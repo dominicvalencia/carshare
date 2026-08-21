@@ -1,0 +1,12 @@
+{
+  "name": "@carrental/test-config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./vitest.mjs"
+  },
+  "peerDependencies": {
+    "vitest": "^4.0.0"
+  }
+}

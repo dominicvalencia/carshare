@@ -1,0 +1,32 @@
+{
+  "name": "@carrental/workers",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/main.ts",
+    "lint": "eslint . --max-warnings=0",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carrental/config": "workspace:*",
+    "@carrental/database": "workspace:*",
+    "@carrental/logger": "workspace:*",
+    "@carrental/payments": "workspace:*",
+    "@carrental/payouts": "workspace:*",
+    "bullmq": "6.1.2",
+    "dotenv": "17.2.4",
+    "ioredis": "6.0.0"
+  },
+  "devDependencies": {
+    "@carrental/test-config": "workspace:*",
+    "@carrental/typescript-config": "workspace:*",
+    "@types/node": "24.13.3",
+    "@vitest/coverage-v8": "4.1.11",
+    "tsx": "4.23.12",
+    "vitest": "4.1.11"
+  }
+}

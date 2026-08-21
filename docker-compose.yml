@@ -1,0 +1,50 @@
+name: carrental-platform
+
+services:
+  postgres:
+    build:
+      context: ./infrastructure/docker/postgres
+    image: carrental-postgis:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-carrental}
+      POSTGRES_USER: ${POSTGRES_USER:-carrental}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carrental_local_only}
+    ports:
+      - '5432:5432'
+    volumes:
+      - carrental_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - carrental
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ['redis-server', '/usr/local/etc/redis/redis.conf']
+    ports:
+      - '6379:6379'
+    volumes:
+      - carrental_redis_data:/data
+      - ./infrastructure/docker/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - carrental
+
+volumes:
+  carrental_postgres_data:
+  carrental_redis_data:
+
+networks:
+  carrental:
+    driver: bridge

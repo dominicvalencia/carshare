@@ -1,0 +1,2424 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BLOCKED
+  DEACTIVATED
+}
+
+enum RoleCode {
+  RENTER
+  OWNER
+  ADMIN
+  SUPER_ADMIN
+  SUPPORT
+  FINANCE_ADMIN
+}
+
+enum SessionPlatform {
+  IOS
+  ANDROID
+  WEB
+  UNKNOWN
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+enum OtpPurpose {
+  LOGIN
+  MOBILE_VERIFICATION
+}
+
+enum OwnerProfileStatus {
+  DRAFT
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+enum VerificationType {
+  ACCOUNT_EMAIL
+  ACCOUNT_MOBILE
+  IDENTITY
+  DRIVER_LICENSE
+  OWNER
+  VEHICLE_DOCUMENT
+}
+
+enum VerificationStatus {
+  NOT_SUBMITTED
+  PENDING
+  VERIFIED
+  REJECTED
+  EXPIRED
+}
+
+enum FileClassification {
+  PUBLIC
+  PRIVATE
+  SENSITIVE
+}
+
+enum FileAssetStatus {
+  PENDING_UPLOAD
+  READY
+  QUARANTINED
+  DELETED
+}
+
+enum VehicleLifecycleStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  CHANGES_REQUIRED
+  REJECTED
+  SUSPENDED
+  ARCHIVED
+}
+
+enum VehicleOperationalStatus {
+  AVAILABLE
+  MAINTENANCE
+  TEMPORARILY_UNAVAILABLE
+}
+
+enum VehicleTransmission {
+  AUTOMATIC
+  MANUAL
+  CVT
+  DCT
+  OTHER
+}
+
+enum VehiclePowertrain {
+  ICE
+  HYBRID
+  PLUG_IN_HYBRID
+  BATTERY_ELECTRIC
+}
+
+enum VehicleFuelType {
+  GASOLINE
+  DIESEL
+  ELECTRIC
+  HYBRID
+  OTHER
+}
+
+enum VehiclePhotoPerspective {
+  FRONT
+  REAR
+  DRIVER_SIDE
+  PASSENGER_SIDE
+  INTERIOR_DASHBOARD
+  OTHER
+}
+
+enum MileagePolicyType {
+  UNLIMITED
+  LIMITED
+}
+
+enum FuelReturnPolicyType {
+  SAME_TO_SAME
+  FULL_TO_FULL
+}
+
+enum EvReturnPolicyType {
+  SAME_TO_SAME
+  MINIMUM_PERCENTAGE
+}
+
+enum AvailabilityPolicyType {
+  EVERY_DAY
+  WEEKLY
+}
+
+enum VehicleBlockReason {
+  PERSONAL_USE
+  MAINTENANCE
+  REPAIR
+  UNAVAILABLE
+  OTHER
+}
+
+enum BookingStatus {
+  HOLD
+  AWAITING_PAYMENT
+  AWAITING_OWNER
+  CAPTURE_PENDING
+  CONFIRMED
+  READY_FOR_PICKUP
+  ACTIVE
+  RETURN_PENDING
+  RETURNED
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum VehicleOccupancyType {
+  OWNER_BLOCK
+  BOOKING_RESERVATION
+  MAINTENANCE
+}
+
+enum BookingActorType {
+  USER
+  SYSTEM
+  WORKER
+}
+
+enum BookingOwnerDecisionType {
+  ACCEPTED
+  REJECTED
+}
+
+enum OutboxEventStatus {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  FAILED
+}
+
+enum PaymentProviderCode {
+  MAYA
+  FAKE
+}
+
+enum PaymentPurpose {
+  RENTAL
+  SECURITY_DEPOSIT
+  ADDITIONAL_CHARGE
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZING
+  AUTHORIZED
+  CAPTURING
+  CAPTURED
+  VOID_PENDING
+  VOIDED
+  FAILED
+  PARTIALLY_REFUNDED
+  REFUNDED
+}
+
+enum PaymentOperationType {
+  AUTHORIZE
+  CAPTURE
+  VOID
+  REFUND
+  RETRIEVE
+}
+
+enum PaymentOperationStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  UNKNOWN
+}
+
+enum PaymentFailureCategory {
+  DEFINITIVE
+  UNKNOWN
+  PROVIDER_UNAVAILABLE
+  CONFIGURATION
+}
+
+enum PaymentWebhookStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+enum CommissionScope {
+  PLATFORM_DEFAULT
+  VEHICLE_CATEGORY
+  OWNER
+}
+
+enum FinancialAccountType {
+  PAYMENT_PROVIDER_RECEIVABLE
+  CUSTOMER_FUNDS_HELD
+  OWNER_PAYABLE
+  PLATFORM_COMMISSION_REVENUE
+  REFUND_PAYABLE
+  PAYOUT_PROVIDER_CLEARING
+  PAYOUT_CASH
+  PAYOUT_PROVIDER_FEE_EXPENSE
+}
+
+enum LedgerTransactionType {
+  CAPTURE_RECOGNITION
+  CAPTURE_ALLOCATION
+  REFUND
+  REVERSAL
+  ADJUSTMENT
+  PAYOUT_SUBMISSION
+  PAYOUT_SETTLEMENT
+  PAYOUT_FAILURE_REVERSAL
+  PAYOUT_REVERSAL
+  PAYOUT_PROVIDER_FEE
+}
+
+enum OwnerEarningStatus {
+  PENDING
+  HELD
+  AVAILABLE
+  PAID
+  REVERSED
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  PROCESSING
+  COMPLETED
+  FAILED
+  REJECTED
+}
+
+enum SecurityDepositStatus {
+  NOT_REQUIRED
+  PENDING
+  AUTHORIZING
+  AUTHORIZED
+  CLAIM_HELD
+  RELEASING
+  RELEASED
+  CHARGE_PROCESSING
+  PARTIALLY_USED
+  USED
+  FAILED
+}
+
+enum InspectionType {
+  PICKUP
+  RETURN
+}
+
+enum InspectionStatus {
+  DRAFT
+  FINALIZED
+}
+
+enum InspectionPerspective {
+  FRONT
+  REAR
+  DRIVER_SIDE
+  PASSENGER_SIDE
+  INTERIOR_DASHBOARD
+  ODOMETER
+  FUEL_OR_BATTERY_DISPLAY
+  ADDITIONAL
+}
+
+enum InspectionParticipantRole {
+  RENTER
+  OWNER
+}
+
+enum InspectionConfirmationDecision {
+  AGREED
+  DISAGREED
+}
+
+enum PostReturnClaimCategory {
+  EXCESS_MILEAGE
+  FUEL_DEFICIENCY
+  EV_BATTERY_DEFICIENCY
+  LATE_RETURN
+  CLEANING
+  DAMAGE
+  OTHER
+}
+
+enum PostReturnClaimStatus {
+  DRAFT
+  SUBMITTED
+  RENTER_REVIEW
+  UNDER_ADMIN_REVIEW
+  PAYMENT_PENDING
+  WITHDRAWN
+  RESOLVED
+}
+
+enum ClaimResponseDecision {
+  ACKNOWLEDGED
+  DISPUTED
+  NO_RESPONSE
+}
+
+enum ClaimAdjudicationOutcome {
+  APPROVED
+  PARTIALLY_APPROVED
+  REJECTED
+  REQUEST_MORE_EVIDENCE
+  ESCALATED_TO_DISPUTE
+}
+
+enum ClaimCalculationMethod {
+  EXCESS_MILEAGE_V1
+  LATE_RETURN_V1
+  ADMIN_PLATFORM_VALUATION_V1
+}
+
+enum ClaimEvidenceType {
+  PHOTO
+  RECEIPT
+  ESTIMATE
+  INVOICE
+  NOTE
+  OTHER
+}
+
+enum EvidenceParticipantRole {
+  OWNER
+  RENTER
+  ADMIN
+}
+
+enum DisputeOriginType {
+  CLAIM
+  INCIDENT
+  ADDITIONAL_CHARGE
+  REFUND
+  OTHER
+}
+
+enum DisputeStatus {
+  OPEN
+  EVIDENCE_COLLECTION
+  UNDER_REVIEW
+  RESOLVED_FOR_RENTER
+  RESOLVED_FOR_OWNER
+  PARTIALLY_RESOLVED
+  CLOSED
+}
+
+enum AdditionalChargeStatus {
+  DRAFT
+  APPROVED
+  PAYMENT_PENDING
+  PROCESSING
+  PAID
+  PAYMENT_FAILED
+  PARTIALLY_REFUNDED
+  REFUNDED
+  CANCELLED
+}
+
+enum AdditionalChargeLineCategory {
+  EXCESS_MILEAGE
+  FUEL_DEFICIENCY
+  EV_DEFICIENCY
+  LATE_RETURN
+  CLEANING
+  DAMAGE
+  ADMIN_ADJUSTMENT
+}
+
+enum AdditionalChargeCollectionStrategy {
+  RENTER_AUTHORIZATION
+  OFF_SESSION
+  SECURITY_DEPOSIT
+}
+
+enum EarningHoldMode {
+  PARTIAL
+  FULL
+}
+
+enum EarningHoldStatus {
+  ACTIVE
+  RELEASED
+}
+
+enum EarningHoldReason {
+  CLAIM_EXPOSURE
+  DISPUTE
+  CRITICAL_INCIDENT
+  PAYMENT_RECONCILIATION
+  ADMIN_REVIEW
+}
+
+enum RentalIncidentCategory {
+  BREAKDOWN
+  ACCIDENT
+  VEHICLE_ISSUE
+  RENTER_ISSUE
+  OWNER_ISSUE
+  RENTER_NO_SHOW
+  OWNER_NO_SHOW
+  VEHICLE_UNAVAILABLE
+  DOWNSTREAM_BOOKING_CONFLICT
+  OTHER
+}
+
+enum RentalIncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum RentalIncidentStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  DISMISSED
+}
+
+enum PayoutProviderCode {
+  XENDIT
+  FAKE
+}
+
+enum PayoutDestinationType {
+  BANK_ACCOUNT
+  E_WALLET
+}
+
+enum PayoutAccountStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  REQUIRES_ACTION
+  REJECTED
+  DISABLED
+}
+
+enum PayoutEligibilityStatus {
+  NOT_READY
+  PENDING
+  ELIGIBLE
+  RESTRICTED
+}
+
+enum PayoutBatchStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum PayoutStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SUBMITTING
+  PROCESSING
+  PAID
+  FAILED
+  CANCELLED
+  REVERSED
+}
+
+enum PayoutOperationType {
+  CREATE
+  APPROVE
+  SUBMIT
+  RETRIEVE
+  RECONCILE
+  CANCEL
+  FINALIZE
+  REVERSE
+}
+
+enum PayoutOperationStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  UNKNOWN
+}
+
+enum PayoutFailureCategory {
+  RETRYABLE
+  INVALID_DESTINATION
+  ACCOUNT_CLOSED
+  PROVIDER_TEMPORARY
+  COMPLIANCE_REJECTED
+  LIMIT_EXCEEDED
+  UNKNOWN
+}
+
+enum PayoutWebhookStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+enum PayoutFeePolicy {
+  PLATFORM_FUNDED
+  OWNER_FUNDED
+}
+
+model User {
+  id                     String     @id @default(uuid()) @db.Uuid
+  email                  String?    @db.VarChar(320)
+  normalizedEmail        String?    @unique @map("normalized_email") @db.VarChar(320)
+  emailVerifiedAt        DateTime?  @map("email_verified_at") @db.Timestamptz(3)
+  mobileNumber           String?    @map("mobile_number") @db.VarChar(32)
+  normalizedMobileNumber String?    @unique @map("normalized_mobile_number") @db.VarChar(32)
+  mobileVerifiedAt       DateTime?  @map("mobile_verified_at") @db.Timestamptz(3)
+  passwordHash           String?    @map("password_hash")
+  status                 UserStatus @default(ACTIVE)
+  failedLoginAttempts    Int        @default(0) @map("failed_login_attempts")
+  loginLockedUntil       DateTime?  @map("login_locked_until") @db.Timestamptz(3)
+  lastLoginAt            DateTime?  @map("last_login_at") @db.Timestamptz(3)
+  createdAt              DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  profile                  UserProfile?
+  roles                    UserRole[]
+  sessions                 Session[]
+  authTokens               AuthToken[]
+  otpChallenges            OtpChallenge[]
+  ownerProfile             OwnerProfile?
+  verifications            Verification[]                    @relation("VerificationSubject")
+  reviewedVerifications    Verification[]                    @relation("VerificationReviewer")
+  uploadedFiles            FileAsset[]
+  securityEvents           SecurityEvent[]
+  auditLogs                AuditLog[]                        @relation("AuditActor")
+  ownedVehicles            Vehicle[]                         @relation("VehicleOwnerUser")
+  vehiclePolicyVersions    VehiclePolicyVersion[]            @relation("VehiclePolicyCreator")
+  vehicleBlocksCreated     VehicleBlockedPeriod[]            @relation("VehicleBlockCreator")
+  vehicleStatusChanges     VehicleStatusHistory[]            @relation("VehicleStatusActor")
+  vehicleDocumentsReviewed VehicleDocument[]                 @relation("VehicleDocumentReviewer")
+  favorites                UserFavorite[]
+  pricingQuotes            PricingQuote[]                    @relation("QuoteRenter")
+  analyticsEvents          AnalyticsEvent[]
+  renterBookings           Booking[]                         @relation("BookingRenter")
+  ownerBookings            Booking[]                         @relation("BookingOwner")
+  bookingStatusActions     BookingStatusHistory[]            @relation("BookingStatusActor")
+  bookingCancellations     BookingCancellation[]             @relation("BookingCancellationActor")
+  bookingOwnerDecisions    BookingOwnerDecision[]            @relation("BookingOwnerDecisionActor")
+  bookingIdempotency       BookingIdempotencyRecord[]
+  commissionRulesCreated   CommissionRule[]                  @relation("CommissionRuleCreator")
+  inspectionsSubmitted     Inspection[]                      @relation("InspectionSubmitter")
+  inspectionMediaSubmitted InspectionMedia[]                 @relation("InspectionMediaSubmitter")
+  inspectionConfirmations  InspectionConfirmation[]
+  pickupChallengesIssued   InspectionVerificationChallenge[] @relation("PickupChallengeIssuer")
+  pickupChallengesConsumed InspectionVerificationChallenge[] @relation("PickupChallengeConsumer")
+  inspectionAmendments     InspectionAmendment[]             @relation("InspectionAmendmentCreator")
+  postReturnClaims         PostReturnClaim[]                 @relation("PostReturnClaimSubmitter")
+  claimLateOverrides       PostReturnClaim[]                 @relation("ClaimLateOverride")
+  claimEvidenceSubmitted   PostReturnClaimEvidence[]         @relation("ClaimEvidenceSubmitter")
+  claimResponses           ClaimResponse[]                   @relation("ClaimResponseRenter")
+  claimAdjudications       ClaimAdjudication[]               @relation("ClaimAdjudicator")
+  disputesOpened           Dispute[]                         @relation("DisputeOpener")
+  disputesResolved         Dispute[]                         @relation("DisputeResolver")
+  disputeEvidenceSubmitted DisputeEvidence[]                 @relation("DisputeEvidenceSubmitter")
+  earningHoldsCreated      EarningHold[]                     @relation("EarningHoldCreator")
+  earningHoldsReleased     EarningHold[]                     @relation("EarningHoldReleaser")
+  rentalIncidents          RentalIncident[]                  @relation("RentalIncidentReporter")
+  payoutAccountsCreated    OwnerPayoutAccount[]              @relation("PayoutAccountCreator")
+  payoutEligibilitiesSet   PayoutEligibility[]               @relation("PayoutEligibilityActor")
+  payoutBatchesCreated     PayoutBatch[]                     @relation("PayoutBatchCreator")
+  payoutsCreated           Payout[]                          @relation("PayoutCreator")
+  payoutsApproved          Payout[]                          @relation("PayoutApprover")
+  payoutOperations         PayoutOperation[]                 @relation("PayoutOperationActor")
+
+  @@index([status])
+  @@map("users")
+}
+
+model UserProfile {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @unique @map("user_id") @db.Uuid
+  firstName    String?   @map("first_name") @db.VarChar(100)
+  middleName   String?   @map("middle_name") @db.VarChar(100)
+  lastName     String?   @map("last_name") @db.VarChar(100)
+  displayName  String?   @map("display_name") @db.VarChar(150)
+  dateOfBirth  DateTime? @map("date_of_birth") @db.Date
+  avatarFileId String?   @map("avatar_file_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  avatarFile FileAsset? @relation("ProfileAvatar", fields: [avatarFileId], references: [id], onDelete: SetNull)
+
+  @@map("user_profiles")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        RoleCode @unique
+  description String?  @db.VarChar(255)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  userId     String   @map("user_id") @db.Uuid
+  roleId     String   @map("role_id") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz(3)
+  assignedBy String?  @map("assigned_by") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(100)
+  description String?  @db.VarChar(255)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String   @map("role_id") @db.Uuid
+  permissionId String   @map("permission_id") @db.Uuid
+  assignedAt   DateTime @default(now()) @map("assigned_at") @db.Timestamptz(3)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model Session {
+  id               String          @id @default(uuid()) @db.Uuid
+  userId           String          @map("user_id") @db.Uuid
+  refreshFamilyId  String          @unique @default(uuid()) @map("refresh_family_id") @db.Uuid
+  deviceIdentifier String?         @map("device_identifier") @db.VarChar(255)
+  deviceName       String?         @map("device_name") @db.VarChar(150)
+  appVersion       String?         @map("app_version") @db.VarChar(50)
+  platform         SessionPlatform @default(UNKNOWN)
+  userAgent        String?         @map("user_agent") @db.VarChar(500)
+  ipAddress        String?         @map("ip_address") @db.Inet
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt       DateTime        @default(now()) @map("last_used_at") @db.Timestamptz(3)
+  expiresAt        DateTime        @map("expires_at") @db.Timestamptz(3)
+  revokedAt        DateTime?       @map("revoked_at") @db.Timestamptz(3)
+  revocationReason String?         @map("revocation_reason") @db.VarChar(255)
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  refreshTokens  RefreshToken[]
+  securityEvents SecurityEvent[]
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model RefreshToken {
+  id           String    @id @default(uuid()) @db.Uuid
+  sessionId    String    @map("session_id") @db.Uuid
+  tokenHash    String    @unique @map("token_hash") @db.Char(64)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt       DateTime? @map("used_at") @db.Timestamptz(3)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  replacedById String?   @unique @map("replaced_by_id") @db.Uuid
+
+  session    Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  replacedBy RefreshToken? @relation("RefreshRotation", fields: [replacedById], references: [id], onDelete: SetNull)
+  replaces   RefreshToken? @relation("RefreshRotation")
+
+  @@index([sessionId, createdAt])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model AuthToken {
+  id         String        @id @default(uuid()) @db.Uuid
+  userId     String        @map("user_id") @db.Uuid
+  type       AuthTokenType
+  tokenHash  String        @unique @map("token_hash") @db.Char(64)
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt  DateTime      @map("expires_at") @db.Timestamptz(3)
+  consumedAt DateTime?     @map("consumed_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type, createdAt])
+  @@index([expiresAt])
+  @@map("auth_tokens")
+}
+
+model OtpChallenge {
+  id                  String     @id @default(uuid()) @db.Uuid
+  userId              String     @map("user_id") @db.Uuid
+  purpose             OtpPurpose
+  destinationHash     String     @map("destination_hash") @db.Char(64)
+  destinationLastFour String     @map("destination_last_four") @db.Char(4)
+  codeHash            String     @map("code_hash") @db.Char(64)
+  attemptCount        Int        @default(0) @map("attempt_count")
+  maxAttempts         Int        @default(5) @map("max_attempts")
+  createdAt           DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt           DateTime   @map("expires_at") @db.Timestamptz(3)
+  resendAvailableAt   DateTime   @map("resend_available_at") @db.Timestamptz(3)
+  consumedAt          DateTime?  @map("consumed_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([destinationHash, purpose, createdAt])
+  @@index([expiresAt])
+  @@map("otp_challenges")
+}
+
+model OwnerProfile {
+  id               String             @id @default(uuid()) @db.Uuid
+  userId           String             @unique @map("user_id") @db.Uuid
+  status           OwnerProfileStatus @default(DRAFT)
+  legalName        String?            @map("legal_name") @db.VarChar(200)
+  contactNumber    String?            @map("contact_number") @db.VarChar(32)
+  addressLine1     String?            @map("address_line_1") @db.VarChar(255)
+  barangay         String?            @db.VarChar(120)
+  city             String?            @db.VarChar(120)
+  province         String?            @db.VarChar(120)
+  postalCode       String?            @map("postal_code") @db.VarChar(12)
+  submittedAt      DateTime?          @map("submitted_at") @db.Timestamptz(3)
+  verifiedAt       DateTime?          @map("verified_at") @db.Timestamptz(3)
+  rejectedAt       DateTime?          @map("rejected_at") @db.Timestamptz(3)
+  suspendedAt      DateTime?          @map("suspended_at") @db.Timestamptz(3)
+  rejectionReason  String?            @map("rejection_reason") @db.VarChar(1000)
+  suspensionReason String?            @map("suspension_reason") @db.VarChar(1000)
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  verifications   Verification[]
+  vehicles        Vehicle[]
+  bookings        Booking[]
+  commissionRules CommissionRule[]
+  earnings        OwnerEarning[]
+  payoutEligibility PayoutEligibility?
+  payoutAccounts  OwnerPayoutAccount[]
+  payouts         Payout[]
+
+  @@index([status, submittedAt])
+  @@map("owner_profiles")
+}
+
+model Verification {
+  id                String             @id @default(uuid()) @db.Uuid
+  userId            String             @map("user_id") @db.Uuid
+  ownerProfileId    String?            @map("owner_profile_id") @db.Uuid
+  type              VerificationType
+  status            VerificationStatus @default(NOT_SUBMITTED)
+  provider          String             @default("manual") @db.VarChar(100)
+  providerReference String?            @map("provider_reference") @db.VarChar(255)
+  submittedAt       DateTime?          @map("submitted_at") @db.Timestamptz(3)
+  reviewedAt        DateTime?          @map("reviewed_at") @db.Timestamptz(3)
+  reviewedByUserId  String?            @map("reviewed_by_user_id") @db.Uuid
+  rejectionReason   String?            @map("rejection_reason") @db.VarChar(1000)
+  expiresAt         DateTime?          @map("expires_at") @db.Timestamptz(3)
+  metadata          Json?
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user         User                   @relation("VerificationSubject", fields: [userId], references: [id], onDelete: Restrict)
+  ownerProfile OwnerProfile?          @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  reviewedBy   User?                  @relation("VerificationReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
+  documents    VerificationDocument[]
+
+  @@index([userId, type, status])
+  @@index([ownerProfileId, status])
+  @@index([status, submittedAt])
+  @@map("verifications")
+}
+
+model VerificationDocument {
+  id             String   @id @default(uuid()) @db.Uuid
+  verificationId String   @map("verification_id") @db.Uuid
+  fileAssetId    String   @map("file_asset_id") @db.Uuid
+  documentType   String   @map("document_type") @db.VarChar(100)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  verification Verification @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+  fileAsset    FileAsset    @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+
+  @@unique([verificationId, fileAssetId])
+  @@index([fileAssetId])
+  @@map("verification_documents")
+}
+
+model FileAsset {
+  id             String             @id @default(uuid()) @db.Uuid
+  objectKey      String             @unique @map("object_key") @db.VarChar(500)
+  classification FileClassification
+  status         FileAssetStatus    @default(PENDING_UPLOAD)
+  originalName   String             @map("original_name") @db.VarChar(255)
+  mimeType       String             @map("mime_type") @db.VarChar(150)
+  size           BigInt
+  checksum       String             @db.Char(64)
+  uploadedById   String             @map("uploaded_by_id") @db.Uuid
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  uploadedBy            User                      @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  verificationDocuments VerificationDocument[]
+  profileAvatars        UserProfile[]             @relation("ProfileAvatar")
+  vehiclePhotos         VehiclePhoto[]
+  vehicleDocuments      VehicleDocument[]
+  inspectionMedia       InspectionMedia[]
+  claimEvidence         PostReturnClaimEvidence[]
+  incidentEvidence      RentalIncidentEvidence[]
+  disputeEvidence       DisputeEvidence[]
+
+  @@index([uploadedById, createdAt])
+  @@index([classification, status])
+  @@map("file_assets")
+}
+
+model SecurityEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  sessionId  String?  @map("session_id") @db.Uuid
+  type       String   @db.VarChar(100)
+  ipAddress  String?  @map("ip_address") @db.Inet
+  userAgent  String?  @map("user_agent") @db.VarChar(500)
+  metadata   Json?
+  occurredAt DateTime @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, occurredAt])
+  @@index([type, occurredAt])
+  @@map("security_events")
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  actorUserId   String   @map("actor_user_id") @db.Uuid
+  action        String   @db.VarChar(100)
+  targetType    String   @map("target_type") @db.VarChar(100)
+  targetId      String   @map("target_id") @db.VarChar(100)
+  reason        String?  @db.VarChar(1000)
+  ipAddress     String?  @map("ip_address") @db.Inet
+  correlationId String?  @map("correlation_id") @db.VarChar(100)
+  metadata      Json?
+  occurredAt    DateTime @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  actor User @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([actorUserId, occurredAt])
+  @@index([targetType, targetId, occurredAt])
+  @@index([action, occurredAt])
+  @@map("audit_logs")
+}
+
+model VehicleCategory {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(100)
+  description String?  @db.VarChar(255)
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  vehicles        Vehicle[]
+  commissionRules CommissionRule[]
+
+  @@index([active, sortOrder])
+  @@map("vehicle_categories")
+}
+
+model VehicleFeature {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(100)
+  description String?  @db.VarChar(255)
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  assignments VehicleFeatureAssignment[]
+
+  @@index([active, sortOrder])
+  @@map("vehicle_features")
+}
+
+model VehicleDocumentDefinition {
+  id           String   @id @default(uuid()) @db.Uuid
+  code         String   @db.VarChar(75)
+  jurisdiction String   @default("PH") @db.Char(2)
+  name         String   @db.VarChar(150)
+  description  String?  @db.VarChar(500)
+  required     Boolean  @default(false)
+  active       Boolean  @default(true)
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  documents VehicleDocument[]
+
+  @@unique([jurisdiction, code])
+  @@index([jurisdiction, active, sortOrder])
+  @@map("vehicle_document_definitions")
+}
+
+model Vehicle {
+  id                   String                   @id @default(uuid()) @db.Uuid
+  ownerProfileId       String                   @map("owner_profile_id") @db.Uuid
+  ownerUserId          String                   @map("owner_user_id") @db.Uuid
+  categoryId           String?                  @map("category_id") @db.Uuid
+  status               VehicleLifecycleStatus   @default(DRAFT)
+  operationalStatus    VehicleOperationalStatus @default(AVAILABLE) @map("operational_status")
+  make                 String?                  @db.VarChar(100)
+  model                String?                  @db.VarChar(100)
+  variant              String?                  @db.VarChar(100)
+  modelYear            Int?                     @map("model_year")
+  transmission         VehicleTransmission?
+  powertrain           VehiclePowertrain?
+  fuelType             VehicleFuelType?         @map("fuel_type")
+  seatCount            Int?                     @map("seat_count")
+  doorCount            Int?                     @map("door_count")
+  color                String?                  @db.VarChar(75)
+  plateNumber          String?                  @map("plate_number") @db.VarChar(30)
+  plateHash            String?                  @unique @map("plate_hash") @db.Char(64)
+  vin                  String?                  @db.VarChar(64)
+  vinHash              String?                  @unique @map("vin_hash") @db.Char(64)
+  description          String?                  @db.VarChar(3000)
+  rentalRequirements   String?                  @map("rental_requirements") @db.VarChar(2000)
+  lastCompletedSection String?                  @map("last_completed_section") @db.VarChar(50)
+  reviewReason         String?                  @map("review_reason") @db.VarChar(1000)
+  submittedAt          DateTime?                @map("submitted_at") @db.Timestamptz(3)
+  approvedAt           DateTime?                @map("approved_at") @db.Timestamptz(3)
+  archivedAt           DateTime?                @map("archived_at") @db.Timestamptz(3)
+  createdAt            DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  ownerProfile    OwnerProfile               @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  ownerUser       User                       @relation("VehicleOwnerUser", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  category        VehicleCategory?           @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  features        VehicleFeatureAssignment[]
+  photos          VehiclePhoto[]
+  documents       VehicleDocument[]
+  location        VehicleLocation?
+  policyVersions  VehiclePolicyVersion[]
+  blockedPeriods  VehicleBlockedPeriod[]
+  statusHistory   VehicleStatusHistory[]
+  favorites       UserFavorite[]
+  pricingQuotes   PricingQuote[]
+  analyticsEvents AnalyticsEvent[]
+  bookings        Booking[]
+  occupancies     VehicleOccupancy[]
+
+  @@index([ownerUserId, status, updatedAt])
+  @@index([ownerProfileId])
+  @@index([status, submittedAt])
+  @@index([categoryId, status])
+  @@map("vehicles")
+}
+
+model VehicleFeatureAssignment {
+  vehicleId String   @map("vehicle_id") @db.Uuid
+  featureId String   @map("feature_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vehicle Vehicle        @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  feature VehicleFeature @relation(fields: [featureId], references: [id], onDelete: Restrict)
+
+  @@id([vehicleId, featureId])
+  @@index([featureId])
+  @@map("vehicle_feature_assignments")
+}
+
+model VehiclePhoto {
+  id           String                  @id @default(uuid()) @db.Uuid
+  vehicleId    String                  @map("vehicle_id") @db.Uuid
+  fileAssetId  String                  @unique @map("file_asset_id") @db.Uuid
+  perspective  VehiclePhotoPerspective
+  displayOrder Int                     @map("display_order")
+  isCover      Boolean                 @default(false) @map("is_cover")
+  removedAt    DateTime?               @map("removed_at") @db.Timestamptz(3)
+  createdAt    DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vehicle   Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  fileAsset FileAsset @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+
+  @@index([vehicleId, removedAt, displayOrder])
+  @@map("vehicle_photos")
+}
+
+model VehicleDocument {
+  id                 String             @id @default(uuid()) @db.Uuid
+  vehicleId          String             @map("vehicle_id") @db.Uuid
+  definitionId       String             @map("definition_id") @db.Uuid
+  fileAssetId        String             @unique @map("file_asset_id") @db.Uuid
+  version            Int                @default(1)
+  status             VerificationStatus @default(PENDING)
+  expiresAt          DateTime?          @map("expires_at") @db.Date
+  reviewedAt         DateTime?          @map("reviewed_at") @db.Timestamptz(3)
+  reviewedByUserId   String?            @map("reviewed_by_user_id") @db.Uuid
+  reviewReason       String?            @map("review_reason") @db.VarChar(1000)
+  replacesDocumentId String?            @unique @map("replaces_document_id") @db.Uuid
+  replacedAt         DateTime?          @map("replaced_at") @db.Timestamptz(3)
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vehicle    Vehicle                   @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  definition VehicleDocumentDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+  fileAsset  FileAsset                 @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+  reviewedBy User?                     @relation("VehicleDocumentReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
+  replaces   VehicleDocument?          @relation("VehicleDocumentReplacement", fields: [replacesDocumentId], references: [id], onDelete: Restrict)
+  replacedBy VehicleDocument?          @relation("VehicleDocumentReplacement")
+
+  @@unique([vehicleId, definitionId, version])
+  @@index([vehicleId, status, replacedAt])
+  @@index([definitionId])
+  @@map("vehicle_documents")
+}
+
+model VehicleLocation {
+  id              String                    @id @default(uuid()) @db.Uuid
+  vehicleId       String                    @unique @map("vehicle_id") @db.Uuid
+  latitude        Decimal                   @db.Decimal(9, 6)
+  longitude       Decimal                   @db.Decimal(9, 6)
+  point           Unsupported("geography")? @default(dbgenerated("(st_setsrid(st_makepoint((longitude)::double precision, (latitude)::double precision), 4326))::geography"))
+  city            String                    @db.VarChar(120)
+  province        String                    @db.VarChar(120)
+  country         String                    @default("PH") @db.Char(2)
+  timezone        String                    @default("Asia/Manila") @db.VarChar(64)
+  pickupAreaLabel String?                   @map("pickup_area_label") @db.VarChar(150)
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([city, province, country])
+  @@index([point], map: "vehicle_locations_point_gist_idx", type: Gist)
+  @@map("vehicle_locations")
+}
+
+model VehiclePolicyVersion {
+  id                       String                 @id @default(uuid()) @db.Uuid
+  vehicleId                String                 @map("vehicle_id") @db.Uuid
+  version                  Int
+  currency                 String                 @default("PHP") @db.Char(3)
+  dailyRateMinor           Int                    @map("daily_rate_minor")
+  minimumRentalDays        Int                    @map("minimum_rental_days")
+  maximumRentalDays        Int                    @map("maximum_rental_days")
+  mileagePolicy            MileagePolicyType      @map("mileage_policy")
+  includedKilometersPerDay Int?                   @map("included_kilometers_per_day")
+  excessKilometerRateMinor Int?                   @map("excess_kilometer_rate_minor")
+  fuelReturnPolicy         FuelReturnPolicyType?  @map("fuel_return_policy")
+  fuelTolerancePercent     Int?                   @map("fuel_tolerance_percent")
+  fuelCalculationPolicyRef String?                @map("fuel_calculation_policy_ref") @db.VarChar(100)
+  evReturnPolicy           EvReturnPolicyType?    @map("ev_return_policy")
+  evRequiredPercentage     Int?                   @map("ev_required_percentage")
+  evTolerancePercent       Int?                   @map("ev_tolerance_percent")
+  evCalculationPolicyRef   String?                @map("ev_calculation_policy_ref") @db.VarChar(100)
+  turnaroundMinutes        Int                    @default(120) @map("turnaround_minutes")
+  availabilityPolicy       AvailabilityPolicyType @default(EVERY_DAY) @map("availability_policy")
+  monday                   Boolean                @default(true)
+  tuesday                  Boolean                @default(true)
+  wednesday                Boolean                @default(true)
+  thursday                 Boolean                @default(true)
+  friday                   Boolean                @default(true)
+  saturday                 Boolean                @default(true)
+  sunday                   Boolean                @default(true)
+  createdByUserId          String                 @map("created_by_user_id") @db.Uuid
+  createdAt                DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vehicle       Vehicle        @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  createdBy     User           @relation("VehiclePolicyCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  pricingQuotes PricingQuote[]
+
+  @@unique([vehicleId, version])
+  @@index([vehicleId, createdAt])
+  @@map("vehicle_policy_versions")
+}
+
+model VehicleBlockedPeriod {
+  id              String             @id @default(uuid()) @db.Uuid
+  vehicleId       String             @map("vehicle_id") @db.Uuid
+  startsAt        DateTime           @map("starts_at") @db.Timestamptz(3)
+  endsAt          DateTime           @map("ends_at") @db.Timestamptz(3)
+  reason          VehicleBlockReason
+  privateNote     String?            @map("private_note") @db.VarChar(1000)
+  createdByUserId String             @map("created_by_user_id") @db.Uuid
+  removedAt       DateTime?          @map("removed_at") @db.Timestamptz(3)
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  occupancyId     String             @unique @map("occupancy_id") @db.Uuid
+
+  vehicle   Vehicle          @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  createdBy User             @relation("VehicleBlockCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  occupancy VehicleOccupancy @relation(fields: [occupancyId], references: [id], onDelete: Restrict)
+
+  @@index([vehicleId, startsAt, endsAt])
+  @@map("vehicle_blocked_periods")
+}
+
+model VehicleStatusHistory {
+  id             String                  @id @default(uuid()) @db.Uuid
+  vehicleId      String                  @map("vehicle_id") @db.Uuid
+  previousStatus VehicleLifecycleStatus? @map("previous_status")
+  newStatus      VehicleLifecycleStatus  @map("new_status")
+  actorUserId    String                  @map("actor_user_id") @db.Uuid
+  reason         String?                 @db.VarChar(1000)
+  correlationId  String?                 @map("correlation_id") @db.VarChar(100)
+  occurredAt     DateTime                @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  actor   User    @relation("VehicleStatusActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([vehicleId, occurredAt])
+  @@map("vehicle_status_history")
+}
+
+model UserFavorite {
+  userId    String   @map("user_id") @db.Uuid
+  vehicleId String   @map("vehicle_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, vehicleId])
+  @@index([userId, createdAt])
+  @@index([vehicleId])
+  @@map("user_favorites")
+}
+
+model PricingQuote {
+  id                       String   @id @default(uuid()) @db.Uuid
+  renterUserId             String   @map("renter_user_id") @db.Uuid
+  vehicleId                String   @map("vehicle_id") @db.Uuid
+  policyVersionId          String   @map("policy_version_id") @db.Uuid
+  rentalStart              DateTime @map("rental_start") @db.Timestamptz(3)
+  rentalEnd                DateTime @map("rental_end") @db.Timestamptz(3)
+  vehicleTimezone          String   @map("vehicle_timezone") @db.VarChar(64)
+  chargeableDays           Int      @map("chargeable_days")
+  currency                 String   @db.Char(3)
+  subtotalMinor            Int      @map("subtotal_minor")
+  totalMinor               Int      @map("total_minor")
+  unlimitedMileage         Boolean  @map("unlimited_mileage")
+  includedMileageKm        Int?     @map("included_mileage_km")
+  excessKilometerRateMinor Int?     @map("excess_kilometer_rate_minor")
+  fuelReturnPolicy         String?  @map("fuel_return_policy") @db.VarChar(50)
+  evReturnPolicy           String?  @map("ev_return_policy") @db.VarChar(50)
+  turnaroundMinutes        Int      @map("turnaround_minutes")
+  pricingEngineVersion     String   @map("pricing_engine_version") @db.VarChar(100)
+  expiresAt                DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  renter          User                 @relation("QuoteRenter", fields: [renterUserId], references: [id], onDelete: Restrict)
+  vehicle         Vehicle              @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  policyVersion   VehiclePolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Restrict)
+  lines           PricingQuoteLine[]
+  analyticsEvents AnalyticsEvent[]
+  booking         Booking?
+
+  @@index([renterUserId, createdAt])
+  @@index([vehicleId, createdAt])
+  @@index([expiresAt])
+  @@map("pricing_quotes")
+}
+
+model PricingQuoteLine {
+  id              String   @id @default(uuid()) @db.Uuid
+  quoteId         String   @map("quote_id") @db.Uuid
+  code            String   @db.VarChar(50)
+  description     String   @db.VarChar(255)
+  quantity        Int
+  unitAmountMinor Int      @map("unit_amount_minor")
+  amountMinor     Int      @map("amount_minor")
+  displayOrder    Int      @default(0) @map("display_order")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  quote PricingQuote @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+
+  @@index([quoteId, displayOrder])
+  @@map("pricing_quote_lines")
+}
+
+model AnalyticsEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  eventType     String   @map("event_type") @db.VarChar(75)
+  userId        String?  @map("user_id") @db.Uuid
+  vehicleId     String?  @map("vehicle_id") @db.Uuid
+  quoteId       String?  @map("quote_id") @db.Uuid
+  bookingId     String?  @map("booking_id") @db.Uuid
+  correlationId String?  @map("correlation_id") @db.VarChar(100)
+  metadata      Json?
+  occurredAt    DateTime @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  user    User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  vehicle Vehicle?      @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  quote   PricingQuote? @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  booking Booking?      @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@index([eventType, occurredAt])
+  @@index([userId, occurredAt])
+  @@index([vehicleId, occurredAt])
+  @@index([bookingId, occurredAt])
+  @@map("analytics_events")
+}
+
+model Booking {
+  id                      String        @id @default(uuid()) @db.Uuid
+  publicReference         String        @unique @map("public_reference") @db.VarChar(32)
+  renterUserId            String        @map("renter_user_id") @db.Uuid
+  ownerUserId             String        @map("owner_user_id") @db.Uuid
+  ownerProfileId          String        @map("owner_profile_id") @db.Uuid
+  vehicleId               String        @map("vehicle_id") @db.Uuid
+  quoteId                 String        @unique @map("quote_id") @db.Uuid
+  status                  BookingStatus @default(HOLD)
+  rentalStart             DateTime      @map("rental_start") @db.Timestamptz(3)
+  rentalEnd               DateTime      @map("rental_end") @db.Timestamptz(3)
+  holdExpiresAt           DateTime?     @map("hold_expires_at") @db.Timestamptz(3)
+  ownerResponseDeadlineAt DateTime?     @map("owner_response_deadline_at") @db.Timestamptz(3)
+  createdAt               DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  renter             User                              @relation("BookingRenter", fields: [renterUserId], references: [id], onDelete: Restrict)
+  owner              User                              @relation("BookingOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  ownerProfile       OwnerProfile                      @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  vehicle            Vehicle                           @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  quote              PricingQuote                      @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  occupancy          VehicleOccupancy?
+  pricingSnapshot    BookingPricingSnapshot?
+  policySnapshot     BookingPolicySnapshot?
+  statusHistory      BookingStatusHistory[]
+  cancellation       BookingCancellation?
+  ownerDecision      BookingOwnerDecision?
+  idempotencyRecord  BookingIdempotencyRecord?
+  analyticsEvents    AnalyticsEvent[]
+  payments           Payment[]
+  commissionSnapshot CommissionSnapshot?
+  ownerEarning       OwnerEarning?
+  securityDeposit    SecurityDepositAuthorization?
+  inspections        Inspection[]
+  usageSummary       BookingUsageSummary?
+  pickupChallenges   InspectionVerificationChallenge[]
+  postReturnClaims   PostReturnClaim[]
+  rentalIncidents    RentalIncident[]
+  disputes           Dispute[]
+  additionalCharges  AdditionalCharge[]
+  pickupWindowStart  DateTime?                         @map("pickup_window_start") @db.Timestamptz(3)
+  pickupWindowEnd    DateTime?                         @map("pickup_window_end") @db.Timestamptz(3)
+  actualPickupAt     DateTime?                         @map("actual_pickup_at") @db.Timestamptz(3)
+  actualReturnAt     DateTime?                         @map("actual_return_at") @db.Timestamptz(3)
+  claimDeadlineAt    DateTime?                         @map("claim_deadline_at") @db.Timestamptz(3)
+  operationalHold    Boolean                           @default(false) @map("operational_hold")
+
+  @@index([renterUserId, createdAt])
+  @@index([ownerUserId, status, createdAt])
+  @@index([vehicleId, rentalStart, rentalEnd])
+  @@index([status, holdExpiresAt])
+  @@index([status, ownerResponseDeadlineAt])
+  @@index([status, pickupWindowStart])
+  @@index([status, claimDeadlineAt])
+  @@map("bookings")
+}
+
+model Inspection {
+  id                    String           @id @default(uuid()) @db.Uuid
+  bookingId             String           @map("booking_id") @db.Uuid
+  type                  InspectionType
+  status                InspectionStatus @default(DRAFT)
+  version               Int              @default(1)
+  submittedByUserId     String           @map("submitted_by_user_id") @db.Uuid
+  odometerMeters        BigInt?          @map("odometer_meters")
+  fuelBasisPoints       Int?             @map("fuel_basis_points")
+  batterySocBasisPoints Int?             @map("battery_soc_basis_points")
+  notes                 String?          @db.VarChar(3000)
+  finalizedAt           DateTime?        @map("finalized_at") @db.Timestamptz(3)
+  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking       Booking                  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  submittedBy   User                     @relation("InspectionSubmitter", fields: [submittedByUserId], references: [id], onDelete: Restrict)
+  media         InspectionMedia[]
+  confirmations InspectionConfirmation[]
+  amendments    InspectionAmendment[]
+
+  @@unique([bookingId, type, version])
+  @@index([bookingId, type, status])
+  @@map("inspections")
+}
+
+model InspectionMedia {
+  id               String                @id @default(uuid()) @db.Uuid
+  inspectionId     String                @map("inspection_id") @db.Uuid
+  fileAssetId      String                @unique @map("file_asset_id") @db.Uuid
+  perspective      InspectionPerspective
+  evidenceSequence Int                   @default(1) @map("evidence_sequence")
+  submittedById    String                @map("submitted_by_id") @db.Uuid
+  clientCapturedAt DateTime?             @map("client_captured_at") @db.Timestamptz(3)
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  inspection  Inspection @relation(fields: [inspectionId], references: [id], onDelete: Restrict)
+  fileAsset   FileAsset  @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+  submittedBy User       @relation("InspectionMediaSubmitter", fields: [submittedById], references: [id], onDelete: Restrict)
+
+  @@unique([inspectionId, perspective, evidenceSequence])
+  @@index([inspectionId, perspective])
+  @@map("inspection_media")
+}
+
+model InspectionConfirmation {
+  id           String                         @id @default(uuid()) @db.Uuid
+  inspectionId String                         @map("inspection_id") @db.Uuid
+  userId       String                         @map("user_id") @db.Uuid
+  role         InspectionParticipantRole
+  decision     InspectionConfirmationDecision
+  reason       String?                        @db.VarChar(1000)
+  confirmedAt  DateTime                       @default(now()) @map("confirmed_at") @db.Timestamptz(3)
+
+  inspection Inspection @relation(fields: [inspectionId], references: [id], onDelete: Restrict)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([inspectionId, role])
+  @@index([userId, confirmedAt])
+  @@map("inspection_confirmations")
+}
+
+model InspectionVerificationChallenge {
+  id               String    @id @default(uuid()) @db.Uuid
+  bookingId        String    @map("booking_id") @db.Uuid
+  issuedToUserId   String    @map("issued_to_user_id") @db.Uuid
+  secretHash       String    @map("secret_hash") @db.Char(64)
+  attemptCount     Int       @default(0) @map("attempt_count")
+  maxAttempts      Int       @default(5) @map("max_attempts")
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(3)
+  consumedAt       DateTime? @map("consumed_at") @db.Timestamptz(3)
+  consumedByUserId String?   @map("consumed_by_user_id") @db.Uuid
+  supersededAt     DateTime? @map("superseded_at") @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking    Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  issuedTo   User    @relation("PickupChallengeIssuer", fields: [issuedToUserId], references: [id], onDelete: Restrict)
+  consumedBy User?   @relation("PickupChallengeConsumer", fields: [consumedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([bookingId, expiresAt])
+  @@map("inspection_verification_challenges")
+}
+
+model InspectionAmendment {
+  id              String   @id @default(uuid()) @db.Uuid
+  inspectionId    String   @map("inspection_id") @db.Uuid
+  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  reason          String   @db.VarChar(1000)
+  evidence        Json?
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  inspection Inspection @relation(fields: [inspectionId], references: [id], onDelete: Restrict)
+  createdBy  User       @relation("InspectionAmendmentCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([inspectionId, createdAt])
+  @@map("inspection_amendments")
+}
+
+model BookingUsageSummary {
+  id                        String   @id @default(uuid()) @db.Uuid
+  bookingId                 String   @unique @map("booking_id") @db.Uuid
+  pickupOdometerMeters      BigInt   @map("pickup_odometer_meters")
+  returnOdometerMeters      BigInt   @map("return_odometer_meters")
+  distanceTravelledMeters   BigInt   @map("distance_travelled_meters")
+  distanceTravelledKm       Int      @map("distance_travelled_km")
+  includedDistanceKm        Int?     @map("included_distance_km")
+  excessDistanceKm          Int      @map("excess_distance_km")
+  pickupFuelBasisPoints     Int?     @map("pickup_fuel_basis_points")
+  returnFuelBasisPoints     Int?     @map("return_fuel_basis_points")
+  requiredFuelBasisPoints   Int?     @map("required_fuel_basis_points")
+  fuelDeficiencyBasisPoints Int?     @map("fuel_deficiency_basis_points")
+  pickupSocBasisPoints      Int?     @map("pickup_soc_basis_points")
+  returnSocBasisPoints      Int?     @map("return_soc_basis_points")
+  requiredSocBasisPoints    Int?     @map("required_soc_basis_points")
+  socDeficiencyBasisPoints  Int?     @map("soc_deficiency_basis_points")
+  scheduledReturnAt         DateTime @map("scheduled_return_at") @db.Timestamptz(3)
+  actualReturnAt            DateTime @map("actual_return_at") @db.Timestamptz(3)
+  lateDurationSeconds       Int      @map("late_duration_seconds")
+  returnDisputed            Boolean  @default(false) @map("return_disputed")
+  calculationVersion        String   @default("usage-v1") @map("calculation_version") @db.VarChar(50)
+  createdAt                 DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@map("booking_usage_summaries")
+}
+
+model PostReturnClaim {
+  id                String                  @id @default(uuid()) @db.Uuid
+  bookingId         String                  @map("booking_id") @db.Uuid
+  submittedByUserId String                  @map("submitted_by_user_id") @db.Uuid
+  category          PostReturnClaimCategory
+  description       String                  @db.VarChar(3000)
+  status            PostReturnClaimStatus   @default(SUBMITTED)
+  blocking          Boolean                 @default(true)
+  responseDeadlineAt DateTime?              @map("response_deadline_at") @db.Timestamptz(3)
+  lateOverrideReason String?                @map("late_override_reason") @db.VarChar(1000)
+  lateOverrideByUserId String?              @map("late_override_by_user_id") @db.Uuid
+  submittedAt       DateTime                @default(now()) @map("submitted_at") @db.Timestamptz(3)
+  resolvedAt        DateTime?               @map("resolved_at") @db.Timestamptz(3)
+
+  booking          Booking                    @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  submittedBy      User                       @relation("PostReturnClaimSubmitter", fields: [submittedByUserId], references: [id], onDelete: Restrict)
+  lateOverrideBy   User?                      @relation("ClaimLateOverride", fields: [lateOverrideByUserId], references: [id], onDelete: Restrict)
+  evidence         PostReturnClaimEvidence[]
+  response         ClaimResponse?
+  adjudications    ClaimAdjudication[]
+  calculations     ClaimCalculation[]
+  disputes         Dispute[]
+  additionalCharge AdditionalCharge?
+  earningHolds     EarningHold[]
+
+  @@index([bookingId, status, submittedAt])
+  @@map("post_return_claims")
+}
+
+model PostReturnClaimEvidence {
+  id                String                  @id @default(uuid()) @db.Uuid
+  claimId           String                  @map("claim_id") @db.Uuid
+  fileAssetId       String                  @unique @map("file_asset_id") @db.Uuid
+  submittedByUserId String                  @map("submitted_by_user_id") @db.Uuid
+  participantRole   EvidenceParticipantRole @map("participant_role")
+  evidenceType      ClaimEvidenceType       @default(PHOTO) @map("evidence_type")
+  sourceType        String?                 @map("source_type") @db.VarChar(100)
+  sourceId          String?                 @map("source_id") @db.Uuid
+  note              String?                 @db.VarChar(1000)
+  createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  claim       PostReturnClaim @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  fileAsset   FileAsset       @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+  submittedBy User            @relation("ClaimEvidenceSubmitter", fields: [submittedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([claimId])
+  @@map("post_return_claim_evidence")
+}
+
+model ClaimResponse {
+  id           String                @id @default(uuid()) @db.Uuid
+  claimId      String                @unique @map("claim_id") @db.Uuid
+  renterUserId String                @map("renter_user_id") @db.Uuid
+  decision     ClaimResponseDecision
+  explanation  String?               @db.VarChar(3000)
+  respondedAt  DateTime              @default(now()) @map("responded_at") @db.Timestamptz(3)
+
+  claim  PostReturnClaim @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  renter User            @relation("ClaimResponseRenter", fields: [renterUserId], references: [id], onDelete: Restrict)
+
+  @@index([renterUserId, respondedAt])
+  @@map("claim_responses")
+}
+
+model ClaimPolicy {
+  id                            String                 @id @default(uuid()) @db.Uuid
+  category                      PostReturnClaimCategory
+  version                       Int
+  calculationMethod             ClaimCalculationMethod @map("calculation_method")
+  formulaVersion                String                 @map("formula_version") @db.VarChar(100)
+  formulaBased                  Boolean                @map("formula_based")
+  evidenceBased                 Boolean                @map("evidence_based")
+  adminReviewRequired           Boolean                @default(true) @map("admin_review_required")
+  renterAcknowledgmentEligible  Boolean                @default(true) @map("renter_acknowledgment_eligible")
+  depositEligible               Boolean                @default(false) @map("deposit_eligible")
+  additionalPaymentEligible     Boolean                @default(true) @map("additional_payment_eligible")
+  maximumAmountMinor            BigInt                 @map("maximum_amount_minor")
+  platformShareBasisPoints      Int                    @default(0) @map("platform_share_basis_points")
+  lateGraceMinutes              Int?                   @map("late_grace_minutes")
+  currency                      String                 @default("PHP") @db.Char(3)
+  effectiveFrom                 DateTime               @map("effective_from") @db.Timestamptz(3)
+  disabledAt                    DateTime?               @map("disabled_at") @db.Timestamptz(3)
+  createdAt                     DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  calculations ClaimCalculation[]
+
+  @@unique([category, version])
+  @@index([category, effectiveFrom, disabledAt])
+  @@map("claim_policies")
+}
+
+model ClaimCalculation {
+  id               String                  @id @default(uuid()) @db.Uuid
+  claimId          String                  @map("claim_id") @db.Uuid
+  claimPolicyId    String                  @map("claim_policy_id") @db.Uuid
+  version          Int
+  method           ClaimCalculationMethod
+  formulaVersion   String                  @map("formula_version") @db.VarChar(100)
+  bookingPolicyRef String                  @map("booking_policy_ref") @db.VarChar(100)
+  inputs           Json
+  quantity         Int
+  unit             String                  @db.VarChar(50)
+  unitRateMinor    BigInt                  @map("unit_rate_minor")
+  amountMinor      BigInt                  @map("amount_minor")
+  currency         String                  @db.Char(3)
+  roundingRule     String                  @map("rounding_rule") @db.VarChar(100)
+  createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  claim  PostReturnClaim @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  policy ClaimPolicy      @relation(fields: [claimPolicyId], references: [id], onDelete: Restrict)
+  adjudications ClaimAdjudication[]
+  chargeLines AdditionalChargeLine[]
+
+  @@unique([claimId, version])
+  @@index([claimPolicyId, createdAt])
+  @@map("claim_calculations")
+}
+
+model ClaimAdjudication {
+  id                  String                    @id @default(uuid()) @db.Uuid
+  claimId             String                    @map("claim_id") @db.Uuid
+  version             Int
+  outcome             ClaimAdjudicationOutcome
+  approvedAmountMinor BigInt                    @map("approved_amount_minor")
+  currency            String                    @db.Char(3)
+  reason              String                    @db.VarChar(3000)
+  decidedByUserId     String                    @map("decided_by_user_id") @db.Uuid
+  calculationId       String?                   @map("calculation_id") @db.Uuid
+  createdAt           DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  claim       PostReturnClaim  @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  decidedBy   User             @relation("ClaimAdjudicator", fields: [decidedByUserId], references: [id], onDelete: Restrict)
+  calculation ClaimCalculation? @relation(fields: [calculationId], references: [id], onDelete: Restrict)
+  charge      AdditionalCharge?
+
+  @@unique([claimId, version])
+  @@index([decidedByUserId, createdAt])
+  @@map("claim_adjudications")
+}
+
+model Dispute {
+  id                String            @id @default(uuid()) @db.Uuid
+  bookingId         String            @map("booking_id") @db.Uuid
+  claimId           String?           @map("claim_id") @db.Uuid
+  incidentId        String?           @map("incident_id") @db.Uuid
+  additionalChargeId String?          @map("additional_charge_id") @db.Uuid
+  refundId          String?           @map("refund_id") @db.Uuid
+  originType        DisputeOriginType @map("origin_type")
+  status            DisputeStatus     @default(OPEN)
+  reason            String            @db.VarChar(3000)
+  blocksCompletion  Boolean           @default(true) @map("blocks_completion")
+  openedByUserId    String            @map("opened_by_user_id") @db.Uuid
+  resolvedByUserId  String?           @map("resolved_by_user_id") @db.Uuid
+  resolutionReason  String?           @map("resolution_reason") @db.VarChar(3000)
+  openedAt          DateTime          @default(now()) @map("opened_at") @db.Timestamptz(3)
+  resolvedAt        DateTime?         @map("resolved_at") @db.Timestamptz(3)
+  closedAt          DateTime?         @map("closed_at") @db.Timestamptz(3)
+
+  booking          Booking           @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  claim            PostReturnClaim?  @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  incident         RentalIncident?   @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  additionalCharge AdditionalCharge? @relation(fields: [additionalChargeId], references: [id], onDelete: Restrict)
+  refund           Refund?           @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  openedBy         User              @relation("DisputeOpener", fields: [openedByUserId], references: [id], onDelete: Restrict)
+  resolvedBy       User?             @relation("DisputeResolver", fields: [resolvedByUserId], references: [id], onDelete: Restrict)
+  evidence         DisputeEvidence[]
+  earningHolds     EarningHold[]
+
+  @@index([bookingId, status, openedAt])
+  @@index([status, openedAt])
+  @@map("disputes")
+}
+
+model DisputeEvidence {
+  id                String                  @id @default(uuid()) @db.Uuid
+  disputeId         String                  @map("dispute_id") @db.Uuid
+  fileAssetId       String                  @unique @map("file_asset_id") @db.Uuid
+  submittedByUserId String                  @map("submitted_by_user_id") @db.Uuid
+  participantRole   EvidenceParticipantRole @map("participant_role")
+  evidenceType      ClaimEvidenceType       @default(PHOTO) @map("evidence_type")
+  sourceType        String?                 @map("source_type") @db.VarChar(100)
+  sourceId          String?                 @map("source_id") @db.Uuid
+  note              String?                 @db.VarChar(1000)
+  createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  dispute    Dispute   @relation(fields: [disputeId], references: [id], onDelete: Restrict)
+  fileAsset  FileAsset @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+  submittedBy User     @relation("DisputeEvidenceSubmitter", fields: [submittedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([disputeId, createdAt])
+  @@map("dispute_evidence")
+}
+
+model RentalIncident {
+  id               String                 @id @default(uuid()) @db.Uuid
+  bookingId        String                 @map("booking_id") @db.Uuid
+  reportedByUserId String                 @map("reported_by_user_id") @db.Uuid
+  category         RentalIncidentCategory
+  severity         RentalIncidentSeverity
+  status           RentalIncidentStatus   @default(OPEN)
+  description      String                 @db.VarChar(3000)
+  blocksCompletion Boolean                @default(false) @map("blocks_completion")
+  reportedAt       DateTime               @default(now()) @map("reported_at") @db.Timestamptz(3)
+  resolvedAt       DateTime?              @map("resolved_at") @db.Timestamptz(3)
+
+  booking    Booking                  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  reportedBy User                     @relation("RentalIncidentReporter", fields: [reportedByUserId], references: [id], onDelete: Restrict)
+  evidence   RentalIncidentEvidence[]
+  disputes   Dispute[]
+  earningHolds EarningHold[]
+
+  @@index([bookingId, status, severity])
+  @@index([status, severity, reportedAt])
+  @@map("rental_incidents")
+}
+
+model RentalIncidentEvidence {
+  id          String   @id @default(uuid()) @db.Uuid
+  incidentId  String   @map("incident_id") @db.Uuid
+  fileAssetId String   @unique @map("file_asset_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  incident  RentalIncident @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  fileAsset FileAsset      @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+
+  @@index([incidentId])
+  @@map("rental_incident_evidence")
+}
+
+model VehicleOccupancy {
+  id             String                    @id @default(uuid()) @db.Uuid
+  vehicleId      String                    @map("vehicle_id") @db.Uuid
+  bookingId      String?                   @unique @map("booking_id") @db.Uuid
+  type           VehicleOccupancyType
+  occupiedStart  DateTime                  @map("occupied_start") @db.Timestamptz(3)
+  occupiedEnd    DateTime                  @map("occupied_end") @db.Timestamptz(3)
+  occupiedPeriod Unsupported("tstzrange")? @map("occupied_period")
+  active         Boolean                   @default(true)
+  expiresAt      DateTime?                 @map("expires_at") @db.Timestamptz(3)
+  releasedAt     DateTime?                 @map("released_at") @db.Timestamptz(3)
+  releaseReason  String?                   @map("release_reason") @db.VarChar(100)
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vehicle       Vehicle               @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  booking       Booking?              @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  blockedPeriod VehicleBlockedPeriod?
+
+  @@index([vehicleId, active, occupiedStart, occupiedEnd])
+  @@index([active, expiresAt])
+  @@map("vehicle_occupancies")
+}
+
+model BookingPricingSnapshot {
+  bookingId                String   @id @map("booking_id") @db.Uuid
+  quoteId                  String   @map("quote_id") @db.Uuid
+  pricingEngineVersion     String   @map("pricing_engine_version") @db.VarChar(100)
+  policyVersionId          String   @map("policy_version_id") @db.Uuid
+  currency                 String   @db.Char(3)
+  rentalStart              DateTime @map("rental_start") @db.Timestamptz(3)
+  rentalEnd                DateTime @map("rental_end") @db.Timestamptz(3)
+  vehicleTimezone          String   @map("vehicle_timezone") @db.VarChar(64)
+  chargeableDays           Int      @map("chargeable_days")
+  subtotalMinor            Int      @map("subtotal_minor")
+  totalMinor               Int      @map("total_minor")
+  unlimitedMileage         Boolean  @map("unlimited_mileage")
+  includedMileageKm        Int?     @map("included_mileage_km")
+  excessKilometerRateMinor Int?     @map("excess_kilometer_rate_minor")
+  createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking Booking                      @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  lines   BookingPricingSnapshotLine[]
+
+  @@index([quoteId])
+  @@map("booking_pricing_snapshots")
+}
+
+model BookingPricingSnapshotLine {
+  id              String   @id @default(uuid()) @db.Uuid
+  bookingId       String   @map("booking_id") @db.Uuid
+  code            String   @db.VarChar(50)
+  description     String   @db.VarChar(255)
+  quantity        Int
+  unitAmountMinor Int      @map("unit_amount_minor")
+  amountMinor     Int      @map("amount_minor")
+  displayOrder    Int      @map("display_order")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  snapshot BookingPricingSnapshot @relation(fields: [bookingId], references: [bookingId], onDelete: Restrict)
+
+  @@index([bookingId, displayOrder])
+  @@map("booking_pricing_snapshot_lines")
+}
+
+model BookingPolicySnapshot {
+  bookingId                String                 @id @map("booking_id") @db.Uuid
+  policyVersionId          String                 @map("policy_version_id") @db.Uuid
+  mileagePolicy            MileagePolicyType      @map("mileage_policy")
+  includedKilometersPerDay Int?                   @map("included_kilometers_per_day")
+  excessKilometerRateMinor Int?                   @map("excess_kilometer_rate_minor")
+  fuelReturnPolicy         FuelReturnPolicyType?  @map("fuel_return_policy")
+  fuelTolerancePercent     Int?                   @map("fuel_tolerance_percent")
+  fuelCalculationPolicyRef String?                @map("fuel_calculation_policy_ref") @db.VarChar(100)
+  evReturnPolicy           EvReturnPolicyType?    @map("ev_return_policy")
+  evRequiredPercentage     Int?                   @map("ev_required_percentage")
+  evTolerancePercent       Int?                   @map("ev_tolerance_percent")
+  evCalculationPolicyRef   String?                @map("ev_calculation_policy_ref") @db.VarChar(100)
+  turnaroundMinutes        Int                    @map("turnaround_minutes")
+  availabilityPolicy       AvailabilityPolicyType @map("availability_policy")
+  monday                   Boolean
+  tuesday                  Boolean
+  wednesday                Boolean
+  thursday                 Boolean
+  friday                   Boolean
+  saturday                 Boolean
+  sunday                   Boolean
+  claimWindowHours         Int                    @default(24) @map("claim_window_hours")
+  cancellationPolicyRef    String?                @map("cancellation_policy_ref") @db.VarChar(100)
+  createdAt                DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@map("booking_policy_snapshots")
+}
+
+model BookingStatusHistory {
+  id            String           @id @default(uuid()) @db.Uuid
+  bookingId     String           @map("booking_id") @db.Uuid
+  fromStatus    BookingStatus?   @map("from_status")
+  toStatus      BookingStatus    @map("to_status")
+  actorType     BookingActorType @map("actor_type")
+  actorUserId   String?          @map("actor_user_id") @db.Uuid
+  reasonCode    String?          @map("reason_code") @db.VarChar(100)
+  reasonText    String?          @map("reason_text") @db.VarChar(1000)
+  correlationId String?          @map("correlation_id") @db.VarChar(100)
+  occurredAt    DateTime         @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  actorUser User?   @relation("BookingStatusActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([bookingId, occurredAt])
+  @@map("booking_status_history")
+}
+
+model BookingCancellation {
+  id            String           @id @default(uuid()) @db.Uuid
+  bookingId     String           @unique @map("booking_id") @db.Uuid
+  actorType     BookingActorType @map("actor_type")
+  actorUserId   String?          @map("actor_user_id") @db.Uuid
+  reasonCode    String           @map("reason_code") @db.VarChar(100)
+  reasonText    String?          @map("reason_text") @db.VarChar(1000)
+  correlationId String?          @map("correlation_id") @db.VarChar(100)
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  actorUser User?   @relation("BookingCancellationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@map("booking_cancellations")
+}
+
+model BookingOwnerDecision {
+  id            String                   @id @default(uuid()) @db.Uuid
+  bookingId     String                   @unique @map("booking_id") @db.Uuid
+  decision      BookingOwnerDecisionType
+  actorUserId   String                   @map("actor_user_id") @db.Uuid
+  reasonText    String?                  @map("reason_text") @db.VarChar(1000)
+  correlationId String?                  @map("correlation_id") @db.VarChar(100)
+  createdAt     DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  actorUser User    @relation("BookingOwnerDecisionActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@map("booking_owner_decisions")
+}
+
+model BookingIdempotencyRecord {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String   @map("actor_user_id") @db.Uuid
+  scope       String   @db.VarChar(100)
+  key         String   @db.VarChar(200)
+  requestHash String   @map("request_hash") @db.Char(64)
+  bookingId   String?  @unique @map("booking_id") @db.Uuid
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor   User     @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  booking Booking? @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@unique([actorUserId, scope, key])
+  @@index([expiresAt])
+  @@map("booking_idempotency_records")
+}
+
+model OutboxEvent {
+  id            String            @id @default(uuid()) @db.Uuid
+  aggregateType String            @map("aggregate_type") @db.VarChar(100)
+  aggregateId   String            @map("aggregate_id") @db.Uuid
+  eventType     String            @map("event_type") @db.VarChar(100)
+  payload       Json
+  status        OutboxEventStatus @default(PENDING)
+  availableAt   DateTime          @default(now()) @map("available_at") @db.Timestamptz(3)
+  occurredAt    DateTime          @default(now()) @map("occurred_at") @db.Timestamptz(3)
+  processedAt   DateTime?         @map("processed_at") @db.Timestamptz(3)
+  attemptCount  Int               @default(0) @map("attempt_count")
+  lastError     String?           @map("last_error") @db.VarChar(1000)
+
+  @@index([status, availableAt, occurredAt])
+  @@index([aggregateType, aggregateId, occurredAt])
+  @@map("outbox_events")
+}
+
+model Payment {
+  id                       String              @id @default(uuid()) @db.Uuid
+  bookingId                String              @map("booking_id") @db.Uuid
+  additionalChargeId       String?             @unique @map("additional_charge_id") @db.Uuid
+  purpose                  PaymentPurpose
+  provider                 PaymentProviderCode
+  status                   PaymentStatus       @default(PENDING)
+  currency                 String              @db.Char(3)
+  amountMinor              BigInt              @map("amount_minor")
+  authorizedAmountMinor    BigInt              @default(0) @map("authorized_amount_minor")
+  capturedAmountMinor      BigInt              @default(0) @map("captured_amount_minor")
+  refundedAmountMinor      BigInt              @default(0) @map("refunded_amount_minor")
+  externalPaymentId        String?             @map("external_payment_id") @db.VarChar(255)
+  providerRequestReference String              @map("provider_request_reference") @db.VarChar(100)
+  providerState            String?             @map("provider_state") @db.VarChar(100)
+  customerActionUrl        String?             @map("customer_action_url") @db.VarChar(2000)
+  reconciliationRequired   Boolean             @default(false) @map("reconciliation_required")
+  reconcileAfter           DateTime?           @map("reconcile_after") @db.Timestamptz(3)
+  unknownExpiresAt         DateTime?           @map("unknown_expires_at") @db.Timestamptz(3)
+  authorizedAt             DateTime?           @map("authorized_at") @db.Timestamptz(3)
+  capturedAt               DateTime?           @map("captured_at") @db.Timestamptz(3)
+  voidedAt                 DateTime?           @map("voided_at") @db.Timestamptz(3)
+  createdAt                DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking         Booking                       @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  operations      PaymentOperation[]
+  webhookEvents   PaymentWebhookEvent[]
+  refunds         Refund[]
+  commission      CommissionSnapshot?
+  ownerEarning    OwnerEarning?
+  securityDeposit SecurityDepositAuthorization?
+  additionalCharge AdditionalCharge?            @relation(fields: [additionalChargeId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, externalPaymentId])
+  @@unique([provider, providerRequestReference])
+  @@index([status, reconciliationRequired, reconcileAfter])
+  @@map("payments")
+}
+
+model PaymentOperation {
+  id                       String                  @id @default(uuid()) @db.Uuid
+  paymentId                String                  @map("payment_id") @db.Uuid
+  type                     PaymentOperationType
+  status                   PaymentOperationStatus  @default(PENDING)
+  idempotencyKey           String                  @unique @map("idempotency_key") @db.VarChar(200)
+  providerRequestReference String                  @map("provider_request_reference") @db.VarChar(100)
+  externalOperationId      String?                 @map("external_operation_id") @db.VarChar(255)
+  amountMinor              BigInt                  @map("amount_minor")
+  currency                 String                  @db.Char(3)
+  attemptCount             Int                     @default(0) @map("attempt_count")
+  failureCategory          PaymentFailureCategory? @map("failure_category")
+  failureCode              String?                 @map("failure_code") @db.VarChar(100)
+  failureMessage           String?                 @map("failure_message") @db.VarChar(500)
+  safeProviderMetadata     Json?                   @map("safe_provider_metadata")
+  nextAttemptAt            DateTime?               @map("next_attempt_at") @db.Timestamptz(3)
+  startedAt                DateTime?               @map("started_at") @db.Timestamptz(3)
+  completedAt              DateTime?               @map("completed_at") @db.Timestamptz(3)
+  createdAt                DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund  Refund?
+
+  @@unique([paymentId, type, providerRequestReference])
+  @@index([status, nextAttemptAt])
+  @@index([paymentId, createdAt])
+  @@map("payment_operations")
+}
+
+model PaymentWebhookEvent {
+  id                String               @id @default(uuid()) @db.Uuid
+  paymentId         String?              @map("payment_id") @db.Uuid
+  provider          PaymentProviderCode
+  externalEventId   String               @map("external_event_id") @db.Char(64)
+  eventType         String               @map("event_type") @db.VarChar(100)
+  providerPaymentId String               @map("provider_payment_id") @db.VarChar(255)
+  status            PaymentWebhookStatus @default(RECEIVED)
+  sourceIp          String?              @map("source_ip") @db.Inet
+  payloadDigest     String               @map("payload_digest") @db.Char(64)
+  redactedPayload   Json?                @map("redacted_payload")
+  attemptCount      Int                  @default(0) @map("attempt_count")
+  failureReason     String?              @map("failure_reason") @db.VarChar(500)
+  receivedAt        DateTime             @default(now()) @map("received_at") @db.Timestamptz(3)
+  processedAt       DateTime?            @map("processed_at") @db.Timestamptz(3)
+
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, externalEventId])
+  @@index([status, receivedAt])
+  @@index([provider, providerPaymentId])
+  @@map("payment_webhook_events")
+}
+
+model CommissionRule {
+  id                 String          @id @default(uuid()) @db.Uuid
+  scope              CommissionScope
+  ownerProfileId     String?         @map("owner_profile_id") @db.Uuid
+  vehicleCategoryId  String?         @map("vehicle_category_id") @db.Uuid
+  version            Int
+  rateBasisPoints    Int             @map("rate_basis_points")
+  fixedAmountMinor   BigInt          @default(0) @map("fixed_amount_minor")
+  minimumAmountMinor BigInt?         @map("minimum_amount_minor")
+  maximumAmountMinor BigInt?         @map("maximum_amount_minor")
+  currency           String          @default("PHP") @db.Char(3)
+  calculationVersion String          @default("COMMISSION_BPS_V1") @map("calculation_version") @db.VarChar(100)
+  effectiveFrom      DateTime        @map("effective_from") @db.Timestamptz(3)
+  disabledAt         DateTime?       @map("disabled_at") @db.Timestamptz(3)
+  createdByUserId    String?         @map("created_by_user_id") @db.Uuid
+  reason             String          @db.VarChar(1000)
+  createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  ownerProfile    OwnerProfile?        @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  vehicleCategory VehicleCategory?     @relation(fields: [vehicleCategoryId], references: [id], onDelete: Restrict)
+  createdBy       User?                @relation("CommissionRuleCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  snapshots       CommissionSnapshot[]
+
+  @@index([scope, effectiveFrom, disabledAt])
+  @@index([ownerProfileId, effectiveFrom])
+  @@index([vehicleCategoryId, effectiveFrom])
+  @@map("commission_rules")
+}
+
+model CommissionSnapshot {
+  id                        String          @id @default(uuid()) @db.Uuid
+  bookingId                 String          @unique @map("booking_id") @db.Uuid
+  paymentId                 String          @unique @map("payment_id") @db.Uuid
+  ruleId                    String          @map("rule_id") @db.Uuid
+  ruleVersion               Int             @map("rule_version")
+  scope                     CommissionScope
+  rateBasisPoints           Int             @map("rate_basis_points")
+  fixedAmountMinor          BigInt          @map("fixed_amount_minor")
+  minimumAmountMinor        BigInt?         @map("minimum_amount_minor")
+  maximumAmountMinor        BigInt?         @map("maximum_amount_minor")
+  commissionableBaseMinor   BigInt          @map("commissionable_base_minor")
+  calculatedCommissionMinor BigInt          @map("calculated_commission_minor")
+  currency                  String          @db.Char(3)
+  calculationVersion        String          @map("calculation_version") @db.VarChar(100)
+  createdAt                 DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking Booking        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  payment Payment        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  rule    CommissionRule @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+
+  @@map("commission_snapshots")
+}
+
+model FinancialAccount {
+  id        String               @id @default(uuid()) @db.Uuid
+  code      String               @db.VarChar(100)
+  type      FinancialAccountType
+  currency  String               @db.Char(3)
+  name      String               @db.VarChar(200)
+  active    Boolean              @default(true)
+  createdAt DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  entries LedgerEntry[]
+
+  @@unique([code, currency])
+  @@map("financial_accounts")
+}
+
+model LedgerTransaction {
+  id            String                @id @default(uuid()) @db.Uuid
+  type          LedgerTransactionType
+  sourceType    String                @map("source_type") @db.VarChar(100)
+  sourceId      String                @map("source_id") @db.Uuid
+  currency      String                @db.Char(3)
+  description   String                @db.VarChar(500)
+  correlationId String?               @map("correlation_id") @db.VarChar(100)
+  postedAt      DateTime              @default(now()) @map("posted_at") @db.Timestamptz(3)
+
+  entries LedgerEntry[]
+
+  @@unique([sourceType, sourceId, type, currency])
+  @@index([postedAt])
+  @@map("ledger_transactions")
+}
+
+model LedgerEntry {
+  id            String   @id @default(uuid()) @db.Uuid
+  transactionId String   @map("transaction_id") @db.Uuid
+  accountId     String   @map("account_id") @db.Uuid
+  amountMinor   BigInt   @map("amount_minor")
+  currency      String   @db.Char(3)
+  memo          String?  @db.VarChar(500)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  transaction LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  account     FinancialAccount  @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([transactionId])
+  @@index([accountId, createdAt])
+  @@map("ledger_entries")
+}
+
+model OwnerEarning {
+  id                     String             @id @default(uuid()) @db.Uuid
+  bookingId              String             @unique @map("booking_id") @db.Uuid
+  paymentId              String             @unique @map("payment_id") @db.Uuid
+  ownerProfileId         String             @map("owner_profile_id") @db.Uuid
+  grossRentalAmountMinor BigInt             @map("gross_rental_amount_minor")
+  commissionAmountMinor  BigInt             @map("commission_amount_minor")
+  netEarningAmountMinor  BigInt             @map("net_earning_amount_minor")
+  additionalCompensationMinor BigInt        @default(0) @map("additional_compensation_minor")
+  adjustmentAmountMinor  BigInt             @default(0) @map("adjustment_amount_minor")
+  currency               String             @db.Char(3)
+  status                 OwnerEarningStatus @default(PENDING)
+  availableAt            DateTime?          @map("available_at") @db.Timestamptz(3)
+  lastFinancialResolutionAt DateTime?       @map("last_financial_resolution_at") @db.Timestamptz(3)
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking      Booking      @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  payment      Payment      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  ownerProfile OwnerProfile @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  holds        EarningHold[]
+  additionalCharges AdditionalCharge[]
+  payoutItems   PayoutItem[]
+
+  @@index([ownerProfileId, status, createdAt])
+  @@index([status, availableAt])
+  @@map("owner_earnings")
+}
+
+model AdditionalCharge {
+  id                       String                             @id @default(uuid()) @db.Uuid
+  bookingId                String                             @map("booking_id") @db.Uuid
+  claimId                  String                             @unique @map("claim_id") @db.Uuid
+  adjudicationId           String                             @unique @map("adjudication_id") @db.Uuid
+  ownerEarningId           String                             @map("owner_earning_id") @db.Uuid
+  status                   AdditionalChargeStatus             @default(DRAFT)
+  collectionStrategy       AdditionalChargeCollectionStrategy @default(RENTER_AUTHORIZATION) @map("collection_strategy")
+  approvedAmountMinor      BigInt                             @map("approved_amount_minor")
+  collectedAmountMinor     BigInt                             @default(0) @map("collected_amount_minor")
+  refundedAmountMinor      BigInt                             @default(0) @map("refunded_amount_minor")
+  ownerCompensationMinor   BigInt                             @map("owner_compensation_minor")
+  platformShareMinor       BigInt                             @default(0) @map("platform_share_minor")
+  currency                 String                             @db.Char(3)
+  providerIdempotencyKey   String                             @unique @map("provider_idempotency_key") @db.VarChar(200)
+  approvedAt               DateTime                           @map("approved_at") @db.Timestamptz(3)
+  paidAt                   DateTime?                          @map("paid_at") @db.Timestamptz(3)
+  createdAt                DateTime                           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking       Booking             @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  claim         PostReturnClaim     @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  adjudication  ClaimAdjudication   @relation(fields: [adjudicationId], references: [id], onDelete: Restrict)
+  ownerEarning  OwnerEarning        @relation(fields: [ownerEarningId], references: [id], onDelete: Restrict)
+  payment       Payment?
+  lines         AdditionalChargeLine[]
+  disputes      Dispute[]
+
+  @@index([bookingId, status, createdAt])
+  @@index([status, updatedAt])
+  @@map("additional_charges")
+}
+
+model AdditionalChargeLine {
+  id               String                       @id @default(uuid()) @db.Uuid
+  additionalChargeId String                     @map("additional_charge_id") @db.Uuid
+  claimCalculationId String?                    @map("claim_calculation_id") @db.Uuid
+  category         AdditionalChargeLineCategory
+  calculationSource String                      @map("calculation_source") @db.VarChar(100)
+  quantity         Int
+  unit             String                       @db.VarChar(50)
+  unitRateMinor    BigInt                       @map("unit_rate_minor")
+  amountMinor      BigInt                       @map("amount_minor")
+  currency         String                       @db.Char(3)
+  formulaVersion   String                       @map("formula_version") @db.VarChar(100)
+  evidenceReferences Json?                      @map("evidence_references")
+  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  additionalCharge AdditionalCharge @relation(fields: [additionalChargeId], references: [id], onDelete: Restrict)
+  claimCalculation ClaimCalculation? @relation(fields: [claimCalculationId], references: [id], onDelete: Restrict)
+
+  @@index([additionalChargeId])
+  @@map("additional_charge_lines")
+}
+
+model EarningHold {
+  id               String            @id @default(uuid()) @db.Uuid
+  ownerEarningId   String            @map("owner_earning_id") @db.Uuid
+  claimId          String?           @map("claim_id") @db.Uuid
+  disputeId        String?           @map("dispute_id") @db.Uuid
+  incidentId       String?           @map("incident_id") @db.Uuid
+  mode             EarningHoldMode
+  status           EarningHoldStatus @default(ACTIVE)
+  reason           EarningHoldReason
+  amountMinor      BigInt            @map("amount_minor")
+  currency         String            @db.Char(3)
+  rationale        String            @db.VarChar(1000)
+  createdByUserId  String?           @map("created_by_user_id") @db.Uuid
+  releasedByUserId String?           @map("released_by_user_id") @db.Uuid
+  resolution       String?           @db.VarChar(1000)
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  releasedAt       DateTime?         @map("released_at") @db.Timestamptz(3)
+
+  ownerEarning OwnerEarning     @relation(fields: [ownerEarningId], references: [id], onDelete: Restrict)
+  claim        PostReturnClaim? @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  dispute      Dispute?         @relation(fields: [disputeId], references: [id], onDelete: Restrict)
+  incident     RentalIncident?  @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  createdBy    User?            @relation("EarningHoldCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  releasedBy   User?            @relation("EarningHoldReleaser", fields: [releasedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([ownerEarningId, status, createdAt])
+  @@index([claimId, status])
+  @@map("earning_holds")
+}
+
+model Refund {
+  id               String       @id @default(uuid()) @db.Uuid
+  paymentId        String       @map("payment_id") @db.Uuid
+  operationId      String?      @unique @map("operation_id") @db.Uuid
+  amountMinor      BigInt       @map("amount_minor")
+  currency         String       @db.Char(3)
+  status           RefundStatus @default(REQUESTED)
+  reason           String       @db.VarChar(1000)
+  externalRefundId String?      @map("external_refund_id") @db.VarChar(255)
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  completedAt      DateTime?    @map("completed_at") @db.Timestamptz(3)
+
+  payment   Payment           @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  operation PaymentOperation? @relation(fields: [operationId], references: [id], onDelete: Restrict)
+  disputes  Dispute[]
+
+  @@index([paymentId, status])
+  @@map("refunds")
+}
+
+model SecurityDepositAuthorization {
+  id                    String                @id @default(uuid()) @db.Uuid
+  bookingId             String                @unique @map("booking_id") @db.Uuid
+  paymentId             String?               @unique @map("payment_id") @db.Uuid
+  status                SecurityDepositStatus @default(NOT_REQUIRED)
+  requiredAmountMinor   BigInt                @default(0) @map("required_amount_minor")
+  authorizedAmountMinor BigInt                @default(0) @map("authorized_amount_minor")
+  usedAmountMinor       BigInt                @default(0) @map("used_amount_minor")
+  currency              String                @default("PHP") @db.Char(3)
+  createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@map("security_deposit_authorizations")
+}
+
+model PayoutEligibility {
+  id              String                   @id @default(uuid()) @db.Uuid
+  ownerProfileId  String                   @unique @map("owner_profile_id") @db.Uuid
+  status          PayoutEligibilityStatus  @default(NOT_READY)
+  reason          String?                  @db.VarChar(1000)
+  requirements    Json?
+  lastEvaluatedAt DateTime?                @map("last_evaluated_at") @db.Timestamptz(3)
+  changedByUserId String?                  @map("changed_by_user_id") @db.Uuid
+  createdAt       DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  ownerProfile OwnerProfile @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  changedBy    User?        @relation("PayoutEligibilityActor", fields: [changedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([status, updatedAt])
+  @@map("payout_eligibilities")
+}
+
+model OwnerPayoutAccount {
+  id                         String                  @id @default(uuid()) @db.Uuid
+  ownerProfileId             String                  @map("owner_profile_id") @db.Uuid
+  type                       PayoutDestinationType
+  provider                   PayoutProviderCode
+  destinationChannel         String                  @map("destination_channel") @db.VarChar(100)
+  accountHolderName          String                  @map("account_holder_name") @db.VarChar(255)
+  maskedAccountIdentifier    String                  @map("masked_account_identifier") @db.VarChar(64)
+  identifierFingerprint      String                  @map("identifier_fingerprint") @db.Char(64)
+  encryptedAccountIdentifier String                  @map("encrypted_account_identifier") @db.Text
+  encryptionIv               String                  @map("encryption_iv") @db.VarChar(64)
+  encryptionAuthTag          String                  @map("encryption_auth_tag") @db.VarChar(64)
+  encryptionKeyVersion       Int                     @default(1) @map("encryption_key_version")
+  country                    String                  @default("PH") @db.Char(2)
+  currency                   String                  @default("PHP") @db.Char(3)
+  status                     PayoutAccountStatus     @default(PENDING_VERIFICATION)
+  validationLevel            String?                 @map("validation_level") @db.VarChar(100)
+  safeValidationReference    String?                 @map("safe_validation_reference") @db.VarChar(255)
+  isDefault                  Boolean                 @default(false) @map("is_default")
+  verifiedAt                 DateTime?               @map("verified_at") @db.Timestamptz(3)
+  disabledAt                 DateTime?               @map("disabled_at") @db.Timestamptz(3)
+  createdByUserId            String                  @map("created_by_user_id") @db.Uuid
+  createdAt                  DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                  DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  ownerProfile OwnerProfile @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  createdBy    User         @relation("PayoutAccountCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  payouts      Payout[]
+
+  @@unique([ownerProfileId, provider, destinationChannel, identifierFingerprint])
+  @@index([ownerProfileId, status, createdAt])
+  @@map("owner_payout_accounts")
+}
+
+model PayoutBatch {
+  id              String            @id @default(uuid()) @db.Uuid
+  publicReference String            @unique @map("public_reference") @db.VarChar(32)
+  status          PayoutBatchStatus @default(DRAFT)
+  currency        String            @default("PHP") @db.Char(3)
+  note            String?           @db.VarChar(1000)
+  createdByUserId String            @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  createdBy User     @relation("PayoutBatchCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  payouts  Payout[]
+
+  @@index([status, createdAt])
+  @@map("payout_batches")
+}
+
+model Payout {
+  id                        String                 @id @default(uuid()) @db.Uuid
+  publicReference           String                 @unique @map("public_reference") @db.VarChar(32)
+  batchId                   String                 @map("batch_id") @db.Uuid
+  ownerProfileId            String                 @map("owner_profile_id") @db.Uuid
+  payoutAccountId           String                 @map("payout_account_id") @db.Uuid
+  provider                  PayoutProviderCode
+  status                    PayoutStatus           @default(DRAFT)
+  amountMinor               BigInt                  @map("amount_minor")
+  grossEarningMinor         BigInt                  @map("gross_earning_minor")
+  adjustmentAmountMinor     BigInt                  @default(0) @map("adjustment_amount_minor")
+  withholdingAmountMinor    BigInt                  @default(0) @map("withholding_amount_minor")
+  providerFeeAmountMinor    BigInt                  @default(0) @map("provider_fee_amount_minor")
+  feePolicy                 PayoutFeePolicy        @default(PLATFORM_FUNDED) @map("fee_policy")
+  currency                  String                 @default("PHP") @db.Char(3)
+  destinationType           PayoutDestinationType  @map("destination_type")
+  destinationChannel        String                 @map("destination_channel") @db.VarChar(100)
+  destinationMasked         String                 @map("destination_masked") @db.VarChar(64)
+  destinationAccountHolder String                 @map("destination_account_holder") @db.VarChar(255)
+  destinationCountry        String                 @default("PH") @map("destination_country") @db.Char(2)
+  destinationCurrency       String                 @default("PHP") @map("destination_currency") @db.Char(3)
+  providerPayoutId          String?                @map("provider_payout_id") @db.VarChar(255)
+  providerState             String?                @map("provider_state") @db.VarChar(100)
+  failureCategory           PayoutFailureCategory? @map("failure_category")
+  safeFailureCode           String?                @map("safe_failure_code") @db.VarChar(100)
+  safeFailureMessage        String?                @map("safe_failure_message") @db.VarChar(500)
+  reconciliationRequired    Boolean                @default(false) @map("reconciliation_required")
+  reconcileAfter            DateTime?              @map("reconcile_after") @db.Timestamptz(3)
+  lastProviderRetrievedAt   DateTime?              @map("last_provider_retrieved_at") @db.Timestamptz(3)
+  approvedAt                DateTime?              @map("approved_at") @db.Timestamptz(3)
+  submittedAt               DateTime?              @map("submitted_at") @db.Timestamptz(3)
+  paidAt                    DateTime?              @map("paid_at") @db.Timestamptz(3)
+  failedAt                  DateTime?              @map("failed_at") @db.Timestamptz(3)
+  cancelledAt               DateTime?              @map("cancelled_at") @db.Timestamptz(3)
+  reversedAt                DateTime?              @map("reversed_at") @db.Timestamptz(3)
+  createdByUserId           String                 @map("created_by_user_id") @db.Uuid
+  approvedByUserId          String?                @map("approved_by_user_id") @db.Uuid
+  approvalNote              String?                @map("approval_note") @db.VarChar(1000)
+  createdAt                 DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                 DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  batch         PayoutBatch        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  ownerProfile  OwnerProfile       @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  payoutAccount OwnerPayoutAccount @relation(fields: [payoutAccountId], references: [id], onDelete: Restrict)
+  createdBy     User               @relation("PayoutCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  approvedBy    User?              @relation("PayoutApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+  items         PayoutItem[]
+  operations    PayoutOperation[]
+  webhookEvents PayoutWebhookEvent[]
+
+  @@unique([provider, providerPayoutId])
+  @@index([ownerProfileId, status, createdAt])
+  @@index([status, reconciliationRequired, reconcileAfter])
+  @@index([batchId, status])
+  @@map("payouts")
+}
+
+model PayoutItem {
+  id               String    @id @default(uuid()) @db.Uuid
+  payoutId         String    @map("payout_id") @db.Uuid
+  ownerEarningId   String    @map("owner_earning_id") @db.Uuid
+  amountMinor      BigInt    @map("amount_minor")
+  currency         String    @default("PHP") @db.Char(3)
+  activeAllocation Boolean   @default(true) @map("active_allocation")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  releasedAt       DateTime? @map("released_at") @db.Timestamptz(3)
+
+  payout       Payout       @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  ownerEarning OwnerEarning @relation(fields: [ownerEarningId], references: [id], onDelete: Restrict)
+
+  @@unique([payoutId, ownerEarningId])
+  @@index([ownerEarningId, activeAllocation])
+  @@map("payout_items")
+}
+
+model PayoutOperation {
+  id                         String                 @id @default(uuid()) @db.Uuid
+  payoutId                   String                 @map("payout_id") @db.Uuid
+  type                       PayoutOperationType
+  status                     PayoutOperationStatus  @default(PENDING)
+  idempotencyKey             String                 @unique @map("idempotency_key") @db.VarChar(200)
+  providerRequestReference   String?                @map("provider_request_reference") @db.VarChar(100)
+  providerOperationReference String?                @map("provider_operation_reference") @db.VarChar(255)
+  attemptCount               Int                    @default(0) @map("attempt_count")
+  failureCategory            PayoutFailureCategory? @map("failure_category")
+  safeFailureCode            String?                @map("safe_failure_code") @db.VarChar(100)
+  safeFailureMessage         String?                @map("safe_failure_message") @db.VarChar(500)
+  safeProviderMetadata       Json?                  @map("safe_provider_metadata")
+  actorUserId                String?                @map("actor_user_id") @db.Uuid
+  correlationId              String?                @map("correlation_id") @db.VarChar(100)
+  startedAt                  DateTime?              @map("started_at") @db.Timestamptz(3)
+  completedAt                DateTime?              @map("completed_at") @db.Timestamptz(3)
+  createdAt                  DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                  DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  payout Payout @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  actor  User?  @relation("PayoutOperationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([payoutId, createdAt])
+  @@index([status, createdAt])
+  @@map("payout_operations")
+}
+
+model PayoutWebhookEvent {
+  id               String              @id @default(uuid()) @db.Uuid
+  payoutId         String?             @map("payout_id") @db.Uuid
+  provider         PayoutProviderCode
+  externalEventId  String              @map("external_event_id") @db.Char(64)
+  eventType        String              @map("event_type") @db.VarChar(100)
+  providerPayoutId String              @map("provider_payout_id") @db.VarChar(255)
+  status           PayoutWebhookStatus @default(RECEIVED)
+  payloadDigest    String              @map("payload_digest") @db.Char(64)
+  redactedPayload  Json?               @map("redacted_payload")
+  attemptCount     Int                 @default(0) @map("attempt_count")
+  failureReason    String?             @map("failure_reason") @db.VarChar(500)
+  receivedAt       DateTime            @default(now()) @map("received_at") @db.Timestamptz(3)
+  processedAt      DateTime?           @map("processed_at") @db.Timestamptz(3)
+
+  payout Payout? @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, externalEventId])
+  @@index([status, receivedAt])
+  @@index([provider, providerPayoutId])
+  @@map("payout_webhook_events")
+}

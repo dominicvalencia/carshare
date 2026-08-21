@@ -1,0 +1,41 @@
+{
+  "name": "carrental-platform",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "pnpm": ">=11.0.0 <12"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "clean": "turbo run clean",
+    "dev": "turbo run dev",
+    "dev:apps": "turbo run dev --filter=@carrental/api --filter=@carrental/admin-web --filter=@carrental/workers --filter=@carrental/mobile",
+    "dev:infra": "docker compose up -d postgres redis",
+    "dev:infra:down": "docker compose down",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "infra:validate": "node tooling/validate-compose.mjs",
+    "lint": "turbo run lint",
+    "typecheck": "pnpm db:generate && turbo run typecheck",
+    "test": "turbo run test",
+    "test:integration": "pnpm --filter @carrental/api test:integration",
+    "test:coverage": "turbo run test:coverage",
+    "db:generate": "pnpm --filter @carrental/database prisma:generate",
+    "db:validate": "pnpm --filter @carrental/database prisma:validate",
+    "db:format": "pnpm --filter @carrental/database prisma:format",
+    "db:migrate:dev": "pnpm --filter @carrental/database prisma:migrate:dev",
+    "db:migrate:deploy": "pnpm --filter @carrental/database prisma:migrate:deploy",
+    "db:seed": "pnpm --filter @carrental/database prisma:seed",
+    "verify": "pnpm format:check && pnpm infra:validate && pnpm lint && pnpm typecheck && pnpm test && pnpm db:validate && pnpm build"
+  },
+  "devDependencies": {
+    "@carrental/eslint-config": "workspace:*",
+    "eslint": "9.39.5",
+    "prettier": "3.9.6",
+    "turbo": "2.10.11",
+    "typescript": "5.9.3",
+    "yaml": "2.9.0"
+  }
+}

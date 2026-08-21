@@ -1,0 +1,17 @@
+# Architecture Decision Records
+
+- [ADR-0001: pnpm and Turborepo monorepo](0001-pnpm-turborepo-monorepo.md)
+- [ADR-0002: NestJS modular monolith](0002-modular-monolith.md)
+- [ADR-0003: one mobile application and owner authorization](0003-single-mobile-and-owner-authorization.md)
+- [ADR-0004: PostgreSQL and Redis authority boundaries](0004-data-authority-boundaries.md)
+- [ADR-0005: versioned API and observability conventions](0005-api-observability-conventions.md)
+- [ADR-0006: locked MVP operating decisions](0006-locked-mvp-operating-decisions.md)
+- [ADR-0007: Expo React Native toolchain](0007-expo-react-native-toolchain.md)
+- [ADR-0008: identity, rotating sessions, and administrative access](0008-identity-tokens-and-administrative-access.md)
+- [ADR-0009: vehicle lifecycle, spatial location, and immutable policy versions](0009-vehicle-supply-and-policy-versions.md)
+- [ADR-0010: public discovery, advisory availability, and immutable quotes](0010-public-discovery-availability-and-quotes.md)
+- [ADR-0011: authoritative booking holds and unified vehicle occupancy](0011-authoritative-booking-occupancy.md)
+- [ADR-0012: provider-independent payments and immutable financial ledger](0012-provider-independent-payments-and-ledger.md)
+- [ADR-0013: server-authoritative rental operations and immutable evidence](0013-rental-operations-and-evidence.md)
+- [ADR-0014: controlled claims, additional charges, and earning release](0014-claims-disputes-and-earning-release.md)
+- [ADR-0015: provider-independent owner payout settlement](0015-provider-independent-owner-payout-settlement.md)

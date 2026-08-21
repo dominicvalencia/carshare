@@ -1,0 +1,124 @@
+import { Injectable } from '@nestjs/common';
+import { FileAssetStatus, FileClassification, MileagePolicyType } from '@carrental/database';
+import { FilesService } from '../files/files.service';
+import type { AdvisoryAvailability } from './availability.service';
+import type { PublicVehicleRecord } from './public-eligibility.service';
+
+@Injectable()
+export class PublicProjectionService {
+  constructor(private readonly files: FilesService) {}
+
+  card(
+    vehicle: PublicVehicleRecord,
+    distanceKm: number,
+    favorite: boolean,
+    availability?: AdvisoryAvailability,
+  ) {
+    const policy = vehicle.policyVersions[0]!;
+    const cover = vehicle.photos.find(({ isCover }) => isCover)!;
+    return {
+      approximateLocation: {
+        city: vehicle.location!.city,
+        country: vehicle.location!.country,
+        province: vehicle.location!.province,
+      },
+      availability: availability ?? {
+        advisory: true,
+        available: true,
+        reasons: [],
+        warning: 'No rental dates were checked. Availability is not guaranteed.',
+      },
+      category: vehicle.category,
+      coverPhoto: {
+        ...this.files.trustedPublicGrant(cover.fileAsset.id),
+        id: cover.id,
+      },
+      currency: policy.currency,
+      displayPrice: {
+        amountMinor: policy.dailyRateMinor,
+        label: 'From',
+        unit: 'DAY',
+      },
+      distanceKm: Math.round(distanceKm * 10) / 10,
+      favorite,
+      fuelType: vehicle.fuelType,
+      make: vehicle.make,
+      model: vehicle.model,
+      powertrain: vehicle.powertrain,
+      seats: vehicle.seatCount,
+      transmission: vehicle.transmission,
+      vehicleId: vehicle.id,
+      year: vehicle.modelYear,
+    };
+  }
+
+  detail(vehicle: PublicVehicleRecord, favorite: boolean) {
+    const policy = vehicle.policyVersions[0]!;
+    const profile = vehicle.ownerProfile.user.profile;
+    const avatar = profile?.avatarFile;
+    return {
+      availabilitySummary: {
+        advisory: true,
+        policy: policy.availabilityPolicy,
+        warning: 'Calendar availability does not reserve this vehicle.',
+      },
+      category: vehicle.category,
+      description: vehicle.description,
+      doors: vehicle.doorCount,
+      favorite,
+      features: vehicle.features.map(({ feature }) => feature),
+      fuelType: vehicle.fuelType,
+      location: {
+        city: vehicle.location!.city,
+        country: vehicle.location!.country,
+        province: vehicle.location!.province,
+      },
+      make: vehicle.make,
+      mileagePolicy:
+        policy.mileagePolicy === MileagePolicyType.UNLIMITED
+          ? { type: 'UNLIMITED' }
+          : {
+              excessKilometerRateMinor: policy.excessKilometerRateMinor,
+              includedKilometersPerChargeableDay: policy.includedKilometersPerDay,
+              type: 'LIMITED',
+            },
+      model: vehicle.model,
+      owner: {
+        avatar:
+          avatar?.classification === FileClassification.PUBLIC &&
+          avatar.status === FileAssetStatus.READY
+            ? this.files.trustedPublicGrant(avatar.id)
+            : null,
+        displayName: profile?.displayName ?? profile?.firstName ?? 'Verified owner',
+        memberSince: vehicle.ownerProfile.user.createdAt,
+        verified: true,
+      },
+      photos: vehicle.photos.map((photo) => ({
+        ...this.files.trustedPublicGrant(photo.fileAsset.id),
+        id: photo.id,
+        perspective: photo.perspective,
+      })),
+      powertrain: vehicle.powertrain,
+      pricing: {
+        authoritative: false,
+        currency: policy.currency,
+        dailyRateMinor: policy.dailyRateMinor,
+        label: 'From',
+      },
+      rentalRequirements: vehicle.rentalRequirements,
+      returnPolicy: {
+        ev: policy.evReturnPolicy,
+        evRequiredPercentage: policy.evRequiredPercentage,
+        evTolerancePercent: policy.evTolerancePercent,
+        fuel: policy.fuelReturnPolicy,
+        fuelTolerancePercent: policy.fuelTolerancePercent,
+      },
+      seats: vehicle.seatCount,
+      transmission: vehicle.transmission,
+      turnaroundMinutes: policy.turnaroundMinutes,
+      variant: vehicle.variant,
+      vehicleId: vehicle.id,
+      year: vehicle.modelYear,
+    };
+  }
+}

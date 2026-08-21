@@ -1,0 +1,41 @@
+{
+  "name": "@carrental/database",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "generated"
+  ],
+  "scripts": {
+    "build": "pnpm prisma:generate && tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "prisma:format": "prisma format",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:seed": "prisma db seed",
+    "prisma:validate": "prisma validate"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.9.1",
+    "@prisma/client": "7.9.1",
+    "argon2": "0.45.1",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@carrental/test-config": "workspace:*",
+    "@carrental/typescript-config": "workspace:*",
+    "@types/node": "24.13.3",
+    "@types/pg": "8.16.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "dotenv": "17.2.4",
+    "prisma": "7.9.1",
+    "tsx": "4.23.12",
+    "vitest": "4.1.11"
+  }
+}

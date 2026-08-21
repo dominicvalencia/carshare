@@ -1,0 +1,9 @@
+node_modules
+.turbo
+dist
+coverage
+.next
+.expo
+pnpm-lock.yaml
+packages/database/generated
+apps/admin-web/next-env.d.ts
