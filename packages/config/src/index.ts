@@ -78,6 +78,17 @@ const rentalOperationsSchema = z.object({
   CLAIM_RESPONSE_WINDOW_HOURS: z.coerce.number().int().min(1).max(168).default(24),
 });
 
+const communicationsSchema = z.object({
+  PUSH_PROVIDER: z.enum(['fake', 'expo', 'in_app']).default('fake'),
+  EXPO_PUSH_ACCESS_TOKEN: z.string().min(1).optional(),
+  NOTIFICATION_DELIVERY_INTERVAL_SECONDS: z.coerce.number().int().min(5).max(300).default(10),
+  PUSH_RECEIPT_DELAY_SECONDS: z.coerce.number().int().min(5).max(3600).default(900),
+  REVIEW_WINDOW_DAYS: z.coerce.number().int().min(1).max(14).default(14),
+  POST_RENTAL_MESSAGING_DAYS: z.coerce.number().int().min(1).max(90).default(30),
+  MESSAGE_MAX_LENGTH: z.coerce.number().int().min(100).max(2000).default(2000),
+  MESSAGE_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(120).default(20),
+});
+
 const apiEnvironmentSchema = commonSchema
   .extend({
     API_HOST: z.string().min(1).default('0.0.0.0'),
@@ -118,7 +129,8 @@ const apiEnvironmentSchema = commonSchema
   })
   .and(paymentSchema)
   .and(payoutSchema)
-  .and(rentalOperationsSchema);
+  .and(rentalOperationsSchema)
+  .and(communicationsSchema);
 
 const workerEnvironmentSchema = commonSchema
   .extend({
@@ -128,7 +140,8 @@ const workerEnvironmentSchema = commonSchema
   })
   .and(paymentSchema)
   .and(payoutSchema)
-  .and(rentalOperationsSchema);
+  .and(rentalOperationsSchema)
+  .and(communicationsSchema);
 
 export type ApiEnvironment = z.infer<typeof apiEnvironmentSchema>;
 export type WorkerEnvironment = z.infer<typeof workerEnvironmentSchema>;
@@ -137,12 +150,25 @@ type EnvironmentInput = Readonly<Record<string, string | undefined>>;
 
 export function parseApiEnvironment(environment: EnvironmentInput): ApiEnvironment {
   assertProductionPayoutInputs(environment);
-  return validateFinancialEnvironment(apiEnvironmentSchema.parse(environment));
+  return validateCommunicationsEnvironment(
+    validateFinancialEnvironment(apiEnvironmentSchema.parse(environment)),
+  );
 }
 
 export function parseWorkerEnvironment(environment: EnvironmentInput): WorkerEnvironment {
   assertProductionPayoutInputs(environment);
-  return validateFinancialEnvironment(workerEnvironmentSchema.parse(environment));
+  return validateCommunicationsEnvironment(
+    validateFinancialEnvironment(workerEnvironmentSchema.parse(environment)),
+  );
+}
+
+function validateCommunicationsEnvironment<
+  T extends z.infer<typeof communicationsSchema> & z.infer<typeof commonSchema>,
+>(environment: T): T {
+  if (environment.APP_ENV === 'production' && environment.PUSH_PROVIDER === 'fake') {
+    throw new Error('PUSH_PROVIDER must not be fake in production.');
+  }
+  return environment;
 }
 
 function assertProductionPayoutInputs(environment: EnvironmentInput): void {

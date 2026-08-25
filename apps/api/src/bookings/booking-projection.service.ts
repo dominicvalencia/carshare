@@ -3,6 +3,7 @@ import { FileAssetStatus, FileClassification, Prisma } from '@carrental/database
 import { FilesService } from '../files/files.service';
 
 export const bookingInclude = {
+  conversation: { select: { id: true } },
   cancellation: true,
   occupancy: {
     select: {
@@ -83,6 +84,7 @@ export class BookingProjectionService {
           }
         : null,
       createdAt: booking.createdAt,
+      conversationId: booking.conversation?.id ?? null,
       holdExpiresAt: booking.holdExpiresAt,
       owner: {
         displayName:

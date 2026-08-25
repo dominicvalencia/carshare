@@ -103,6 +103,15 @@ input {
   padding: 12px 14px;
   width: 100%;
 }
+textarea {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font: inherit;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  resize: vertical;
+  width: 100%;
+}
 button {
   background: var(--primary);
   border: 0;

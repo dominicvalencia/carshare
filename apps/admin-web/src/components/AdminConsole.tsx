@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
+import { Phase10AdminPanels } from './Phase10AdminPanels';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
 interface Envelope<T> {
@@ -740,6 +741,7 @@ export function AdminConsole() {
           </div>
         )}
       </section>
+      <Phase10AdminPanels accessToken={accessToken} />
       <section className="admin-card">
         <span className="eyebrow">RENTAL OPERATIONS</span>
         <h2>Pickup, active and return queue</h2>

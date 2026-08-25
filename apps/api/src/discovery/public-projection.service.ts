@@ -13,6 +13,7 @@ export class PublicProjectionService {
     distanceKm: number,
     favorite: boolean,
     availability?: AdvisoryAvailability,
+    rating?: { readonly averageRating: string; readonly reviewCount: number } | null,
   ) {
     const policy = vehicle.policyVersions[0]!;
     const cover = vehicle.photos.find(({ isCover }) => isCover)!;
@@ -44,6 +45,7 @@ export class PublicProjectionService {
       fuelType: vehicle.fuelType,
       make: vehicle.make,
       model: vehicle.model,
+      rating: rating ?? { averageRating: null, label: 'New', reviewCount: 0 },
       powertrain: vehicle.powertrain,
       seats: vehicle.seatCount,
       transmission: vehicle.transmission,
@@ -52,7 +54,14 @@ export class PublicProjectionService {
     };
   }
 
-  detail(vehicle: PublicVehicleRecord, favorite: boolean) {
+  detail(
+    vehicle: PublicVehicleRecord,
+    favorite: boolean,
+    ratings?: {
+      readonly vehicle?: { readonly averageRating: string; readonly reviewCount: number } | null;
+      readonly owner?: { readonly averageRating: string; readonly reviewCount: number } | null;
+    },
+  ) {
     const policy = vehicle.policyVersions[0]!;
     const profile = vehicle.ownerProfile.user.profile;
     const avatar = profile?.avatarFile;
@@ -74,6 +83,7 @@ export class PublicProjectionService {
         province: vehicle.location!.province,
       },
       make: vehicle.make,
+      rating: ratings?.vehicle ?? { averageRating: null, label: 'New', reviewCount: 0 },
       mileagePolicy:
         policy.mileagePolicy === MileagePolicyType.UNLIMITED
           ? { type: 'UNLIMITED' }
@@ -91,6 +101,7 @@ export class PublicProjectionService {
             : null,
         displayName: profile?.displayName ?? profile?.firstName ?? 'Verified owner',
         memberSince: vehicle.ownerProfile.user.createdAt,
+        rating: ratings?.owner ?? { averageRating: null, label: 'New', reviewCount: 0 },
         verified: true,
       },
       photos: vehicle.photos.map((photo) => ({

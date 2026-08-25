@@ -15,15 +15,17 @@ pickup/return inspections, active-rental operations, measured usage, the 24-hour
 incident escalation, and safe automatic completion. Phase 8 adds controlled post-return claims,
 renter responses and disputes, immutable admin adjudication,
 formula-backed additional charges, provider-aware collection/refunds, earning holds, safe booking
-completion, and the `PENDING` to `AVAILABLE` earning transition. Payout execution remains
-intentionally unimplemented.
+completion, and the `PENDING` to `AVAILABLE` earning transition. Phase 9 adds controlled,
+provider-independent owner payout settlement. Phase 10 adds booking conversations, in-app and push
+notifications, verified-rental reviews and rating projections, support tickets, and report-led
+moderation.
 
 ## Applications
 
 - `apps/mobile` — one Expo/React Native application with modular renter and owner modes
 - `apps/admin-web` — Next.js administrative application
 - `apps/api` — NestJS modular monolith API
-- `apps/workers` — BullMQ booking, rental-operations, payment-reconciliation, and outbox worker
+- `apps/workers` — BullMQ lifecycle, reconciliation, outbox, domain-event, and notification workers
 
 ## Requirements
 
@@ -78,4 +80,6 @@ See [local development](docs/development/local-development.md), the
 [Phase 6 payments and ledger guide](docs/development/phase-6-payments-ledger.md), and the
 [Phase 7 rental operations guide](docs/development/phase-7-rental-operations.md), and the
 [Phase 8 claims and financial resolution guide](docs/development/phase-8-claims-financial-resolution.md), and the
+[Phase 9 owner payouts guide](docs/development/phase-9-owner-payouts.md), the
+[Phase 10 marketplace experience guide](docs/development/phase-10-marketplace-experience.md), and the
 [architecture decisions](docs/decisions/README.md).

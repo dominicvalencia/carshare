@@ -396,7 +396,7 @@ export class PaymentsService {
       };
     });
     return {
-      notice: 'Available earnings are eligible for the next administrator-approved payout batch.',
+      notice: 'Available earnings will be included in your next eligible payout.',
       summary: {
         availableMinor: projected
           .filter((item) => item.status === 'AVAILABLE')

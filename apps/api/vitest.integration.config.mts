@@ -17,7 +17,7 @@ export default defineConfig({
       API_PORT: '3000',
       API_PUBLIC_URL: 'http://localhost:3000',
       CORS_ORIGINS: 'http://localhost:3001',
-      DATABASE_URL: process.env.DATABASE_URL ?? '',
+      DATABASE_URL: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL ?? '',
       JWT_ACCESS_SECRET: 'integration-access-secret-at-least-thirty-two-characters',
       LOG_LEVEL: process.env.INTEGRATION_LOG_LEVEL ?? 'silent',
       NODE_ENV: 'test',

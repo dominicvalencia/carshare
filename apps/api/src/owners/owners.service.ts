@@ -155,6 +155,28 @@ export class OwnersService {
   }
 
   async assertOperational(userId: string): Promise<void> {
+    const profile = await this.assertOwnerCapability(userId);
+    if (profile.status !== OwnerProfileStatus.VERIFIED) {
+      throw new ApplicationException(
+        IdentityErrorCode.OWNER_VERIFICATION_REQUIRED,
+        'A verified owner profile is required.',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+  }
+
+  async assertDraftCapable(userId: string): Promise<void> {
+    const profile = await this.assertOwnerCapability(userId);
+    if (profile.status === OwnerProfileStatus.SUSPENDED) {
+      throw new ApplicationException(
+        IdentityErrorCode.OWNER_VERIFICATION_REQUIRED,
+        'This owner profile is suspended.',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+  }
+
+  private async assertOwnerCapability(userId: string) {
     const [role, profile] = await Promise.all([
       this.database.client.userRole.findFirst({
         where: { role: { code: RoleCode.OWNER }, userId },
@@ -168,12 +190,13 @@ export class OwnersService {
         HttpStatus.FORBIDDEN,
       );
     }
-    if (profile?.status !== OwnerProfileStatus.VERIFIED) {
+    if (!profile) {
       throw new ApplicationException(
-        IdentityErrorCode.OWNER_VERIFICATION_REQUIRED,
-        'A verified owner profile is required.',
+        IdentityErrorCode.OWNER_PROFILE_NOT_FOUND,
+        'Owner onboarding has not been started.',
         HttpStatus.FORBIDDEN,
       );
     }
+    return profile;
   }
 }

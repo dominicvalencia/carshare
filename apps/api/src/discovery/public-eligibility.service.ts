@@ -79,21 +79,23 @@ export class PublicVehicleEligibilityService {
   async findEligible(
     ids?: readonly string[],
     transaction?: Prisma.TransactionClient,
+    excludedOwnerUserId?: string,
   ): Promise<PublicVehicleRecord[]> {
     const client = transaction ?? this.database.client;
     const required = await this.requiredDocumentIds(client);
     return client.vehicle.findMany({
       orderBy: { id: 'asc' },
       select: publicVehicleSelect,
-      where: this.where(required, ids),
+      where: this.where(required, ids, excludedOwnerUserId),
     });
   }
 
   async findOne(
     id: string,
     transaction?: Prisma.TransactionClient,
+    excludedOwnerUserId?: string,
   ): Promise<PublicVehicleRecord | null> {
-    const vehicles = await this.findEligible([id], transaction);
+    const vehicles = await this.findEligible([id], transaction, excludedOwnerUserId);
     return vehicles[0] ?? null;
   }
 
@@ -153,7 +155,11 @@ export class PublicVehicleEligibilityService {
     return definitions.map(({ id }) => id);
   }
 
-  private where(required: readonly string[], ids?: readonly string[]): Prisma.VehicleWhereInput {
+  private where(
+    required: readonly string[],
+    ids?: readonly string[],
+    excludedOwnerUserId?: string,
+  ): Prisma.VehicleWhereInput {
     return {
       AND: required.map((definitionId) => ({
         documents: {
@@ -168,7 +174,10 @@ export class PublicVehicleEligibilityService {
       ...(ids ? { id: { in: [...ids] } } : {}),
       location: { isNot: null },
       operationalStatus: VehicleOperationalStatus.AVAILABLE,
-      ownerProfile: { status: OwnerProfileStatus.VERIFIED },
+      ownerProfile: {
+        status: OwnerProfileStatus.VERIFIED,
+        ...(excludedOwnerUserId ? { userId: { not: excludedOwnerUserId } } : {}),
+      },
       photos: {
         some: {
           fileAsset: { classification: FileClassification.PUBLIC, status: FileAssetStatus.READY },

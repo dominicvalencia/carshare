@@ -4,6 +4,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { colors, spacing } from '../../theme/tokens';
+import { dateTimeLabel, domainLabel } from '../../ui/format';
 
 const perspectives = [
   'FRONT',
@@ -118,9 +119,7 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
     <View style={styles.panel}>
       <Text style={styles.heading}>Rental operations</Text>
       <Text style={styles.status}>{friendlyStatus(detail.status)}</Text>
-      <Text style={styles.body}>
-        Scheduled return: {new Date(detail.rentalEnd).toLocaleString()}
-      </Text>
+      <Text style={styles.body}>Scheduled return: {dateTimeLabel(detail.rentalEnd)}</Text>
       {detail.status === 'READY_FOR_PICKUP' && pickup && !pickupCode && (
         <Action
           label="Review inspection and generate pickup code"
@@ -137,7 +136,7 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
       )}
       {detail.status === 'ACTIVE' && (
         <>
-          <Text style={styles.body}>Pickup odometer: {pickup?.odometerMeters ?? '—'} m</Text>
+          <Text style={styles.body}>Pickup odometer: {odometerLabel(pickup?.odometerMeters)}</Text>
           <Action label="Start vehicle return" onPress={() => action.mutate('return')} />
           <SecondaryAction
             label="Report an operational issue"
@@ -147,7 +146,7 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
       )}
       {detail.status === 'RETURN_PENDING' && returned && (
         <>
-          <Text style={styles.body}>Return odometer: {returned.odometerMeters ?? '—'} m</Text>
+          <Text style={styles.body}>Return odometer: {odometerLabel(returned.odometerMeters)}</Text>
           <Action label="Agree with return evidence" onPress={() => action.mutate('agree')} />
           <SecondaryAction label="Record disagreement" onPress={() => action.mutate('disagree')} />
         </>
@@ -239,7 +238,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
       const type = detail.status === 'RETURN_PENDING' ? 'return' : 'pickup';
       return apiClient.request(`/owner/bookings/${reference}/rental/${type}/inspection`, {
         body: JSON.stringify({
-          odometerMeters: odometer,
+          odometerMeters: String(Math.round(Number(odometer) * 1000)),
           ...(fuel ? { fuelBasisPoints: Math.round(Number(fuel) * 100) } : {}),
           ...(soc ? { batterySocBasisPoints: Math.round(Number(soc) * 100) } : {}),
           media: perspectives.map((perspective) => ({
@@ -272,12 +271,23 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
       <Text style={styles.status}>{friendlyStatus(detail.status)}</Text>
       {needsInspection && (
         <>
+          <View style={styles.inspectionHeader}>
+            <Text style={styles.cardTitle}>
+              {detail.status === 'RETURN_PENDING' ? 'Return inspection' : 'Pickup inspection'}
+            </Text>
+            <Text style={styles.progress}>
+              {Object.keys(files).length} of {perspectives.length} photos
+            </Text>
+          </View>
+          <Text style={styles.body}>
+            Capture each guided view, then record the physical readings exactly as shown.
+          </Text>
           <TextInput
             style={styles.input}
             value={odometer}
             onChangeText={setOdometer}
             keyboardType="number-pad"
-            placeholder="Odometer metres"
+            placeholder="Odometer reading (km)"
           />
           {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' && (
             <TextInput
@@ -300,12 +310,12 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
           {perspectives.map((perspective) => (
             <SecondaryAction
               key={perspective}
-              label={`${files[perspective] ? '✓ ' : ''}${perspective.replaceAll('_', ' ')}`}
+              label={`${files[perspective] ? '✓ ' : ''}${domainLabel(perspective)}`}
               onPress={() => capture.mutate(perspective)}
             />
           ))}
           <Action
-            label="Finalize immutable inspection"
+            label="Submit inspection"
             disabled={Object.keys(files).length !== perspectives.length || !odometer}
             onPress={() => action.mutate('inspection')}
           />
@@ -342,7 +352,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
           {claimCategories.map((category) => (
             <SecondaryAction
               key={category}
-              label={`${claimCategory === category ? '✓ ' : ''}${category.replaceAll('_', ' ')}`}
+              label={`${claimCategory === category ? '✓ ' : ''}${domainLabel(category)}`}
               onPress={() => setClaimCategory(category)}
             />
           ))}
@@ -380,8 +390,7 @@ function UsageSummary({ detail }: { readonly detail: RentalDetail }) {
       <Text style={styles.body}>Excess: {usage.excessDistanceKm} km</Text>
       <Text style={styles.body}>Late: {Math.ceil(usage.lateDurationSeconds / 60)} minutes</Text>
       <Text style={styles.body}>
-        Claim window ends:{' '}
-        {detail.claimDeadlineAt ? new Date(detail.claimDeadlineAt).toLocaleString() : '—'}
+        Claim window ends: {detail.claimDeadlineAt ? dateTimeLabel(detail.claimDeadlineAt) : '—'}
       </Text>
       <Text style={styles.body}>
         No additional charge has been created. Administrator approval is required.
@@ -434,6 +443,11 @@ function friendlyStatus(status: string) {
   return labels[status] ?? status.replaceAll('_', ' ');
 }
 
+function odometerLabel(meters: string | null | undefined) {
+  if (!meters) return '—';
+  return `${(Number(meters) / 1000).toLocaleString('en-PH', { maximumFractionDigits: 1 })} km`;
+}
+
 const styles = StyleSheet.create({
   body: { color: colors.subtleText, lineHeight: 21, marginTop: spacing.xs },
   button: {
@@ -464,12 +478,19 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     padding: spacing.md,
   },
+  inspectionHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: spacing.md,
+  },
   panel: {
     borderTopColor: colors.border,
     borderTopWidth: 1,
     marginTop: spacing.xl,
     paddingTop: spacing.lg,
   },
+  progress: { color: colors.primary, fontSize: 12, fontWeight: '800' },
   secondary: {
     alignItems: 'center',
     borderColor: colors.primary,

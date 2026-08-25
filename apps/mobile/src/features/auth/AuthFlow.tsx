@@ -2,20 +2,41 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation } from '@tanstack/react-query';
 import { Controller, useForm } from 'react-hook-form';
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { z } from 'zod';
 import { apiClient } from '../../auth/api-client';
 import { useAuth } from '../../auth/AuthProvider';
 import { colors, spacing } from '../../theme/tokens';
 
 type Screen = 'welcome' | 'login' | 'register' | 'forgot' | 'reset' | 'email' | 'otp';
-const credentialsSchema = z.object({ identifier: z.string().min(3), password: z.string() });
+const credentialsSchema = z.object({ identifier: z.string(), password: z.string() });
 type Credentials = z.infer<typeof credentialsSchema>;
 
 export function AuthFlow() {
   const [screen, setScreen] = useState<Screen>('welcome');
-  if (screen === 'welcome') return <Welcome onSelect={setScreen} />;
-  return <CredentialScreen mode={screen} onBack={() => setScreen('welcome')} />;
+  return (
+    <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.safeArea}
+      >
+        {screen === 'welcome' ? (
+          <Welcome onSelect={setScreen} />
+        ) : (
+          <CredentialScreen mode={screen} onBack={() => setScreen('welcome')} />
+        )}
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
 }
 
 function Welcome({ onSelect }: { readonly onSelect: (screen: Screen) => void }) {
@@ -28,16 +49,16 @@ function Welcome({ onSelect }: { readonly onSelect: (screen: Screen) => void }) 
       </Text>
       <Button label="Log in" onPress={() => onSelect('login')} />
       <Button label="Create account" secondary onPress={() => onSelect('register')} />
-      <Pressable onPress={() => onSelect('otp')}>
+      <Pressable accessibilityRole="button" onPress={() => onSelect('otp')}>
         <Text style={styles.link}>Continue with mobile OTP</Text>
       </Pressable>
-      <Pressable onPress={() => onSelect('forgot')}>
+      <Pressable accessibilityRole="button" onPress={() => onSelect('forgot')}>
         <Text style={styles.link}>Forgot password</Text>
       </Pressable>
-      <Pressable onPress={() => onSelect('reset')}>
+      <Pressable accessibilityRole="button" onPress={() => onSelect('reset')}>
         <Text style={styles.link}>Open reset link</Text>
       </Pressable>
-      <Pressable onPress={() => onSelect('email')}>
+      <Pressable accessibilityRole="button" onPress={() => onSelect('email')}>
         <Text style={styles.link}>Verify email</Text>
       </Pressable>
     </View>
@@ -53,10 +74,26 @@ function CredentialScreen({
 }) {
   const auth = useAuth();
   const schema = credentialsSchema.superRefine((value, context) => {
-    if (
-      (mode === 'login' || mode === 'register' || mode === 'reset') &&
-      value.password.length < 12
-    ) {
+    if (value.identifier.trim().length < 3) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          mode === 'otp'
+            ? 'Enter a Philippine mobile number.'
+            : mode === 'reset' || mode === 'email'
+              ? 'Enter the verification token.'
+              : 'Enter your email or mobile number.',
+        path: ['identifier'],
+      });
+    }
+    if (mode === 'register' && !z.email().safeParse(value.identifier.trim()).success) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Enter a valid email address.',
+        path: ['identifier'],
+      });
+    }
+    if ((mode === 'register' || mode === 'reset') && value.password.length < 12) {
       context.addIssue({
         code: 'custom',
         message: 'Use at least 12 characters.',
@@ -97,6 +134,12 @@ function CredentialScreen({
     },
   });
   const standard = mode === 'login' || mode === 'register';
+  const submit = form.handleSubmit((values) => {
+    mutation.reset();
+    utility.reset();
+    if (standard) mutation.mutate(values);
+    else utility.mutate(values);
+  });
   const title = {
     login: 'Welcome back',
     register: 'Create your account',
@@ -114,6 +157,13 @@ function CredentialScreen({
         name="identifier"
         render={({ field: { onChange, value } }) => (
           <TextInput
+            accessibilityLabel={
+              mode === 'otp'
+                ? 'Philippine mobile number'
+                : mode === 'reset' || mode === 'email'
+                  ? 'Verification token'
+                  : 'Email or mobile number'
+            }
             autoCapitalize="none"
             onChangeText={onChange}
             placeholder={
@@ -128,12 +178,16 @@ function CredentialScreen({
           />
         )}
       />
+      {form.formState.errors.identifier?.message && (
+        <Text style={styles.fieldError}>{form.formState.errors.identifier.message}</Text>
+      )}
       {(standard || mode === 'reset') && (
         <Controller
           control={form.control}
           name="password"
           render={({ field: { onChange, value } }) => (
             <TextInput
+              accessibilityLabel={mode === 'reset' ? 'New password' : 'Password'}
               onChangeText={onChange}
               placeholder={mode === 'reset' ? 'New password' : 'Password'}
               secureTextEntry
@@ -143,13 +197,17 @@ function CredentialScreen({
           )}
         />
       )}
+      {form.formState.errors.password?.message && (
+        <Text style={styles.fieldError}>{form.formState.errors.password.message}</Text>
+      )}
       <Button
-        label="Continue"
-        onPress={form.handleSubmit((values) =>
-          standard ? mutation.mutate(values) : utility.mutate(values),
-        )}
+        disabled={mutation.isPending || utility.isPending}
+        label={mutation.isPending || utility.isPending ? 'Please wait…' : 'Continue'}
+        onPress={() => {
+          void submit();
+        }}
       />
-      <Pressable onPress={onBack}>
+      <Pressable accessibilityRole="button" onPress={onBack}>
         <Text style={styles.link}>Back</Text>
       </Pressable>
       {(mutation.error || utility.error) && (
@@ -157,7 +215,7 @@ function CredentialScreen({
       )}
       {mode === 'login' && (
         <View style={styles.utility}>
-          <Pressable onPress={() => onBack()}>
+          <Pressable accessibilityRole="button" onPress={() => onBack()}>
             <Text style={styles.link}>
               Password and verification tools are available from Welcome.
             </Text>
@@ -172,13 +230,20 @@ function Button({
   label,
   onPress,
   secondary = false,
+  disabled = false,
 }: {
   readonly label: string;
   readonly onPress: () => void;
   readonly secondary?: boolean;
+  readonly disabled?: boolean;
 }) {
   return (
-    <Pressable onPress={onPress} style={[styles.button, secondary && styles.secondary]}>
+    <Pressable
+      accessibilityRole="button"
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.button, secondary && styles.secondary, disabled && styles.buttonDisabled]}
+    >
       <Text style={[styles.buttonText, secondary && styles.secondaryText]}>{label}</Text>
     </Pressable>
   );
@@ -193,8 +258,10 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     padding: spacing.md,
   },
+  buttonDisabled: { opacity: 0.55 },
   buttonText: { color: colors.onPrimary, fontWeight: '700' },
   error: { color: '#A12626', marginTop: spacing.md },
+  fieldError: { color: colors.danger, fontSize: 12, marginTop: spacing.xs },
   eyebrow: { color: colors.primary, fontSize: 12, fontWeight: '700', letterSpacing: 1.4 },
   input: {
     backgroundColor: colors.surface,
@@ -213,6 +280,7 @@ const styles = StyleSheet.create({
   },
   secondary: { backgroundColor: colors.surface, borderColor: colors.primary, borderWidth: 1 },
   secondaryText: { color: colors.primary },
+  safeArea: { backgroundColor: colors.background, flex: 1 },
   title: {
     color: colors.ink,
     fontSize: 32,

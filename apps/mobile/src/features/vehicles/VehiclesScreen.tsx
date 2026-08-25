@@ -2,9 +2,16 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { apiClient } from '../../auth/api-client';
-import { colors, spacing } from '../../theme/tokens';
+import { developmentLocationSuggestions } from '../../location/location-provider';
+import { colors, radius, spacing } from '../../theme/tokens';
+import { DateTimeField } from '../../ui/DateTimeField';
+import { domainLabel, money, vehicleStatusLabel } from '../../ui/format';
+import { VehicleImage } from '../../ui/VehicleImage';
+import { StateView, StatusBadge } from '../../ui/primitives';
 
 interface Reference {
   readonly id: string;
@@ -15,6 +22,7 @@ interface Reference {
 interface SafeFile {
   readonly id: string;
   readonly originalName: string;
+  readonly contentGrant?: { readonly contentPath: string } | null;
 }
 interface VehiclePhoto {
   readonly id: string;
@@ -109,34 +117,73 @@ export function VehiclesScreen() {
       />
     );
   return (
-    <ScrollView contentContainerStyle={styles.page}>
-      <Text style={styles.eyebrow}>OWNER FLEET</Text>
-      <Text style={styles.title}>My vehicles</Text>
-      <Text style={styles.body}>
-        Drafts save on the server, so you can leave and resume at any time.
-      </Text>
-      <Pressable style={styles.primaryButton} onPress={() => create.mutate()}>
-        <Text style={styles.primaryText}>Add vehicle</Text>
-      </Pressable>
-      {create.error && <Text style={styles.error}>{create.error.message}</Text>}
-      {vehicles.data?.map((vehicle) => (
-        <Pressable key={vehicle.id} onPress={() => setSelectedId(vehicle.id)} style={styles.card}>
-          <Text style={styles.cardTitle}>
-            {vehicle.make && vehicle.model
-              ? `${vehicle.make} ${vehicle.model}`
-              : 'Untitled vehicle draft'}
-          </Text>
-          <Text style={styles.body}>
-            {vehicle.status} · {vehicle.operationalStatus}
-          </Text>
-          {vehicle.reviewReason && <Text style={styles.error}>{vehicle.reviewReason}</Text>}
-          <Text style={styles.link}>Open vehicle →</Text>
+    <SafeAreaView edges={['top']} style={styles.flex}>
+      <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+        <Text style={styles.eyebrow}>OWNER FLEET</Text>
+        <Text style={styles.title}>My vehicles</Text>
+        <Text style={styles.body}>
+          Drafts save on the server, so you can leave and resume at any time.
+        </Text>
+        <Pressable style={styles.primaryButton} onPress={() => create.mutate()}>
+          <Text style={styles.primaryText}>Add vehicle</Text>
         </Pressable>
-      ))}
-      {!vehicles.isLoading && vehicles.data?.length === 0 && (
-        <Text style={styles.empty}>No vehicles yet.</Text>
-      )}
-    </ScrollView>
+        {create.error && <Text style={styles.error}>{create.error.message}</Text>}
+        {vehicles.isPending && <StateView loading title="Loading your fleet…" />}
+        {vehicles.isError && (
+          <StateView
+            icon="cloud-offline-outline"
+            title="Fleet unavailable"
+            message={vehicles.error.message}
+            actionLabel="Retry"
+            onAction={() => void vehicles.refetch()}
+          />
+        )}
+        {vehicles.data?.map((vehicle) => (
+          <Pressable
+            key={vehicle.id}
+            accessibilityRole="button"
+            onPress={() => setSelectedId(vehicle.id)}
+            style={styles.fleetCard}
+          >
+            <VehicleImage
+              contentPath={vehicle.photos[0]?.fileAsset.contentGrant?.contentPath}
+              style={styles.fleetImage}
+            />
+            <View style={styles.fleetContent}>
+              <Text numberOfLines={1} style={styles.cardTitle}>
+                {vehicle.make && vehicle.model
+                  ? `${vehicle.modelYear ?? ''} ${vehicle.make} ${vehicle.model}`.trim()
+                  : 'Untitled vehicle draft'}
+              </Text>
+              <StatusBadge
+                label={vehicleStatusLabel(vehicle.status)}
+                tone={vehicleTone(vehicle.status)}
+              />
+              <Text style={styles.body}>{vehicleStatusLabel(vehicle.operationalStatus)}</Text>
+              {vehicle.location && (
+                <Text numberOfLines={1} style={styles.body}>
+                  {vehicle.location.city}, {vehicle.location.province}
+                </Text>
+              )}
+              {vehicle.policyVersions[0] && (
+                <Text style={styles.rate}>
+                  {money(vehicle.policyVersions[0].dailyRateMinor)} / day
+                </Text>
+              )}
+              {vehicle.reviewReason && <Text style={styles.error}>{vehicle.reviewReason}</Text>}
+              <Text style={styles.link}>Manage vehicle →</Text>
+            </View>
+          </Pressable>
+        ))}
+        {!vehicles.isPending && !vehicles.isError && vehicles.data?.length === 0 && (
+          <StateView
+            icon="car-sport-outline"
+            title="No vehicles yet"
+            message="Add a vehicle to start a draft. You can finish it before owner verification is complete."
+          />
+        )}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -164,15 +211,27 @@ function VehicleEditor({ id, onClose }: { readonly id: string; readonly onClose:
       }),
     onSuccess: refresh,
   });
-  if (!vehicle.data)
+  if (vehicle.isPending)
     return (
-      <View style={styles.loading}>
-        <Text>Loading vehicle draft…</Text>
-      </View>
+      <SafeAreaView edges={['top']} style={styles.flex}>
+        <StateView loading title="Loading vehicle draft…" />
+      </SafeAreaView>
+    );
+  if (vehicle.isError || !vehicle.data)
+    return (
+      <SafeAreaView edges={['top']} style={styles.flex}>
+        <StateView
+          icon="cloud-offline-outline"
+          title="Vehicle unavailable"
+          message={vehicle.error?.message}
+          actionLabel="Retry"
+          onAction={() => void vehicle.refetch()}
+        />
+      </SafeAreaView>
     );
   const value = vehicle.data;
   return (
-    <View style={styles.flex}>
+    <SafeAreaView edges={['top']} style={styles.flex}>
       <View style={styles.editorHeader}>
         <Pressable onPress={onClose}>
           <Text style={styles.link}>‹ Fleet</Text>
@@ -181,27 +240,23 @@ function VehicleEditor({ id, onClose }: { readonly id: string; readonly onClose:
           <Text style={styles.cardTitle}>
             {value.make ?? 'Vehicle'} {value.model ?? 'draft'}
           </Text>
-          <Text style={styles.body}>{value.status}</Text>
+          <Text style={styles.body}>{vehicleStatusLabel(value.status)}</Text>
         </View>
       </View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.stepBar}
-        contentContainerStyle={styles.stepContent}
+      <View
+        style={styles.progressPanel}
+        accessibilityLabel={`Step ${step + 1} of ${steps.length}: ${steps[step]}`}
       >
-        {steps.map((label, index) => (
-          <Pressable
-            key={label}
-            onPress={() => setStep(index)}
-            style={[styles.step, step === index && styles.stepActive]}
-          >
-            <Text style={step === index ? styles.stepTextActive : styles.body}>
-              {index + 1}. {label}
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+        <View style={styles.progressCopy}>
+          <Text style={styles.progressStep}>
+            Step {step + 1} of {steps.length}
+          </Text>
+          <Text style={styles.progressTitle}>{steps[step]}</Text>
+        </View>
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${((step + 1) / steps.length) * 100}%` }]} />
+        </View>
+      </View>
       <ScrollView contentContainerStyle={styles.editorBody}>
         {step === 0 && <DetailsStep vehicle={value} onSaved={refresh} />}
         {step === 1 && (
@@ -218,20 +273,28 @@ function VehicleEditor({ id, onClose }: { readonly id: string; readonly onClose:
         {step === 6 && <AvailabilityStep id={id} vehicle={value} onSaved={refresh} />}
         {step === 7 && <ReviewStep vehicle={value} action={action.mutate} />}
         {action.error && <Text style={styles.error}>{action.error.message}</Text>}
-        <View style={styles.row}>
-          {step > 0 && (
-            <Pressable style={styles.secondaryButton} onPress={() => setStep(step - 1)}>
-              <Text>Previous</Text>
-            </Pressable>
-          )}
-          {step < steps.length - 1 && (
-            <Pressable style={styles.primaryButton} onPress={() => setStep(step + 1)}>
-              <Text style={styles.primaryText}>Next</Text>
-            </Pressable>
-          )}
-        </View>
       </ScrollView>
-    </View>
+      <View style={styles.editorActions}>
+        {step > 0 && (
+          <Pressable
+            accessibilityRole="button"
+            style={[styles.secondaryButton, styles.editorActionButton]}
+            onPress={() => setStep(step - 1)}
+          >
+            <Text>Previous</Text>
+          </Pressable>
+        )}
+        {step < steps.length - 1 && (
+          <Pressable
+            accessibilityRole="button"
+            style={[styles.primaryButton, styles.editorActionButton]}
+            onPress={() => setStep(step + 1)}
+          >
+            <Text style={styles.primaryText}>Continue</Text>
+          </Pressable>
+        )}
+      </View>
+    </SafeAreaView>
   );
 }
 
@@ -302,7 +365,7 @@ function DetailsStep({
           <Choice
             key={powertrain}
             selected={form.powertrain === powertrain}
-            label={powertrain.replaceAll('_', ' ')}
+            label={domainLabel(powertrain)}
             onPress={() =>
               setForm({
                 ...form,
@@ -434,7 +497,7 @@ function PhotosStep({
           <View key={perspective} style={styles.card}>
             <Pressable disabled={Boolean(present)} onPress={() => void upload(perspective)}>
               <Text style={styles.cardTitle}>
-                {present ? '✓' : '+'} {perspective.replaceAll('_', ' ')}
+                {present ? '✓' : '+'} {domainLabel(perspective)}
               </Text>
               <Text style={styles.body}>
                 {present
@@ -540,12 +603,32 @@ function LocationStep({
   readonly onSaved: () => void;
 }) {
   const [form, setForm] = useState({
-    latitude: vehicle.location?.latitude ?? '14.5995',
-    longitude: vehicle.location?.longitude ?? '120.9842',
+    latitude: vehicle.location?.latitude ?? '14.5547',
+    longitude: vehicle.location?.longitude ?? '121.0244',
     city: vehicle.location?.city ?? '',
     province: vehicle.location?.province ?? 'Metro Manila',
     pickupAreaLabel: vehicle.location?.pickupAreaLabel ?? '',
   });
+  const [locationError, setLocationError] = useState('');
+  const areas = developmentLocationSuggestions;
+  const captureDeviceLocation = async () => {
+    setLocationError('');
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (!permission.granted) {
+      setLocationError('Location access was not granted. Choose a pickup city instead.');
+      return;
+    }
+    try {
+      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      setForm({
+        ...form,
+        latitude: String(current.coords.latitude),
+        longitude: String(current.coords.longitude),
+      });
+    } catch {
+      setLocationError('We could not capture this location. Try again or choose a city.');
+    }
+  };
   const save = useMutation({
     mutationFn: () =>
       apiClient.request(`/owner/vehicles/${id}/location`, {
@@ -557,20 +640,32 @@ function LocationStep({
   return (
     <Section title="Private pickup location">
       <Text style={styles.body}>
-        Exact coordinates stay private; future search will use an approximate area.
+        Renters see only the city and province. Choose the nearest area, then use your device at the
+        private pickup point for accurate distance.
       </Text>
-      <Field
-        label="Latitude"
-        value={form.latitude}
-        onChange={(latitude) => setForm({ ...form, latitude })}
-        keyboard="decimal-pad"
-      />
-      <Field
-        label="Longitude"
-        value={form.longitude}
-        onChange={(longitude) => setForm({ ...form, longitude })}
-        keyboard="decimal-pad"
-      />
+      <Text style={styles.label}>Pickup city</Text>
+      <View style={styles.wrap}>
+        {areas.map((area) => (
+          <Choice
+            key={area.city}
+            label={area.city}
+            selected={form.city === area.city}
+            onPress={() =>
+              setForm({
+                ...form,
+                city: area.city,
+                province: area.province,
+                latitude: String(area.latitude),
+                longitude: String(area.longitude),
+              })
+            }
+          />
+        ))}
+      </View>
+      <Pressable style={styles.secondaryButton} onPress={() => void captureDeviceLocation()}>
+        <Text>Use this device at the pickup point</Text>
+      </Pressable>
+      {locationError && <Text style={styles.error}>{locationError}</Text>}
       <Field label="City" value={form.city} onChange={(city) => setForm({ ...form, city })} />
       <Field
         label="Province / region"
@@ -596,24 +691,27 @@ function PolicyStep({
   readonly vehicle: Vehicle;
   readonly onSaved: () => void;
 }) {
-  const [dailyRate, setDailyRate] = useState('250000');
-  const [limited, setLimited] = useState(true);
+  const current = vehicle.policyVersions[0];
+  const [dailyRate, setDailyRate] = useState(
+    current ? String(current.dailyRateMinor / 100) : '2500',
+  );
+  const [limited, setLimited] = useState(current?.mileagePolicy !== 'UNLIMITED');
   const [included, setIncluded] = useState('150');
-  const [excess, setExcess] = useState('1500');
-  const [turnaround, setTurnaround] = useState(120);
+  const [excess, setExcess] = useState('15');
+  const [turnaround, setTurnaround] = useState(current?.turnaroundMinutes ?? 120);
   const electric = vehicle.powertrain === 'BATTERY_ELECTRIC';
   const save = useMutation({
     mutationFn: () =>
       apiClient.request(`/owner/vehicles/${id}/policy-versions`, {
         body: JSON.stringify({
-          dailyRateMinor: Number(dailyRate),
+          dailyRateMinor: Math.round(Number(dailyRate) * 100),
           minimumRentalDays: 1,
           maximumRentalDays: 30,
           mileagePolicy: limited ? 'LIMITED' : 'UNLIMITED',
           ...(limited
             ? {
                 includedKilometersPerDay: Number(included),
-                excessKilometerRateMinor: Number(excess),
+                excessKilometerRateMinor: Math.round(Number(excess) * 100),
               }
             : {}),
           ...(electric
@@ -628,9 +726,8 @@ function PolicyStep({
   });
   return (
     <Section title="Pricing and usage policies">
-      <Text style={styles.body}>Amounts are integer centavos. ₱2,500.00 = 250000.</Text>
       <Field
-        label="Daily rate (centavos)"
+        label="Daily rate (PHP)"
         value={dailyRate}
         onChange={setDailyRate}
         keyboard="numeric"
@@ -649,7 +746,7 @@ function PolicyStep({
             keyboard="numeric"
           />
           <Field
-            label="Excess centavos per whole km"
+            label="Excess charge per whole km (PHP)"
             value={excess}
             onChange={setExcess}
             keyboard="numeric"
@@ -669,7 +766,8 @@ function PolicyStep({
       </View>
       <Text style={styles.body}>
         {electric ? 'EV same-to-same, 5% tolerance' : 'Fuel same-to-same, 5% tolerance'} ·
-        admin-approved deficiency rules
+        deficiency charges require platform review. Current rate:{' '}
+        {money(Math.round(Number(dailyRate || 0) * 100))} per day.
       </Text>
       <Save mutation={save} />
     </Section>
@@ -686,12 +784,26 @@ function AvailabilityStep({
   readonly onSaved: () => void;
 }) {
   const current = vehicle.policyVersions[0];
-  const [startsAt, setStartsAt] = useState('');
-  const [endsAt, setEndsAt] = useState('');
+  const [startsAt, setStartsAt] = useState(() => {
+    const value = new Date();
+    value.setDate(value.getDate() + 1);
+    value.setHours(9, 0, 0, 0);
+    return value;
+  });
+  const [endsAt, setEndsAt] = useState(() => {
+    const value = new Date();
+    value.setDate(value.getDate() + 2);
+    value.setHours(9, 0, 0, 0);
+    return value;
+  });
   const add = useMutation({
     mutationFn: () =>
       apiClient.request(`/owner/vehicles/${id}/blocked-periods`, {
-        body: JSON.stringify({ startsAt, endsAt, reason: 'PERSONAL_USE' }),
+        body: JSON.stringify({
+          startsAt: startsAt.toISOString(),
+          endsAt: endsAt.toISOString(),
+          reason: 'PERSONAL_USE',
+        }),
         method: 'POST',
       }),
     onSuccess: onSaved,
@@ -703,22 +815,18 @@ function AvailabilityStep({
         with booking scheduling.
       </Text>
       <Text style={styles.body}>
-        Policy version {current?.version ?? 'not configured'} · turnaround{' '}
-        {current?.turnaroundMinutes ?? 120} minutes
+        Current preparation buffer: {(current?.turnaroundMinutes ?? 120) / 60} hours between
+        rentals.
       </Text>
-      <Text style={styles.label}>Block a future period (ISO 8601)</Text>
-      <Field
-        label="Starts at"
+      <Text style={styles.label}>Block a future period</Text>
+      <DateTimeField
+        label="Starts"
         value={startsAt}
+        minimumDate={new Date()}
         onChange={setStartsAt}
-        placeholder="2026-09-01T08:00:00+08:00"
       />
-      <Field
-        label="Ends at"
-        value={endsAt}
-        onChange={setEndsAt}
-        placeholder="2026-09-02T08:00:00+08:00"
-      />
+      <DateTimeField label="Ends" value={endsAt} minimumDate={startsAt} onChange={setEndsAt} />
+      {endsAt <= startsAt && <Text style={styles.error}>End must be after start.</Text>}
       <Save mutation={add} label="Add blocked period" />
     </Section>
   );
@@ -734,8 +842,28 @@ function ReviewStep({
   const editable = ['DRAFT', 'CHANGES_REQUIRED', 'REJECTED'].includes(vehicle.status);
   return (
     <Section title="Review and submit">
-      <Text style={styles.status}>Status: {vehicle.status}</Text>
+      <Text style={styles.status}>Status: {vehicleStatusLabel(vehicle.status)}</Text>
       {vehicle.reviewReason && <Text style={styles.error}>{vehicle.reviewReason}</Text>}
+      <View style={styles.reviewSummary}>
+        <Text style={styles.cardTitle}>
+          {vehicle.modelYear} {vehicle.make} {vehicle.model}
+        </Text>
+        <Text style={styles.body}>
+          {domainLabel(vehicle.transmission)} · {domainLabel(vehicle.powertrain)} ·{' '}
+          {vehicle.seatCount ?? '—'} seats
+        </Text>
+        <Text style={styles.body}>
+          {vehicle.location
+            ? `${vehicle.location.city}, ${vehicle.location.province}`
+            : 'Location not complete'}
+        </Text>
+        {vehicle.policyVersions[0] && (
+          <Text style={styles.body}>
+            {money(vehicle.policyVersions[0].dailyRateMinor)} per day ·{' '}
+            {vehicle.policyVersions[0].turnaroundMinutes / 60}-hour preparation buffer
+          </Text>
+        )}
+      </View>
       <Readiness
         label="Basic details"
         done={Boolean(vehicle.make && vehicle.model && vehicle.modelYear && vehicle.categoryId)}
@@ -873,6 +1001,13 @@ function Readiness({ label, done }: { readonly label: string; readonly done: boo
   );
 }
 
+function vehicleTone(status: string): 'success' | 'warning' | 'neutral' | 'danger' {
+  if (status === 'APPROVED') return 'success';
+  if (['CHANGES_REQUIRED', 'PENDING_APPROVAL'].includes(status)) return 'warning';
+  if (['REJECTED', 'SUSPENDED'].includes(status)) return 'danger';
+  return 'neutral';
+}
+
 const styles = StyleSheet.create({
   body: { color: colors.subtleText, marginTop: spacing.xs },
   card: {
@@ -899,7 +1034,16 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     padding: spacing.md,
   },
-  editorBody: { padding: spacing.xl, paddingBottom: 80 },
+  editorActionButton: { flex: 1, marginTop: 0 },
+  editorActions: {
+    backgroundColor: colors.surface,
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    padding: spacing.md,
+  },
+  editorBody: { padding: spacing.xl },
   editorHeader: {
     alignItems: 'center',
     backgroundColor: colors.surface,
@@ -913,6 +1057,19 @@ const styles = StyleSheet.create({
   error: { color: '#A12626', marginTop: spacing.sm },
   eyebrow: { color: colors.primary, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
   flex: { backgroundColor: colors.background, flex: 1 },
+  fleetCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    overflow: 'hidden',
+    padding: spacing.sm,
+  },
+  fleetContent: { flex: 1, minWidth: 0, paddingVertical: spacing.xxs },
+  fleetImage: { borderRadius: radius.md, height: 142, width: 116 },
   input: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
@@ -933,12 +1090,38 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   primaryText: { color: colors.onPrimary, fontWeight: '700' },
+  progressCopy: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  progressFill: { backgroundColor: colors.primary, borderRadius: radius.pill, height: '100%' },
+  progressPanel: {
+    backgroundColor: colors.surface,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.sm,
+  },
+  progressStep: { color: colors.subtleText, fontSize: 12, fontWeight: '700' },
+  progressTitle: { color: colors.ink, fontSize: 14, fontWeight: '800' },
+  progressTrack: {
+    backgroundColor: colors.muted,
+    borderRadius: radius.pill,
+    height: 6,
+    overflow: 'hidden',
+  },
+  rate: { color: colors.ink, fontSize: 14, fontWeight: '800', marginTop: spacing.xs },
   readiness: {
     borderBottomColor: colors.border,
     borderBottomWidth: 1,
     paddingVertical: spacing.sm,
   },
-  row: { flexDirection: 'row', gap: spacing.md, justifyContent: 'flex-end', marginTop: spacing.lg },
+  reviewSummary: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
   secondaryButton: {
     alignItems: 'center',
     backgroundColor: colors.muted,

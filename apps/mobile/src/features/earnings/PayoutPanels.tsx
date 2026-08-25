@@ -3,6 +3,13 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { colors, spacing } from '../../theme/tokens';
+import {
+  channelLabel,
+  domainLabel,
+  money,
+  payoutEligibilityLabel,
+  payoutStatusLabel,
+} from '../../ui/format';
 
 interface PayoutAccount {
   readonly accountHolderName: string;
@@ -82,12 +89,21 @@ export function PayoutPanels() {
 
   return (
     <>
+      {(accounts.isPending || payouts.isPending) && (
+        <Text style={styles.body}>Loading payout details…</Text>
+      )}
+      {(accounts.isError || payouts.isError) && (
+        <Text style={styles.error}>
+          {accounts.error?.message ?? payouts.error?.message ?? 'Payout details are unavailable.'}
+        </Text>
+      )}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Payout status</Text>
-        <Text style={styles.amount}>Processing · ₱{(processingMinor / 100).toLocaleString()}</Text>
-        <Text style={styles.body}>Paid · ₱{(paidMinor / 100).toLocaleString()}</Text>
+        <Text style={styles.amount}>Processing · {money(processingMinor)}</Text>
+        <Text style={styles.body}>Paid · {money(paidMinor)}</Text>
         <Text style={styles.body}>
-          Eligibility · {accounts.data?.eligibility.status ?? 'NOT_READY'}
+          Payout readiness ·{' '}
+          {payoutEligibilityLabel(accounts.data?.eligibility.status ?? 'NOT_READY')}
         </Text>
       </View>
 
@@ -97,10 +113,11 @@ export function PayoutPanels() {
         {accounts.data?.items.map((account) => (
           <View key={account.id} style={styles.destination}>
             <Text style={styles.destinationTitle}>
-              {account.destinationChannel} · {account.maskedAccountIdentifier}
+              {channelLabel(account.destinationChannel)} · {account.maskedAccountIdentifier}
             </Text>
             <Text style={styles.body}>
-              {account.status} · {account.isDefault ? 'Default' : account.validationLevel}
+              {domainLabel(account.status)} ·{' '}
+              {account.isDefault ? 'Default destination' : domainLabel(account.validationLevel)}
             </Text>
             {account.status === 'ACTIVE' && !account.isDefault && (
               <Pressable
@@ -133,19 +150,33 @@ export function PayoutPanels() {
                 </Pressable>
               ))}
             </View>
+            <Text style={styles.label}>Provider</Text>
+            <View style={styles.row}>
+              {(type === 'BANK_ACCOUNT'
+                ? ['PH_BPI', 'PH_BDO', 'PH_METROBANK']
+                : ['PH_GCASH', 'PH_MAYA']
+              ).map((value) => (
+                <Pressable
+                  key={value}
+                  accessibilityRole="button"
+                  style={[styles.pill, channel === value && styles.pillActive]}
+                  onPress={() => setChannel(value)}
+                >
+                  <Text style={channel === value ? styles.buttonText : styles.secondaryButtonText}>
+                    {channelLabel(value)}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
             <TextInput
-              style={styles.input}
-              value={channel}
-              onChangeText={setChannel}
-              placeholder="Channel, e.g. PH_BPI"
-            />
-            <TextInput
+              accessibilityLabel="Account holder name"
               style={styles.input}
               value={holder}
               onChangeText={setHolder}
               placeholder="Account holder name"
             />
             <TextInput
+              accessibilityLabel="Account or wallet number"
               style={styles.input}
               value={identifier}
               onChangeText={setIdentifier}
@@ -173,10 +204,10 @@ export function PayoutPanels() {
         {payouts.data?.map((payout) => (
           <View key={payout.id} style={styles.destination}>
             <Text style={styles.destinationTitle}>
-              ₱{(payout.amountMinor / 100).toLocaleString()} · {payout.status}
+              {money(payout.amountMinor)} · {payoutStatusLabel(payout.status)}
             </Text>
             <Text style={styles.body}>
-              {payout.destination.channel} · {payout.destination.maskedIdentifier}
+              {channelLabel(payout.destination.channel)} · {payout.destination.maskedIdentifier}
             </Text>
             <Text style={styles.body}>{payout.publicReference}</Text>
           </View>
@@ -222,6 +253,7 @@ const styles = StyleSheet.create({
     color: colors.ink,
     padding: spacing.md,
   },
+  label: { color: colors.ink, fontSize: 13, fontWeight: '700', marginTop: spacing.xs },
   pill: {
     borderColor: colors.primary,
     borderRadius: 20,

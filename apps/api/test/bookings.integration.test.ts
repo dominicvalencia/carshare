@@ -777,6 +777,216 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     expect(completed.ownerEarning?.status).toBe('PENDING');
   }, 120_000);
 
+  it('completes the Phase 12 pilot happy path through public and participant APIs', async () => {
+    const renter = await createActor('phase12-pilot-renter', [RoleCode.RENTER]);
+    const outsider = await createActor('phase12-pilot-outsider', [RoleCode.RENTER]);
+    const vehicle = await createVehicle('PilotHappyPath');
+    const rentalStart = new Date(Date.now() + 5 * 60_000);
+    const rentalEnd = new Date(rentalStart.getTime() + 3 * 24 * 60 * 60 * 1000);
+
+    const discovery = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query({
+        end: rentalEnd.toISOString(),
+        latitude: '13.9414',
+        longitude: '121.6230',
+        radius: '10',
+        start: rentalStart.toISOString(),
+      })
+      .expect(200);
+    expect(
+      discovery.body.data.items.some(
+        (item: { vehicleId: string }) => item.vehicleId === vehicle.id,
+      ),
+    ).toBe(true);
+
+    const quote = await request(app.getHttpServer())
+      .post(`/api/v1/vehicles/${vehicle.id}/quotes`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({ end: rentalEnd.toISOString(), start: rentalStart.toISOString() })
+      .expect(201);
+    expect(quote.body.data).toMatchObject({
+      chargeableDays: 3,
+      currency: 'PHP',
+      includedMileageKm: 450,
+      totalMinor: 750_000,
+    });
+
+    const held = await hold(renter.token, quote.body.data.id, `phase12-pilot-${unique}`).expect(
+      201,
+    );
+    const reference = held.body.data.publicReference as string;
+    expect(held.body.data.vehicle.coverPhoto.contentPath).toContain('/api/v1/file-access/');
+    await request(app.getHttpServer())
+      .get(`/api/v1/bookings/${reference}`)
+      .set('Authorization', `Bearer ${outsider.token}`)
+      .expect(404);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/reviews`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({ categoryRatings: { condition: 5 }, rating: 5, type: 'VEHICLE' })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/continue`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/payment/authorize`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(201);
+    const ownerQueue = await request(app.getHttpServer())
+      .get('/api/v1/owner/bookings/requests')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(200);
+    expect(
+      ownerQueue.body.data.some(
+        (item: { publicReference: string; status: string }) =>
+          item.publicReference === reference && item.status === 'AWAITING_OWNER',
+      ),
+    ).toBe(true);
+    await database.client.ownerProfile.update({
+      data: { status: OwnerProfileStatus.DRAFT, verifiedAt: null },
+      where: { id: ownerProfileId },
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/accept`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('OWNER_VERIFICATION_REQUIRED'));
+    await database.client.ownerProfile.update({
+      data: { status: OwnerProfileStatus.VERIFIED, verifiedAt: new Date() },
+      where: { id: ownerProfileId },
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/accept`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/accept`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(409);
+
+    const pickupFiles = await Promise.all(
+      Object.values(InspectionPerspective)
+        .filter((perspective) => perspective !== InspectionPerspective.ADDITIONAL)
+        .map(async (perspective) => ({
+          fileAssetId: await file('SENSITIVE', 'image/jpeg'),
+          perspective,
+        })),
+    );
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/rental/pickup/inspection`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ fuelBasisPoints: 10_000, media: pickupFiles, odometerMeters: '30000000' })
+      .expect(201);
+    const pickupCode = await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/rental/pickup/verify`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ code: pickupCode.body.data.code })
+      .expect(201);
+
+    const booking = await database.client.booking.findUniqueOrThrow({
+      include: { conversation: true },
+      where: { publicReference: reference },
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/conversations/${booking.conversation!.id}/messages`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .set('Idempotency-Key', `phase12-message-${unique}`)
+      .send({ body: 'I have arrived at the agreed pickup area.' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/return/start`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(201);
+    const returnFiles = await Promise.all(
+      Object.values(InspectionPerspective)
+        .filter((perspective) => perspective !== InspectionPerspective.ADDITIONAL)
+        .map(async (perspective) => ({
+          fileAssetId: await file('SENSITIVE', 'image/jpeg'),
+          perspective,
+        })),
+    );
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/rental/return/inspection`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ fuelBasisPoints: 10_000, media: returnFiles, odometerMeters: '30400000' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/return/confirm`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({ decision: 'AGREED' })
+      .expect(201);
+
+    await database.client.booking.update({
+      data: { claimDeadlineAt: new Date(Date.now() - 1_000) },
+      where: { id: booking.id },
+    });
+    await database.client.$queryRaw(Prisma.sql`SELECT "complete_due_returned_bookings"()`);
+    const completed = await database.client.booking.findUniqueOrThrow({
+      include: {
+        commissionSnapshot: true,
+        ownerEarning: true,
+        payments: true,
+        pricingSnapshot: true,
+        usageSummary: true,
+      },
+      where: { id: booking.id },
+    });
+    expect(completed.status).toBe('COMPLETED');
+    expect(completed.payments.find(({ purpose }) => purpose === 'RENTAL')?.status).toBe('CAPTURED');
+    expect(completed.commissionSnapshot).not.toBeNull();
+    expect(completed.ownerEarning?.status).toBe('PENDING');
+    expect(completed.usageSummary).toMatchObject({
+      distanceTravelledKm: 400,
+      excessDistanceKm: 0,
+      includedDistanceKm: 450,
+    });
+    expect(completed.pricingSnapshot?.totalMinor).toBe(750_000);
+
+    await database.client.ownerEarning.update({
+      data: { availableAt: new Date(Date.now() - 1_000) },
+      where: { bookingId: booking.id },
+    });
+    await database.client.$queryRaw(Prisma.sql`SELECT "release_due_owner_earnings"()`);
+    expect(
+      (await database.client.ownerEarning.findUniqueOrThrow({ where: { bookingId: booking.id } }))
+        .status,
+    ).toBe('AVAILABLE');
+
+    const eligibility = await request(app.getHttpServer())
+      .get(`/api/v1/bookings/${reference}/review-eligibility`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(200);
+    expect(eligibility.body.data.eligible).toBe(true);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/reviews`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({
+        categoryRatings: { condition: 5, value: 5 },
+        rating: 5,
+        text: 'A smooth pilot rental from booking through return.',
+        type: 'VEHICLE',
+      })
+      .expect(201);
+
+    const financialTransactions = await database.client.ledgerTransaction.findMany({
+      include: { entries: true },
+      where: { sourceId: { in: completed.payments.map(({ id }) => id) } },
+    });
+    expect(financialTransactions.length).toBeGreaterThan(0);
+    expect(
+      financialTransactions.every(
+        ({ entries }) => entries.reduce((sum, entry) => sum + entry.amountMinor, 0n) === 0n,
+      ),
+    ).toBe(true);
+  }, 120_000);
+
   it('serializes a claim submission racing automatic completion', async () => {
     const renter = await createActor('claim-race-renter', [RoleCode.RENTER]);
     const vehicle = await createVehicle('ClaimCompletionRace');

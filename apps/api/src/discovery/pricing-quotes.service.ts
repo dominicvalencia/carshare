@@ -1,6 +1,6 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DiscoveryErrorCode, IdentityErrorCode } from '@carrental/api-contracts';
+import { BookingErrorCode, DiscoveryErrorCode, IdentityErrorCode } from '@carrental/api-contracts';
 import type { ApiEnvironment } from '@carrental/config';
 import { MileagePolicyType } from '@carrental/database';
 import { ApplicationException } from '../common/errors/application.exception';
@@ -45,6 +45,13 @@ export class PricingQuotesService {
       vehicleId,
     });
     const vehicle = await this.publicVehicles.publicVehicle(vehicleId);
+    if (vehicle.ownerProfile.userId === userId) {
+      throw new ApplicationException(
+        BookingErrorCode.OWNER_CANNOT_BOOK_OWN_VEHICLE,
+        'Owners cannot request a price or rent their own vehicle.',
+        HttpStatus.FORBIDDEN,
+      );
+    }
     const { chargeableDays, end, start } = this.duration.calculate(startInput, endInput);
     this.availability.assertQuotable(await this.availability.check(vehicle, startInput, endInput));
     const policy = vehicle.policyVersions[0]!;

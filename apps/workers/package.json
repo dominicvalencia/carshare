@@ -15,6 +15,7 @@
     "@carrental/config": "workspace:*",
     "@carrental/database": "workspace:*",
     "@carrental/logger": "workspace:*",
+    "@carrental/notifications": "workspace:*",
     "@carrental/payments": "workspace:*",
     "@carrental/payouts": "workspace:*",
     "bullmq": "6.1.2",

@@ -19,7 +19,18 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   android: {
     package: 'ph.com.carrental.mobile',
   },
+  plugins: [
+    'expo-notifications',
+    [
+      'expo-location',
+      {
+        locationWhenInUsePermission:
+          'Allow Car Rental to use your location to find nearby cars and set private pickup points.',
+      },
+    ],
+  ],
   extra: {
     apiUrl: process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1',
+    projectId: process.env.EXPO_PUBLIC_PROJECT_ID,
   },
 });

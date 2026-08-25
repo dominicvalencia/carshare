@@ -14,25 +14,76 @@ interface UploadAsset {
   readonly mimeType: string;
 }
 
+interface AuthenticationLifecycle {
+  readonly refreshAccessToken: () => Promise<string | null>;
+  readonly onAuthenticationExpired: () => Promise<void> | void;
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 export class ApiClient {
   private accessToken: string | null = null;
+  private authentication: AuthenticationLifecycle | null = null;
+  private refreshInFlight: Promise<string | null> | null = null;
+
+  constructor(private readonly apiUrl = API_URL) {}
+
+  configureAuthentication(lifecycle: AuthenticationLifecycle | null): void {
+    this.authentication = lifecycle;
+  }
 
   setAccessToken(token: string | null): void {
     this.accessToken = token;
   }
 
+  assetUrl(contentPath: string): string {
+    if (/^https?:\/\//.test(contentPath)) return contentPath;
+    return `${this.apiUrl.replace(/\/api\/v1\/?$/, '')}${contentPath}`;
+  }
+
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(`${API_URL}${path}`, {
+    const anonymousAuthenticationRoute = [
+      '/auth/login',
+      '/auth/register',
+      '/auth/refresh',
+    ].includes(path);
+    const allowsAuthenticationRefresh = !anonymousAuthenticationRoute;
+    let response = await this.fetch(`${this.apiUrl}${path}`, {
       ...init,
       headers: {
         'Content-Type': 'application/json',
-        ...(this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}),
+        ...(!anonymousAuthenticationRoute && this.accessToken
+          ? { Authorization: `Bearer ${this.accessToken}` }
+          : {}),
         ...init.headers,
       },
     });
+    if (response.status === 401 && allowsAuthenticationRefresh && (await this.refreshOnce())) {
+      response = await this.fetch(`${this.apiUrl}${path}`, {
+        ...init,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}),
+          ...init.headers,
+        },
+      });
+    }
     const envelope = (await response.json().catch(() => ({}))) as ApiEnvelope<T>;
     if (!response.ok || !envelope.success)
-      throw new Error(envelope.error?.message ?? 'Request failed.');
+      throw new ApiError(
+        envelope.error?.message ?? 'Request failed. Please try again.',
+        envelope.error?.code ?? 'REQUEST_FAILED',
+        response.status,
+      );
     return envelope.data as T;
   }
 
@@ -44,14 +95,25 @@ export class ApiClient {
       type: file.mimeType,
       uri: file.uri,
     } as unknown as Blob);
-    const response = await fetch(`${API_URL}${path}`, {
+    let response = await this.fetch(`${this.apiUrl}${path}`, {
       body: form,
       headers: this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {},
       method: 'POST',
     });
+    if (response.status === 401 && (await this.refreshOnce())) {
+      response = await this.fetch(`${this.apiUrl}${path}`, {
+        body: form,
+        headers: this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {},
+        method: 'POST',
+      });
+    }
     const envelope = (await response.json().catch(() => ({}))) as ApiEnvelope<T>;
     if (!response.ok || !envelope.success)
-      throw new Error(envelope.error?.message ?? 'Upload failed.');
+      throw new ApiError(
+        envelope.error?.message ?? 'Upload failed. Please try again.',
+        envelope.error?.code ?? 'UPLOAD_FAILED',
+        response.status,
+      );
     return envelope.data as T;
   }
 
@@ -74,6 +136,45 @@ export class ApiClient {
       body: JSON.stringify({ refreshToken }),
       method: 'POST',
     });
+  }
+
+  private async fetch(url: string, init: RequestInit): Promise<Response> {
+    try {
+      return await fetch(url, init);
+    } catch {
+      throw new ApiError(
+        'Unable to reach the service. Check your connection and try again.',
+        'NETWORK_ERROR',
+        0,
+      );
+    }
+  }
+
+  private async refreshOnce(): Promise<boolean> {
+    if (!this.authentication || !this.accessToken) return false;
+    this.refreshInFlight ??= this.authentication.refreshAccessToken().finally(() => {
+      this.refreshInFlight = null;
+    });
+    try {
+      const token = await this.refreshInFlight;
+      if (!token) {
+        await this.expireAuthentication();
+        return false;
+      }
+      this.accessToken = token;
+      return true;
+    } catch {
+      await this.expireAuthentication();
+      return false;
+    }
+  }
+
+  private async expireAuthentication(): Promise<void> {
+    try {
+      await this.authentication?.onAuthenticationExpired();
+    } catch {
+      this.accessToken = null;
+    }
   }
 }
 

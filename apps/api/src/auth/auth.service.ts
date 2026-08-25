@@ -5,6 +5,7 @@ import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import {
   AuthTokenType,
   OtpPurpose,
+  PushTokenStatus,
   RoleCode,
   UserStatus,
   type Prisma,
@@ -343,6 +344,10 @@ export class AuthService {
         data: { revocationReason: 'PASSWORD_RESET', revokedAt: now },
         where: { revokedAt: null, userId: token.userId },
       });
+      await transaction.devicePushToken.updateMany({
+        data: { disabledAt: now, status: PushTokenStatus.DISABLED },
+        where: { userId: token.userId, status: PushTokenStatus.ACTIVE },
+      });
     });
     await this.events.record('PASSWORD_RESET_COMPLETED', { ...metadata, userId: token.userId });
   }
@@ -568,6 +573,10 @@ export class AuthService {
       this.database.client.refreshToken.updateMany({
         data: { revokedAt: now },
         where: { sessionId, revokedAt: null },
+      }),
+      this.database.client.devicePushToken.updateMany({
+        data: { disabledAt: now, status: PushTokenStatus.DISABLED },
+        where: { sessionId, status: PushTokenStatus.ACTIVE },
       }),
     ]);
   }

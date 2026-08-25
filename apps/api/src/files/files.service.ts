@@ -61,6 +61,11 @@ export class FilesService {
     return this.createGrant(id);
   }
 
+  /** Only call after the owning service has already authorized the principal for this asset. */
+  trustedAuthorizedGrant(id: string) {
+    return this.createGrant(id);
+  }
+
   private createGrant(id: string) {
     const expiresAt = Date.now() + 5 * 60 * 1000;
     const payload = Buffer.from(`${id}:${expiresAt}`).toString('base64url');

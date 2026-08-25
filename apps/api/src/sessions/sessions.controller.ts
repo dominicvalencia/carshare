@@ -17,6 +17,7 @@ import { DatabaseService } from '../infrastructure/database/database.service';
 import { SecurityEventService } from '../security/security-event.service';
 import type { RequestPrincipal } from '../security/security-context';
 import { requestMetadata } from '../auth/auth.controller';
+import { PushTokenStatus } from '@carrental/database';
 
 @ApiBearerAuth()
 @ApiTags('Sessions')
@@ -94,6 +95,10 @@ export class SessionsController {
       this.database.client.refreshToken.updateMany({
         data: { revokedAt: now },
         where: { revokedAt: null, sessionId: { in: ids } },
+      }),
+      this.database.client.devicePushToken.updateMany({
+        data: { disabledAt: now, status: PushTokenStatus.DISABLED },
+        where: { sessionId: { in: ids }, status: PushTokenStatus.ACTIVE },
       }),
     ]);
   }

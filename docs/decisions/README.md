@@ -15,3 +15,5 @@
 - [ADR-0013: server-authoritative rental operations and immutable evidence](0013-rental-operations-and-evidence.md)
 - [ADR-0014: controlled claims, additional charges, and earning release](0014-claims-disputes-and-earning-release.md)
 - [ADR-0015: provider-independent owner payout settlement](0015-provider-independent-owner-payout-settlement.md)
+- [ADR-0016: marketplace communications, notifications, reputation, and support](0016-marketplace-communications-notifications-reputation-support.md)
+- [ADR-0017: mobile product experience and development location resolver](0017-mobile-product-experience-layer.md)

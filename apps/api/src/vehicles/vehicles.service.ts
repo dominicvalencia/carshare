@@ -16,6 +16,7 @@ import { AuditService } from '../audit/audit.service';
 import { OccupancyService } from '../bookings/occupancy.service';
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
+import { FilesService } from '../files/files.service';
 import { OwnersService } from '../owners/owners.service';
 import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata } from '../security/security-context';
@@ -77,6 +78,7 @@ const ownerVehicleInclude = {
   policyVersions: { orderBy: { version: 'desc' as const } },
   statusHistory: { orderBy: { occurredAt: 'asc' as const } },
 };
+type OwnerVehicleRecord = Prisma.VehicleGetPayload<{ include: typeof ownerVehicleInclude }>;
 
 @Injectable()
 export class VehiclesService {
@@ -86,6 +88,7 @@ export class VehiclesService {
     private readonly crypto: CryptoService,
     private readonly audit: AuditService,
     private readonly occupancy: OccupancyService,
+    private readonly files: FilesService,
   ) {}
 
   categories() {
@@ -110,7 +113,7 @@ export class VehiclesService {
   }
 
   async create(userId: string, input: CreateVehicleDto, request: RequestMetadata) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const owner = await this.database.client.ownerProfile.findUniqueOrThrow({ where: { userId } });
     if (input.categoryId) await this.assertCategory(input.categoryId);
     const vehicle = await this.database.client.$transaction(async (transaction) => {
@@ -136,8 +139,8 @@ export class VehiclesService {
     return this.getOwned(userId, vehicle.id);
   }
 
-  listOwned(userId: string) {
-    return this.database.client.vehicle.findMany({
+  async listOwned(userId: string) {
+    const vehicles = await this.database.client.vehicle.findMany({
       include: {
         category: true,
         photos: {
@@ -151,6 +154,7 @@ export class VehiclesService {
       orderBy: { updatedAt: 'desc' },
       where: { ownerUserId: userId },
     });
+    return vehicles.map((vehicle) => this.withOwnerPhotoGrants(vehicle));
   }
 
   async getOwned(userId: string, id: string) {
@@ -159,11 +163,11 @@ export class VehiclesService {
       where: { id, ownerUserId: userId },
     });
     if (!vehicle) this.notFound();
-    return vehicle;
+    return this.withOwnerPhotoGrants(vehicle);
   }
 
   async update(userId: string, id: string, input: UpdateVehicleDto) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     const keys = Object.keys(input).filter(
       (key) => input[key as keyof UpdateVehicleDto] !== undefined,
@@ -241,7 +245,7 @@ export class VehiclesService {
   }
 
   async setFeatures(userId: string, id: string, input: SetVehicleFeaturesDto) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(vehicle.status, POLICY_EDITABLE, 'Features cannot be changed in this state.');
     const unique = [...new Set(input.featureIds)];
@@ -267,7 +271,7 @@ export class VehiclesService {
   }
 
   async addPhoto(userId: string, id: string, input: AddVehiclePhotoDto) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(vehicle.status, MATERIAL_EDITABLE, 'Photos cannot be changed in this state.');
     const file = await this.database.client.fileAsset.findFirst({
@@ -299,7 +303,7 @@ export class VehiclesService {
   }
 
   async reorderPhotos(userId: string, id: string, input: ReorderVehiclePhotosDto) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(vehicle.status, MATERIAL_EDITABLE, 'Photos cannot be changed in this state.');
     const active = await this.database.client.vehiclePhoto.findMany({
@@ -336,7 +340,7 @@ export class VehiclesService {
   }
 
   async removePhoto(userId: string, id: string, photoId: string) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(vehicle.status, MATERIAL_EDITABLE, 'Photos cannot be changed in this state.');
     const result = await this.database.client.vehiclePhoto.updateMany({
@@ -347,7 +351,7 @@ export class VehiclesService {
   }
 
   async addDocument(userId: string, id: string, input: AddVehicleDocumentDto) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(
       vehicle.status,
@@ -402,7 +406,7 @@ export class VehiclesService {
   }
 
   async setLocation(userId: string, id: string, input: SetVehicleLocationDto) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(
       vehicle.status,
@@ -444,7 +448,7 @@ export class VehiclesService {
   }
 
   async createPolicyVersion(userId: string, id: string, input: CreateVehiclePolicyVersionDto) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(vehicle.status, POLICY_EDITABLE, 'Policies cannot be changed in this state.');
     this.validatePolicy(vehicle.powertrain, input);
@@ -499,7 +503,7 @@ export class VehiclesService {
   }
 
   async addBlockedPeriod(userId: string, id: string, input: CreateVehicleBlockDto) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(
       vehicle.status,
@@ -553,7 +557,7 @@ export class VehiclesService {
   }
 
   async removeBlockedPeriod(userId: string, id: string, blockId: string) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     await this.ownedRecord(userId, id);
     const result = await this.database.client.$transaction(async (transaction) => {
       const block = await transaction.vehicleBlockedPeriod.findFirst({
@@ -596,7 +600,7 @@ export class VehiclesService {
   }
 
   async archive(userId: string, id: string, request: RequestMetadata) {
-    await this.owners.assertOperational(userId);
+    await this.owners.assertDraftCapable(userId);
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(
       vehicle.status,
@@ -640,6 +644,28 @@ export class VehiclesService {
       data: { operationalStatus: input.status },
       where: { id },
     });
+  }
+
+  private withOwnerPhotoGrants<
+    T extends {
+      photos: Array<{
+        fileAsset: { id: string; status: FileAssetStatus };
+      }>;
+    },
+  >(vehicle: T) {
+    return {
+      ...vehicle,
+      photos: vehicle.photos.map((photo) => ({
+        ...photo,
+        fileAsset: {
+          ...photo.fileAsset,
+          contentGrant:
+            photo.fileAsset.status === FileAssetStatus.READY
+              ? this.files.trustedAuthorizedGrant(photo.fileAsset.id)
+              : null,
+        },
+      })),
+    };
   }
 
   listAdmin(status?: VehicleLifecycleStatus) {
@@ -796,7 +822,7 @@ export class VehiclesService {
     return this.adminDetail(id);
   }
 
-  private async readinessFailures(vehicle: Awaited<ReturnType<VehiclesService['getOwned']>>) {
+  private async readinessFailures(vehicle: OwnerVehicleRecord) {
     const failures: { field: string; issue: string }[] = [];
     if (
       !vehicle.categoryId ||

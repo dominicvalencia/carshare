@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { colors, spacing } from '../../theme/tokens';
+import { dateTimeLabel, domainLabel, money } from '../../ui/format';
 
 interface ClaimView {
   readonly id: string;
@@ -129,7 +130,7 @@ export function OwnerClaimsPanel({ bookingReference }: { readonly bookingReferen
         <ClaimCard key={claim.id} claim={claim}>
           <Text style={styles.body}>
             {claim.response
-              ? `Renter response: ${claim.response.decision.replaceAll('_', ' ')}`
+              ? `Renter response: ${domainLabel(claim.response.decision)}`
               : 'Awaiting renter response or response deadline.'}
           </Text>
           <Text style={styles.notice}>
@@ -152,8 +153,8 @@ function ClaimCard({
   const latestDecision = claim.adjudications.at(-1);
   return (
     <View style={styles.card}>
-      <Text style={styles.cardTitle}>{claim.category.replaceAll('_', ' ')}</Text>
-      <Text style={styles.status}>{claim.status.replaceAll('_', ' ')}</Text>
+      <Text style={styles.cardTitle}>{domainLabel(claim.category)}</Text>
+      <Text style={styles.status}>{domainLabel(claim.status)}</Text>
       <Text style={styles.body}>{claim.description}</Text>
       <Text style={styles.body}>
         Platform calculation: {money(latestCalculation?.amountMinor ?? 0)} · evidence{' '}
@@ -161,19 +162,17 @@ function ClaimCard({
       </Text>
       {latestDecision && (
         <Text style={styles.body}>
-          Admin decision: {latestDecision.outcome.replaceAll('_', ' ')} ·{' '}
+          Admin decision: {domainLabel(latestDecision.outcome)} ·{' '}
           {money(latestDecision.approvedAmountMinor)}
         </Text>
       )}
       {claim.responseDeadlineAt && claim.status === 'RENTER_REVIEW' && (
-        <Text style={styles.body}>
-          Respond by {new Date(claim.responseDeadlineAt).toLocaleString()}
-        </Text>
+        <Text style={styles.body}>Respond by {dateTimeLabel(claim.responseDeadlineAt)}</Text>
       )}
       {claim.additionalCharge && (
         <Text style={styles.amount}>
           {money(claim.additionalCharge.approvedAmountMinor)} ·{' '}
-          {claim.additionalCharge.status.replaceAll('_', ' ')}
+          {domainLabel(claim.additionalCharge.status)}
         </Text>
       )}
       {children}
@@ -195,10 +194,6 @@ function Secondary({ label, onPress }: { readonly label: string; readonly onPres
       <Text style={styles.secondaryText}>{label}</Text>
     </Pressable>
   );
-}
-
-function money(amountMinor: number) {
-  return `₱${(amountMinor / 100).toLocaleString()}`;
 }
 
 const styles = StyleSheet.create({

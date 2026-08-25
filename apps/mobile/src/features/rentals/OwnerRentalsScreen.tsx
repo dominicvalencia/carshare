@@ -1,11 +1,16 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Pressable, ScrollView, StyleSheet, Text } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import type { BookingView } from '../bookings/MyBookingsScreen';
 import { colors, spacing } from '../../theme/tokens';
 import { OwnerRentalPanel } from './RentalOperationsPanels';
 import { OwnerClaimsPanel } from '../claims/ClaimsPanels';
+import { ReviewPanel } from '../reviews/ReviewPanel';
+import { useNavigation } from '@react-navigation/native';
+import { bookingStatusLabel, dateTimeLabel } from '../../ui/format';
+import { VehicleImage } from '../../ui/VehicleImage';
+import { Button, Card, Screen, StateView, StatusBadge } from '../../ui/primitives';
 
 const operational = new Set([
   'CONFIRMED',
@@ -17,56 +22,111 @@ const operational = new Set([
 ]);
 
 export function OwnerRentalsScreen() {
+  const navigation = useNavigation<{
+    navigate(name: 'Messages', params?: { conversationId?: string }): void;
+  }>();
   const [selected, setSelected] = useState<string | null>(null);
   const rentals = useQuery({
     queryKey: ['owner-rentals'],
     queryFn: () => apiClient.request<BookingView[]>('/owner/bookings/requests'),
   });
+  const selectedBooking = rentals.data?.find(({ publicReference }) => publicReference === selected);
+  const items = (rentals.data ?? []).filter(({ status }) => operational.has(status));
   return (
-    <ScrollView contentContainerStyle={styles.page}>
-      <Text style={styles.eyebrow}>OWNER MODE</Text>
-      <Text style={styles.title}>Rentals</Text>
+    <Screen
+      eyebrow="Owner mode"
+      title="Active rentals"
+      subtitle="Pickup, return, claims, and renter coordination in one place."
+    >
       {selected ? (
         <>
-          <Pressable onPress={() => setSelected(null)}>
-            <Text style={styles.link}>← All rentals</Text>
-          </Pressable>
+          <Button
+            icon="arrow-back"
+            label="All rentals"
+            onPress={() => setSelected(null)}
+            variant="ghost"
+          />
           <OwnerRentalPanel reference={selected} />
           <OwnerClaimsPanel bookingReference={selected} />
+          {selectedBooking?.conversationId && (
+            <Pressable
+              style={styles.action}
+              onPress={() =>
+                navigation.navigate('Messages', {
+                  conversationId: selectedBooking.conversationId!,
+                })
+              }
+            >
+              <Text style={styles.actionText}>Open booking conversation</Text>
+            </Pressable>
+          )}
+          {selectedBooking?.status === 'COMPLETED' && <ReviewPanel bookingReference={selected} />}
         </>
       ) : (
-        rentals.data
-          ?.filter(({ status }) => operational.has(status))
-          .map((booking) => (
+        <>
+          {rentals.isPending && <StateView loading title="Loading rentals…" />}
+          {rentals.isError && (
+            <StateView
+              icon="cloud-offline-outline"
+              title="Rentals unavailable"
+              message={rentals.error.message}
+              actionLabel="Retry"
+              onAction={() => void rentals.refetch()}
+            />
+          )}
+          {!rentals.isPending && !rentals.isError && items.length === 0 && (
+            <StateView
+              icon="key-outline"
+              title="No active rentals"
+              message="Confirmed bookings will appear here as pickup approaches."
+            />
+          )}
+          {items.map((booking) => (
             <Pressable
               key={booking.publicReference}
-              style={styles.card}
               onPress={() => setSelected(booking.publicReference)}
             >
-              <Text style={styles.cardTitle}>
-                {booking.vehicle.make} {booking.vehicle.model}
-              </Text>
-              <Text style={styles.status}>{booking.status.replaceAll('_', ' ')}</Text>
-              <Text style={styles.body}>{new Date(booking.rentalStart).toLocaleString()}</Text>
+              <Card style={styles.card}>
+                <VehicleImage
+                  contentPath={booking.vehicle.coverPhoto?.contentPath}
+                  style={styles.image}
+                />
+                <View style={styles.flex}>
+                  <Text style={styles.cardTitle}>
+                    {booking.vehicle.make} {booking.vehicle.model}
+                  </Text>
+                  <StatusBadge label={bookingStatusLabel(booking.status)} />
+                  <Text style={styles.body}>Pickup {dateTimeLabel(booking.rentalStart)}</Text>
+                </View>
+              </Card>
             </Pressable>
-          ))
+          ))}
+        </>
       )}
-    </ScrollView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  action: {
+    alignItems: 'center',
+    borderColor: colors.primary,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  actionText: { color: colors.primary, fontWeight: '800' },
   body: { color: colors.subtleText, marginTop: spacing.xs },
   card: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    marginTop: spacing.md,
-    padding: spacing.lg,
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
   },
   cardTitle: { color: colors.ink, fontWeight: '800' },
-  eyebrow: { color: colors.primary, fontSize: 12, fontWeight: '800' },
+  flex: { flex: 1, minWidth: 0 },
+  image: { borderRadius: 12, height: 92, width: 92 },
   link: { color: colors.primary, fontWeight: '700', marginTop: spacing.md },
-  page: { backgroundColor: colors.background, flexGrow: 1, padding: spacing.xl },
   status: { color: colors.primary, fontWeight: '700', marginTop: spacing.xs },
   title: { color: colors.ink, fontSize: 28, fontWeight: '800' },
 });

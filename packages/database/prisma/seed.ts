@@ -2,6 +2,7 @@ import { hash } from 'argon2';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../src/generated/prisma/client';
 import { CommissionScope, FinancialAccountType, RoleCode } from '../src/generated/prisma/enums';
+import { seedDevelopmentDemo } from './development-demo';
 
 const roleDescriptions: Readonly<Record<RoleCode, string>> = {
   ADMIN: 'Platform administrator',
@@ -50,6 +51,14 @@ const permissionDescriptions = {
   'vehicles.read': 'Read owner vehicle listings and review queues',
   'vehicles.review': 'Approve, reject, and request changes to vehicle listings',
   'vehicles.suspend': 'Suspend and restore approved vehicle listings',
+  'support.read': 'Read support queues and user-visible support history',
+  'support.manage': 'Reply to and change support ticket workflow state',
+  'support.assign': 'Assign support tickets to staff',
+  'support.internal_notes': 'Create and read staff-only support notes',
+  'moderation.read': 'Read user-submitted moderation reports',
+  'moderation.manage': 'Resolve moderation reports and moderate reported content',
+  'messages.moderate': 'Moderate reported booking messages',
+  'reviews.moderate': 'Moderate reported marketplace reviews',
 } as const;
 
 const rolePermissions: Readonly<Partial<Record<RoleCode, readonly string[]>>> = {
@@ -79,6 +88,14 @@ const rolePermissions: Readonly<Partial<Record<RoleCode, readonly string[]>>> = 
     'additional_charges.approve',
     'earnings.read',
     'earnings.hold',
+    'support.read',
+    'support.manage',
+    'support.assign',
+    'support.internal_notes',
+    'moderation.read',
+    'moderation.manage',
+    'messages.moderate',
+    'reviews.moderate',
   ],
   FINANCE_ADMIN: [
     'commissions.manage',
@@ -107,6 +124,14 @@ const rolePermissions: Readonly<Partial<Record<RoleCode, readonly string[]>>> = 
     'claims.read',
     'disputes.read',
     'additional_charges.read',
+    'support.read',
+    'support.manage',
+    'support.assign',
+    'support.internal_notes',
+    'moderation.read',
+    'moderation.manage',
+    'messages.moderate',
+    'reviews.moderate',
   ],
 };
 
@@ -305,6 +330,7 @@ async function seed(): Promise<void> {
         },
       });
     }
+    await seedDevelopmentDemo(client);
   } finally {
     await client.$disconnect();
   }

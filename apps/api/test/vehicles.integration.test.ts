@@ -28,6 +28,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
   let approvedPhotoFileId = '';
   let sensitiveDocumentFileId = '';
   let archivedVehicleId = '';
+  let preVerificationVehicleId = '';
 
   beforeAll(async () => {
     const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
@@ -66,7 +67,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
     await app.close();
   });
 
-  it('enforces OWNER plus VERIFIED before vehicle creation', async () => {
+  it('allows OWNER drafts before verification but gates publication', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/owner/vehicles')
       .set('Authorization', `Bearer ${renterToken}`)
@@ -77,10 +78,20 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .expect(201);
     ownerId = started.body.data.id;
-    await request(app.getHttpServer())
+    const draft = await request(app.getHttpServer())
       .post('/api/v1/owner/vehicles')
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({})
+      .expect(201);
+    preVerificationVehicleId = draft.body.data.id;
+    await request(app.getHttpServer())
+      .patch(`/api/v1/owner/vehicles/${preVerificationVehicleId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ make: 'Draft make', model: 'Draft model' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${preVerificationVehicleId}/submission`)
+      .set('Authorization', `Bearer ${ownerToken}`)
       .expect(403)
       .expect(({ body }) => expect(body.error.code).toBe('OWNER_VERIFICATION_REQUIRED'));
     await request(app.getHttpServer())

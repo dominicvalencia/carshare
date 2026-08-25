@@ -25,6 +25,10 @@ import { PaymentsModule } from './payments/payments.module';
 import { RentalsModule } from './rentals/rentals.module';
 import { ClaimsModule } from './claims/claims.module';
 import { PayoutsModule } from './payouts/payouts.module';
+import { CommunicationsModule } from './communications/communications.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { ReviewsModule } from './reviews/reviews.module';
+import { SupportModule } from './support/support.module';
 
 @Module({
   imports: [
@@ -51,6 +55,10 @@ import { PayoutsModule } from './payouts/payouts.module';
     RentalsModule,
     ClaimsModule,
     PayoutsModule,
+    CommunicationsModule,
+    NotificationsModule,
+    ReviewsModule,
+    SupportModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: ApiExceptionFilter },

@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { Prisma } from '@carrental/database';
+import { Prisma, ReviewType } from '@carrental/database';
 import { DiscoveryErrorCode } from '@carrental/api-contracts';
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
@@ -42,6 +42,7 @@ export class PublicVehiclesService {
       INNER JOIN "vehicle_locations" l ON l."vehicle_id" = v."id"
       WHERE v."status" = 'APPROVED'::"VehicleLifecycleStatus"
         AND v."operational_status" = 'AVAILABLE'::"VehicleOperationalStatus"
+        ${principal ? Prisma.sql`AND v."owner_user_id" <> ${principal.userId}::uuid` : Prisma.empty}
         AND l."point" IS NOT NULL
         AND ST_DWithin(
           l."point",
@@ -52,7 +53,11 @@ export class PublicVehiclesService {
       LIMIT 500
     `);
     const distance = new Map(spatial.map((item) => [item.id, item.distanceKm]));
-    let vehicles = await this.eligibility.findEligible(spatial.map(({ id }) => id));
+    let vehicles = await this.eligibility.findEligible(
+      spatial.map(({ id }) => id),
+      undefined,
+      principal?.userId,
+    );
     vehicles = vehicles.filter((vehicle) => this.matches(vehicle, input));
     let availabilities: Awaited<ReturnType<AvailabilityService['checkMany']>> | undefined;
     let chargeableDays: number | undefined;
@@ -80,12 +85,22 @@ export class PublicVehiclesService {
           ).map(({ vehicleId }) => vehicleId),
         )
       : new Set<string>();
+    const ratingRows = await this.database.client.ratingProjection.findMany({
+      where: { subjectType: ReviewType.VEHICLE, subjectId: { in: page.map(({ id }) => id) } },
+    });
+    const ratings = new Map(
+      ratingRows.map((rating) => [
+        rating.subjectId,
+        { averageRating: rating.averageRating.toString(), reviewCount: rating.reviewCount },
+      ]),
+    );
     const items = page.map((vehicle) => {
       const card = this.projection.card(
         vehicle,
         distance.get(vehicle.id)!,
         favoriteIds.has(vehicle.id),
         availabilities?.get(vehicle.id),
+        ratings.get(vehicle.id),
       );
       return chargeableDays
         ? {
@@ -127,7 +142,7 @@ export class PublicVehiclesService {
   }
 
   async detail(id: string, principal?: RequestPrincipal, correlationId?: string) {
-    const vehicle = await this.publicVehicle(id);
+    const vehicle = await this.publicVehicle(id, principal?.userId);
     const favorite = principal
       ? Boolean(
           await this.database.client.userFavorite.findUnique({
@@ -141,15 +156,32 @@ export class PublicVehiclesService {
       userId: principal?.userId,
       vehicleId: id,
     });
-    return this.projection.detail(vehicle, favorite);
+    const ratingRows = await this.database.client.ratingProjection.findMany({
+      where: {
+        OR: [
+          { subjectType: ReviewType.VEHICLE, subjectId: vehicle.id },
+          { subjectType: ReviewType.OWNER, subjectId: vehicle.ownerProfile.id },
+        ],
+      },
+    });
+    const rating = (type: ReviewType) => {
+      const value = ratingRows.find((row) => row.subjectType === type);
+      return value
+        ? { averageRating: value.averageRating.toString(), reviewCount: value.reviewCount }
+        : null;
+    };
+    return this.projection.detail(vehicle, favorite, {
+      vehicle: rating(ReviewType.VEHICLE),
+      owner: rating(ReviewType.OWNER),
+    });
   }
 
   async availabilityFor(id: string, start: string, end: string) {
     return this.availability.check(await this.publicVehicle(id), start, end);
   }
 
-  publicVehicle(id: string): Promise<PublicVehicleRecord> {
-    return this.eligibility.findOne(id).then((vehicle) => {
+  publicVehicle(id: string, excludedOwnerUserId?: string): Promise<PublicVehicleRecord> {
+    return this.eligibility.findOne(id, undefined, excludedOwnerUserId).then((vehicle) => {
       if (!vehicle) {
         throw new ApplicationException(
           DiscoveryErrorCode.VEHICLE_NOT_PUBLIC,

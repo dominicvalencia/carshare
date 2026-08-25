@@ -23,6 +23,7 @@ describe.sequential('Phase 4 public discovery integration', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let renterToken = '';
+  let ownerToken = '';
   let ownerUserId = '';
   let firstVehicleId = '';
   let secondVehicleId = '';
@@ -54,6 +55,7 @@ describe.sequential('Phase 4 public discovery integration', () => {
     const renter = await register(`phase4-renter-${unique}@example.test`);
     renterToken = renter.body.data.accessToken;
     const owner = await register(`phase4-owner-${unique}@example.test`);
+    ownerToken = owner.body.data.accessToken;
     ownerUserId = owner.body.data.user.id;
     const ownerRole = await database.client.role.findUniqueOrThrow({
       where: { code: RoleCode.OWNER },
@@ -67,8 +69,70 @@ describe.sequential('Phase 4 public discovery integration', () => {
         verifiedAt: new Date(),
       },
     });
-    firstVehicleId = await createPublicVehicle(ownerProfile.id, 'Near', 13.9414, 121.623, 250_000);
-    secondVehicleId = await createPublicVehicle(ownerProfile.id, 'Farther', 13.98, 121.65, 220_000);
+    firstVehicleId = await createPublicVehicle(
+      ownerProfile.id,
+      ownerUserId,
+      'Near',
+      13.9414,
+      121.623,
+      250_000,
+    );
+    const secondOwner = await register(`phase4-second-owner-${unique}@example.test`);
+    const secondOwnerProfile = await database.client.ownerProfile.create({
+      data: {
+        legalName: 'Second Private Legal Name',
+        status: OwnerProfileStatus.VERIFIED,
+        userId: secondOwner.body.data.user.id,
+        verifiedAt: new Date(),
+      },
+    });
+    secondVehicleId = await createPublicVehicle(
+      secondOwnerProfile.id,
+      secondOwner.body.data.user.id,
+      'Farther',
+      13.98,
+      121.65,
+      220_000,
+    );
+  });
+
+  it('excludes the authenticated owner’s vehicles before pagination and rejects direct access', async () => {
+    const query = {
+      latitude: 13.9414,
+      longitude: 121.623,
+      make: `PhaseFour-${unique}`,
+      radius: 25,
+      sort: 'DISTANCE',
+    };
+    const anonymous = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query(query)
+      .expect(200);
+    expect(anonymous.body.data.items.map((item: { vehicleId: string }) => item.vehicleId)).toEqual([
+      firstVehicleId,
+      secondVehicleId,
+    ]);
+
+    const asOwner = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .query({ ...query, limit: 1 })
+      .expect(200);
+    expect(asOwner.body.data.items.map((item: { vehicleId: string }) => item.vehicleId)).toEqual([
+      secondVehicleId,
+    ]);
+    expect(asOwner.body.data.pageInfo.hasNextPage).toBe(false);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/vehicles/${firstVehicleId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(404);
+    await request(app.getHttpServer())
+      .post(`/api/v1/vehicles/${firstVehicleId}/quotes`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ end, start })
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('OWNER_CANNOT_BOOK_OWN_VEHICLE'));
   });
 
   afterAll(async () => {
@@ -207,6 +271,7 @@ describe.sequential('Phase 4 public discovery integration', () => {
 
   async function createPublicVehicle(
     ownerProfileId: string,
+    vehicleOwnerUserId: string,
     model: string,
     latitude: number,
     longitude: number,
@@ -226,7 +291,7 @@ describe.sequential('Phase 4 public discovery integration', () => {
         modelYear: 2025,
         operationalStatus: VehicleOperationalStatus.AVAILABLE,
         ownerProfileId,
-        ownerUserId,
+        ownerUserId: vehicleOwnerUserId,
         plateNumber: `PRIVATE-${randomUUID().slice(0, 8)}`,
         powertrain: 'ICE',
         reviewReason: 'private admin review',
@@ -257,7 +322,7 @@ describe.sequential('Phase 4 public discovery integration', () => {
         originalName: 'public.jpg',
         size: 1n,
         status: FileAssetStatus.READY,
-        uploadedById: ownerUserId,
+        uploadedById: vehicleOwnerUserId,
       },
     });
     await database.client.vehiclePhoto.create({
@@ -282,7 +347,7 @@ describe.sequential('Phase 4 public discovery integration', () => {
           originalName: 'private-document.pdf',
           size: 1n,
           status: FileAssetStatus.READY,
-          uploadedById: ownerUserId,
+          uploadedById: vehicleOwnerUserId,
         },
       });
       await database.client.vehicleDocument.create({
@@ -297,15 +362,20 @@ describe.sequential('Phase 4 public discovery integration', () => {
       });
     }
     await database.client.vehiclePolicyVersion.create({
-      data: policy(vehicle.id, 1, dailyRateMinor),
+      data: policy(vehicle.id, 1, dailyRateMinor, vehicleOwnerUserId),
     });
     return vehicle.id;
   }
 
-  function policy(vehicleId: string, version: number, dailyRateMinor: number) {
+  function policy(
+    vehicleId: string,
+    version: number,
+    dailyRateMinor: number,
+    createdByUserId = ownerUserId,
+  ) {
     return {
       availabilityPolicy: 'EVERY_DAY' as const,
-      createdByUserId: ownerUserId,
+      createdByUserId,
       currency: 'PHP',
       dailyRateMinor,
       excessKilometerRateMinor: 1_200,

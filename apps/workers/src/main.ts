@@ -13,6 +13,12 @@ import {
   submitApprovedPayouts,
   workerPayoutProvider,
 } from './payout-reconciliation';
+import {
+  consumeDomainEvent,
+  deliverPendingNotifications,
+  reconcilePushReceipts,
+  workerPushProvider,
+} from './notification-delivery';
 
 loadEnvironment({ path: resolve(__dirname, '../../../.env'), quiet: true });
 
@@ -30,6 +36,7 @@ async function bootstrap(): Promise<void> {
   const database = createDatabaseClient(environment.DATABASE_URL);
   const paymentProvider = workerPaymentProvider(environment);
   const payoutProvider = workerPayoutProvider(environment);
+  const pushProvider = workerPushProvider(environment);
   await database.$connect();
 
   const lifecycleQueue = new Queue(LIFECYCLE_QUEUE, { connection });
@@ -38,6 +45,16 @@ async function bootstrap(): Promise<void> {
     'booking-expiration-sweep',
     { every: 15_000 },
     { data: {}, name: 'expire-stale-bookings' },
+  );
+  await lifecycleQueue.upsertJobScheduler(
+    'notification-delivery-sweep',
+    { every: environment.NOTIFICATION_DELIVERY_INTERVAL_SECONDS * 1000 },
+    { data: {}, name: 'deliver-notifications' },
+  );
+  await lifecycleQueue.upsertJobScheduler(
+    'push-receipt-sweep',
+    { every: Math.max(30, environment.NOTIFICATION_DELIVERY_INTERVAL_SECONDS) * 1000 },
+    { data: {}, name: 'reconcile-push-receipts' },
   );
   await lifecycleQueue.upsertJobScheduler(
     'payout-reconciliation-sweep',
@@ -166,12 +183,36 @@ async function bootstrap(): Promise<void> {
           logger.info(result, 'Rental operations sweep completed');
         }
       }
+      if (job.name === 'deliver-notifications') {
+        const delivered = await deliverPendingNotifications(database, pushProvider);
+        if (delivered) logger.info({ delivered }, 'Notification delivery sweep completed');
+      }
+      if (job.name === 'reconcile-push-receipts') {
+        const reconciled = await reconcilePushReceipts(
+          database,
+          pushProvider,
+          environment.PUSH_RECEIPT_DELAY_SECONDS,
+        );
+        if (reconciled) logger.info({ reconciled }, 'Push receipt sweep completed');
+      }
     },
     { connection, concurrency: 2 },
   );
   worker.on('failed', (job, error) =>
     logger.error({ err: error, jobId: job?.id, jobName: job?.name }, 'Worker job failed'),
   );
+  const domainWorker = new Worker(
+    DOMAIN_EVENTS_QUEUE,
+    async (job) => consumeDomainEvent(database, job.name, job.data, String(job.id ?? '')),
+    { connection, concurrency: 8 },
+  );
+  domainWorker.on('failed', (job, error) =>
+    logger.error(
+      { err: error, jobId: job?.id, jobName: job?.name },
+      'Domain event consumer failed',
+    ),
+  );
+  await domainWorker.waitUntilReady();
   await worker.waitUntilReady();
   logger.info(
     'Booking lifecycle, rental operations, payment and payout reconciliation, and outbox workers started',
@@ -180,6 +221,7 @@ async function bootstrap(): Promise<void> {
   const shutdown = async (signal: NodeJS.Signals) => {
     logger.info({ signal }, 'Worker shutdown requested');
     await worker.close();
+    await domainWorker.close();
     await lifecycleQueue.close();
     await domainEventsQueue.close();
     await database.$disconnect();
