@@ -18,7 +18,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "prisma:seed": "prisma db seed",
+    "prisma:seed": "tsx prisma/psgc/sync.ts reference/psgc-2q-2026.json && prisma db seed",
+    "psgc:normalize": "tsx prisma/psgc/normalize-workbook.ts",
+    "psgc:sync": "tsx prisma/psgc/sync.ts",
     "prisma:validate": "prisma validate"
   },
   "dependencies": {
@@ -34,6 +36,7 @@
     "@types/pg": "8.16.0",
     "@vitest/coverage-v8": "4.1.11",
     "dotenv": "17.2.4",
+    "exceljs": "^4.4.0",
     "prisma": "7.9.1",
     "tsx": "4.23.12",
     "vitest": "4.1.11"

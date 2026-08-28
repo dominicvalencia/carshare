@@ -2,18 +2,36 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import { colors, radius, spacing } from '../../theme/tokens';
-import { bookingStatusLabel, dateTimeLabel, money } from '../../ui/format';
+import { bookingStatusLabel, dateTimeLabel, money, titleCase } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
-import { Button, Card, Chip, Icon, Screen, StateView, StatusBadge } from '../../ui/primitives';
+import {
+  BackControl,
+  Button,
+  Card,
+  Chip,
+  Icon,
+  Screen,
+  StateView,
+  StatusBadge,
+} from '../../ui/primitives';
 import type { BookingView } from './MyBookingsScreen';
 
 interface OwnerBookingView extends BookingView {
   readonly renter: {
+    accountStanding: string;
+    averageRating: number | null;
+    completedRentals: number;
     displayName: string;
     driverLicenseVerified: boolean;
     emailVerified: boolean;
+    identityVerified: boolean;
+    memberSince: string;
     mobileVerified: boolean;
+    reviewCount: number;
+    verificationLabel: string;
+    verified: boolean;
   };
 }
 
@@ -31,6 +49,17 @@ export function OwnerBookingRequestsScreen() {
     enabled: Boolean(selected),
     queryKey: ['owner-booking', selected],
     queryFn: () => apiClient.request<OwnerBookingView>(`/owner/bookings/${selected}`),
+    refetchInterval: (query) =>
+      query.state.data &&
+      ['AWAITING_OWNER', 'CAPTURE_PENDING', 'READY_FOR_PICKUP', 'RETURN_PENDING'].includes(
+        query.state.data.status,
+      )
+        ? 5_000
+        : false,
+  });
+  useRefreshOnFocusAndForeground(() => {
+    void requests.refetch();
+    if (selected) void detail.refetch();
   });
   const decision = useMutation({
     mutationFn: ({ reference, action }: { reference: string; action: 'accept' | 'reject' }) =>
@@ -45,6 +74,7 @@ export function OwnerBookingRequestsScreen() {
       void client.invalidateQueries({ queryKey: ['owner-booking', selected] });
       void client.invalidateQueries({ queryKey: ['owner-rentals'] });
       void client.invalidateQueries({ queryKey: ['owner-earnings'] });
+      void client.invalidateQueries({ queryKey: ['public-search'] });
     },
   });
 
@@ -150,15 +180,22 @@ function OwnerRequestDetail({
     typeof useMutation<unknown, Error, { reference: string; action: 'accept' | 'reject' }>
   >;
 }) {
+  const [trustProfileOpen, setTrustProfileOpen] = useState(false);
   if (loading)
     return (
-      <Screen title="Booking request">
+      <Screen
+        leading={<BackControl label="All requests" onPress={onBack} />}
+        title="Booking request"
+      >
         <StateView loading title="Loading request…" />
       </Screen>
     );
   if (error || !booking)
     return (
-      <Screen title="Booking request">
+      <Screen
+        leading={<BackControl label="All requests" onPress={onBack} />}
+        title="Booking request"
+      >
         <StateView
           icon="alert-circle-outline"
           title="Request unavailable"
@@ -169,8 +206,11 @@ function OwnerRequestDetail({
       </Screen>
     );
   return (
-    <Screen eyebrow="Booking request" title={`${booking.vehicle.make} ${booking.vehicle.model}`}>
-      <Button icon="arrow-back" label="All requests" onPress={onBack} variant="ghost" />
+    <Screen
+      leading={<BackControl label="All requests" onPress={onBack} />}
+      eyebrow="Booking request"
+      title={`${booking.vehicle.make} ${booking.vehicle.model}`}
+    >
       <VehicleImage contentPath={booking.vehicle.coverPhoto?.contentPath} style={styles.hero} />
       <View style={styles.metaRow}>
         <StatusBadge
@@ -205,12 +245,52 @@ function OwnerRequestDetail({
         </Text>
       </Card>
       <Card>
-        <Text style={styles.title}>Renter verification</Text>
+        <View style={styles.metaRow}>
+          <Text style={styles.title}>Renter verification</Text>
+          <StatusBadge
+            label={booking.renter.verificationLabel}
+            tone={booking.renter.verified ? 'success' : 'warning'}
+          />
+        </View>
         <Text style={styles.body}>
-          Email {verified(booking.renter.emailVerified)} · Mobile{' '}
+          Identity {verified(booking.renter.identityVerified)} · Email{' '}
+          {verified(booking.renter.emailVerified)} · Mobile{' '}
           {verified(booking.renter.mobileVerified)} · Driver’s license{' '}
           {verified(booking.renter.driverLicenseVerified)}
         </Text>
+        <Button
+          label={trustProfileOpen ? 'Hide renter profile' : 'View renter trust profile'}
+          onPress={() => setTrustProfileOpen(!trustProfileOpen)}
+          variant="ghost"
+        />
+        {trustProfileOpen && (
+          <View style={styles.trustProfile}>
+            <Info icon="person-circle-outline" label="Renter" value={booking.renter.displayName} />
+            <Info
+              icon="star-outline"
+              label="Marketplace history"
+              value={
+                booking.renter.averageRating
+                  ? `${booking.renter.averageRating.toFixed(1)} rating · ${booking.renter.reviewCount} reviews`
+                  : 'No published renter reviews yet'
+              }
+            />
+            <Info
+              icon="car-outline"
+              label="Completed rentals"
+              value={String(booking.renter.completedRentals)}
+            />
+            <Info
+              icon="shield-outline"
+              label="Account standing"
+              value={titleCase(booking.renter.accountStanding)}
+            />
+            <Text style={styles.note}>
+              Identity documents, license numbers, and residential address are reviewed only by
+              authorized platform staff and are never shown here.
+            </Text>
+          </View>
+        )}
       </Card>
       {booking.status === 'AWAITING_OWNER' ? (
         <>
@@ -256,9 +336,25 @@ function OwnerRequestDetail({
       ) : (
         <Card>
           <Text style={styles.title}>Next step</Text>
-          <Text style={styles.body}>{nextStep(booking.status)}</Text>
+          <Text style={styles.body}>{nextStep(booking)}</Text>
         </Card>
       )}
+      <Card>
+        <Text style={styles.title}>Booking timeline</Text>
+        <Text style={styles.note}>Only recorded booking events appear here.</Text>
+        {booking.statusHistory.map((entry, index) => (
+          <View key={`${entry.occurredAt}-${entry.toStatus}`} style={styles.timelineRow}>
+            <View style={styles.timelineTrack}>
+              <View style={styles.timelineDot} />
+              {index < booking.statusHistory.length - 1 && <View style={styles.timelineLine} />}
+            </View>
+            <View style={styles.flex}>
+              <Text style={styles.infoValue}>{bookingStatusLabel(entry.toStatus)}</Text>
+              <Text style={styles.body}>{dateTimeLabel(entry.occurredAt)}</Text>
+            </View>
+          </View>
+        ))}
+      </Card>
       {decision.isError && <Text style={styles.error}>{decision.error.message}</Text>}
     </Screen>
   );
@@ -287,12 +383,12 @@ function Info({
 function verified(value: boolean) {
   return value ? 'verified' : 'not yet verified';
 }
-function nextStep(status: string) {
-  if (status === 'CAPTURE_PENDING')
+function nextStep(booking: OwnerBookingView) {
+  if (booking.status === 'CAPTURE_PENDING')
     return 'Payment capture is being confirmed. Do not hand over the vehicle yet.';
-  if (status === 'CONFIRMED')
-    return 'Prepare the vehicle and complete the pickup inspection when the pickup window opens.';
-  if (status === 'READY_FOR_PICKUP')
+  if (booking.status === 'CONFIRMED')
+    return `Pickup is scheduled for ${dateTimeLabel(booking.rentalStart)}. Handover becomes available at ${dateTimeLabel(booking.pickupWindow?.opensAt ?? booking.rentalStart)}. Prepare the vehicle and complete the pickup inspection with the renter.`;
+  if (booking.status === 'READY_FOR_PICKUP')
     return 'Complete pickup inspection, then verify the renter’s six-digit code.';
   return 'This request can no longer be accepted or rejected.';
 }
@@ -303,6 +399,7 @@ const styles = StyleSheet.create({
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   flex: { flex: 1, minWidth: 0 },
   hero: { borderRadius: radius.lg, height: 210, width: '100%' },
+  trustProfile: { borderTopColor: colors.border, borderTopWidth: 1, marginTop: spacing.sm },
   info: {
     alignItems: 'center',
     borderBottomColor: colors.border,
@@ -325,8 +422,18 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   notice: { backgroundColor: colors.warningSoft },
+  note: { color: colors.subtleText, fontSize: 12, lineHeight: 18, marginTop: spacing.sm },
   price: { color: colors.ink, fontSize: 16, fontWeight: '900' },
   requestCard: { flexDirection: 'row', gap: spacing.sm, padding: spacing.sm },
   thumbnail: { borderRadius: radius.md, height: 128, width: 108 },
+  timelineDot: {
+    backgroundColor: colors.primary,
+    borderRadius: radius.pill,
+    height: 12,
+    width: 12,
+  },
+  timelineLine: { backgroundColor: colors.border, flex: 1, marginVertical: 3, width: 2 },
+  timelineRow: { flexDirection: 'row', gap: spacing.sm, minHeight: 58, marginTop: spacing.sm },
+  timelineTrack: { alignItems: 'center', width: 16 },
   title: { color: colors.ink, fontSize: 15, fontWeight: '800' },
 });

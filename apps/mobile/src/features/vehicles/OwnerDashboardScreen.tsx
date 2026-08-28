@@ -3,6 +3,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import type { OwnerStatus } from '../../auth/auth.types';
 import type { OwnerTabParamList, RootStackParamList } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
@@ -32,6 +33,10 @@ export function OwnerDashboardScreen({
     enabled: ownerStatus === 'VERIFIED',
     retry: false,
   });
+  useRefreshOnFocusAndForeground(() => {
+    void vehicles.refetch();
+    if (ownerStatus === 'VERIFIED') void bookings.refetch();
+  });
   const dashboardError = vehicles.error ?? bookings.error;
   if (dashboardError)
     return (
@@ -59,10 +64,10 @@ export function OwnerDashboardScreen({
     return result;
   }, {});
   const requests = bookings.data?.filter((item) => item.status === 'AWAITING_OWNER').length ?? 0;
-  const active =
-    bookings.data?.filter((item) =>
-      ['READY_FOR_PICKUP', 'ACTIVE', 'RETURN_PENDING'].includes(item.status),
-    ).length ?? 0;
+  const upcoming =
+    bookings.data?.filter((item) => ['CONFIRMED', 'READY_FOR_PICKUP'].includes(item.status))
+      .length ?? 0;
+  const active = bookings.data?.filter((item) => item.status === 'ACTIVE').length ?? 0;
   return (
     <Screen
       eyebrow="Owner mode"
@@ -101,6 +106,7 @@ export function OwnerDashboardScreen({
           attention={requests > 0}
         />
         <Metric icon="key-outline" label="Active rentals" value={active} />
+        <Metric icon="calendar-outline" label="Upcoming rentals" value={upcoming} />
         <Metric icon="create-outline" label="Drafts" value={counts.DRAFT ?? 0} />
       </View>
       <SectionHeader title="Quick actions" />

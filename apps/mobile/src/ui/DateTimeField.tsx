@@ -113,12 +113,11 @@ const styles = StyleSheet.create({
   calendarIcon: { marginLeft: spacing.sm },
   date: { color: colors.ink, fontSize: 15, fontWeight: '700' },
   field: {
-    flexBasis: 0,
+    flexBasis: 140,
     flexGrow: 1,
     flexShrink: 1,
     gap: spacing.xs,
-    minWidth: 0,
-    width: 0,
+    minWidth: 140,
   },
   handle: {
     alignSelf: 'center',

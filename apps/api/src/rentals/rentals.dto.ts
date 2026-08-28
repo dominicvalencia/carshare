@@ -12,8 +12,10 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsDateString,
   IsEnum,
   IsInt,
+  IsIn,
   IsOptional,
   IsString,
   IsUUID,
@@ -116,4 +118,13 @@ export class IncidentStatusDto {
   @IsEnum(RentalIncidentStatus)
   status!: RentalIncidentStatus;
   @ApiProperty() @IsString() @MinLength(5) @MaxLength(1000) reason!: string;
+}
+
+export class AdminHandoverResolutionDto {
+  @ApiProperty({ enum: ['CONFIRM_PICKUP', 'CONFIRM_RETURN'] })
+  @IsIn(['CONFIRM_PICKUP', 'CONFIRM_RETURN'])
+  action!: 'CONFIRM_PICKUP' | 'CONFIRM_RETURN';
+  @ApiProperty() @IsString() @MinLength(10) @MaxLength(1000) reason!: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() occurredAt?: string;
+  @ApiPropertyOptional() @IsOptional() @IsUUID() incidentId?: string;
 }

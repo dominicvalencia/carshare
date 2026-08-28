@@ -74,6 +74,7 @@ const rentalOperationsSchema = z.object({
   PICKUP_WINDOW_GRACE_MINUTES: z.coerce.number().int().min(15).max(240).default(60),
   PICKUP_VERIFICATION_TTL_MINUTES: z.coerce.number().int().min(2).max(30).default(10),
   PICKUP_VERIFICATION_MAX_ATTEMPTS: z.coerce.number().int().min(3).max(10).default(5),
+  RETURN_CONFIRMATION_GRACE_MINUTES: z.coerce.number().int().min(15).max(1440).default(120),
   RENTAL_OPERATIONS_SWEEP_SECONDS: z.coerce.number().int().min(5).max(300).default(15),
   CLAIM_RESPONSE_WINDOW_HOURS: z.coerce.number().int().min(1).max(168).default(24),
 });
@@ -150,8 +151,10 @@ type EnvironmentInput = Readonly<Record<string, string | undefined>>;
 
 export function parseApiEnvironment(environment: EnvironmentInput): ApiEnvironment {
   assertProductionPayoutInputs(environment);
-  return validateCommunicationsEnvironment(
-    validateFinancialEnvironment(apiEnvironmentSchema.parse(environment)),
+  return validateAuthDeliveryEnvironment(
+    validateCommunicationsEnvironment(
+      validateFinancialEnvironment(apiEnvironmentSchema.parse(environment)),
+    ),
   );
 }
 
@@ -167,6 +170,16 @@ function validateCommunicationsEnvironment<
 >(environment: T): T {
   if (environment.APP_ENV === 'production' && environment.PUSH_PROVIDER === 'fake') {
     throw new Error('PUSH_PROVIDER must not be fake in production.');
+  }
+  return environment;
+}
+
+function validateAuthDeliveryEnvironment<T extends ApiEnvironment>(environment: T): T {
+  if (
+    environment.APP_ENV === 'production' &&
+    environment.AUTH_DELIVERY_PROVIDER === 'development'
+  ) {
+    throw new Error('AUTH_DELIVERY_PROVIDER must not be development in production.');
   }
   return environment;
 }

@@ -28,6 +28,17 @@ export class UsersController {
         profile: true,
         roles: { select: { role: { select: { code: true } } } },
         status: true,
+        verifications: {
+          orderBy: { updatedAt: 'desc' },
+          select: {
+            expiresAt: true,
+            rejectionReason: true,
+            status: true,
+            submittedAt: true,
+            type: true,
+            updatedAt: true,
+          },
+        },
       },
     });
   }

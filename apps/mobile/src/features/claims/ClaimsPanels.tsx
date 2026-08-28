@@ -3,6 +3,7 @@ import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { colors, spacing } from '../../theme/tokens';
 import { dateTimeLabel, domainLabel, money } from '../../ui/format';
+import { BackControl, Screen, StateView } from '../../ui/primitives';
 
 interface ClaimView {
   readonly id: string;
@@ -29,6 +30,41 @@ interface ClaimView {
 
 interface ClaimsResponse {
   readonly items: readonly ClaimView[];
+}
+
+export function ClaimDetailScreen({
+  claimId,
+  ownerMode,
+  onBack,
+}: {
+  readonly claimId: string;
+  readonly ownerMode: boolean;
+  readonly onBack: () => void;
+}) {
+  const claim = useQuery({
+    queryKey: ['claim', ownerMode ? 'owner' : 'renter', claimId],
+    queryFn: () => apiClient.request<ClaimView>(`${ownerMode ? '/owner' : ''}/claims/${claimId}`),
+    retry: false,
+  });
+  return (
+    <Screen
+      leading={<BackControl label="Back" onPress={onBack} />}
+      eyebrow="Claim"
+      title="Claim details"
+    >
+      {claim.isPending && <StateView loading title="Loading claim…" />}
+      {claim.isError && (
+        <StateView
+          icon="alert-circle-outline"
+          title="Claim unavailable"
+          message="This claim may be stale, removed, or unavailable to your account."
+          actionLabel="Back"
+          onAction={onBack}
+        />
+      )}
+      {claim.data && <ClaimCard claim={claim.data} />}
+    </Screen>
+  );
 }
 
 export function RenterClaimsPanel({ bookingReference }: { readonly bookingReference: string }) {

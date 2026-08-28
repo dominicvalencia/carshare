@@ -6,6 +6,8 @@ import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { CryptoService } from '../security/crypto.service';
 import type { RequestPrincipal } from '../security/security-context';
+import type { RequestMetadata } from '../security/security-context';
+import { AuditService } from '../audit/audit.service';
 import { ObjectStorageProvider } from './object-storage.provider';
 
 @Injectable()
@@ -14,6 +16,7 @@ export class FilesService {
     private readonly database: DatabaseService,
     private readonly storage: ObjectStorageProvider,
     private readonly crypto: CryptoService,
+    private readonly audit: AuditService,
   ) {}
 
   async upload(userId: string, classification: FileClassification, file: Express.Multer.File) {
@@ -21,6 +24,22 @@ export class FilesService {
       throw new ApplicationException(
         'FILE_REQUIRED',
         'A file is required.',
+        HttpStatus.BAD_REQUEST,
+      );
+    const acceptedMimeTypes = new Set([
+      'application/pdf',
+      'image/heic',
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+    ]);
+    if (
+      classification !== FileClassification.PUBLIC &&
+      !acceptedMimeTypes.has(file.mimetype.toLowerCase())
+    )
+      throw new ApplicationException(
+        'FILE_TYPE_INVALID',
+        'Private evidence must be a supported image or PDF document.',
         HttpStatus.BAD_REQUEST,
       );
     const id = randomUUID();
@@ -46,13 +65,20 @@ export class FilesService {
     return this.serialize(await this.authorizedAsset(id, principal));
   }
 
-  async content(id: string, principal: RequestPrincipal) {
+  async content(id: string, principal: RequestPrincipal, request?: RequestMetadata) {
     const asset = await this.authorizedAsset(id, principal);
+    await this.auditRenterDocumentAccess(asset, principal, request, 'RENTER_DOCUMENT_VIEWED');
     return { asset, stream: this.storage.open(asset.objectKey) };
   }
 
-  async accessGrant(id: string, principal: RequestPrincipal) {
-    await this.authorizedAsset(id, principal);
+  async accessGrant(id: string, principal: RequestPrincipal, request?: RequestMetadata) {
+    const asset = await this.authorizedAsset(id, principal);
+    await this.auditRenterDocumentAccess(
+      asset,
+      principal,
+      request,
+      'RENTER_DOCUMENT_ACCESS_GRANTED',
+    );
     return this.createGrant(id);
   }
 
@@ -130,15 +156,25 @@ export class FilesService {
         },
         vehicleDocuments: { select: { vehicle: { select: { ownerUserId: true } } } },
         vehiclePhotos: { select: { vehicle: { select: { ownerUserId: true } } } },
-        verificationDocuments: { select: { id: true } },
+        verificationDocuments: {
+          select: { id: true, verification: { select: { type: true, userId: true } } },
+        },
       },
       where: { id },
     });
     const vehicleOwner = [...asset.vehicleDocuments, ...asset.vehiclePhotos].some(
       ({ vehicle }) => vehicle.ownerUserId === principal.userId,
     );
+    const renterVerificationDocument = asset.verificationDocuments.some(({ verification }) =>
+      ['IDENTITY', 'DRIVER_LICENSE'].includes(verification.type),
+    );
+    const ownerVerificationDocument = asset.verificationDocuments.some(
+      ({ verification }) => verification.type === 'OWNER',
+    );
     const administrative =
-      (asset.verificationDocuments.length > 0 && principal.permissions.includes('owners.read')) ||
+      (renterVerificationDocument &&
+        principal.permissions.includes('renters.verification_documents.read')) ||
+      (ownerVerificationDocument && principal.permissions.includes('owners.read')) ||
       (asset.vehicleDocuments.length > 0 && principal.permissions.includes('vehicles.review')) ||
       (asset.vehiclePhotos.length > 0 && principal.permissions.includes('vehicles.read')) ||
       (asset.inspectionMedia.length > 0 && principal.permissions.includes('inspections.read')) ||
@@ -169,6 +205,26 @@ export class FilesService {
       );
     }
     return asset;
+  }
+
+  private async auditRenterDocumentAccess(
+    asset: Awaited<ReturnType<FilesService['authorizedAsset']>>,
+    principal: RequestPrincipal,
+    request: RequestMetadata | undefined,
+    action: string,
+  ) {
+    const renterDocument = asset.verificationDocuments.find(({ verification }) =>
+      ['IDENTITY', 'DRIVER_LICENSE'].includes(verification.type),
+    );
+    if (!renterDocument || principal.userId === asset.uploadedById) return;
+    await this.audit.record({
+      action,
+      actorUserId: principal.userId,
+      metadata: { fileAssetId: asset.id, verificationType: renterDocument.verification.type },
+      request: request ?? {},
+      targetId: renterDocument.verification.userId,
+      targetType: 'RENTER_VERIFICATION_DOCUMENT',
+    });
   }
 
   private invalidGrant(): never {

@@ -29,6 +29,16 @@ export class BookingReviewsController {
     return this.reviews.create(p.userId, reference, input);
   }
 }
+@ApiBearerAuth()
+@ApiTags('Current user reviews')
+@Controller('me/reviews')
+@UseGuards(AccessTokenGuard, PolicyGuard)
+export class MyReviewsController {
+  constructor(private readonly reviews: ReviewsService) {}
+  @Get() list(@CurrentPrincipal() principal: RequestPrincipal) {
+    return this.reviews.mine(principal.userId);
+  }
+}
 @ApiTags('Public reviews')
 @Controller()
 export class PublicReviewsController {

@@ -21,7 +21,14 @@ import { SecurityEventService } from '../security/security-event.service';
 import type { RequestMetadata } from '../security/security-context';
 import { EmailProvider, SmsProvider } from '../providers/delivery.provider';
 import { TokenService } from './token.service';
-import type { DeviceDto, LoginDto, OtpRequestDto, OtpVerifyDto, RegisterDto } from './auth.dto';
+import type {
+  DeviceDto,
+  LoginDto,
+  MobileVerificationRequestDto,
+  OtpRequestDto,
+  OtpVerifyDto,
+  RegisterDto,
+} from './auth.dto';
 
 export interface AuthenticationResult {
   readonly accessToken: string;
@@ -404,6 +411,44 @@ export class AuthService {
       to: mobile,
     });
     return { challengeId: challenge.id };
+  }
+
+  async requestMobileVerification(
+    userId: string,
+    input: MobileVerificationRequestDto,
+    metadata: RequestMetadata,
+  ): Promise<{ challengeId?: string; mobileNumber: string }> {
+    const mobile = this.normalizeMobile(input.mobileNumber);
+    const [user, duplicate] = await Promise.all([
+      this.database.client.user.findUniqueOrThrow({ where: { id: userId } }),
+      this.database.client.user.findUnique({ where: { normalizedMobileNumber: mobile } }),
+    ]);
+    if (duplicate && duplicate.id !== userId) {
+      throw new ApplicationException(
+        IdentityErrorCode.MOBILE_ALREADY_EXISTS,
+        'This mobile number is already registered.',
+        HttpStatus.CONFLICT,
+      );
+    }
+    if (user.normalizedMobileNumber !== mobile || !user.mobileNumber) {
+      await this.database.client.user.update({
+        data: {
+          mobileNumber: mobile,
+          mobileVerifiedAt: null,
+          normalizedMobileNumber: mobile,
+        },
+        where: { id: userId },
+      });
+      await this.events.record('MOBILE_NUMBER_CHANGED', { ...metadata, userId });
+    }
+    if (user.normalizedMobileNumber === mobile && user.mobileVerifiedAt) {
+      return { mobileNumber: mobile };
+    }
+    const challenge = await this.requestOtp(
+      { ...input, mobileNumber: mobile, purpose: OtpPurpose.MOBILE_VERIFICATION },
+      metadata,
+    );
+    return { ...challenge, mobileNumber: mobile };
   }
 
   async verifyOtp(

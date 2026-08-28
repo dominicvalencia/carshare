@@ -11,7 +11,7 @@ import { colors, radius, spacing } from '../../theme/tokens';
 import { DateTimeField } from '../../ui/DateTimeField';
 import { domainLabel, money, vehicleStatusLabel } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
-import { StateView, StatusBadge } from '../../ui/primitives';
+import { BackControl, StateView, StatusBadge } from '../../ui/primitives';
 
 interface Reference {
   readonly id: string;
@@ -214,12 +214,18 @@ function VehicleEditor({ id, onClose }: { readonly id: string; readonly onClose:
   if (vehicle.isPending)
     return (
       <SafeAreaView edges={['top']} style={styles.flex}>
+        <View style={styles.editorStateHeader}>
+          <BackControl label="Fleet" onPress={onClose} />
+        </View>
         <StateView loading title="Loading vehicle draft…" />
       </SafeAreaView>
     );
   if (vehicle.isError || !vehicle.data)
     return (
       <SafeAreaView edges={['top']} style={styles.flex}>
+        <View style={styles.editorStateHeader}>
+          <BackControl label="Fleet" onPress={onClose} />
+        </View>
         <StateView
           icon="cloud-offline-outline"
           title="Vehicle unavailable"
@@ -233,9 +239,7 @@ function VehicleEditor({ id, onClose }: { readonly id: string; readonly onClose:
   return (
     <SafeAreaView edges={['top']} style={styles.flex}>
       <View style={styles.editorHeader}>
-        <Pressable onPress={onClose}>
-          <Text style={styles.link}>‹ Fleet</Text>
-        </Pressable>
+        <BackControl label="Fleet" onPress={onClose} />
         <View>
           <Text style={styles.cardTitle}>
             {value.make ?? 'Vehicle'} {value.model ?? 'draft'}
@@ -1053,6 +1057,7 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
     padding: spacing.md,
   },
+  editorStateHeader: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   empty: { color: colors.subtleText, marginTop: spacing.xl, textAlign: 'center' },
   error: { color: '#A12626', marginTop: spacing.sm },
   eyebrow: { color: colors.primary, fontSize: 12, fontWeight: '800', letterSpacing: 1 },

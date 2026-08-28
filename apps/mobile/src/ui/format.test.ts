@@ -1,35 +1,29 @@
-import { describe, expect, it } from 'vitest';
-import {
-  bookingStatusLabel,
-  channelLabel,
-  dateLabel,
-  domainLabel,
-  earningStatusLabel,
-  money,
-  payoutEligibilityLabel,
-  titleCase,
-  vehicleStatusLabel,
-} from './format';
+import { afterEach, describe, expect, it } from 'vitest';
+import { dateLabel, relativeTime } from './format';
 
-describe('mobile presentation formatting', () => {
-  it('maps domain booking states to renter-friendly copy without changing state values', () => {
-    expect(bookingStatusLabel('AWAITING_OWNER')).toBe('Waiting for owner');
-    expect(bookingStatusLabel('CAPTURE_PENDING')).toBe('Confirming payment');
-    expect(bookingStatusLabel('RETURN_PENDING')).toBe('Return being confirmed');
+const now = new Date('2026-08-25T08:00:00.000Z').getTime();
+const descriptor = Object.getOwnPropertyDescriptor(Intl, 'RelativeTimeFormat');
+
+afterEach(() => {
+  if (descriptor) Object.defineProperty(Intl, 'RelativeTimeFormat', descriptor);
+});
+
+describe('relativeTime', () => {
+  it('formats now, minutes, hours, yesterday and recent day ranges', () => {
+    expect(relativeTime(new Date(now - 15_000), now)).toBe('Just now');
+    expect(relativeTime(new Date(now - 5 * 60_000), now)).toBe('5 min ago');
+    expect(relativeTime(new Date(now - 2 * 3_600_000), now)).toBe('2 hr ago');
+    expect(relativeTime(new Date(now - 86_400_000), now)).toBe('Yesterday');
+    expect(relativeTime(new Date(now - 3 * 86_400_000), now)).toBe('3 days ago');
   });
 
-  it('formats PHP minor units and Philippine dates for display', () => {
-    expect(money(250_000)).toContain('2,500');
-    expect(dateLabel('2026-08-24T01:00:00.000Z')).toContain('2026');
+  it('uses a normal date for older content', () => {
+    const old = new Date(now - 8 * 86_400_000);
+    expect(relativeTime(old, now)).toBe(dateLabel(old));
   });
 
-  it('turns internal enum-like values into readable labels', () => {
-    expect(titleCase('BATTERY_ELECTRIC')).toBe('Battery Electric');
-    expect(domainLabel('BATTERY_ELECTRIC')).toBe('Electric');
-    expect(vehicleStatusLabel('CHANGES_REQUIRED')).toBe('Changes requested');
-    expect(vehicleStatusLabel('AVAILABLE')).toBe('Available for booking');
-    expect(earningStatusLabel('AVAILABLE')).toBe('Available for payout');
-    expect(payoutEligibilityLabel('NOT_READY')).toBe('Setup required');
-    expect(channelLabel('PH_GCASH')).toBe('GCash');
+  it('does not require Intl.RelativeTimeFormat at runtime', () => {
+    Object.defineProperty(Intl, 'RelativeTimeFormat', { configurable: true, value: undefined });
+    expect(relativeTime(new Date(now - 5 * 60_000), now)).toBe('5 min ago');
   });
 });

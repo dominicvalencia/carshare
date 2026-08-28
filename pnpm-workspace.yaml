@@ -28,3 +28,24 @@ minimumReleaseAgeExclude:
   - react-native-safe-area-context@5.9.1
   - turbo@2.10.11
   - vitest@4.1.11
+  - expo-crypto@55.0.19
+  - expo-local-authentication@55.0.18
+  - '@expo/cli@55.0.36'
+  - '@expo/config@55.0.21'
+  - '@expo/image-utils@0.8.17'
+  - '@expo/local-build-cache-provider@55.0.16'
+  - '@expo/metro-config@55.0.27'
+  - '@expo/prebuild-config@55.0.22'
+  - '@expo/require-utils@55.0.8'
+  - babel-preset-expo@55.0.25
+  - expo-asset@55.0.20
+  - expo-file-system@55.0.26
+  - expo-modules-autolinking@55.0.27
+  - expo@55.0.30
+  - expo-application@55.0.19
+  - expo-device@55.0.21
+  - expo-document-picker@55.0.17
+  - expo-image-picker@55.0.24
+  - expo-location@55.1.14
+  - expo-notifications@55.0.27
+  - expo-secure-store@55.0.18

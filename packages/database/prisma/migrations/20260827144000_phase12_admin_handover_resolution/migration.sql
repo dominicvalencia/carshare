@@ -1,0 +1,1 @@
+ALTER TYPE "BookingActorType" ADD VALUE IF NOT EXISTS 'ADMIN';

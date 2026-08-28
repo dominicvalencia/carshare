@@ -6,10 +6,12 @@ import {
   Post,
   StreamableFile,
   Query,
+  Req,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { AccessTokenGuard } from '../authorization/access-token.guard';
@@ -17,6 +19,7 @@ import { CurrentPrincipal } from '../authorization/authorization.decorator';
 import type { RequestPrincipal } from '../security/security-context';
 import { UploadFileDto } from './files.dto';
 import { FilesService } from './files.service';
+import { requestMetadata } from '../auth/auth.controller';
 
 @ApiBearerAuth()
 @ApiTags('Files')
@@ -42,8 +45,12 @@ export class FilesController {
   }
 
   @Get(':id/content')
-  async content(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
-    const { asset, stream } = await this.files.content(id, principal);
+  async content(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Req() request: Request,
+  ) {
+    const { asset, stream } = await this.files.content(id, principal, requestMetadata(request));
     return new StreamableFile(stream, {
       disposition: `attachment; filename="${asset.originalName.replaceAll('"', '')}"`,
       type: asset.mimeType,
@@ -51,8 +58,12 @@ export class FilesController {
   }
 
   @Post(':id/access-grants')
-  accessGrant(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
-    return this.files.accessGrant(id, principal);
+  accessGrant(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Req() request: Request,
+  ) {
+    return this.files.accessGrant(id, principal, requestMetadata(request));
   }
 }
 

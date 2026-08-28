@@ -9,6 +9,7 @@ import type { RequestPrincipal } from '../security/security-context';
 import {
   EmailDto,
   LoginDto,
+  MobileVerificationRequestDto,
   OtpRequestDto,
   OtpVerifyDto,
   PasswordResetDto,
@@ -110,6 +111,18 @@ export class AuthController {
       message: 'If the mobile number is eligible, a code has been sent.',
       challengeId: result.challengeId,
     };
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('mobile-verification/requests')
+  @UseGuards(AccessTokenGuard)
+  requestMobileVerification(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Body() input: MobileVerificationRequestDto,
+    @Req() request: Request,
+  ) {
+    return this.auth.requestMobileVerification(principal.userId, input, requestMetadata(request));
   }
 
   @HttpCode(HttpStatus.OK)

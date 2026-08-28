@@ -1,0 +1,1177 @@
+import { useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import * as ImagePicker from 'expo-image-picker';
+import {
+  Alert,
+  FlatList,
+  Image,
+  Linking,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { apiClient } from '../../auth/api-client';
+import { colors, radius, spacing } from '../../theme/tokens';
+import { DateOnlyField } from '../../ui/DateOnlyField';
+import { Button, Card, Field, Icon, Screen, StateView, StatusBadge } from '../../ui/primitives';
+import type { RenterVerificationSnapshot } from './AccountScreen';
+import {
+  addressError,
+  driverError,
+  emergencyError,
+  localitySelection,
+  normalizeMobile,
+  personalError,
+  regionSelection,
+  scopeSelection,
+} from './renter-verification-form';
+
+const stages = [
+  'Personal information',
+  'Residential address',
+  'Driver information',
+  'Emergency contact',
+  'Identity documents',
+  'Selfie',
+  'Review & submit',
+] as const;
+
+const relationships = [
+  ['PARENT', 'Parent'],
+  ['SPOUSE', 'Spouse'],
+  ['SIBLING', 'Sibling'],
+  ['CHILD', 'Child'],
+  ['RELATIVE', 'Relative'],
+  ['GUARDIAN', 'Guardian'],
+  ['FRIEND', 'Friend'],
+  ['PARTNER', 'Partner'],
+  ['COLLEAGUE', 'Colleague'],
+  ['OTHER', 'Other'],
+] as const;
+
+interface AreaOption {
+  readonly code: string;
+  readonly name: string;
+  readonly kind?: string;
+  readonly provinceCode?: string | null;
+}
+
+interface AreaResponse {
+  readonly datasetVersion: string | null;
+  readonly items: readonly AreaOption[];
+}
+
+export function RenterVerificationWorkflow({
+  snapshot,
+}: {
+  readonly snapshot: RenterVerificationSnapshot;
+}) {
+  const client = useQueryClient();
+  const profile = snapshot.profile;
+  const [step, setStep] = useState(() => Math.min(profile?.renterVerificationDraftStep ?? 0, 6));
+  const [formError, setFormError] = useState('');
+  const [editingApproved, setEditingApproved] = useState(false);
+  const [barangaySearch, setBarangaySearch] = useState('');
+  const [capturedSelfie, setCapturedSelfie] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [form, setForm] = useState({
+    addressLine1: profile?.addressLine1 ?? '',
+    addressScopeCode: profile?.addressScopeCode ?? '',
+    barangay: profile?.barangay ?? '',
+    barangayCode: profile?.barangayCode ?? '',
+    cityMunicipality: profile?.cityMunicipality ?? '',
+    cityMunicipalityCode: profile?.cityMunicipalityCode ?? '',
+    dateOfBirth: profile?.dateOfBirth?.slice(0, 10) ?? '',
+    driverLicenseClass: profile?.driverLicenseClass ?? '',
+    driverLicenseExpiry: profile?.driverLicenseExpiry?.slice(0, 10) ?? '',
+    driverLicenseNumber: '',
+    driverLicenseRestrictions: profile?.driverLicenseRestrictions ?? '',
+    emergencyContactMobile: profile?.emergencyContactMobile ?? '',
+    emergencyContactName: profile?.emergencyContactName ?? '',
+    emergencyContactRelation: profile?.emergencyContactRelation ?? '',
+    emergencyContactRelationOther: profile?.emergencyContactRelationOther ?? '',
+    legalFirstName: profile?.firstName ?? '',
+    legalLastName: profile?.lastName ?? '',
+    middleName: profile?.middleName ?? '',
+    postalCode: profile?.postalCode ?? '',
+    province: profile?.province ?? '',
+    provinceCode: profile?.provinceCode ?? '',
+    region: profile?.region ?? '',
+    regionCode: profile?.regionCode ?? '',
+  });
+  const regions = useQuery({
+    queryKey: ['geography', 'regions'],
+    queryFn: () => apiClient.request<AreaResponse>('/geography/regions'),
+  });
+  const scopes = useQuery({
+    enabled: Boolean(form.regionCode),
+    queryKey: ['geography', 'scopes', form.regionCode],
+    queryFn: () => apiClient.request<AreaResponse>(`/geography/regions/${form.regionCode}/scopes`),
+  });
+  const localities = useQuery({
+    enabled: Boolean(form.regionCode && form.addressScopeCode),
+    queryKey: ['geography', 'localities', form.regionCode, form.addressScopeCode],
+    queryFn: () =>
+      apiClient.request<AreaResponse>(
+        `/geography/regions/${form.regionCode}/localities?scopeCode=${form.addressScopeCode}`,
+      ),
+  });
+  const barangays = useQuery({
+    enabled: Boolean(form.cityMunicipalityCode),
+    queryKey: ['geography', 'barangays', form.cityMunicipalityCode, barangaySearch],
+    queryFn: () =>
+      apiClient.request<AreaResponse>(
+        `/geography/localities/${form.cityMunicipalityCode}/barangays?query=${encodeURIComponent(
+          barangaySearch,
+        )}&limit=100`,
+      ),
+  });
+  const save = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiClient.request('/renter-verification/profile', {
+        body: JSON.stringify(body),
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      setFormError('');
+      void client.invalidateQueries({ queryKey: ['renter-verification'] });
+      void client.invalidateQueries({ queryKey: ['me'] });
+    },
+  });
+  const upload = useMutation({
+    mutationFn: async ({
+      definition,
+      asset,
+    }: {
+      definition: RenterVerificationSnapshot['definitions'][number];
+      asset: { uri: string; name: string; mimeType: string };
+    }) => {
+      const file = await apiClient.upload<{ id: string }>('/files', 'SENSITIVE', asset);
+      return apiClient.request('/renter-verification/documents', {
+        body: JSON.stringify({ definitionCode: definition.code, fileAssetId: file.id }),
+        method: 'POST',
+      });
+    },
+    onSuccess: () => {
+      setCapturedSelfie(null);
+      void client.invalidateQueries({ queryKey: ['renter-verification'] });
+    },
+  });
+  const submit = useMutation({
+    mutationFn: () => apiClient.request('/renter-verification/submission', { method: 'POST' }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ['renter-verification'] }),
+  });
+  const documents = useMemo(
+    () =>
+      new Map(
+        snapshot.verifications.flatMap(({ documents: items }) =>
+          items
+            .filter(({ replacedAt }) => !replacedAt)
+            .map((item) => [item.definition?.code, item] as const),
+        ),
+      ),
+    [snapshot.verifications],
+  );
+  const pending = ['SUBMITTED', 'UNDER_REVIEW'].includes(snapshot.eligibility.status);
+  const locked = snapshot.eligibility.status === 'APPROVED' && !editingApproved;
+  const currentDataset = regions.data?.datasetVersion ?? null;
+  const emergencySamePhone = Boolean(
+    normalizeMobile(form.emergencyContactMobile) &&
+    normalizeMobile(form.emergencyContactMobile) === normalizeMobile(snapshot.mobileNumber ?? ''),
+  );
+
+  const saveStage = (body: Record<string, unknown>, nextStep: number) => {
+    setFormError('');
+    save.mutate(body, { onSuccess: () => setStep(nextStep) });
+  };
+
+  return (
+    <>
+      <Card style={snapshot.eligibility.eligible ? undefined : styles.warningCard}>
+        <View style={styles.rowBetween}>
+          <Text style={styles.cardTitle}>Rental eligibility</Text>
+          <StatusBadge
+            label={verificationLabel(snapshot.eligibility.status)}
+            tone={snapshot.eligibility.eligible ? 'success' : 'warning'}
+          />
+        </View>
+        <Text style={styles.body}>
+          {snapshot.eligibility.eligible
+            ? 'You can reserve vehicles and authorize rental payments.'
+            : pending
+              ? 'Your evidence is with the platform verification team.'
+              : 'Search and quotes remain available while you complete verification.'}
+        </Text>
+      </Card>
+      {(locked || pending) && (
+        <>
+          <StateView
+            icon={locked ? 'checkmark-circle-outline' : 'time-outline'}
+            title={locked ? 'Verification approved' : 'Verification under review'}
+            message={
+              locked
+                ? 'Material identity, address, or driver changes require reverification.'
+                : 'Your server-persisted evidence is preserved while authorized staff review it.'
+            }
+          />
+          {locked && (
+            <Button
+              label="Edit verified details"
+              onPress={() => {
+                Alert.alert(
+                  'Reverification required',
+                  'Saving changes to your legal identity, residential address, or driver information returns your verification to draft and pauses rental eligibility until staff approve it again.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Continue editing',
+                      onPress: () => {
+                        setEditingApproved(true);
+                        setStep(0);
+                      },
+                    },
+                  ],
+                );
+              }}
+              variant="secondary"
+            />
+          )}
+        </>
+      )}
+      {!locked && !pending && (
+        <>
+          <Card style={styles.progressCard}>
+            <Text style={styles.progressText}>
+              Step {step + 1} of {stages.length}
+            </Text>
+            <Text style={styles.cardTitle}>{stages[step]}</Text>
+            <View style={styles.progressDots}>
+              {stages.map((label, index) => (
+                <Pressable
+                  accessibilityLabel={`Go to ${label}`}
+                  key={label}
+                  onPress={() =>
+                    index <= Math.max(profile?.renterVerificationDraftStep ?? 0, step) &&
+                    setStep(index)
+                  }
+                  style={[styles.progressDot, index <= step && styles.progressDotActive]}
+                />
+              ))}
+            </View>
+          </Card>
+
+          {step === 0 && (
+            <SectionCard
+              icon="person-outline"
+              title="Personal information"
+              helper="Use the name and birth date shown on your government-issued identity document."
+            >
+              <Field
+                label="Legal first name *"
+                value={form.legalFirstName}
+                onChangeText={(legalFirstName) => setForm({ ...form, legalFirstName })}
+              />
+              <Field
+                label="Legal middle name"
+                value={form.middleName}
+                onChangeText={(middleName) => setForm({ ...form, middleName })}
+              />
+              <Field
+                label="Legal last name *"
+                value={form.legalLastName}
+                onChangeText={(legalLastName) => setForm({ ...form, legalLastName })}
+              />
+              <DateOnlyField
+                label="Date of birth *"
+                maximumDate={new Date()}
+                value={form.dateOfBirth}
+                onChange={(dateOfBirth) => setForm({ ...form, dateOfBirth })}
+              />
+              <Button
+                disabled={save.isPending}
+                label={save.isPending ? 'Saving…' : 'Save & continue'}
+                onPress={() => {
+                  const error = personalError(form);
+                  if (error) return setFormError(error);
+                  saveStage(
+                    {
+                      dateOfBirth: form.dateOfBirth,
+                      legalFirstName: form.legalFirstName.trim(),
+                      legalLastName: form.legalLastName.trim(),
+                      ...(form.middleName.trim() ? { middleName: form.middleName.trim() } : {}),
+                      stage: 'PERSONAL_INFORMATION',
+                    },
+                    1,
+                  );
+                }}
+              />
+              {step === 0 && formError && (
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {formError}
+                </Text>
+              )}
+            </SectionCard>
+          )}
+
+          {step === 1 && (
+            <SectionCard
+              icon="location-outline"
+              title="Residential address"
+              helper={`Searchable official PSA PSGC reference${currentDataset ? ` · ${currentDataset.replaceAll('_', ' ')}` : ''}. Address line and postal code remain renter-entered.`}
+            >
+              <Field
+                label="House / building / street *"
+                multiline
+                value={form.addressLine1}
+                onChangeText={(addressLine1) => setForm({ ...form, addressLine1 })}
+              />
+              <ReferenceSelect
+                label="Region *"
+                loading={regions.isPending}
+                options={regions.data?.items ?? []}
+                selectedLabel={form.region}
+                onSelect={(area) => {
+                  setForm({ ...form, ...regionSelection(area) });
+                }}
+              />
+              <ReferenceSelect
+                disabled={!form.regionCode}
+                label="Province / geographic area *"
+                loading={scopes.isPending}
+                options={scopes.data?.items ?? []}
+                selectedLabel={scopeLabel(form, scopes.data?.items)}
+                onSelect={(area) => setForm({ ...form, ...scopeSelection(area) })}
+              />
+              <ReferenceSelect
+                disabled={!form.addressScopeCode}
+                label="City / municipality *"
+                loading={localities.isPending}
+                options={localities.data?.items ?? []}
+                selectedLabel={form.cityMunicipality}
+                onSelect={(area) => setForm({ ...form, ...localitySelection(area) })}
+              />
+              <ReferenceSelect
+                disabled={!form.cityMunicipalityCode}
+                label="Barangay *"
+                loading={barangays.isPending}
+                onSearch={setBarangaySearch}
+                options={barangays.data?.items ?? []}
+                selectedLabel={form.barangay}
+                onSelect={(area) =>
+                  setForm({ ...form, barangay: area.name, barangayCode: area.code })
+                }
+              />
+              <Field
+                keyboardType="number-pad"
+                label="Postal code *"
+                value={form.postalCode}
+                onChangeText={(postalCode) => setForm({ ...form, postalCode })}
+              />
+              <NavigationButtons
+                busy={save.isPending}
+                onBack={() => setStep(0)}
+                onNext={() => {
+                  const error = addressError(form);
+                  if (error) return setFormError(error);
+                  saveStage(
+                    {
+                      addressLine1: form.addressLine1.trim(),
+                      addressScopeCode: form.addressScopeCode,
+                      barangayCode: form.barangayCode,
+                      cityMunicipalityCode: form.cityMunicipalityCode,
+                      postalCode: form.postalCode,
+                      ...(form.provinceCode ? { provinceCode: form.provinceCode } : {}),
+                      regionCode: form.regionCode,
+                      stage: 'RESIDENTIAL_ADDRESS',
+                    },
+                    2,
+                  );
+                }}
+              />
+              {step === 1 && formError && (
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {formError}
+                </Text>
+              )}
+            </SectionCard>
+          )}
+
+          {step === 2 && (
+            <SectionCard
+              icon="card-outline"
+              title="Driver information"
+              helper="The full license number is normalized, hashed, and never returned by the API."
+            >
+              <Field
+                label={
+                  profile?.driverLicenseLastFour
+                    ? 'New license number (leave blank to keep current)'
+                    : 'Driver’s license number *'
+                }
+                value={form.driverLicenseNumber}
+                onChangeText={(driverLicenseNumber) => setForm({ ...form, driverLicenseNumber })}
+                placeholder={
+                  profile?.driverLicenseLastFour
+                    ? `Current ends in ${profile.driverLicenseLastFour}`
+                    : 'Letters and numbers shown on license'
+                }
+              />
+              <DateOnlyField
+                label="Expiration date *"
+                minimumDate={tomorrow()}
+                value={form.driverLicenseExpiry}
+                onChange={(driverLicenseExpiry) => setForm({ ...form, driverLicenseExpiry })}
+              />
+              <Field
+                label="License classification *"
+                value={form.driverLicenseClass}
+                onChangeText={(driverLicenseClass) => setForm({ ...form, driverLicenseClass })}
+                placeholder="As printed on the license"
+              />
+              <Field
+                label="Restrictions"
+                value={form.driverLicenseRestrictions}
+                onChangeText={(driverLicenseRestrictions) =>
+                  setForm({ ...form, driverLicenseRestrictions })
+                }
+                placeholder="If applicable"
+              />
+              <NavigationButtons
+                busy={save.isPending}
+                onBack={() => setStep(1)}
+                onNext={() => {
+                  const error = driverError(form, Boolean(profile?.driverLicenseLastFour));
+                  if (error) return setFormError(error);
+                  saveStage(
+                    {
+                      driverLicenseClass: form.driverLicenseClass.trim(),
+                      driverLicenseExpiry: form.driverLicenseExpiry,
+                      ...(form.driverLicenseNumber.trim()
+                        ? { driverLicenseNumber: form.driverLicenseNumber.trim() }
+                        : {}),
+                      ...(form.driverLicenseRestrictions.trim()
+                        ? { driverLicenseRestrictions: form.driverLicenseRestrictions.trim() }
+                        : {}),
+                      stage: 'DRIVER_INFORMATION',
+                    },
+                    3,
+                  );
+                }}
+              />
+              {step === 2 && formError && (
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {formError}
+                </Text>
+              )}
+            </SectionCard>
+          )}
+
+          {step === 3 && (
+            <SectionCard
+              icon="call-outline"
+              title="Emergency contact"
+              helper="This person must not be you. Philippine mobile formats are normalized before comparison."
+            >
+              <Field
+                label="Full name"
+                value={form.emergencyContactName}
+                onChangeText={(emergencyContactName) => setForm({ ...form, emergencyContactName })}
+              />
+              <ReferenceSelect
+                label="Relationship"
+                options={relationships.map(([code, name]) => ({ code, name }))}
+                selectedLabel={relationshipLabel(form.emergencyContactRelation)}
+                onSelect={(option) =>
+                  setForm({
+                    ...form,
+                    emergencyContactRelation: option.code,
+                    emergencyContactRelationOther:
+                      option.code === 'OTHER' ? form.emergencyContactRelationOther : '',
+                  })
+                }
+              />
+              {form.emergencyContactRelation === 'OTHER' && (
+                <Field
+                  label="Describe relationship *"
+                  value={form.emergencyContactRelationOther}
+                  onChangeText={(emergencyContactRelationOther) =>
+                    setForm({ ...form, emergencyContactRelationOther })
+                  }
+                />
+              )}
+              <Field
+                error={
+                  emergencySamePhone
+                    ? 'Emergency contact mobile number must be different from your number.'
+                    : undefined
+                }
+                keyboardType="phone-pad"
+                label="Philippine mobile number"
+                value={form.emergencyContactMobile}
+                onChangeText={(emergencyContactMobile) =>
+                  setForm({ ...form, emergencyContactMobile })
+                }
+                placeholder="09XXXXXXXXX or +639XXXXXXXXX"
+              />
+              <NavigationButtons
+                busy={save.isPending}
+                onBack={() => setStep(2)}
+                onNext={() => {
+                  const error = emergencyError(form, snapshot.mobileNumber);
+                  if (error) return setFormError(error);
+                  saveStage(
+                    {
+                      ...(form.emergencyContactName.trim()
+                        ? {
+                            emergencyContactMobile: form.emergencyContactMobile.trim(),
+                            emergencyContactName: form.emergencyContactName.trim(),
+                            emergencyContactRelation: form.emergencyContactRelation,
+                            ...(form.emergencyContactRelationOther.trim()
+                              ? {
+                                  emergencyContactRelationOther:
+                                    form.emergencyContactRelationOther.trim(),
+                                }
+                              : {}),
+                          }
+                        : {}),
+                      stage: 'EMERGENCY_CONTACT',
+                    },
+                    4,
+                  );
+                }}
+              />
+              {step === 3 && formError && (
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {formError}
+                </Text>
+              )}
+            </SectionCard>
+          )}
+
+          {step === 4 && (
+            <DocumentStage
+              definitions={snapshot.definitions.filter(({ code }) => code !== 'SELFIE')}
+              documents={documents}
+              upload={upload}
+              onBack={() => setStep(3)}
+              onContinue={() => setStep(5)}
+            />
+          )}
+
+          {step === 5 && (
+            <SelfieStage
+              captured={capturedSelfie}
+              definition={snapshot.definitions.find(({ code }) => code === 'SELFIE')}
+              document={documents.get('SELFIE')}
+              upload={upload}
+              onBack={() => setStep(4)}
+              onCapture={setCapturedSelfie}
+              onContinue={() => setStep(6)}
+            />
+          )}
+
+          {step === 6 && (
+            <SectionCard
+              icon="checkmark-done-outline"
+              title="Review & submit"
+              helper="Nothing is submitted automatically. Confirm the information below before sending it to authorized verification staff."
+            >
+              <ReviewRow
+                label="Legal identity"
+                value={`${form.legalFirstName} ${form.middleName} ${form.legalLastName}`
+                  .replaceAll(/\s+/g, ' ')
+                  .trim()}
+              />
+              <ReviewRow label="Date of birth" value={form.dateOfBirth} />
+              <ReviewRow
+                label="Residential address"
+                value={`${form.addressLine1}, ${form.barangay}, ${form.cityMunicipality}${form.province ? `, ${form.province}` : ''} ${form.postalCode}`}
+              />
+              <ReviewRow
+                label="Driver’s license"
+                value={`${profile?.driverLicenseLastFour ? `Ending ${profile.driverLicenseLastFour}` : 'Number supplied'} · expires ${form.driverLicenseExpiry}`}
+              />
+              <ReviewRow
+                label="Emergency contact"
+                value={
+                  form.emergencyContactName
+                    ? `${form.emergencyContactName} · ${relationshipLabel(form.emergencyContactRelation)} · ${form.emergencyContactMobile}`
+                    : 'Not provided'
+                }
+              />
+              <ReviewRow
+                label="Documents"
+                value={`${documents.size} submitted requirement(s), including ${documents.has('SELFIE') ? 'a newly captured selfie' : 'no selfie yet'}.`}
+              />
+              <Text style={styles.note}>
+                A camera selfie is evidence for manual review. It is not certified liveness
+                verification.
+              </Text>
+              <NavigationButtons
+                busy={submit.isPending}
+                nextLabel={
+                  submit.isPending
+                    ? 'Submitting…'
+                    : snapshot.eligibility.status === 'MORE_INFORMATION_REQUIRED'
+                      ? 'Resubmit verification'
+                      : 'Submit verification'
+                }
+                onBack={() => setStep(5)}
+                onNext={() => submit.mutate()}
+              />
+            </SectionCard>
+          )}
+        </>
+      )}
+      {(save.isError || upload.isError || submit.isError) && (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {(save.error ?? upload.error ?? submit.error)?.message}
+        </Text>
+      )}
+      {snapshot.verifications.map((verification) =>
+        verification.rejectionReason ? (
+          <Text key={verification.type} style={styles.error}>
+            {verification.rejectionReason}
+          </Text>
+        ) : null,
+      )}
+    </>
+  );
+}
+
+function SectionCard({
+  children,
+  helper,
+  icon,
+  title,
+}: {
+  readonly children: React.ReactNode;
+  readonly helper: string;
+  readonly icon: Parameters<typeof Icon>[0]['name'];
+  readonly title: string;
+}) {
+  return (
+    <Card style={styles.sectionCard}>
+      <View style={styles.sectionHeading}>
+        <View style={styles.sectionIcon}>
+          <Icon color={colors.primary} name={icon} />
+        </View>
+        <View style={styles.flex}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+          <Text style={styles.note}>{helper}</Text>
+        </View>
+      </View>
+      {children}
+    </Card>
+  );
+}
+
+function ReferenceSelect({
+  disabled = false,
+  label,
+  loading = false,
+  onSearch,
+  onSelect,
+  options,
+  selectedLabel,
+}: {
+  readonly disabled?: boolean;
+  readonly label: string;
+  readonly loading?: boolean;
+  readonly onSearch?: (query: string) => void;
+  readonly onSelect: (option: AreaOption) => void;
+  readonly options: readonly AreaOption[];
+  readonly selectedLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const visible = onSearch
+    ? options
+    : options.filter(({ name }) => name.toLowerCase().includes(query.trim().toLowerCase()));
+  return (
+    <View style={styles.selectField}>
+      <Text style={styles.label}>{label}</Text>
+      <Pressable
+        accessibilityRole="button"
+        disabled={disabled}
+        onPress={() => setOpen(true)}
+        style={[styles.selectButton, disabled && styles.disabled]}
+      >
+        <Text numberOfLines={2} style={selectedLabel ? styles.selectValue : styles.placeholder}>
+          {selectedLabel || (disabled ? 'Select the previous field first' : 'Search and select')}
+        </Text>
+        <Icon color={colors.primary} name="chevron-down" size={19} />
+      </Pressable>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setOpen(false)}
+        presentationStyle="pageSheet"
+        visible={open}
+      >
+        <Screen scroll={false} eyebrow="Searchable selector" title={label}>
+          <View style={styles.searchBox}>
+            <Icon color={colors.subtleText} name="search" size={19} />
+            <TextInput
+              autoFocus
+              onChangeText={(value) => {
+                setQuery(value);
+                onSearch?.(value);
+              }}
+              placeholder="Type to search"
+              placeholderTextColor={colors.subtleText}
+              style={styles.searchInput}
+              value={query}
+            />
+          </View>
+          {loading ? (
+            <StateView loading title="Loading options…" />
+          ) : (
+            <FlatList
+              data={visible}
+              keyboardShouldPersistTaps="handled"
+              keyExtractor={(item) => item.code}
+              ListEmptyComponent={
+                <StateView
+                  icon="search-outline"
+                  title="No matching options"
+                  message="Check the spelling or choose the previous address level again."
+                />
+              }
+              renderItem={({ item }) => (
+                <Pressable
+                  onPress={() => {
+                    onSelect(item);
+                    setQuery('');
+                    onSearch?.('');
+                    setOpen(false);
+                  }}
+                  style={styles.option}
+                >
+                  <Text style={styles.optionText}>{item.name}</Text>
+                  <Icon color={colors.primary} name="chevron-forward" size={18} />
+                </Pressable>
+              )}
+            />
+          )}
+          <Button label="Cancel" onPress={() => setOpen(false)} variant="ghost" />
+        </Screen>
+      </Modal>
+    </View>
+  );
+}
+
+function DocumentStage({
+  definitions,
+  documents,
+  upload,
+  onBack,
+  onContinue,
+}: {
+  readonly definitions: RenterVerificationSnapshot['definitions'];
+  readonly documents: Map<
+    string | undefined,
+    RenterVerificationSnapshot['verifications'][number]['documents'][number]
+  >;
+  readonly upload: ReturnType<
+    typeof useMutation<
+      unknown,
+      Error,
+      {
+        definition: RenterVerificationSnapshot['definitions'][number];
+        asset: { uri: string; name: string; mimeType: string };
+      }
+    >
+  >;
+  readonly onBack: () => void;
+  readonly onContinue: () => void;
+}) {
+  return (
+    <SectionCard
+      icon="documents-outline"
+      title="Identity documents"
+      helper="Capture each document now with the rear camera. Images remain private and sensitive; owners cannot access them."
+    >
+      {definitions.map((definition) => {
+        const document = documents.get(definition.code);
+        return (
+          <DocumentCaptureRow
+            definition={definition}
+            documentName={document?.fileAsset.originalName}
+            key={definition.code}
+            upload={upload}
+          />
+        );
+      })}
+      <NavigationButtons busy={upload.isPending} onBack={onBack} onNext={onContinue} />
+    </SectionCard>
+  );
+}
+
+function DocumentCaptureRow({
+  definition,
+  documentName,
+  upload,
+}: {
+  readonly definition: RenterVerificationSnapshot['definitions'][number];
+  readonly documentName?: string | undefined;
+  readonly upload: ReturnType<
+    typeof useMutation<
+      unknown,
+      Error,
+      {
+        definition: RenterVerificationSnapshot['definitions'][number];
+        asset: { uri: string; name: string; mimeType: string };
+      }
+    >
+  >;
+}) {
+  const [captured, setCaptured] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const capture = async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert(
+        'Camera access required',
+        'Verification requires a new photo of this document. Gallery and file uploads are not available. Enable Camera in Settings to continue.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open settings', onPress: () => void Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: false,
+      cameraType: ImagePicker.CameraType.back,
+      mediaTypes: ['images'],
+      quality: 0.9,
+    });
+    const asset = result.canceled ? undefined : result.assets[0];
+    if (asset) setCaptured(asset);
+  };
+  return (
+    <View style={styles.documentCapture}>
+      <View style={styles.flex}>
+        <Text style={styles.cardTitle}>
+          {definition.name}
+          {definition.required ? ' *' : ''}
+        </Text>
+        <Text style={styles.note}>{documentGuidance(definition.code)}</Text>
+        {documentName && <Text style={styles.success}>✓ Captured and securely uploaded</Text>}
+      </View>
+      {captured ? (
+        <>
+          <Image
+            accessibilityLabel={`${definition.name} camera preview`}
+            source={{ uri: captured.uri }}
+            style={styles.documentPreview}
+          />
+          <View style={styles.buttonRow}>
+            <Button label="Retake" onPress={() => void capture()} variant="secondary" />
+            <Button
+              disabled={upload.isPending}
+              label={upload.isPending ? 'Uploading…' : 'Use photo'}
+              onPress={() =>
+                upload.mutate(
+                  {
+                    definition,
+                    asset: {
+                      mimeType: captured.mimeType ?? 'image/jpeg',
+                      name:
+                        captured.fileName ?? `${definition.code.toLowerCase()}-${Date.now()}.jpg`,
+                      uri: captured.uri,
+                    },
+                  },
+                  { onSuccess: () => setCaptured(null) },
+                )
+              }
+            />
+          </View>
+        </>
+      ) : (
+        <Button
+          disabled={upload.isPending}
+          icon="camera-outline"
+          label={documentName ? 'Retake document' : 'Open camera'}
+          onPress={() => void capture()}
+          variant="secondary"
+        />
+      )}
+    </View>
+  );
+}
+
+function documentGuidance(code: string): string {
+  if (code.includes('FRONT'))
+    return 'Place the front inside the frame; keep all edges and text visible.';
+  if (code.includes('BACK')) return 'Place the back inside the frame; avoid glare and blur.';
+  if (code.includes('ADDRESS')) return 'Capture the full proof-of-address page in even lighting.';
+  return 'Keep the entire government document inside the frame and make text readable.';
+}
+
+function SelfieStage({
+  captured,
+  definition,
+  document,
+  upload,
+  onBack,
+  onCapture,
+  onContinue,
+}: {
+  readonly captured: ImagePicker.ImagePickerAsset | null;
+  readonly definition: RenterVerificationSnapshot['definitions'][number] | undefined;
+  readonly document:
+    RenterVerificationSnapshot['verifications'][number]['documents'][number] | undefined;
+  readonly upload: ReturnType<
+    typeof useMutation<
+      unknown,
+      Error,
+      {
+        definition: RenterVerificationSnapshot['definitions'][number];
+        asset: { uri: string; name: string; mimeType: string };
+      }
+    >
+  >;
+  readonly onBack: () => void;
+  readonly onCapture: (asset: ImagePicker.ImagePickerAsset | null) => void;
+  readonly onContinue: () => void;
+}) {
+  const capture = async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert(
+        'Camera access required',
+        'Selfie verification requires a new camera capture. Gallery upload is not available.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open settings', onPress: () => void Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      cameraType: ImagePicker.CameraType.front,
+      mediaTypes: ['images'],
+      quality: 0.85,
+    });
+    const asset = result.canceled ? undefined : result.assets[0];
+    if (asset) onCapture(asset);
+  };
+  return (
+    <SectionCard
+      icon="camera-outline"
+      title="Selfie verification"
+      helper="Use the front camera in good lighting. Center your face, remove sunglasses, and capture a new photo."
+    >
+      <Card style={styles.guidanceCard}>
+        <Text style={styles.cardTitle}>Camera-only evidence</Text>
+        <Text style={styles.note}>
+          No gallery or file-picker action is available for the selfie. A submitted selfie is
+          manually reviewed and does not prove certified liveness.
+        </Text>
+      </Card>
+      {captured ? (
+        <>
+          <Image
+            accessibilityLabel="Captured selfie preview"
+            source={{ uri: captured.uri }}
+            style={styles.selfiePreview}
+          />
+          <View style={styles.buttonRow}>
+            <Button label="Retake" onPress={() => void capture()} variant="secondary" />
+            <Button
+              disabled={!definition || upload.isPending}
+              label={upload.isPending ? 'Uploading…' : 'Use photo'}
+              onPress={() =>
+                definition &&
+                upload.mutate({
+                  definition,
+                  asset: {
+                    mimeType: captured.mimeType ?? 'image/jpeg',
+                    name: captured.fileName ?? `selfie-${Date.now()}.jpg`,
+                    uri: captured.uri,
+                  },
+                })
+              }
+            />
+          </View>
+        </>
+      ) : (
+        <Button
+          icon="camera-outline"
+          label={document ? 'Retake selfie' : 'Open camera'}
+          onPress={() => void capture()}
+        />
+      )}
+      {document && <Text style={styles.success}>✓ Selfie submitted for manual review</Text>}
+      <NavigationButtons busy={upload.isPending} onBack={onBack} onNext={onContinue} />
+    </SectionCard>
+  );
+}
+
+function NavigationButtons({
+  busy,
+  nextLabel = 'Continue',
+  onBack,
+  onNext,
+}: {
+  readonly busy: boolean;
+  readonly nextLabel?: string;
+  readonly onBack: () => void;
+  readonly onNext: () => void;
+}) {
+  return (
+    <View style={styles.buttonRow}>
+      <Button label="Back" onPress={onBack} variant="secondary" />
+      <Button disabled={busy} label={nextLabel} onPress={onNext} />
+    </View>
+  );
+}
+
+function ReviewRow({ label, value }: { readonly label: string; readonly value: string }) {
+  return (
+    <View style={styles.reviewRow}>
+      <Text style={styles.label}>{label}</Text>
+      <Text style={styles.body}>{value}</Text>
+    </View>
+  );
+}
+
+function tomorrow() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return date;
+}
+function relationshipLabel(code: string) {
+  return relationships.find(([value]) => value === code)?.[1] ?? '';
+}
+function scopeLabel(
+  form: { addressScopeCode: string; province: string },
+  options?: readonly AreaOption[],
+) {
+  return form.province || options?.find(({ code }) => code === form.addressScopeCode)?.name || '';
+}
+function verificationLabel(status: string) {
+  return (
+    (
+      {
+        APPROVED: 'Verified renter',
+        MORE_INFORMATION_REQUIRED: 'More information required',
+        REJECTED: 'Verification rejected',
+        SUBMITTED: 'Verification pending',
+        SUSPENDED: 'Verification suspended',
+        UNDER_REVIEW: 'Under review',
+      } as Record<string, string>
+    )[status] ?? 'Verification incomplete'
+  );
+}
+
+const styles = StyleSheet.create({
+  body: { color: colors.subtleText, lineHeight: 21 },
+  buttonRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  cardTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
+  disabled: { opacity: 0.5 },
+  documentCapture: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    paddingBottom: spacing.md,
+    paddingTop: spacing.xs,
+  },
+  documentPreview: {
+    aspectRatio: 1.58,
+    backgroundColor: colors.muted,
+    borderRadius: radius.md,
+    width: '100%',
+  },
+  error: { color: colors.danger, fontWeight: '700', lineHeight: 20 },
+  flex: { flex: 1 },
+  guidanceCard: { backgroundColor: colors.primarySoft, gap: spacing.xs },
+  label: { color: colors.ink, fontSize: 13, fontWeight: '700' },
+  note: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
+  option: {
+    alignItems: 'center',
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 54,
+    paddingVertical: spacing.sm,
+  },
+  optionText: { color: colors.ink, flex: 1, fontSize: 15, fontWeight: '700' },
+  placeholder: { color: colors.subtleText, flex: 1, fontSize: 14 },
+  progressCard: { gap: spacing.xs },
+  progressDot: {
+    backgroundColor: colors.border,
+    borderRadius: radius.pill,
+    flex: 1,
+    height: 6,
+    minWidth: 20,
+  },
+  progressDotActive: { backgroundColor: colors.primary },
+  progressDots: { flexDirection: 'row', gap: spacing.xxs },
+  progressText: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  reviewRow: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xxs,
+    paddingVertical: spacing.sm,
+  },
+  rowBetween: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  searchBox: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 48,
+    paddingHorizontal: spacing.sm,
+  },
+  searchInput: { color: colors.ink, flex: 1, fontSize: 15 },
+  sectionCard: { gap: spacing.md },
+  sectionHeading: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
+  sectionIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.md,
+    height: 42,
+    justifyContent: 'center',
+    width: 42,
+  },
+  sectionTitle: { color: colors.ink, fontSize: 19, fontWeight: '900' },
+  selectButton: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minHeight: 50,
+    paddingHorizontal: spacing.md,
+  },
+  selectField: { gap: spacing.xs },
+  selectValue: { color: colors.ink, flex: 1, fontSize: 14, fontWeight: '700' },
+  selfiePreview: {
+    aspectRatio: 0.85,
+    backgroundColor: colors.muted,
+    borderRadius: radius.lg,
+    width: '100%',
+  },
+  success: { color: colors.primary, fontWeight: '800' },
+  warningCard: { backgroundColor: colors.warningSoft },
+});

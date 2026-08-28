@@ -19,6 +19,7 @@ import {
   VehiclePowertrain,
   VehicleTransmission,
   VerificationStatus,
+  VerificationType,
 } from '../src/generated/prisma/enums';
 import type { PrismaClient } from '../src/generated/prisma/client';
 
@@ -205,10 +206,17 @@ export async function seedDevelopmentDemo(client: PrismaClient): Promise<void> {
       email: 'renter@demo.carrental.ph',
       normalizedEmail: 'renter@demo.carrental.ph',
       emailVerifiedAt: new Date(),
+      mobileNumber: '+639171234566',
+      mobileVerifiedAt: new Date(),
       passwordHash,
       profile: { create: { displayName: 'Mika Santos', firstName: 'Mika', lastName: 'Santos' } },
     },
-    update: { emailVerifiedAt: new Date(), passwordHash },
+    update: {
+      emailVerifiedAt: new Date(),
+      mobileNumber: '+639171234566',
+      mobileVerifiedAt: new Date(),
+      passwordHash,
+    },
   });
   await client.userRole.upsert({
     where: { userId_roleId: { userId: renter.id, roleId: renterRole.id } },
@@ -324,6 +332,9 @@ export async function seedDevelopmentDemo(client: PrismaClient): Promise<void> {
       verifiedAt: new Date(),
     },
   });
+  await ensureApprovedRenter(client, renter.id, 1, 'Mika', 'Santos');
+  await ensureApprovedRenter(client, ownerUser.id, 2, 'Paolo', 'Reyes');
+  await ensureApprovedRenter(client, dualRoleUser.id, 3, 'Alex', 'Cruz');
   const imagePath = resolve(import.meta.dirname, '../../../apps/mobile/assets/demo-vehicle.png');
   const image = await readFile(imagePath);
   const checksum = createHash('sha256').update(image).digest('hex');
@@ -531,6 +542,67 @@ export async function seedDevelopmentDemo(client: PrismaClient): Promise<void> {
     },
     update: { reviewCount: 6, ratingSum: 29, averageRating: '4.83', recalculatedAt: new Date() },
   });
+}
+
+async function ensureApprovedRenter(
+  client: PrismaClient,
+  userId: string,
+  ordinal: number,
+  firstName: string,
+  lastName: string,
+) {
+  await client.userProfile.upsert({
+    where: { userId },
+    create: {
+      addressLine1: 'Development Demo Address',
+      barangay: 'Poblacion',
+      cityMunicipality: 'Makati City',
+      dateOfBirth: new Date('1990-01-01'),
+      displayName: `${firstName} ${lastName}`,
+      driverLicenseClass: 'Professional / valid for pilot testing',
+      driverLicenseExpiry: new Date('2030-12-31'),
+      driverLicenseLastFour: `${ordinal}`.padStart(4, '0'),
+      driverLicenseNumberHash: createHash('sha256').update(`demo-license-${ordinal}`).digest('hex'),
+      firstName,
+      lastName,
+      postalCode: '1210',
+      province: 'Metro Manila',
+      userId,
+    },
+    update: {
+      addressLine1: 'Development Demo Address',
+      barangay: 'Poblacion',
+      cityMunicipality: 'Makati City',
+      dateOfBirth: new Date('1990-01-01'),
+      driverLicenseClass: 'Professional / valid for pilot testing',
+      driverLicenseExpiry: new Date('2030-12-31'),
+      driverLicenseLastFour: `${ordinal}`.padStart(4, '0'),
+      driverLicenseNumberHash: createHash('sha256').update(`demo-license-${ordinal}`).digest('hex'),
+      postalCode: '1210',
+      province: 'Metro Manila',
+    },
+  });
+  for (const [index, type] of [
+    VerificationType.IDENTITY,
+    VerificationType.DRIVER_LICENSE,
+  ].entries())
+    await client.verification.upsert({
+      where: { id: stableId('77', ordinal * 10 + index) },
+      create: {
+        expiresAt: type === VerificationType.DRIVER_LICENSE ? new Date('2030-12-31') : null,
+        id: stableId('77', ordinal * 10 + index),
+        reviewedAt: new Date(),
+        status: VerificationStatus.APPROVED,
+        submittedAt: new Date(),
+        type,
+        userId,
+      },
+      update: {
+        expiresAt: type === VerificationType.DRIVER_LICENSE ? new Date('2030-12-31') : null,
+        rejectionReason: null,
+        status: VerificationStatus.APPROVED,
+      },
+    });
 }
 
 async function writeDemoAsset(

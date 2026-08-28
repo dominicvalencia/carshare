@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigation, type NavigationProp } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   FlatList,
@@ -14,7 +15,17 @@ import { apiClient } from '../../auth/api-client';
 import { useAuth } from '../../auth/AuthProvider';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { bookingStatusLabel, relativeTime } from '../../ui/format';
-import { Card, Icon, IconButton, Screen, StateView, StatusBadge } from '../../ui/primitives';
+import {
+  BackControl,
+  Card,
+  Icon,
+  IconButton,
+  Screen,
+  StateView,
+  StatusBadge,
+} from '../../ui/primitives';
+import { conversationHeading } from './conversation-heading';
+import type { RootStackParamList } from '../../navigation/routes';
 
 interface Person {
   readonly userId: string;
@@ -31,12 +42,14 @@ interface Conversation {
   readonly status?: string;
   readonly unreadCount: number;
   readonly participants?: readonly Person[];
-  readonly booking: {
-    readonly publicReference: string;
-    readonly status: string;
-    readonly vehicle: { readonly make: string | null; readonly model: string | null };
-  };
+  readonly booking: ConversationBooking;
   readonly messages: readonly Message[];
+}
+interface ConversationBooking {
+  readonly publicReference: string;
+  readonly status: string;
+  readonly vehicle?:
+    { readonly make: string | null; readonly model: string | null } | null | undefined;
 }
 interface ConversationDetail extends Conversation {
   readonly canSend: boolean;
@@ -51,9 +64,12 @@ interface Message {
 
 export function MessagesScreen({
   initialConversationId,
+  onClose,
 }: {
   readonly initialConversationId?: string | undefined;
+  readonly onClose?: (() => void) | undefined;
 }) {
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const auth = useAuth();
   const client = useQueryClient();
   const [selected, setSelected] = useState<string | null>(initialConversationId ?? null);
@@ -63,6 +79,11 @@ export function MessagesScreen({
     queryKey: ['conversations'],
     queryFn: () => apiClient.request<{ items: Conversation[] }>('/conversations?limit=50'),
     refetchInterval: 10_000,
+  });
+  const notificationSummary = useQuery({
+    queryKey: ['notification-summary'],
+    queryFn: () => apiClient.request<{ unreadCount: number }>('/notifications/summary'),
+    refetchInterval: 15_000,
   });
   const conversation = useQuery({
     enabled: Boolean(selected),
@@ -110,18 +131,29 @@ export function MessagesScreen({
     const context = conversation.data?.booking;
     return (
       <Screen
+        leading={
+          <BackControl
+            label="Back to messages"
+            onPress={() => {
+              if (onClose) onClose();
+              else setSelected(null);
+            }}
+          />
+        }
         scroll={false}
         eyebrow={context?.publicReference ?? 'Booking conversation'}
-        title={
-          context
-            ? `${context.vehicle.make ?? ''} ${context.vehicle.model ?? ''}`.trim() ||
-              'Booking messages'
-            : 'Booking messages'
-        }
-        action={
-          <IconButton icon="close" label="Close conversation" onPress={() => setSelected(null)} />
-        }
+        title={conversationHeading(context)}
       >
+        {conversation.isPending && <StateView loading title="Loading conversation…" />}
+        {conversation.isError && (
+          <StateView
+            icon="cloud-offline-outline"
+            title="Conversation unavailable"
+            message={conversation.error.message}
+            actionLabel="Retry"
+            onAction={() => void conversation.refetch()}
+          />
+        )}
         {messages.isPending && <StateView loading title="Loading messages…" />}
         {messages.isError && (
           <StateView
@@ -172,7 +204,7 @@ export function MessagesScreen({
                 This conversation is read-only because the booking messaging period has closed.
               </Text>
             </View>
-          ) : (
+          ) : conversation.data ? (
             <View style={styles.composer}>
               <TextInput
                 accessibilityLabel="Message"
@@ -192,7 +224,7 @@ export function MessagesScreen({
                 }}
               />
             </View>
-          )}
+          ) : null}
           {send.isError && <Text style={styles.error}>{send.error.message}</Text>}
         </KeyboardAvoidingView>
       </Screen>
@@ -200,6 +232,27 @@ export function MessagesScreen({
   }
   return (
     <Screen
+      action={
+        <View style={styles.notificationAction}>
+          <IconButton
+            icon="notifications-outline"
+            label="Open notifications"
+            onPress={() => navigation.navigate('Notifications')}
+          />
+          {Boolean(notificationSummary.data?.unreadCount) && (
+            <View
+              accessibilityLabel={`${notificationSummary.data?.unreadCount} unread notifications`}
+              style={styles.notificationBadge}
+            >
+              <Text style={styles.notificationBadgeText}>
+                {(notificationSummary.data?.unreadCount ?? 0) > 99
+                  ? '99+'
+                  : notificationSummary.data?.unreadCount}
+              </Text>
+            </View>
+          )}
+        </View>
+      }
       scroll={false}
       eyebrow="Your inbox"
       title="Messages"
@@ -245,8 +298,7 @@ export function MessagesScreen({
                     </Text>
                   </View>
                   <Text numberOfLines={1} style={styles.vehicle}>
-                    {item.booking.vehicle.make} {item.booking.vehicle.model} ·{' '}
-                    {bookingStatusLabel(item.booking.status)}
+                    {conversationHeading(item.booking)} · {bookingStatusLabel(item.booking.status)}
                   </Text>
                   <Text
                     numberOfLines={1}
@@ -316,6 +368,22 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   listTime: { color: colors.subtleText, fontSize: 11 },
+  notificationAction: { position: 'relative' },
+  notificationBadge: {
+    alignItems: 'center',
+    backgroundColor: colors.danger,
+    borderColor: colors.background,
+    borderRadius: radius.pill,
+    borderWidth: 2,
+    justifyContent: 'center',
+    minHeight: 20,
+    minWidth: 20,
+    paddingHorizontal: 4,
+    position: 'absolute',
+    right: -5,
+    top: -5,
+  },
+  notificationBadgeText: { color: colors.onPrimary, fontSize: 10, fontWeight: '900' },
   messageList: { flexGrow: 1, paddingBottom: spacing.md, paddingTop: spacing.xs },
   messageText: { color: colors.ink, fontSize: 15, lineHeight: 21 },
   mine: { backgroundColor: colors.primary, borderBottomRightRadius: 5 },

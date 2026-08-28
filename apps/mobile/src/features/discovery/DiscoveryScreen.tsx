@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { NavigationProp } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -11,19 +11,21 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
-import { apiClient } from '../../auth/api-client';
+import { ApiError, apiClient } from '../../auth/api-client';
 import {
   developmentLocationSuggestions,
   type LocationSuggestion,
 } from '../../location/location-provider';
-import type { RenterTabParamList } from '../../navigation/routes';
+import type { RenterTabParamList, RootStackParamList } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateTimeField } from '../../ui/DateTimeField';
 import { VehicleImage } from '../../ui/VehicleImage';
 import { dateTimeLabel, domainLabel, money, timeLabel } from '../../ui/format';
 import {
+  BackControl,
   Button,
   Card,
   Chip,
@@ -128,10 +130,19 @@ function futureDate(days: number, hour = 9) {
   return value;
 }
 
-export function DiscoveryScreen({ home = false }: { readonly home?: boolean }) {
+export function DiscoveryScreen({
+  home = false,
+  initialMode = 'form',
+  onExit,
+}: {
+  readonly home?: boolean;
+  readonly initialMode?: 'form' | 'favorites';
+  readonly onExit?: (() => void) | undefined;
+}) {
   const navigation = useNavigation<NavigationProp<RenterTabParamList>>();
   const client = useQueryClient();
-  const [mode, setMode] = useState<ViewMode>(home ? 'form' : 'form');
+  const [mode, setMode] = useState<ViewMode>(initialMode);
+  const detailOrigin = useRef<ViewMode>(initialMode === 'favorites' ? 'favorites' : 'results');
   const [vehicleId, setVehicleId] = useState<string | null>(null);
   const [place, setPlace] = useState<SearchLocation>(locations[0]!);
   const [pickup, setPickup] = useState(futureDate(1));
@@ -244,6 +255,7 @@ export function DiscoveryScreen({ home = false }: { readonly home?: boolean }) {
     if (index >= 0) sessionRecentlyViewed.splice(index, 1);
     sessionRecentlyViewed.unshift(id);
     sessionRecentlyViewed.splice(10);
+    detailOrigin.current = mode === 'favorites' ? 'favorites' : 'results';
     setVehicleId(id);
     setMode('detail');
   }
@@ -282,8 +294,9 @@ export function DiscoveryScreen({ home = false }: { readonly home?: boolean }) {
         data={favorites.data}
         error={favorites.error}
         loading={favorites.isPending}
-        onBack={() => setMode('form')}
+        onBack={onExit ?? (() => setMode('form'))}
         onOpen={openVehicle}
+        onRemove={(id) => favorite.mutate({ id, active: true })}
       />
     );
   if ((mode === 'detail' || mode === 'quote') && vehicleId)
@@ -296,7 +309,7 @@ export function DiscoveryScreen({ home = false }: { readonly home?: boolean }) {
         returnAt={returnAt}
         setPickup={setPickup}
         setReturnAt={setReturnAt}
-        onBack={() => setMode('results')}
+        onBack={() => setMode(detailOrigin.current)}
         onFavorite={() =>
           detail.data &&
           favorite.mutate({ id: detail.data.vehicleId, active: detail.data.favorite })
@@ -609,6 +622,11 @@ function VehicleView(properties: {
   readonly mode: ViewMode;
 }) {
   const { vehicle } = properties;
+  const { width: viewportWidth } = useWindowDimensions();
+  const scrollRef = useRef<ScrollView>(null);
+  const quotePosition = useRef(0);
+  const lastScrolledQuoteId = useRef<string | null>(null);
+  const quoteData = properties.quote.data;
   if (properties.loading)
     return (
       <Screen
@@ -635,6 +653,7 @@ function VehicleView(properties: {
     );
   return (
     <Screen
+      scrollRef={scrollRef}
       leading={<BackControl label="Back to results" onPress={properties.onBack} />}
       eyebrow="Vehicle details"
       title={`${vehicle.year ?? ''} ${vehicle.make ?? ''} ${vehicle.model ?? ''}`.trim()}
@@ -655,7 +674,11 @@ function VehicleView(properties: {
       >
         {(vehicle.photos?.length ? vehicle.photos : [{ id: 'fallback', contentPath: '' }]).map(
           (photo) => (
-            <VehicleImage key={photo.id} contentPath={photo.contentPath} style={styles.heroImage} />
+            <VehicleImage
+              key={photo.id}
+              contentPath={photo.contentPath}
+              style={[styles.heroImage, { width: viewportWidth }]}
+            />
           ),
         )}
       </ScrollView>
@@ -710,20 +733,34 @@ function VehicleView(properties: {
           message={properties.quote.error.message}
         />
       )}
-      {properties.mode === 'quote' && properties.quote.data && (
-        <QuoteCard
-          quote={properties.quote.data}
-          vehicle={vehicle}
-          pickup={properties.pickup}
-          returnAt={properties.returnAt}
-          reserve={properties.reserve}
-          continueBooking={properties.continueBooking}
-          onRefreshQuote={() => {
-            properties.reserve.reset();
-            properties.continueBooking.reset();
-            properties.quote.mutate();
+      {properties.mode === 'quote' && quoteData && (
+        <View
+          onLayout={(event) => {
+            quotePosition.current = event.nativeEvent.layout.y;
+            if (lastScrolledQuoteId.current === quoteData.id) return;
+            lastScrolledQuoteId.current = quoteData.id;
+            requestAnimationFrame(() =>
+              scrollRef.current?.scrollTo({
+                animated: true,
+                y: Math.max(0, quotePosition.current - spacing.sm),
+              }),
+            );
           }}
-        />
+        >
+          <QuoteCard
+            quote={quoteData}
+            vehicle={vehicle}
+            pickup={properties.pickup}
+            returnAt={properties.returnAt}
+            reserve={properties.reserve}
+            continueBooking={properties.continueBooking}
+            onRefreshQuote={() => {
+              properties.reserve.reset();
+              properties.continueBooking.reset();
+              properties.quote.mutate();
+            }}
+          />
+        </View>
       )}
       <SectionHeader title="Vehicle details" />
       <Card>
@@ -839,6 +876,7 @@ function QuoteCard({
   readonly continueBooking: ReturnType<typeof useMutation<PaymentSetupResult, Error, string>>;
   readonly onRefreshQuote: () => void;
 }) {
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const expiryTime = timeLabel(quote.expiresAt);
   return (
     <Card style={styles.quoteCard}>
@@ -879,10 +917,26 @@ function QuoteCard({
       {reserve.isError && (
         <View style={styles.hold}>
           <Text style={styles.error}>{reserve.error.message}</Text>
-          <Text style={styles.note}>
-            Quotes expire and availability can change before reservation.
-          </Text>
-          <Button label="Check current price" onPress={onRefreshQuote} variant="secondary" />
+          {reserve.error instanceof ApiError &&
+          reserve.error.code === 'RENTER_VERIFICATION_REQUIRED' ? (
+            <>
+              <Text style={styles.note}>
+                Your quote remains informational until renter verification is approved.
+              </Text>
+              <Button
+                label="Complete renter verification"
+                onPress={() => navigation.navigate('Verification')}
+                variant="secondary"
+              />
+            </>
+          ) : (
+            <>
+              <Text style={styles.note}>
+                Quotes expire and availability can change before reservation.
+              </Text>
+              <Button label="Check current price" onPress={onRefreshQuote} variant="secondary" />
+            </>
+          )}
         </View>
       )}
       {reserve.data && (
@@ -914,6 +968,7 @@ function FavoritesView({
   loading,
   onBack,
   onOpen,
+  onRemove,
 }: {
   readonly data?:
     { items: readonly { vehicle: VehicleDetail }[]; unavailableCount: number } | undefined;
@@ -921,10 +976,15 @@ function FavoritesView({
   readonly loading: boolean;
   readonly onBack: () => void;
   readonly onOpen: (id: string) => void;
+  readonly onRemove: (id: string) => void;
 }) {
   return (
-    <Screen eyebrow="Saved cars" title="Favorites" subtitle="Cars you save will appear here.">
-      <Button icon="arrow-back" label="Back" onPress={onBack} variant="ghost" />
+    <Screen
+      leading={<BackControl label="Back" onPress={onBack} />}
+      eyebrow="Saved cars"
+      title="Favorites"
+      subtitle="Cars you save will appear here."
+    >
       {loading && <StateView loading title="Loading saved cars…" />}
       {error && (
         <StateView
@@ -946,8 +1006,12 @@ function FavoritesView({
         />
       )}
       {data?.items.map(({ vehicle }) => (
-        <Pressable key={vehicle.vehicleId} onPress={() => onOpen(vehicle.vehicleId)}>
-          <Card style={styles.favoriteCard}>
+        <Card key={vehicle.vehicleId} style={styles.favoriteCard}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => onOpen(vehicle.vehicleId)}
+            style={styles.favoriteOpen}
+          >
             <VehicleImage
               contentPath={vehicle.photos?.[0]?.contentPath}
               style={styles.favoriteImage}
@@ -961,8 +1025,14 @@ function FavoritesView({
               </Text>
               <Text style={styles.cardPrice}>{money(vehicle.pricing.dailyRateMinor)}</Text>
             </View>
-          </Card>
-        </Pressable>
+          </Pressable>
+          <IconButton
+            active
+            icon="heart"
+            label="Remove from favorites"
+            onPress={() => onRemove(vehicle.vehicleId)}
+          />
+        </Card>
       ))}
     </Screen>
   );
@@ -1155,38 +1225,16 @@ function DetailRow({
     </View>
   );
 }
-function BackControl({ label, onPress }: { readonly label: string; readonly onPress: () => void }) {
-  return (
-    <Pressable
-      accessibilityLabel={label}
-      accessibilityRole="button"
-      hitSlop={8}
-      onPress={onPress}
-      style={styles.backControl}
-    >
-      <Icon color={colors.primary} name="arrow-back" size={19} />
-      <Text style={styles.backControlText}>{label}</Text>
-    </Pressable>
-  );
-}
 function activeFilterCount(filters: Record<string, string>) {
   return Object.values(filters).filter(Boolean).length;
 }
 
 const styles = StyleSheet.create({
-  backControl: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: spacing.xs,
-    minHeight: 36,
-    paddingRight: spacing.sm,
-  },
-  backControlText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
   body: { color: colors.subtleText, lineHeight: 21 },
   cardTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
   cardImage: { height: 190, width: '100%' },
   cardPrice: { color: colors.ink, fontSize: 17, fontWeight: '900' },
-  dateGrid: { flexDirection: 'row', gap: spacing.sm },
+  dateGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   dateSummary: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
@@ -1221,10 +1269,17 @@ const styles = StyleSheet.create({
   },
   favorite: { position: 'absolute', right: spacing.sm, top: spacing.sm },
   favoriteCard: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  favoriteOpen: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minWidth: 0,
+  },
   favoriteImage: { borderRadius: radius.md, height: 88, width: 110 },
   flex: { flex: 1, minWidth: 0 },
   gallery: { marginHorizontal: -spacing.lg },
-  heroImage: { height: 265, width: 390 },
+  heroImage: { height: 265 },
   hold: {
     backgroundColor: colors.primarySoft,
     borderRadius: radius.md,

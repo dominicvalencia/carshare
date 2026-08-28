@@ -1,9 +1,14 @@
+import { useState } from 'react';
+import type { NavigationProp } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
+import { internalDestination } from '../../navigation/deep-links';
+import type { RootStackParamList } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { relativeTime } from '../../ui/format';
-import { Button, Card, Icon, Screen, StateView } from '../../ui/primitives';
+import { Button, Card, Icon, NestedScreen, StateView } from '../../ui/primitives';
 
 interface NotificationItem {
   readonly id: string;
@@ -16,6 +21,8 @@ interface NotificationItem {
 }
 export function NotificationCenter() {
   const client = useQueryClient();
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
+  const [openError, setOpenError] = useState('');
   const notifications = useQuery({
     queryKey: ['notifications'],
     queryFn: () => apiClient.request<{ items: NotificationItem[] }>('/notifications?limit=50'),
@@ -29,17 +36,55 @@ export function NotificationCenter() {
     },
   });
   async function open(item: NotificationItem) {
-    const result = await apiClient.request<{ deepLink: string | null }>(
-      `/notifications/${item.id}/opened`,
-      { method: 'POST' },
-    );
-    void client.invalidateQueries({ queryKey: ['notifications'] });
-    void client.invalidateQueries({ queryKey: ['notification-summary'] });
-    if (result.deepLink) await Linking.openURL(result.deepLink);
+    setOpenError('');
+    try {
+      const result = await apiClient.request<{ deepLink: string | null }>(
+        `/notifications/${item.id}/opened`,
+        { method: 'POST' },
+      );
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['notifications'] }),
+        client.invalidateQueries({ queryKey: ['notification-summary'] }),
+      ]);
+      if (result.deepLink) {
+        const destination = internalDestination(result.deepLink);
+        if (!destination) {
+          setOpenError('This notification target is no longer available.');
+          return;
+        }
+        switch (destination.name) {
+          case 'Booking':
+            navigation.navigate('Booking', destination.params);
+            break;
+          case 'Conversation':
+            navigation.navigate('Conversation', destination.params);
+            break;
+          case 'Claim':
+            navigation.navigate('Claim', destination.params);
+            break;
+          case 'Support':
+            navigation.navigate('Support', destination.params);
+            break;
+          case 'Payout':
+            navigation.navigate('Payout', destination.params);
+            break;
+          case 'OwnerEarnings':
+            navigation.navigate('OwnerEarnings');
+            break;
+          case 'Notifications':
+            break;
+          default:
+            setOpenError('This notification target is not available in the current app version.');
+        }
+      }
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : 'Could not open this notification.');
+    }
   }
   const unread = notifications.data?.items.filter((item) => !item.readAt).length ?? 0;
   return (
-    <Screen
+    <NestedScreen
+      backLabel="Back"
       eyebrow="Updates"
       title="Notifications"
       subtitle={
@@ -47,10 +92,18 @@ export function NotificationCenter() {
       }
       action={
         unread ? (
-          <Button label="Read all" onPress={() => readAll.mutate()} variant="ghost" />
+          <Button
+            disabled={readAll.isPending}
+            label={readAll.isPending ? 'Clearing…' : 'Read all'}
+            onPress={() => readAll.mutate()}
+            variant="ghost"
+          />
         ) : undefined
       }
     >
+      {(openError || readAll.isError) && (
+        <Text style={styles.error}>{openError || readAll.error?.message}</Text>
+      )}
       {notifications.isPending && <StateView loading title="Loading notifications…" />}
       {notifications.isError && (
         <StateView
@@ -88,7 +141,7 @@ export function NotificationCenter() {
           </Card>
         </Pressable>
       ))}
-    </Screen>
+    </NestedScreen>
   );
 }
 function notificationIcon(category?: string): Parameters<typeof Icon>[0]['name'] {
@@ -101,6 +154,7 @@ function notificationIcon(category?: string): Parameters<typeof Icon>[0]['name']
 const styles = StyleSheet.create({
   body: { color: colors.subtleText, lineHeight: 20, marginTop: 3 },
   dot: { backgroundColor: colors.primary, borderRadius: radius.pill, height: 8, width: 8 },
+  error: { color: colors.danger },
   flex: { flex: 1, minWidth: 0 },
   icon: {
     alignItems: 'center',

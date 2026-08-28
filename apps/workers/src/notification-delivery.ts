@@ -42,6 +42,7 @@ export async function consumeDomainEvent(
   const recipients = await resolveRecipients(database, policy.recipients, payload);
   const sourceId =
     uuid(payload.messageId) ??
+    uuid(payload.claimId) ??
     uuid(payload.reviewId) ??
     uuid(payload.ticketId) ??
     uuid(payload.payoutId) ??
@@ -397,6 +398,9 @@ async function bookingReference(database: PrismaClient, bookingId: string | null
     : null;
 }
 function deepLink(policy: EventPolicy, eventType: string, payload: Payload): string | null {
+  const claimId = uuid(payload.claimId);
+  if (policy.category === NotificationCategory.CLAIMS && claimId)
+    return `carrental://claims/${claimId}`;
   const id = uuid(payload.conversationId) ?? uuid(payload.bookingId) ?? uuid(payload.ticketId);
   const payoutId =
     uuid(payload.payoutId) ?? (eventType.startsWith('PAYOUT_') ? uuid(payload.aggregateId) : null);

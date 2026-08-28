@@ -139,6 +139,86 @@ export class ReviewsService {
     return this.publicReviews({ ownerProfileId });
   }
 
+  async mine(userId: string) {
+    const reviewSelect = {
+      booking: {
+        select: {
+          publicReference: true,
+          vehicle: { select: { make: true, model: true, modelYear: true } },
+        },
+      },
+      categoryRatings: true,
+      createdAt: true,
+      id: true,
+      moderationStatus: true,
+      rating: true,
+      text: true,
+      type: true,
+    } satisfies Prisma.ReviewSelect;
+    const [written, received, completed] = await Promise.all([
+      this.database.client.review.findMany({
+        where: { authorUserId: userId },
+        orderBy: { createdAt: 'desc' },
+        select: reviewSelect,
+      }),
+      this.database.client.review.findMany({
+        where: {
+          moderationStatus: ReviewModerationStatus.PUBLISHED,
+          OR: [{ subjectUserId: userId }, { ownerProfile: { userId } }],
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          ...reviewSelect,
+          author: { select: { profile: { select: { firstName: true } } } },
+        },
+      }),
+      this.database.client.booking.findMany({
+        where: {
+          status: BookingStatus.COMPLETED,
+          OR: [{ renterUserId: userId }, { ownerUserId: userId }],
+        },
+        select: {
+          ownerUserId: true,
+          publicReference: true,
+          renterUserId: true,
+          reviews: { where: { authorUserId: userId }, select: { type: true } },
+          statusHistory: {
+            where: { toStatus: BookingStatus.COMPLETED },
+            orderBy: { occurredAt: 'desc' },
+            take: 1,
+            select: { occurredAt: true },
+          },
+          vehicle: { select: { make: true, model: true, modelYear: true } },
+        },
+      }),
+    ]);
+    const now = Date.now();
+    const pending = completed.flatMap((booking) => {
+      const completedAt = booking.statusHistory[0]?.occurredAt;
+      if (!completedAt) return [];
+      const deadline = new Date(completedAt.getTime() + this.windowDays * 86_400_000);
+      if (deadline.getTime() < now) return [];
+      const allowed =
+        booking.renterUserId === userId
+          ? [ReviewType.VEHICLE, ReviewType.OWNER]
+          : [ReviewType.RENTER];
+      const availableTypes = allowed.filter(
+        (type) => !booking.reviews.some((review) => review.type === type),
+      );
+      return availableTypes.length
+        ? [
+            {
+              availableTypes,
+              bookingReference: booking.publicReference,
+              deadline,
+              vehicle: booking.vehicle,
+            },
+          ]
+        : [];
+    });
+    return { pending, received, written };
+  }
+
   async moderate(
     adminUserId: string,
     reviewId: string,

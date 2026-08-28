@@ -8,8 +8,8 @@ does not change the authoritative financial or booking state machines.
 
 - A dedicated API integration scenario now traverses public search, authoritative quote creation,
   booking hold, rental-payment authorization, the owner request queue, owner acceptance and capture,
-  pickup inspection and code verification, active rental, secure booking messaging, return inspection,
-  renter confirmation, claim-window completion, the earning safety hold, earning availability, and a
+  pickup inspection and code verification, active rental, secure booking messaging, renter and owner
+  return inspections, owner confirmation, claim-window completion, the earning safety hold, earning availability, and a
   post-completion review.
 - Booking projections include a short-lived signed grant for the public vehicle cover photo. Booking,
   owner-request, and active-rental screens render that projection through Expo Image and fall back to
@@ -69,11 +69,11 @@ does not change the authoritative financial or booking state machines.
 
 Run `pnpm db:seed`. Demo data is skipped when `APP_ENV=test` or `SEED_DEMO_DATA=false`.
 
-| Mode                 | Email                        | Password             | Expected state                         |
-| -------------------- | ---------------------------- | -------------------- | -------------------------------------- |
-| Renter               | `renter@demo.carrental.ph`   | `CarRentalDemo2026!` | verified email, RENTER                 |
-| Verified owner       | `owner@demo.carrental.ph`    | `CarRentalDemo2026!` | RENTER + OWNER, VERIFIED owner profile |
-| Dual-role acceptance | `dualrole@demo.carrental.ph` | `CarRentalDemo2026!` | RENTER + OWNER, VERIFIED owner profile |
+| Mode                 | Email                        | Password             | Expected state                             |
+| -------------------- | ---------------------------- | -------------------- | ------------------------------------------ |
+| Renter               | `renter@demo.carrental.ph`   | `CarRentalDemo2026!` | verified contact + renter identity/license |
+| Verified owner       | `owner@demo.carrental.ph`    | `CarRentalDemo2026!` | RENTER + OWNER, VERIFIED owner profile     |
+| Dual-role acceptance | `dualrole@demo.carrental.ph` | `CarRentalDemo2026!` | RENTER + OWNER, VERIFIED owner profile     |
 
 The verified owner has seven stable vehicles and the dual-role acceptance account has one. All eight
 are approved and operationally available across Metro Manila, Cebu, Davao, Iloilo, and Baguio. This
@@ -125,7 +125,7 @@ public discovery
 → CONFIRMED / READY_FOR_PICKUP
 → pickup inspection + renter code
 → ACTIVE
-→ return inspection + renter agreement
+→ renter return inspection + independent owner receipt inspection + owner acknowledgement
 → RETURNED
 → claim deadline elapsed with no claim
 → COMPLETED
@@ -170,14 +170,15 @@ pnpm --filter @carrental/mobile build
 
 Final Phase 12 verification passed:
 
-- `pnpm verify`: formatting, Compose validation, 18/18 lint tasks, 18/18 typecheck tasks, 16 unit/E2E
-  test files with 32 tests, Prisma validation, and 11/11 build tasks.
-- `pnpm test:integration`: 7 files and 39 tests, including the complete pilot lifecycle.
+- `pnpm verify`: formatting, Compose validation, 18/18 lint tasks, 18/18 typecheck tasks, 19 unit/E2E
+  test files with 45 tests, Prisma validation, and 11/11 build tasks.
+- `pnpm test:integration`: 7 files and 42 tests, including renter verification, protected evidence,
+  booking/occupancy concurrency, and the complete pilot lifecycle.
 - Expo production export: iOS and Android Hermes bundles plus 26 assets.
 - Next.js admin, NestJS API, worker, database, and shared-package builds all completed.
 
-Visual inspection was performed in Expo Go on an iPhone 17 Pro simulator and an iPhone SE (3rd
-generation) simulator. Inspected states included renter home, search results, vehicle detail and price
+Visual inspection was performed in Expo Go on iPhone 17 Pro and iPhone 17 Pro Max iOS 26.5 simulators
+(with the earlier compact-screen pass retained). Inspected states included renter home, search results, vehicle detail and price
 CTA, bookings, profile, owner dashboard, fleet, wizard, booking requests, active-rental empty state,
 earnings/payouts, and owner More. Pickup/return and populated booking-detail states were verified through
 the HTTP integration scenario and exported bundle, not manually replayed as a complete simulator rental.

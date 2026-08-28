@@ -11,6 +11,7 @@ import {
 import { apiClient } from './api-client';
 import type { AuthUser } from './auth.types';
 import { tokenStorage } from './token-storage';
+import { appLockStorage } from '../app-lock/storage';
 
 interface AuthContextValue {
   readonly booting: boolean;
@@ -89,12 +90,14 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
         await accept(await apiClient.register(email, password));
       },
       logout: async () => {
+        const currentUserId = user?.id;
         sessionGeneration.current += 1;
         try {
           await apiClient.request('/auth/logout', { method: 'POST' });
         } finally {
           apiClient.setAccessToken(null);
           await tokenStorage.clear();
+          if (currentUserId) await appLockStorage.clearAccount(currentUserId);
           setUser(null);
         }
       },

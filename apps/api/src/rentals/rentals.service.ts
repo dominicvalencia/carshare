@@ -29,6 +29,7 @@ import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata, RequestPrincipal } from '../security/security-context';
 import type {
   CreateClaimDto,
+  AdminHandoverResolutionDto,
   CreateIncidentDto,
   IncidentStatusDto,
   OperationalHoldDto,
@@ -105,6 +106,7 @@ export class RentalsService {
   private readonly pickupGraceMinutes: number;
   private readonly challengeTtlMinutes: number;
   private readonly challengeMaxAttempts: number;
+  private readonly returnConfirmationGraceMinutes: number;
 
   constructor(
     private readonly database: DatabaseService,
@@ -124,6 +126,10 @@ export class RentalsService {
     this.challengeMaxAttempts = configuration.getOrThrow('PICKUP_VERIFICATION_MAX_ATTEMPTS', {
       infer: true,
     });
+    this.returnConfirmationGraceMinutes = configuration.getOrThrow(
+      'RETURN_CONFIRMATION_GRACE_MINUTES',
+      { infer: true },
+    );
   }
 
   async participantDetail(principal: RequestPrincipal, reference: string) {
@@ -141,7 +147,7 @@ export class RentalsService {
   }
 
   async submitInspection(
-    ownerUserId: string,
+    userId: string,
     reference: string,
     type: InspectionType,
     input: SubmitInspectionDto,
@@ -153,8 +159,20 @@ export class RentalsService {
         include: { ownerProfile: true, vehicle: true },
         where: { publicReference: reference },
       });
-      if (booking.ownerUserId !== ownerUserId) this.denied();
-      if (booking.ownerProfile.status !== OwnerProfileStatus.VERIFIED) {
+      const participantRole =
+        booking.ownerUserId === userId
+          ? InspectionParticipantRole.OWNER
+          : booking.renterUserId === userId
+            ? InspectionParticipantRole.RENTER
+            : null;
+      if (!participantRole) this.denied();
+      if (type === InspectionType.PICKUP && participantRole !== InspectionParticipantRole.OWNER) {
+        this.denied();
+      }
+      if (
+        participantRole === InspectionParticipantRole.OWNER &&
+        booking.ownerProfile.status !== OwnerProfileStatus.VERIFIED
+      ) {
         throw new ApplicationException(
           'OWNER_NOT_VERIFIED',
           'Owner verification is required for rental handover.',
@@ -171,12 +189,21 @@ export class RentalsService {
         this.invalidState('Return inspection requires a return-pending booking.');
       }
       this.validatePowertrainMeasurements(booking.vehicle.powertrain, input);
-      await this.validateInspectionFiles(transaction, ownerUserId, input);
+      await this.validateInspectionFiles(transaction, userId, input);
       this.validatePerspectives(input);
       const existing = await transaction.inspection.findFirst({
-        where: { bookingId: booking.id, status: InspectionStatus.FINALIZED, type },
+        where: {
+          bookingId: booking.id,
+          status: InspectionStatus.FINALIZED,
+          submittedByUserId: userId,
+          type,
+        },
       });
       if (existing) return existing.id;
+      const latest = await transaction.inspection.findFirst({
+        orderBy: { version: 'desc' },
+        where: { bookingId: booking.id, type },
+      });
       const inspection = await transaction.inspection.create({
         data: {
           batterySocBasisPoints: input.batterySocBasisPoints ?? null,
@@ -185,8 +212,9 @@ export class RentalsService {
           id: randomUUID(),
           notes: input.notes ?? null,
           odometerMeters: BigInt(input.odometerMeters),
-          submittedByUserId: ownerUserId,
+          submittedByUserId: userId,
           type,
+          version: (latest?.version ?? 0) + 1,
         },
       });
       await transaction.inspectionMedia.createMany({
@@ -197,7 +225,7 @@ export class RentalsService {
           id: randomUUID(),
           inspectionId: inspection.id,
           perspective: media.perspective,
-          submittedById: ownerUserId,
+          submittedById: userId,
         })),
       });
       await transaction.inspection.update({
@@ -209,8 +237,8 @@ export class RentalsService {
           decision: InspectionConfirmationDecision.AGREED,
           id: randomUUID(),
           inspectionId: inspection.id,
-          role: InspectionParticipantRole.OWNER,
-          userId: ownerUserId,
+          role: participantRole,
+          userId,
         },
       });
       await this.outbox(transaction, booking.id, `${type}_INSPECTION_SUBMITTED`, {
@@ -220,7 +248,7 @@ export class RentalsService {
       await this.analytics(transaction, booking, `${type}_INSPECTION_SUBMITTED`, metadata);
       return inspection.id;
     });
-    return { inspectionId, rental: await this.ownerDetailById(ownerUserId, reference) };
+    return { inspectionId, rental: await this.participantDetailById(userId, reference) };
   }
 
   async issuePickupCode(renterUserId: string, reference: string, metadata: RequestMetadata) {
@@ -432,7 +460,7 @@ export class RentalsService {
   }
 
   async confirmReturn(
-    renterUserId: string,
+    userId: string,
     reference: string,
     input: ReturnConfirmationDto,
     metadata: RequestMetadata,
@@ -442,16 +470,30 @@ export class RentalsService {
       const booking = await transaction.booking.findUniqueOrThrow({
         include: {
           occupancy: true,
+          ownerProfile: true,
           policySnapshot: true,
           pricingSnapshot: true,
           vehicle: true,
         },
         where: { publicReference: reference },
       });
-      if (booking.renterUserId !== renterUserId) this.denied();
+      const participantRole =
+        booking.ownerUserId === userId
+          ? InspectionParticipantRole.OWNER
+          : booking.renterUserId === userId
+            ? InspectionParticipantRole.RENTER
+            : null;
+      if (!participantRole) this.denied();
+      if (
+        participantRole === InspectionParticipantRole.OWNER &&
+        booking.ownerProfile.status !== OwnerProfileStatus.VERIFIED
+      ) {
+        this.denied();
+      }
       if (booking.status === BookingStatus.RETURNED) {
         const finalizedReturn = await transaction.inspection.findFirst({
           include: { confirmations: true },
+          orderBy: { version: 'asc' },
           where: {
             bookingId: booking.id,
             status: InspectionStatus.FINALIZED,
@@ -459,7 +501,7 @@ export class RentalsService {
           },
         });
         const confirmation = finalizedReturn?.confirmations.find(
-          ({ role }) => role === InspectionParticipantRole.RENTER,
+          ({ role }) => role === participantRole,
         );
         if (confirmation?.decision === input.decision) return;
         throw new ApplicationException(
@@ -479,15 +521,33 @@ export class RentalsService {
         },
       });
       const returned = await transaction.inspection.findFirstOrThrow({
+        orderBy: { version: 'asc' },
         where: {
           bookingId: booking.id,
           status: InspectionStatus.FINALIZED,
           type: InspectionType.RETURN,
         },
       });
+      if (participantRole === InspectionParticipantRole.OWNER) {
+        const ownerReceiptInspection = await transaction.inspection.findFirst({
+          where: {
+            bookingId: booking.id,
+            status: InspectionStatus.FINALIZED,
+            submittedByUserId: booking.ownerUserId,
+            type: InspectionType.RETURN,
+          },
+        });
+        if (!ownerReceiptInspection) {
+          throw new ApplicationException(
+            'OWNER_RETURN_INSPECTION_REQUIRED',
+            'Complete the owner receipt inspection before confirming physical return.',
+            HttpStatus.CONFLICT,
+          );
+        }
+      }
       const existing = await transaction.inspectionConfirmation.findUnique({
         where: {
-          inspectionId_role: { inspectionId: returned.id, role: InspectionParticipantRole.RENTER },
+          inspectionId_role: { inspectionId: returned.id, role: participantRole },
         },
       });
       if (existing && existing.decision !== input.decision) {
@@ -504,10 +564,20 @@ export class RentalsService {
             id: randomUUID(),
             inspectionId: returned.id,
             reason: input.reason ?? null,
-            role: InspectionParticipantRole.RENTER,
-            userId: renterUserId,
+            role: participantRole,
+            userId,
           },
         });
+      }
+      const confirmations = await transaction.inspectionConfirmation.findMany({
+        where: { inspectionId: returned.id },
+      });
+      const confirmedRoles = new Set(confirmations.map(({ role }) => role));
+      if (
+        !confirmedRoles.has(InspectionParticipantRole.OWNER) ||
+        !confirmedRoles.has(InspectionParticipantRole.RENTER)
+      ) {
+        return;
       }
       if (pickup.odometerMeters === null || returned.odometerMeters === null) {
         throw new ApplicationException(
@@ -556,9 +626,9 @@ export class RentalsService {
           data: {
             blocksCompletion: true,
             bookingId: booking.id,
-            openedByUserId: renterUserId,
+            openedByUserId: userId,
             originType: DisputeOriginType.OTHER,
-            reason: input.reason ?? 'Renter disputed the recorded return measurements.',
+            reason: input.reason ?? 'A participant disputed the recorded return measurements.',
             status: DisputeStatus.EVIDENCE_COLLECTION,
           },
         });
@@ -603,7 +673,7 @@ export class RentalsService {
         BookingStatus.RETURN_PENDING,
         BookingStatus.RETURNED,
         BookingActorType.USER,
-        renterUserId,
+        userId,
         'RETURN_CONFIRMED',
         metadata,
       );
@@ -617,7 +687,7 @@ export class RentalsService {
       });
       await this.analytics(transaction, booking, 'RETURN_COMPLETED', metadata);
     });
-    return this.participantDetailById(renterUserId, reference);
+    return this.participantDetailById(userId, reference);
   }
 
   async submitClaim(
@@ -767,6 +837,198 @@ export class RentalsService {
       reason: input.reason,
       request: metadata,
       targetId: booking.id,
+      targetType: 'BOOKING',
+    });
+    return this.adminDetail(reference);
+  }
+
+  async adminResolveHandover(
+    principal: RequestPrincipal,
+    reference: string,
+    input: AdminHandoverResolutionDto,
+    metadata: RequestMetadata,
+  ) {
+    const occurredAt = input.occurredAt ? new Date(input.occurredAt) : new Date();
+    if (occurredAt.getTime() > Date.now() + 60_000) {
+      throw new ApplicationException(
+        'OPERATIONAL_RESOLUTION_TIME_INVALID',
+        'The authoritative handover time cannot be in the future.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    await this.database.client.$transaction(async (transaction) => {
+      await this.lockBooking(transaction, reference);
+      const booking = await transaction.booking.findUniqueOrThrow({
+        include: {
+          occupancy: true,
+          policySnapshot: true,
+          pricingSnapshot: true,
+          vehicle: true,
+        },
+        where: { publicReference: reference },
+      });
+      const earliestOccurredAt =
+        input.action === 'CONFIRM_RETURN'
+          ? (booking.actualPickupAt ?? booking.rentalStart)
+          : booking.createdAt;
+      if (occurredAt.getTime() < earliestOccurredAt.getTime()) {
+        throw new ApplicationException(
+          'OPERATIONAL_RESOLUTION_TIME_INVALID',
+          input.action === 'CONFIRM_RETURN'
+            ? 'The authoritative return time cannot precede pickup.'
+            : 'The authoritative pickup time cannot precede the booking.',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+      if (input.incidentId) {
+        const incident = await transaction.rentalIncident.findUniqueOrThrow({
+          where: { id: input.incidentId },
+        });
+        if (incident.bookingId !== booking.id) this.denied();
+      }
+      if (input.action === 'CONFIRM_PICKUP') {
+        if (booking.status !== BookingStatus.READY_FOR_PICKUP) {
+          this.invalidState('Administrative pickup resolution requires a pickup-ready booking.');
+        }
+        const inspection = await transaction.inspection.findFirst({
+          where: {
+            bookingId: booking.id,
+            status: InspectionStatus.FINALIZED,
+            type: InspectionType.PICKUP,
+          },
+        });
+        if (!inspection) {
+          throw new ApplicationException(
+            'PICKUP_INSPECTION_REQUIRED',
+            'A finalized pickup inspection is required for administrative resolution.',
+            HttpStatus.CONFLICT,
+          );
+        }
+        await transaction.inspectionVerificationChallenge.updateMany({
+          data: { supersededAt: new Date() },
+          where: { bookingId: booking.id, consumedAt: null, supersededAt: null },
+        });
+        await transaction.booking.update({
+          data: { actualPickupAt: occurredAt, status: BookingStatus.ACTIVE },
+          where: { id: booking.id },
+        });
+        await this.history(
+          transaction,
+          booking.id,
+          BookingStatus.READY_FOR_PICKUP,
+          BookingStatus.ACTIVE,
+          BookingActorType.ADMIN,
+          principal.userId,
+          'ADMIN_PICKUP_CONFIRMED',
+          metadata,
+        );
+        await this.outbox(transaction, booking.id, 'PICKUP_ADMIN_RESOLVED', {
+          actualPickupAt: occurredAt.toISOString(),
+          bookingId: booking.id,
+        });
+      } else {
+        if (booking.status !== BookingStatus.RETURN_PENDING) {
+          this.invalidState('Administrative return resolution requires a return-pending booking.');
+        }
+        const [pickup, returned, existingUsage] = await Promise.all([
+          transaction.inspection.findFirst({
+            where: {
+              bookingId: booking.id,
+              status: InspectionStatus.FINALIZED,
+              type: InspectionType.PICKUP,
+            },
+          }),
+          transaction.inspection.findFirst({
+            orderBy: { version: 'asc' },
+            where: {
+              bookingId: booking.id,
+              status: InspectionStatus.FINALIZED,
+              submittedByUserId: booking.renterUserId,
+              type: InspectionType.RETURN,
+            },
+          }),
+          transaction.bookingUsageSummary.findUnique({ where: { bookingId: booking.id } }),
+        ]);
+        if (
+          !pickup ||
+          !returned ||
+          pickup.odometerMeters === null ||
+          returned.odometerMeters === null
+        ) {
+          throw new ApplicationException(
+            'RETURN_EVIDENCE_REQUIRED',
+            'Finalized pickup and return inspections are required for administrative resolution.',
+            HttpStatus.CONFLICT,
+          );
+        }
+        if (!booking.policySnapshot || !booking.pricingSnapshot) {
+          throw new ApplicationException(
+            'BOOKING_SNAPSHOT_MISSING',
+            'The immutable booking policy snapshot is unavailable.',
+            HttpStatus.CONFLICT,
+          );
+        }
+        if (!existingUsage) {
+          const usage = calculateBookingUsage({
+            actualReturnAt: occurredAt,
+            decision: InspectionConfirmationDecision.AGREED,
+            pickup: {
+              batterySocBasisPoints: pickup.batterySocBasisPoints,
+              fuelBasisPoints: pickup.fuelBasisPoints,
+              odometerMeters: pickup.odometerMeters,
+            },
+            policy: booking.policySnapshot,
+            pricing: booking.pricingSnapshot,
+            returned: {
+              batterySocBasisPoints: returned.batterySocBasisPoints,
+              fuelBasisPoints: returned.fuelBasisPoints,
+              odometerMeters: returned.odometerMeters,
+            },
+            scheduledReturnAt: booking.rentalEnd,
+          });
+          await transaction.bookingUsageSummary.create({
+            data: { bookingId: booking.id, id: randomUUID(), ...usage },
+          });
+        }
+        const claimDeadlineAt = new Date(
+          occurredAt.getTime() + booking.policySnapshot.claimWindowHours * 60 * 60 * 1000,
+        );
+        await transaction.booking.update({
+          data: { actualReturnAt: occurredAt, claimDeadlineAt, status: BookingStatus.RETURNED },
+          where: { id: booking.id },
+        });
+        await this.extendOccupancyOrEscalate(transaction, booking, occurredAt);
+        await this.history(
+          transaction,
+          booking.id,
+          BookingStatus.RETURN_PENDING,
+          BookingStatus.RETURNED,
+          BookingActorType.ADMIN,
+          principal.userId,
+          'ADMIN_RETURN_CONFIRMED',
+          metadata,
+        );
+        await this.outbox(transaction, booking.id, 'RETURN_ADMIN_RESOLVED', {
+          actualReturnAt: occurredAt.toISOString(),
+          bookingId: booking.id,
+          claimDeadlineAt: claimDeadlineAt.toISOString(),
+        });
+      }
+      if (input.incidentId) {
+        await transaction.rentalIncident.update({
+          data: { resolvedAt: new Date(), status: RentalIncidentStatus.RESOLVED },
+          where: { id: input.incidentId },
+        });
+      }
+    });
+    await this.audit.record({
+      action:
+        input.action === 'CONFIRM_PICKUP' ? 'ADMIN_PICKUP_CONFIRMED' : 'ADMIN_RETURN_CONFIRMED',
+      actorUserId: principal.userId,
+      metadata: { incidentId: input.incidentId ?? null, occurredAt: occurredAt.toISOString() },
+      reason: input.reason,
+      request: metadata,
+      targetId: reference,
       targetType: 'BOOKING',
     });
     return this.adminDetail(reference);
@@ -1112,6 +1374,9 @@ export class RentalsService {
       pickupVerification: {
         configuredMaxAttempts: this.challengeMaxAttempts,
         ttlMinutes: this.challengeTtlMinutes,
+      },
+      operationalPolicy: {
+        returnConfirmationGraceMinutes: this.returnConfirmationGraceMinutes,
       },
     });
   }

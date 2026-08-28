@@ -183,6 +183,49 @@ button.quiet {
   gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
+
+.address-review-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.address-review-panel,
+.address-assessment-form {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #d8e0dc);
+  border-radius: 16px;
+  display: grid;
+  gap: 0.6rem;
+  padding: 1rem;
+}
+
+.sensitive-panel {
+  background: #fff8eb;
+}
+
+.address-assessment-form {
+  margin-top: 1rem;
+}
+
+.address-assessment-form label {
+  display: grid;
+  font-weight: 700;
+  gap: 0.35rem;
+}
+
+.address-assessment-form select,
+.address-assessment-form textarea {
+  border: 1px solid #c9d5cf;
+  border-radius: 10px;
+  font: inherit;
+  padding: 0.7rem;
+}
+
+.address-assessment-form textarea {
+  min-height: 96px;
+  resize: vertical;
+}
 .file-button {
   text-align: left;
 }

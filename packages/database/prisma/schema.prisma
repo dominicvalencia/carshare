@@ -60,10 +60,33 @@ enum VerificationType {
 
 enum VerificationStatus {
   NOT_SUBMITTED
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  MORE_INFORMATION_REQUIRED
+  APPROVED
   PENDING
   VERIFIED
   REJECTED
+  SUSPENDED
   EXPIRED
+}
+
+enum AddressMatchAssessment {
+  MATCH
+  POSSIBLE_MATCH
+  MISMATCH
+  NOT_APPLICABLE
+}
+
+enum GeographicAreaLevel {
+  REGION
+  PROVINCE
+  SPECIAL_GEOGRAPHIC_AREA
+  CITY
+  MUNICIPALITY
+  SUBMUNICIPALITY
+  BARANGAY
 }
 
 enum FileClassification {
@@ -180,6 +203,7 @@ enum BookingActorType {
   USER
   SYSTEM
   WORKER
+  ADMIN
 }
 
 enum BookingOwnerDecisionType {
@@ -715,6 +739,7 @@ model User {
   ownerProfile              OwnerProfile?
   verifications             Verification[]                    @relation("VerificationSubject")
   reviewedVerifications     Verification[]                    @relation("VerificationReviewer")
+  addressAssessments        Verification[]                    @relation("VerificationAddressAssessor")
   uploadedFiles             FileAsset[]
   securityEvents            SecurityEvent[]
   auditLogs                 AuditLog[]                        @relation("AuditActor")
@@ -775,16 +800,37 @@ model User {
 }
 
 model UserProfile {
-  id           String    @id @default(uuid()) @db.Uuid
-  userId       String    @unique @map("user_id") @db.Uuid
-  firstName    String?   @map("first_name") @db.VarChar(100)
-  middleName   String?   @map("middle_name") @db.VarChar(100)
-  lastName     String?   @map("last_name") @db.VarChar(100)
-  displayName  String?   @map("display_name") @db.VarChar(150)
-  dateOfBirth  DateTime? @map("date_of_birth") @db.Date
-  avatarFileId String?   @map("avatar_file_id") @db.Uuid
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                            String    @id @default(uuid()) @db.Uuid
+  userId                        String    @unique @map("user_id") @db.Uuid
+  firstName                     String?   @map("first_name") @db.VarChar(100)
+  middleName                    String?   @map("middle_name") @db.VarChar(100)
+  lastName                      String?   @map("last_name") @db.VarChar(100)
+  displayName                   String?   @map("display_name") @db.VarChar(150)
+  dateOfBirth                   DateTime? @map("date_of_birth") @db.Date
+  avatarFileId                  String?   @map("avatar_file_id") @db.Uuid
+  addressLine1                  String?   @map("address_line_1") @db.VarChar(255)
+  region                        String?   @db.VarChar(120)
+  regionCode                    String?   @map("region_code") @db.VarChar(10)
+  addressScopeCode              String?   @map("address_scope_code") @db.VarChar(10)
+  barangay                      String?   @db.VarChar(120)
+  barangayCode                  String?   @map("barangay_code") @db.VarChar(10)
+  cityMunicipality              String?   @map("city_municipality") @db.VarChar(120)
+  cityMunicipalityCode          String?   @map("city_municipality_code") @db.VarChar(10)
+  province                      String?   @db.VarChar(120)
+  provinceCode                  String?   @map("province_code") @db.VarChar(10)
+  postalCode                    String?   @map("postal_code") @db.VarChar(12)
+  driverLicenseNumberHash       String?   @unique @map("driver_license_number_hash") @db.Char(64)
+  driverLicenseLastFour         String?   @map("driver_license_last_four") @db.VarChar(4)
+  driverLicenseExpiry           DateTime? @map("driver_license_expiry") @db.Date
+  driverLicenseClass            String?   @map("driver_license_class") @db.VarChar(100)
+  driverLicenseRestrictions     String?   @map("driver_license_restrictions") @db.VarChar(255)
+  emergencyContactName          String?   @map("emergency_contact_name") @db.VarChar(200)
+  emergencyContactMobile        String?   @map("emergency_contact_mobile") @db.VarChar(32)
+  emergencyContactRelation      String?   @map("emergency_contact_relation") @db.VarChar(100)
+  emergencyContactRelationOther String?   @map("emergency_contact_relation_other") @db.VarChar(100)
+  renterVerificationDraftStep   Int       @default(0) @map("renter_verification_draft_step")
+  createdAt                     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   user       User       @relation(fields: [userId], references: [id], onDelete: Restrict)
   avatarFile FileAsset? @relation("ProfileAvatar", fields: [avatarFileId], references: [id], onDelete: SetNull)
@@ -962,46 +1008,110 @@ model OwnerProfile {
 }
 
 model Verification {
-  id                String             @id @default(uuid()) @db.Uuid
-  userId            String             @map("user_id") @db.Uuid
-  ownerProfileId    String?            @map("owner_profile_id") @db.Uuid
-  type              VerificationType
-  status            VerificationStatus @default(NOT_SUBMITTED)
-  provider          String             @default("manual") @db.VarChar(100)
-  providerReference String?            @map("provider_reference") @db.VarChar(255)
-  submittedAt       DateTime?          @map("submitted_at") @db.Timestamptz(3)
-  reviewedAt        DateTime?          @map("reviewed_at") @db.Timestamptz(3)
-  reviewedByUserId  String?            @map("reviewed_by_user_id") @db.Uuid
-  rejectionReason   String?            @map("rejection_reason") @db.VarChar(1000)
-  expiresAt         DateTime?          @map("expires_at") @db.Timestamptz(3)
-  metadata          Json?
-  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                      String                  @id @default(uuid()) @db.Uuid
+  userId                  String                  @map("user_id") @db.Uuid
+  ownerProfileId          String?                 @map("owner_profile_id") @db.Uuid
+  type                    VerificationType
+  status                  VerificationStatus      @default(NOT_SUBMITTED)
+  provider                String                  @default("manual") @db.VarChar(100)
+  providerReference       String?                 @map("provider_reference") @db.VarChar(255)
+  submittedAt             DateTime?               @map("submitted_at") @db.Timestamptz(3)
+  reviewedAt              DateTime?               @map("reviewed_at") @db.Timestamptz(3)
+  reviewedByUserId        String?                 @map("reviewed_by_user_id") @db.Uuid
+  rejectionReason         String?                 @map("rejection_reason") @db.VarChar(1000)
+  addressAssessment       AddressMatchAssessment? @map("address_assessment")
+  addressReviewNotes      String?                 @map("address_review_notes") @db.VarChar(2000)
+  addressAssessedAt       DateTime?               @map("address_assessed_at") @db.Timestamptz(3)
+  addressAssessedByUserId String?                 @map("address_assessed_by_user_id") @db.Uuid
+  expiresAt               DateTime?               @map("expires_at") @db.Timestamptz(3)
+  metadata                Json?
+  createdAt               DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  user         User                   @relation("VerificationSubject", fields: [userId], references: [id], onDelete: Restrict)
-  ownerProfile OwnerProfile?          @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
-  reviewedBy   User?                  @relation("VerificationReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
-  documents    VerificationDocument[]
+  user              User                   @relation("VerificationSubject", fields: [userId], references: [id], onDelete: Restrict)
+  ownerProfile      OwnerProfile?          @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  reviewedBy        User?                  @relation("VerificationReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
+  addressAssessedBy User?                  @relation("VerificationAddressAssessor", fields: [addressAssessedByUserId], references: [id], onDelete: Restrict)
+  documents         VerificationDocument[]
 
   @@index([userId, type, status])
   @@index([ownerProfileId, status])
   @@index([status, submittedAt])
+  @@index([addressAssessedByUserId, addressAssessedAt])
   @@map("verifications")
 }
 
-model VerificationDocument {
-  id             String   @id @default(uuid()) @db.Uuid
-  verificationId String   @map("verification_id") @db.Uuid
-  fileAssetId    String   @map("file_asset_id") @db.Uuid
-  documentType   String   @map("document_type") @db.VarChar(100)
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+model GeographicArea {
+  code                 String              @id @db.VarChar(10)
+  name                 String              @db.VarChar(200)
+  searchName           String              @map("search_name") @db.VarChar(200)
+  level                GeographicAreaLevel
+  parentCode           String?             @map("parent_code") @db.VarChar(10)
+  regionCode           String              @map("region_code") @db.VarChar(10)
+  provinceCode         String?             @map("province_code") @db.VarChar(10)
+  cityMunicipalityCode String?             @map("city_municipality_code") @db.VarChar(10)
+  correspondenceCode   String?             @map("correspondence_code") @db.VarChar(10)
+  cityClass            String?             @map("city_class") @db.VarChar(10)
+  oldName              String?             @map("old_name") @db.VarChar(255)
+  datasetVersion       String              @map("dataset_version") @db.VarChar(40)
+  active               Boolean             @default(true)
+  importedAt           DateTime            @default(now()) @map("imported_at") @db.Timestamptz(3)
 
-  verification Verification @relation(fields: [verificationId], references: [id], onDelete: Cascade)
-  fileAsset    FileAsset    @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+  parent   GeographicArea?  @relation("GeographicAreaHierarchy", fields: [parentCode], references: [code], onDelete: Restrict)
+  children GeographicArea[] @relation("GeographicAreaHierarchy")
+
+  @@index([level, regionCode, name])
+  @@index([level, provinceCode, name])
+  @@index([level, cityMunicipalityCode, name])
+  @@index([parentCode, level, name])
+  @@index([searchName])
+  @@map("geographic_areas")
+}
+
+model VerificationDocument {
+  id             String             @id @default(uuid()) @db.Uuid
+  verificationId String             @map("verification_id") @db.Uuid
+  fileAssetId    String             @map("file_asset_id") @db.Uuid
+  definitionId   String?            @map("definition_id") @db.Uuid
+  documentType   String             @map("document_type") @db.VarChar(100)
+  version        Int                @default(1)
+  status         VerificationStatus @default(SUBMITTED)
+  expiresAt      DateTime?          @map("expires_at") @db.Date
+  reviewFeedback String?            @map("review_feedback") @db.VarChar(1000)
+  replacedAt     DateTime?          @map("replaced_at") @db.Timestamptz(3)
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  verification Verification              @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+  fileAsset    FileAsset                 @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+  definition   RenterDocumentDefinition? @relation(fields: [definitionId], references: [id], onDelete: Restrict)
 
   @@unique([verificationId, fileAssetId])
+  @@unique([verificationId, definitionId, version])
   @@index([fileAssetId])
+  @@index([definitionId, status, replacedAt])
   @@map("verification_documents")
+}
+
+model RenterDocumentDefinition {
+  id                String           @id @default(uuid()) @db.Uuid
+  jurisdiction      String           @default("PH") @db.Char(2)
+  code              String           @db.VarChar(100)
+  name              String           @db.VarChar(150)
+  category          String           @db.VarChar(100)
+  verificationType  VerificationType @map("verification_type")
+  required          Boolean          @default(true)
+  acceptedMimeTypes String[]         @default(["image/jpeg", "image/png", "application/pdf"]) @map("accepted_mime_types")
+  maximumBytes      BigInt           @default(10485760) @map("maximum_bytes")
+  active            Boolean          @default(true)
+  sortOrder         Int              @default(0) @map("sort_order")
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  documents VerificationDocument[]
+
+  @@unique([jurisdiction, code])
+  @@index([jurisdiction, active, sortOrder])
+  @@map("renter_document_definitions")
 }
 
 model FileAsset {

@@ -63,6 +63,10 @@ export class OtpRequestDto extends DeviceDto {
   @ApiProperty({ enum: OtpPurpose }) @IsEnum(OtpPurpose) purpose!: OtpPurpose;
 }
 
+export class MobileVerificationRequestDto extends DeviceDto {
+  @ApiProperty() @IsPhoneNumber('PH') mobileNumber!: string;
+}
+
 export class OtpVerifyDto extends DeviceDto {
   @ApiProperty() @IsUUID() challengeId!: string;
   @ApiProperty() @IsString() @Length(6, 6) code!: string;

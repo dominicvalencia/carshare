@@ -15,6 +15,7 @@ import {
   VehicleLifecycleStatus,
   VehicleOperationalStatus,
   VerificationStatus,
+  VerificationType,
 } from '@carrental/database';
 import { AppModule } from '../src/app.module';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
@@ -23,6 +24,7 @@ describe.sequential('Phase 4 public discovery integration', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let renterToken = '';
+  let renterUserId = '';
   let ownerToken = '';
   let ownerUserId = '';
   let firstVehicleId = '';
@@ -54,6 +56,8 @@ describe.sequential('Phase 4 public discovery integration', () => {
 
     const renter = await register(`phase4-renter-${unique}@example.test`);
     renterToken = renter.body.data.accessToken;
+    renterUserId = renter.body.data.user.id;
+    await approveRenter(renterUserId);
     const owner = await register(`phase4-owner-${unique}@example.test`);
     ownerToken = owner.body.data.accessToken;
     ownerUserId = owner.body.data.user.id;
@@ -133,6 +137,78 @@ describe.sequential('Phase 4 public discovery integration', () => {
       .send({ end, start })
       .expect(403)
       .expect(({ body }) => expect(body.error.code).toBe('OWNER_CANNOT_BOOK_OWN_VEHICLE'));
+    await request(app.getHttpServer())
+      .put(`/api/v1/favorites/${firstVehicleId}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(404);
+  });
+
+  it('filters unified booking occupancy before pagination and honors exact buffer boundaries', async () => {
+    const occupiedStart = futureIso(10, 9);
+    const rentalEnd = futureIso(11, 10);
+    const quote = await request(app.getHttpServer())
+      .post(`/api/v1/vehicles/${firstVehicleId}/quotes`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .send({ start: occupiedStart, end: rentalEnd })
+      .expect(201);
+    const hold = await request(app.getHttpServer())
+      .post('/api/v1/bookings')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .set('Idempotency-Key', `discovery-occupancy-${unique}`)
+      .send({ quoteId: quote.body.data.id })
+      .expect(201);
+    const booking = await database.client.booking.findUniqueOrThrow({
+      where: { publicReference: hold.body.data.publicReference },
+    });
+    expect(booking.renterUserId).toBe(renterUserId);
+    const occupancy = await database.client.vehicleOccupancy.findFirstOrThrow({
+      where: { bookingId: booking.id, active: true },
+    });
+    const baseQuery = {
+      latitude: 13.9414,
+      longitude: 121.623,
+      make: `PhaseFour-${unique}`,
+      radius: 25,
+      sort: 'DISTANCE',
+    };
+    const overlapping = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query({ ...baseQuery, start: occupiedStart, end: rentalEnd, limit: 1 })
+      .expect(200);
+    expect(
+      overlapping.body.data.items.map((item: { vehicleId: string }) => item.vehicleId),
+    ).toEqual([secondVehicleId]);
+    expect(overlapping.body.data.pageInfo.hasNextPage).toBe(false);
+
+    const afterStart = occupancy.occupiedEnd.toISOString();
+    const afterEnd = new Date(occupancy.occupiedEnd.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const exactAfter = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query({ ...baseQuery, start: afterStart, end: afterEnd })
+      .expect(200);
+    expect(exactAfter.body.data.items.map((item: { vehicleId: string }) => item.vehicleId)).toEqual(
+      [firstVehicleId, secondVehicleId],
+    );
+
+    const exactBeforeEnd = new Date(occupancy.occupiedStart.getTime() - 120 * 60 * 1000);
+    const exactBeforeStart = new Date(exactBeforeEnd.getTime() - 24 * 60 * 60 * 1000);
+    const exactBefore = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query({
+        ...baseQuery,
+        start: exactBeforeStart.toISOString(),
+        end: exactBeforeEnd.toISOString(),
+      })
+      .expect(200);
+    expect(
+      exactBefore.body.data.items.map((item: { vehicleId: string }) => item.vehicleId),
+    ).toEqual([firstVehicleId, secondVehicleId]);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${hold.body.data.publicReference}/cancel`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .send({ reason: 'Release Phase 12 discovery test occupancy.' })
+      .expect(201);
   });
 
   afterAll(async () => {
@@ -267,6 +343,36 @@ describe.sequential('Phase 4 public discovery integration', () => {
       .post('/api/v1/auth/register')
       .send({ email, password, platform: 'WEB' })
       .expect(201);
+  }
+
+  async function approveRenter(userId: string) {
+    await database.client.user.update({
+      data: {
+        emailVerifiedAt: new Date(),
+        mobileNumber: `+639${String(Math.floor(Math.random() * 1_000_000_000)).padStart(9, '0')}`,
+        mobileVerifiedAt: new Date(),
+        profile: {
+          upsert: {
+            create: {
+              driverLicenseExpiry: futureDate(365),
+              firstName: 'Pilot',
+              lastName: 'Renter',
+            },
+            update: { driverLicenseExpiry: futureDate(365) },
+          },
+        },
+      },
+      where: { id: userId },
+    });
+    await database.client.verification.createMany({
+      data: [VerificationType.IDENTITY, VerificationType.DRIVER_LICENSE].map((type) => ({
+        expiresAt: futureDate(365),
+        reviewedAt: new Date(),
+        status: VerificationStatus.APPROVED,
+        type,
+        userId,
+      })),
+    });
   }
 
   async function createPublicVehicle(

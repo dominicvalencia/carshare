@@ -17,6 +17,7 @@ import { DatabaseService } from '../infrastructure/database/database.service';
 import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata } from '../security/security-context';
 import { OwnersService } from '../owners/owners.service';
+import { RenterEligibilityService } from '../renter-verification/renter-eligibility.service';
 import {
   BookingProjectionService,
   bookingInclude,
@@ -38,6 +39,7 @@ export class BookingsService {
     private readonly crypto: CryptoService,
     private readonly analytics: DiscoveryAnalyticsService,
     private readonly owners: OwnersService,
+    private readonly renterEligibility: RenterEligibilityService,
     @Inject(ConfigService) private readonly configuration: ConfigService<ApiEnvironment, true>,
   ) {}
 
@@ -57,6 +59,7 @@ export class BookingsService {
     try {
       const bookingId = await this.database.client.$transaction(
         async (transaction) => {
+          await this.renterEligibility.assertEligible(renterUserId, transaction);
           await this.occupancy.expireStale(transaction);
           const existing = await transaction.bookingIdempotencyRecord.findUnique({
             where: {

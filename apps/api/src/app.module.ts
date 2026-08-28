@@ -29,6 +29,8 @@ import { CommunicationsModule } from './communications/communications.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { SupportModule } from './support/support.module';
+import { RenterVerificationModule } from './renter-verification/renter-verification.module';
+import { GeographyModule } from './geography/geography.module';
 
 @Module({
   imports: [
@@ -59,6 +61,8 @@ import { SupportModule } from './support/support.module';
     NotificationsModule,
     ReviewsModule,
     SupportModule,
+    RenterVerificationModule,
+    GeographyModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: ApiExceptionFilter },

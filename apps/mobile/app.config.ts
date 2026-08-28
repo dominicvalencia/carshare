@@ -20,7 +20,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     package: 'ph.com.carrental.mobile',
   },
   plugins: [
+    '@react-native-community/datetimepicker',
     'expo-notifications',
+    'expo-secure-store',
+    [
+      'expo-local-authentication',
+      {
+        faceIDPermission: 'Allow Car Rental to use Face ID to unlock protected app content.',
+      },
+    ],
     [
       'expo-location',
       {

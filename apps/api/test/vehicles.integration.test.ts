@@ -442,13 +442,16 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
     const history = await database.client.vehicleStatusHistory.findMany({
       where: { vehicleId },
     });
-    expect(history.map(({ newStatus }) => newStatus)).toEqual([
-      VehicleLifecycleStatus.DRAFT,
-      VehicleLifecycleStatus.PENDING_APPROVAL,
-      VehicleLifecycleStatus.CHANGES_REQUIRED,
-      VehicleLifecycleStatus.PENDING_APPROVAL,
-      VehicleLifecycleStatus.APPROVED,
-    ]);
+    expect(history).toHaveLength(5);
+    expect(history.map(({ previousStatus, newStatus }) => [previousStatus, newStatus])).toEqual(
+      expect.arrayContaining([
+        [null, VehicleLifecycleStatus.DRAFT],
+        [VehicleLifecycleStatus.DRAFT, VehicleLifecycleStatus.PENDING_APPROVAL],
+        [VehicleLifecycleStatus.PENDING_APPROVAL, VehicleLifecycleStatus.CHANGES_REQUIRED],
+        [VehicleLifecycleStatus.CHANGES_REQUIRED, VehicleLifecycleStatus.PENDING_APPROVAL],
+        [VehicleLifecycleStatus.PENDING_APPROVAL, VehicleLifecycleStatus.APPROVED],
+      ]),
+    );
     const audit = await database.client.auditLog.findFirst({
       where: { action: 'VEHICLE_APPROVED', targetId: vehicleId },
     });

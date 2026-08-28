@@ -1,4 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { ApiEnvironment } from '@carrental/config';
 import { FileAssetStatus, FileClassification, Prisma } from '@carrental/database';
 import { FilesService } from '../files/files.service';
 
@@ -38,10 +40,26 @@ export const bookingInclude = {
   pricingSnapshot: { include: { lines: { orderBy: { displayOrder: 'asc' as const } } } },
   renter: {
     select: {
+      _count: {
+        select: { renterBookings: { where: { status: 'COMPLETED' as const } } },
+      },
+      createdAt: true,
       emailVerifiedAt: true,
       mobileVerifiedAt: true,
-      profile: { select: { displayName: true, firstName: true } },
-      verifications: { select: { status: true, type: true } },
+      profile: {
+        select: {
+          avatarFile: { select: { classification: true, id: true, status: true } },
+          displayName: true,
+          firstName: true,
+          lastName: true,
+        },
+      },
+      status: true,
+      subjectReviews: {
+        select: { rating: true },
+        where: { moderationStatus: 'PUBLISHED' as const, type: 'RENTER' as const },
+      },
+      verifications: { select: { expiresAt: true, status: true, type: true } },
     },
   },
   statusHistory: { orderBy: { occurredAt: 'asc' as const } },
@@ -72,7 +90,10 @@ export type BookingRecord = Prisma.BookingGetPayload<{ include: typeof bookingIn
 
 @Injectable()
 export class BookingProjectionService {
-  constructor(private readonly files: FilesService) {}
+  constructor(
+    private readonly files: FilesService,
+    @Inject(ConfigService) private readonly configuration: ConfigService<ApiEnvironment, true>,
+  ) {}
 
   renter(booking: BookingRecord) {
     return {
@@ -95,6 +116,16 @@ export class BookingProjectionService {
         verified: true,
       },
       ownerResponseDeadlineAt: booking.ownerResponseDeadlineAt,
+      pickupWindow: {
+        closesAt: new Date(
+          booking.rentalStart.getTime() +
+            this.configuration.getOrThrow('PICKUP_WINDOW_GRACE_MINUTES', { infer: true }) * 60_000,
+        ),
+        opensAt: new Date(
+          booking.rentalStart.getTime() -
+            this.configuration.getOrThrow('PICKUP_WINDOW_EARLY_MINUTES', { infer: true }) * 60_000,
+        ),
+      },
       policy: this.policy(booking),
       payments: booking.payments.map((payment) => ({
         amountMinor: Number(payment.amountMinor),
@@ -124,16 +155,55 @@ export class BookingProjectionService {
 
   owner(booking: BookingRecord) {
     const profile = booking.renter.profile;
+    const identity = booking.renter.verifications.find(({ type }) => type === 'IDENTITY');
+    const license = booking.renter.verifications.find(({ type }) => type === 'DRIVER_LICENSE');
+    const approved = (status?: string) => status === 'APPROVED' || status === 'VERIFIED';
+    const driverLicenseVerified = Boolean(
+      license && approved(license.status) && (!license.expiresAt || license.expiresAt > new Date()),
+    );
+    const identityVerified = approved(identity?.status);
+    const emailVerified = Boolean(booking.renter.emailVerifiedAt);
+    const mobileVerified = Boolean(booking.renter.mobileVerifiedAt);
+    const verified =
+      booking.renter.status === 'ACTIVE' &&
+      identityVerified &&
+      driverLicenseVerified &&
+      emailVerified &&
+      mobileVerified;
+    const avatar = profile?.avatarFile;
+    const ratings = booking.renter.subjectReviews.map(({ rating }) => rating);
     return {
       ...this.renter(booking),
       owner: undefined,
       renter: {
-        displayName: profile?.displayName ?? profile?.firstName ?? 'Verified renter',
-        driverLicenseVerified: booking.renter.verifications.some(
-          ({ status, type }) => type === 'DRIVER_LICENSE' && status === 'VERIFIED',
-        ),
-        emailVerified: Boolean(booking.renter.emailVerifiedAt),
-        mobileVerified: Boolean(booking.renter.mobileVerifiedAt),
+        accountStanding: booking.renter.status === 'ACTIVE' ? 'GOOD_STANDING' : 'RESTRICTED',
+        averageRating: ratings.length
+          ? ratings.reduce((total, rating) => total + rating, 0) / ratings.length
+          : null,
+        completedRentals: booking.renter._count.renterBookings,
+        displayName:
+          profile?.displayName ??
+          ([profile?.firstName, profile?.lastName].filter(Boolean).join(' ') || 'Renter'),
+        driverLicenseVerified,
+        emailVerified,
+        identityVerified,
+        memberSince: booking.renter.createdAt,
+        mobileVerified,
+        profilePhoto:
+          avatar?.classification === FileClassification.PUBLIC &&
+          avatar.status === FileAssetStatus.READY
+            ? this.files.trustedPublicGrant(avatar.id)
+            : null,
+        reviewCount: ratings.length,
+        verificationLabel: verified
+          ? 'Verified renter'
+          : identity?.status === 'SUSPENDED' || license?.status === 'SUSPENDED'
+            ? 'Verification suspended'
+            : [identity?.status, license?.status].includes('SUBMITTED') ||
+                [identity?.status, license?.status].includes('UNDER_REVIEW')
+              ? 'Verification pending'
+              : 'Verification incomplete',
+        verified,
       },
       earning: booking.ownerEarning
         ? {

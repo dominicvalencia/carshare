@@ -1,7 +1,12 @@
 import { hash } from 'argon2';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../src/generated/prisma/client';
-import { CommissionScope, FinancialAccountType, RoleCode } from '../src/generated/prisma/enums';
+import {
+  CommissionScope,
+  FinancialAccountType,
+  RoleCode,
+  VerificationType,
+} from '../src/generated/prisma/enums';
 import { seedDevelopmentDemo } from './development-demo';
 
 const roleDescriptions: Readonly<Record<RoleCode, string>> = {
@@ -20,6 +25,10 @@ const permissionDescriptions = {
   'owners.read': 'Read owner profiles and verification cases',
   'owners.suspend': 'Suspend owner operational access',
   'owners.verify': 'Approve or reject owner verification',
+  'renters.verifications.read': 'Read renter verification queues and case details',
+  'renters.verifications.review': 'Review and decide renter verification cases',
+  'renters.verifications.suspend': 'Suspend approved renter verification',
+  'renters.verification_documents.read': 'Issue audited access to sensitive renter documents',
   'payments.read': 'Read payment operations',
   'rentals.read': 'Read rental operations and lifecycle diagnostics',
   'rentals.intervene': 'Place or release audited operational holds',
@@ -67,6 +76,10 @@ const rolePermissions: Readonly<Partial<Record<RoleCode, readonly string[]>>> = 
     'owners.read',
     'owners.suspend',
     'owners.verify',
+    'renters.verifications.read',
+    'renters.verifications.review',
+    'renters.verifications.suspend',
+    'renters.verification_documents.read',
     'users.read',
     'users.suspend',
     'vehicles.read',
@@ -172,6 +185,34 @@ const documentDefinitions = [
   ['OWNERSHIP_AUTHORIZATION', 'Ownership or authorization evidence', false],
 ] as const;
 
+const renterDocumentDefinitions = [
+  [
+    'DRIVER_LICENSE_FRONT',
+    'Driver’s license front',
+    'DRIVER_LICENSE',
+    VerificationType.DRIVER_LICENSE,
+  ],
+  [
+    'DRIVER_LICENSE_BACK',
+    'Driver’s license back',
+    'DRIVER_LICENSE',
+    VerificationType.DRIVER_LICENSE,
+  ],
+  [
+    'ADDITIONAL_GOVERNMENT_ID',
+    'Additional government-issued ID',
+    'GOVERNMENT_ID',
+    VerificationType.IDENTITY,
+  ],
+  [
+    'PROOF_OF_ADDRESS',
+    'Proof of residential address',
+    'PROOF_OF_ADDRESS',
+    VerificationType.IDENTITY,
+  ],
+  ['SELFIE', 'New camera selfie for manual review', 'SELFIE', VerificationType.IDENTITY],
+] as const;
+
 async function seed(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is required for seeding.');
@@ -241,6 +282,7 @@ async function seed(): Promise<void> {
       });
       const user = await client.user.upsert({
         create: {
+          acceptedMimeTypes: code === 'SELFIE' ? ['image/jpeg', 'image/png'] : undefined,
           email: adminEmail,
           emailVerifiedAt: new Date(),
           normalizedEmail: adminEmail,
@@ -277,6 +319,35 @@ async function seed(): Promise<void> {
       await client.vehicleDocumentDefinition.upsert({
         create: { code, jurisdiction: 'PH', name, required, sortOrder },
         update: { active: true, name, required, sortOrder },
+        where: { jurisdiction_code: { code, jurisdiction: 'PH' } },
+      });
+    }
+    for (const [
+      sortOrder,
+      [code, name, category, verificationType],
+    ] of renterDocumentDefinitions.entries()) {
+      await client.renterDocumentDefinition.upsert({
+        create: {
+          category,
+          code,
+          jurisdiction: 'PH',
+          name,
+          required: true,
+          sortOrder: (sortOrder + 1) * 10,
+          verificationType,
+        },
+        update: {
+          acceptedMimeTypes:
+            code === 'SELFIE'
+              ? ['image/jpeg', 'image/png']
+              : ['image/jpeg', 'image/png', 'application/pdf'],
+          active: true,
+          category,
+          name,
+          required: true,
+          sortOrder: (sortOrder + 1) * 10,
+          verificationType,
+        },
         where: { jurisdiction_code: { code, jurisdiction: 'PH' } },
       });
     }

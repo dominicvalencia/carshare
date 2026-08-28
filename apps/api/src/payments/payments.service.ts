@@ -29,6 +29,7 @@ import {
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import type { RequestMetadata } from '../security/security-context';
+import { RenterEligibilityService } from '../renter-verification/renter-eligibility.service';
 import { PAYMENT_PROVIDER } from './payment-provider.factory';
 
 const PAYMENT_INCLUDE = {
@@ -44,10 +45,12 @@ export class PaymentsService {
     private readonly database: DatabaseService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     @Inject(ConfigService) private readonly configuration: ConfigService<ApiEnvironment, true>,
+    private readonly renterEligibility: RenterEligibilityService,
   ) {}
 
   async authorizeRental(userId: string, reference: string, request: RequestMetadata) {
     const prepared = await this.database.client.$transaction(async (transaction) => {
+      await this.renterEligibility.assertEligible(userId, transaction);
       const booking = await transaction.booking.findFirst({
         include: { pricingSnapshot: true, renter: { select: { email: true } } },
         where: {
@@ -572,6 +575,48 @@ export class PaymentsService {
         return;
       }
       if (booking.status !== BookingStatus.AWAITING_PAYMENT) return;
+      const renterEligibility = await this.renterEligibility.evaluate(
+        booking.renterUserId,
+        transaction,
+      );
+      if (!renterEligibility.eligible) {
+        await transaction.payment.update({
+          data: {
+            authorizedAmountMinor: payment.amountMinor,
+            authorizedAt: new Date(),
+            externalPaymentId,
+            providerState: result.providerState ?? 'AUTHORIZED',
+            status: PaymentStatus.VOID_PENDING,
+          },
+          where: { id: payment.id },
+        });
+        await this.ensureOperation(transaction, payment, PaymentOperationType.VOID);
+        await transaction.booking.update({
+          data: { status: BookingStatus.CANCELLED },
+          where: { id: booking.id },
+        });
+        await transaction.vehicleOccupancy.updateMany({
+          data: {
+            active: false,
+            releaseReason: 'RENTER_VERIFICATION_REQUIRED',
+            releasedAt: new Date(),
+          },
+          where: { active: true, bookingId: booking.id },
+        });
+        await this.history(
+          transaction,
+          booking.id,
+          booking.status,
+          BookingStatus.CANCELLED,
+          'RENTER_VERIFICATION_REQUIRED',
+          request,
+        );
+        await this.outbox(transaction, booking.id, 'BOOKING_CANCELLED', {
+          bookingId: booking.id,
+          reasonCode: 'RENTER_VERIFICATION_REQUIRED',
+        });
+        return;
+      }
       const deadline = new Date(
         Date.now() +
           this.configuration.getOrThrow('OWNER_RESPONSE_TTL_MINUTES', { infer: true }) * 60_000,

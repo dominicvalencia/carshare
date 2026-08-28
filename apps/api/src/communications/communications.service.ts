@@ -342,7 +342,13 @@ export class CommunicationsService {
     const conversation = await this.database.client.conversation.findFirst({
       where: { id: conversationId, participants: { some: { userId, leftAt: null } } },
       include: {
-        booking: { select: { publicReference: true, status: true } },
+        booking: {
+          select: {
+            publicReference: true,
+            status: true,
+            vehicle: { select: { make: true, model: true } },
+          },
+        },
         participants: { select: { userId: true, context: true } },
       },
     });

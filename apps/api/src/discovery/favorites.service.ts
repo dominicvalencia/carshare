@@ -16,7 +16,7 @@ export class FavoritesService {
   ) {}
 
   async add(userId: string, vehicleId: string, correlationId?: string) {
-    if (!(await this.eligibility.findOne(vehicleId))) {
+    if (!(await this.eligibility.findOne(vehicleId, undefined, userId))) {
       throw new ApplicationException(
         DiscoveryErrorCode.VEHICLE_NOT_PUBLIC,
         'Only a public vehicle can be added to favorites.',
@@ -50,6 +50,8 @@ export class FavoritesService {
     });
     const vehicles = await this.eligibility.findEligible(
       favorites.map(({ vehicleId }) => vehicleId),
+      undefined,
+      userId,
     );
     const vehicleById = new Map(vehicles.map((vehicle) => [vehicle.id, vehicle]));
     return {

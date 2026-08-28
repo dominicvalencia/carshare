@@ -4,15 +4,19 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import type { ComponentProps } from 'react';
+import { Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiClient } from '../auth/api-client';
 import type { OwnerStatus } from '../auth/auth.types';
 import {
   AccountScreen,
   ActiveDevicesScreen,
+  LoginSecurityScreen,
   OwnerMoreScreen,
   OwnerOnboardingScreen,
   PersonalInformationScreen,
   SettingsScreen,
+  VerificationScreen,
 } from '../features/account/AccountScreen';
 import { MyBookingsScreen } from '../features/bookings/MyBookingsScreen';
 import { OwnerBookingRequestsScreen } from '../features/bookings/OwnerBookingRequestsScreen';
@@ -21,6 +25,8 @@ import { DiscoveryScreen } from '../features/discovery/DiscoveryScreen';
 import { OwnerEarningsScreen } from '../features/earnings/OwnerEarningsScreen';
 import { NotificationCenter } from '../features/notifications/NotificationCenter';
 import { OwnerRentalsScreen } from '../features/rentals/OwnerRentalsScreen';
+import { ReviewsScreen } from '../features/reviews/ReviewsScreen';
+import { ClaimDetailScreen } from '../features/claims/ClaimsPanels';
 import { SupportCenter } from '../features/support/SupportCenter';
 import { OwnerDashboardScreen } from '../features/vehicles/OwnerDashboardScreen';
 import { VehiclesScreen } from '../features/vehicles/VehiclesScreen';
@@ -64,11 +70,6 @@ const ownerIcons: Readonly<Record<keyof OwnerTabParamList, { active: IconName; i
   };
 
 function useBadges() {
-  const notifications = useQuery({
-    queryKey: ['notification-summary'],
-    queryFn: () => apiClient.request<{ unreadCount: number }>('/notifications/summary'),
-    refetchInterval: 30_000,
-  });
   const conversations = useQuery({
     queryKey: ['conversations'],
     queryFn: () =>
@@ -77,11 +78,11 @@ function useBadges() {
   });
   return {
     messages: conversations.data?.items.reduce((sum, item) => sum + item.unreadCount, 0) ?? 0,
-    notifications: notifications.data?.unreadCount ?? 0,
   };
 }
 
-function tabOptions(icons: { active: IconName; idle: IconName }) {
+function tabOptions(icons: { active: IconName; idle: IconName }, bottomInset: number) {
+  const safeBottom = Math.max(bottomInset, Platform.OS === 'android' ? 8 : 10);
   return {
     headerShown: false,
     tabBarActiveTintColor: colors.primary,
@@ -90,8 +91,14 @@ function tabOptions(icons: { active: IconName; idle: IconName }) {
     tabBarIcon: ({ color, focused, size }: { color: string; focused: boolean; size: number }) => (
       <Ionicons color={color} name={focused ? icons.active : icons.idle} size={size} />
     ),
-    tabBarLabelStyle: { fontSize: 11, fontWeight: '700' as const },
-    tabBarStyle: { borderTopColor: colors.border, height: 66, paddingBottom: 7, paddingTop: 5 },
+    tabBarItemStyle: { paddingTop: 3 },
+    tabBarLabelStyle: { fontSize: 11, fontWeight: '700' as const, marginBottom: 2 },
+    tabBarStyle: {
+      borderTopColor: colors.border,
+      height: 54 + safeBottom,
+      paddingBottom: safeBottom,
+      paddingTop: 6,
+    },
   };
 }
 
@@ -100,8 +107,11 @@ function RenterNavigation({
   ownerCapable,
 }: Pick<AppNavigationProperties, 'onModeChange' | 'ownerCapable'>) {
   const badges = useBadges();
+  const insets = useSafeAreaInsets();
   return (
-    <RenterTabs.Navigator screenOptions={({ route }) => tabOptions(renterIcons[route.name])}>
+    <RenterTabs.Navigator
+      screenOptions={({ route }) => tabOptions(renterIcons[route.name], insets.bottom)}
+    >
       <RenterTabs.Screen name="Home">{() => <DiscoveryScreen home />}</RenterTabs.Screen>
       <RenterTabs.Screen name="Search">{() => <DiscoveryScreen />}</RenterTabs.Screen>
       <RenterTabs.Screen name="Bookings" component={MyBookingsScreen} />
@@ -109,12 +119,14 @@ function RenterNavigation({
         name="Messages"
         options={badges.messages ? { tabBarBadge: badges.messages } : {}}
       >
-        {({ route }) => <MessagesScreen initialConversationId={route.params?.conversationId} />}
+        {({ route }) => (
+          <MessagesScreen
+            key={route.params?.conversationId ?? 'conversation-list'}
+            initialConversationId={route.params?.conversationId}
+          />
+        )}
       </RenterTabs.Screen>
-      <RenterTabs.Screen
-        name="Profile"
-        options={badges.notifications ? { tabBarBadge: badges.notifications } : {}}
-      >
+      <RenterTabs.Screen name="Profile">
         {() => <AccountScreen onModeChange={onModeChange} ownerCapable={ownerCapable} />}
       </RenterTabs.Screen>
     </RenterTabs.Navigator>
@@ -126,8 +138,11 @@ function OwnerNavigation({
   ownerStatus,
 }: Pick<AppNavigationProperties, 'onModeChange' | 'ownerStatus'>) {
   const badges = useBadges();
+  const insets = useSafeAreaInsets();
   return (
-    <OwnerTabs.Navigator screenOptions={({ route }) => tabOptions(ownerIcons[route.name])}>
+    <OwnerTabs.Navigator
+      screenOptions={({ route }) => tabOptions(ownerIcons[route.name], insets.bottom)}
+    >
       <OwnerTabs.Screen name="Dashboard">
         {() => <OwnerDashboardScreen ownerStatus={ownerStatus} />}
       </OwnerTabs.Screen>
@@ -151,7 +166,12 @@ function OwnerNavigation({
         name="Messages"
         options={badges.messages ? { tabBarBadge: badges.messages } : {}}
       >
-        {({ route }) => <MessagesScreen initialConversationId={route.params?.conversationId} />}
+        {({ route }) => (
+          <MessagesScreen
+            key={route.params?.conversationId ?? 'conversation-list'}
+            initialConversationId={route.params?.conversationId}
+          />
+        )}
       </OwnerTabs.Screen>
       <OwnerTabs.Screen name="More">
         {() => <OwnerMoreScreen onModeChange={onModeChange} ownerStatus={ownerStatus} />}
@@ -170,6 +190,13 @@ export function AppNavigation(properties: AppNavigationProperties) {
             Marketplace: 'marketplace',
             Notifications: 'notifications',
             Support: 'support/:ticketId',
+            Conversation: 'messages/:conversationId',
+            Booking: 'bookings/:bookingId',
+            Claim: 'claims/:claimId',
+            OwnerEarnings: 'earnings',
+            Payout: 'payouts/:payoutId',
+            Favorites: 'favorites',
+            Reviews: 'reviews',
           },
         },
       }}
@@ -202,6 +229,16 @@ export function AppNavigation(properties: AppNavigationProperties) {
           options={{ headerShown: false }}
         />
         <Stack.Screen
+          component={VerificationScreen}
+          name="Verification"
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          component={LoginSecurityScreen}
+          name="LoginSecurity"
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
           component={ActiveDevicesScreen}
           name="ActiveDevices"
           options={{ headerShown: false }}
@@ -216,7 +253,40 @@ export function AppNavigation(properties: AppNavigationProperties) {
           name="Notifications"
           options={{ headerShown: false }}
         />
-        <Stack.Screen component={SupportCenter} name="Support" options={{ headerShown: false }} />
+        <Stack.Screen name="Favorites" options={{ headerShown: false }}>
+          {({ navigation }) => (
+            <DiscoveryScreen initialMode="favorites" onExit={() => navigation.goBack()} />
+          )}
+        </Stack.Screen>
+        <Stack.Screen component={ReviewsScreen} name="Reviews" options={{ headerShown: false }} />
+        <Stack.Screen name="Conversation" options={{ headerShown: false }}>
+          {({ navigation, route }) => (
+            <MessagesScreen
+              initialConversationId={route.params.conversationId}
+              onClose={() => navigation.goBack()}
+            />
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="Booking" options={{ headerShown: false }}>
+          {({ navigation, route }) => (
+            <MyBookingsScreen
+              initialBookingReference={route.params.bookingId}
+              onClose={() => navigation.goBack()}
+            />
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="Claim" options={{ headerShown: false }}>
+          {({ navigation, route }) => (
+            <ClaimDetailScreen
+              claimId={route.params.claimId}
+              ownerMode={properties.mode === 'owner'}
+              onBack={() => navigation.goBack()}
+            />
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="Support" options={{ headerShown: false }}>
+          {({ route }) => <SupportCenter initialTicketId={route.params?.ticketId} />}
+        </Stack.Screen>
         <Stack.Screen component={SettingsScreen} name="Settings" options={{ headerShown: false }} />
         <Stack.Screen
           component={OwnerRentalsScreen}
@@ -228,6 +298,9 @@ export function AppNavigation(properties: AppNavigationProperties) {
           name="OwnerEarnings"
           options={{ headerShown: false }}
         />
+        <Stack.Screen name="Payout" options={{ headerShown: false }}>
+          {() => <OwnerEarningsScreen />}
+        </Stack.Screen>
       </Stack.Navigator>
     </NavigationContainer>
   );

@@ -25,15 +25,26 @@ export function dateTimeLabel(value: string | Date): string {
   return `${dateLabel(value)} · ${timeLabel(value)}`;
 }
 
-export function relativeTime(value: string | Date): string {
+export function relativeTime(value: string | Date, now = Date.now()): string {
   const date = new Date(value);
-  const seconds = Math.round((date.getTime() - Date.now()) / 1000);
-  const absolute = Math.abs(seconds);
-  const formatter = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
-  if (absolute < 60) return formatter.format(seconds, 'second');
-  if (absolute < 3600) return formatter.format(Math.round(seconds / 60), 'minute');
-  if (absolute < 86_400) return formatter.format(Math.round(seconds / 3600), 'hour');
-  if (absolute < 604_800) return formatter.format(Math.round(seconds / 86_400), 'day');
+  if (!Number.isFinite(date.getTime())) return 'Unknown date';
+  const difference = now - date.getTime();
+  const absolute = Math.abs(difference);
+  const past = difference >= 0;
+  if (absolute < 60_000) return 'Just now';
+  if (absolute < 3_600_000) {
+    const minutes = Math.max(1, Math.floor(absolute / 60_000));
+    return past ? `${minutes} min ago` : `In ${minutes} min`;
+  }
+  if (absolute < 86_400_000) {
+    const hours = Math.max(1, Math.floor(absolute / 3_600_000));
+    return past ? `${hours} hr ago` : `In ${hours} hr`;
+  }
+  if (absolute < 604_800_000) {
+    const days = Math.max(1, Math.floor(absolute / 86_400_000));
+    if (days === 1) return past ? 'Yesterday' : 'Tomorrow';
+    return past ? `${days} days ago` : `In ${days} days`;
+  }
   return dateLabel(date);
 }
 

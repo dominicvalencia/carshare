@@ -154,10 +154,14 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
       request(app.getHttpServer()).get(`/api/v1/conversations/${conversationId}`),
       outsider,
     ).expect(404);
-    await auth(
+    const detail = await auth(
       request(app.getHttpServer()).get(`/api/v1/conversations/${conversationId}`),
       renter,
     ).expect(200);
+    expect(detail.body.data.booking.vehicle).toMatchObject({
+      make: expect.any(String),
+      model: expect.any(String),
+    });
   });
 
   it('sends immutable messages idempotently and tracks read state', async () => {
@@ -306,6 +310,10 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
         })
       ).reviewCount,
     ).toBe(0);
+    const mine = await auth(request(app.getHttpServer()).get('/api/v1/me/reviews'), renter).expect(
+      200,
+    );
+    expect(mine.body.data.written.some((item: { id: string }) => item.id === review.id)).toBe(true);
   });
 
   it('keeps support tickets private and internal notes invisible to users', async () => {
@@ -319,10 +327,26 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
       })
       .expect(201);
     const reference = created.body.data.publicReference as string;
+    const list = await auth(
+      request(app.getHttpServer()).get('/api/v1/support/tickets'),
+      renter,
+    ).expect(200);
+    expect(
+      list.body.data.some(
+        (ticket: { publicReference: string }) => ticket.publicReference === reference,
+      ),
+    ).toBe(true);
     await auth(
       request(app.getHttpServer()).get(`/api/v1/support/tickets/${reference}`),
       outsider,
     ).expect(404);
+    await auth(
+      request(app.getHttpServer()).post(`/api/v1/support/tickets/${reference}/messages`),
+      renter,
+    )
+      .set('Idempotency-Key', `user-reply-${unique}`)
+      .send({ body: 'Here is the requested renter follow-up.' })
+      .expect(201);
     await auth(
       request(app.getHttpServer()).post(`/api/v1/admin/support/tickets/${reference}/messages`),
       admin,
@@ -342,6 +366,7 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
       renter,
     ).expect(200);
     expect(JSON.stringify(detail.body)).toContain('We reviewed your booking.');
+    expect(JSON.stringify(detail.body)).toContain('Here is the requested renter follow-up.');
     expect(JSON.stringify(detail.body)).not.toContain('Private investigation note.');
     await auth(
       request(app.getHttpServer()).patch(`/api/v1/admin/support/tickets/${reference}`),

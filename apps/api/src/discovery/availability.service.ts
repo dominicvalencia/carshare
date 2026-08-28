@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { AvailabilityPolicyType } from '@carrental/database';
+import { AvailabilityPolicyType, Prisma, VehicleOccupancyType } from '@carrental/database';
 import { DiscoveryErrorCode } from '@carrental/api-contracts';
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
@@ -7,7 +7,12 @@ import { RentalDurationService } from './duration.service';
 import type { PublicVehicleRecord } from './public-eligibility.service';
 
 export type UnavailableReason =
-  'OUTSIDE_WEEKLY_AVAILABILITY' | 'OWNER_BLOCKED' | 'MINIMUM_DURATION' | 'MAXIMUM_DURATION';
+  | 'OUTSIDE_WEEKLY_AVAILABILITY'
+  | 'OWNER_BLOCKED'
+  | 'BOOKING_RESERVED'
+  | 'MAINTENANCE'
+  | 'MINIMUM_DURATION'
+  | 'MAXIMUM_DURATION';
 
 export interface AdvisoryAvailability {
   readonly advisory: true;
@@ -35,10 +40,15 @@ export class AvailabilityService {
   async checkMany(vehicles: readonly PublicVehicleRecord[], startInput: string, endInput: string) {
     const { chargeableDays, end, start } = this.duration.calculate(startInput, endInput);
     const ids = vehicles.map(({ id }) => id);
-    const blocks = ids.length
-      ? await this.database.client.vehicleBlockedPeriod.findMany({
-          select: { endsAt: true, startsAt: true, vehicleId: true },
-          where: { removedAt: null, vehicleId: { in: ids } },
+    if (ids.length) {
+      await this.database.client.$queryRaw(
+        Prisma.sql`SELECT "expire_stale_bookings"() AS "expired"`,
+      );
+    }
+    const occupancies = ids.length
+      ? await this.database.client.vehicleOccupancy.findMany({
+          select: { occupiedEnd: true, occupiedStart: true, type: true, vehicleId: true },
+          where: { active: true, vehicleId: { in: ids } },
         })
       : [];
     const results = new Map<string, AdvisoryAvailability>();
@@ -54,16 +64,22 @@ export class AvailabilityService {
           reasons.push('OUTSIDE_WEEKLY_AVAILABILITY');
         }
       }
-      const buffer = policy.turnaroundMinutes * 60 * 1000;
-      if (
-        blocks.some(
-          (block) =>
-            block.vehicleId === vehicle.id &&
-            start.getTime() < block.endsAt.getTime() + buffer &&
-            end.getTime() > block.startsAt.getTime() - buffer,
-        )
-      ) {
-        reasons.push('OWNER_BLOCKED');
+      const requestedOccupiedEnd = new Date(end.getTime() + policy.turnaroundMinutes * 60_000);
+      for (const occupancy of occupancies) {
+        if (
+          occupancy.vehicleId !== vehicle.id ||
+          start >= occupancy.occupiedEnd ||
+          requestedOccupiedEnd <= occupancy.occupiedStart
+        ) {
+          continue;
+        }
+        const reason =
+          occupancy.type === VehicleOccupancyType.BOOKING_RESERVATION
+            ? 'BOOKING_RESERVED'
+            : occupancy.type === VehicleOccupancyType.MAINTENANCE
+              ? 'MAINTENANCE'
+              : 'OWNER_BLOCKED';
+        if (!reasons.includes(reason)) reasons.push(reason);
       }
       results.set(vehicle.id, {
         advisory: true,
@@ -84,6 +100,8 @@ export class AvailabilityService {
       MINIMUM_DURATION: DiscoveryErrorCode.MINIMUM_RENTAL_NOT_MET,
       OUTSIDE_WEEKLY_AVAILABILITY: DiscoveryErrorCode.VEHICLE_UNAVAILABLE,
       OWNER_BLOCKED: DiscoveryErrorCode.VEHICLE_UNAVAILABLE,
+      BOOKING_RESERVED: DiscoveryErrorCode.VEHICLE_UNAVAILABLE,
+      MAINTENANCE: DiscoveryErrorCode.VEHICLE_UNAVAILABLE,
     } as const;
     throw new ApplicationException(
       mapping[reason],

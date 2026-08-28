@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
@@ -10,7 +10,7 @@ import {
   Chip,
   Field,
   Icon,
-  Screen,
+  NestedScreen,
   StateView,
   StatusBadge,
 } from '../../ui/primitives';
@@ -21,7 +21,7 @@ interface Ticket {
   readonly subject: string;
   readonly status: string;
   readonly category?: string;
-  readonly updatedAt?: string;
+  readonly lastActivityAt: string;
 }
 interface TicketDetail extends Ticket {
   readonly messages: readonly {
@@ -33,14 +33,23 @@ interface TicketDetail extends Ticket {
 }
 type SupportView = 'home' | 'create' | 'detail';
 
-export function SupportCenter() {
+export function SupportCenter({
+  initialTicketId,
+}: {
+  readonly initialTicketId?: string | undefined;
+}) {
   const client = useQueryClient();
-  const [view, setView] = useState<SupportView>('home');
+  const [view, setView] = useState<SupportView>(initialTicketId ? 'detail' : 'home');
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [category, setCategory] = useState('OTHER');
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialTicketId ?? null);
   const [reply, setReply] = useState('');
+  const [formError, setFormError] = useState('');
+  const instanceId = useId();
+  const requestSequence = useRef(0);
+  const createKey = useRef(`support-create-${instanceId}-0`);
+  const replyKey = useRef(`support-reply-${instanceId}-0`);
   const tickets = useQuery({
     queryKey: ['support-tickets'],
     queryFn: () => apiClient.request<Ticket[]>('/support/tickets'),
@@ -54,12 +63,15 @@ export function SupportCenter() {
     mutationFn: () =>
       apiClient.request<Ticket>('/support/tickets', {
         method: 'POST',
-        headers: { 'Idempotency-Key': `support-${Date.now()}` },
-        body: JSON.stringify({ category, subject, message }),
+        headers: { 'Idempotency-Key': createKey.current },
+        body: JSON.stringify({ category, subject: subject.trim(), message: message.trim() }),
       }),
     onSuccess: (ticket) => {
       setSubject('');
       setMessage('');
+      setFormError('');
+      requestSequence.current += 1;
+      createKey.current = `support-create-${instanceId}-${requestSequence.current}`;
       setSelected(ticket.publicReference);
       setView('detail');
       void client.invalidateQueries({ queryKey: ['support-tickets'] });
@@ -69,28 +81,26 @@ export function SupportCenter() {
     mutationFn: () =>
       apiClient.request(`/support/tickets/${selected}/messages`, {
         method: 'POST',
-        headers: { 'Idempotency-Key': `support-reply-${Date.now()}` },
-        body: JSON.stringify({ body: reply }),
+        headers: { 'Idempotency-Key': replyKey.current },
+        body: JSON.stringify({ body: reply.trim() }),
       }),
     onSuccess: () => {
       setReply('');
+      requestSequence.current += 1;
+      replyKey.current = `support-reply-${instanceId}-${requestSequence.current}`;
       void client.invalidateQueries({ queryKey: ['support-ticket', selected] });
       void client.invalidateQueries({ queryKey: ['support-tickets'] });
     },
   });
   if (view === 'create')
     return (
-      <Screen
+      <NestedScreen
+        backLabel="Support home"
+        onBack={() => setView('home')}
         eyebrow="Help & support"
         title="Create a ticket"
         subtitle="Tell us what happened and our support team will reply here."
       >
-        <Button
-          icon="arrow-back"
-          label="Support home"
-          onPress={() => setView('home')}
-          variant="ghost"
-        />
         <Text style={styles.label}>What can we help with?</Text>
         <View style={styles.chips}>
           {['BOOKING', 'PAYMENT', 'RENTAL', 'CLAIM', 'OTHER'].map((value) => (
@@ -116,16 +126,29 @@ export function SupportCenter() {
           multiline
         />
         <Button
-          disabled={subject.trim().length < 3 || message.trim().length < 3 || create.isPending}
+          disabled={create.isPending}
           label={create.isPending ? 'Sending…' : 'Submit ticket'}
-          onPress={() => create.mutate()}
+          onPress={() => {
+            if (subject.trim().length < 3 || !message.trim()) {
+              setFormError('Enter a subject with at least 3 characters and a message.');
+              return;
+            }
+            setFormError('');
+            create.mutate();
+          }}
         />
+        {formError && <Text style={styles.error}>{formError}</Text>}
         {create.isError && <Text style={styles.error}>{create.error.message}</Text>}
-      </Screen>
+      </NestedScreen>
     );
   if (view === 'detail' && selected)
     return (
-      <Screen
+      <NestedScreen
+        backLabel="Ticket history"
+        onBack={() => {
+          setView('home');
+          setSelected(null);
+        }}
         eyebrow={detail.data?.publicReference ?? 'Support ticket'}
         title={detail.data?.subject ?? 'Ticket detail'}
         action={
@@ -137,15 +160,6 @@ export function SupportCenter() {
           ) : undefined
         }
       >
-        <Button
-          icon="arrow-back"
-          label="Ticket history"
-          onPress={() => {
-            setView('home');
-            setSelected(null);
-          }}
-          variant="ghost"
-        />
         {detail.isPending && <StateView loading title="Loading ticket…" />}
         {detail.isError && (
           <StateView
@@ -183,10 +197,11 @@ export function SupportCenter() {
             message="Create a new ticket if you need help with something else."
           />
         ) : null}
-      </Screen>
+      </NestedScreen>
     );
   return (
-    <Screen
+    <NestedScreen
+      backLabel="Back to profile"
       eyebrow="Customer care"
       title="Help & support"
       subtitle="Find answers or contact the support team."
@@ -239,7 +254,9 @@ export function SupportCenter() {
               <Text style={styles.ticketTitle}>{ticket.subject}</Text>
               <Text style={styles.body}>
                 {ticket.publicReference} ·{' '}
-                {ticket.updatedAt ? relativeTime(ticket.updatedAt) : titleCase(ticket.category)}
+                {ticket.lastActivityAt
+                  ? relativeTime(ticket.lastActivityAt)
+                  : titleCase(ticket.category)}
               </Text>
             </View>
             <StatusBadge
@@ -250,7 +267,7 @@ export function SupportCenter() {
           </Card>
         </Pressable>
       ))}
-    </Screen>
+    </NestedScreen>
   );
 }
 const styles = StyleSheet.create({

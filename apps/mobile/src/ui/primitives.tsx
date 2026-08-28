@@ -1,5 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import type { ComponentProps, ReactNode } from 'react';
+import type { NavigationProp, ParamListBase } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
+import { useEffect, useRef, type ComponentProps, type ReactNode, type RefObject } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -39,16 +41,9 @@ export function Screen({
   leading,
   action,
   scroll = true,
-}: {
-  readonly children: ReactNode;
-  readonly eyebrow?: string | undefined;
-  readonly title?: string | undefined;
-  readonly subtitle?: string | undefined;
-  readonly leading?: ReactNode | undefined;
-  readonly action?: ReactNode | undefined;
-  readonly scroll?: boolean | undefined;
-}) {
-  const content = (
+  scrollRef,
+}: ScreenProperties) {
+  const header = (
     <>
       {leading && <View style={styles.leading}>{leading}</View>}
       {(title || eyebrow || action) && (
@@ -65,6 +60,11 @@ export function Screen({
           {action}
         </View>
       )}
+    </>
+  );
+  const content = (
+    <>
+      {header}
       {children}
     </>
   );
@@ -74,8 +74,25 @@ export function Screen({
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.flex}
       >
-        {scroll ? (
+        {leading ? (
+          <>
+            <View style={styles.stickyNestedHeader}>{header}</View>
+            {scroll ? (
+              <ScrollView
+                ref={scrollRef}
+                contentContainerStyle={styles.nestedScreenContent}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                {children}
+              </ScrollView>
+            ) : (
+              <View style={styles.nestedScreenContentFlex}>{children}</View>
+            )}
+          </>
+        ) : scroll ? (
           <ScrollView
+            ref={scrollRef}
             contentContainerStyle={styles.screenContent}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
@@ -87,6 +104,55 @@ export function Screen({
         )}
       </KeyboardAvoidingView>
     </SafeAreaView>
+  );
+}
+
+interface ScreenProperties {
+  readonly children: ReactNode;
+  readonly eyebrow?: string | undefined;
+  readonly title?: string | undefined;
+  readonly subtitle?: string | undefined;
+  readonly leading?: ReactNode | undefined;
+  readonly action?: ReactNode | undefined;
+  readonly scroll?: boolean | undefined;
+  readonly scrollRef?: RefObject<ScrollView | null> | undefined;
+}
+
+export function BackControl({
+  label = 'Back',
+  onPress,
+}: {
+  readonly label?: string;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      hitSlop={8}
+      onPress={onPress}
+      style={styles.backControl}
+    >
+      <Icon color={colors.primary} name="arrow-back" size={19} />
+      <Text style={styles.backControlText}>{label}</Text>
+    </Pressable>
+  );
+}
+
+export function NestedScreen({
+  backLabel = 'Back',
+  onBack,
+  ...properties
+}: Omit<ScreenProperties, 'leading'> & {
+  readonly backLabel?: string;
+  readonly onBack?: (() => void) | undefined;
+}) {
+  const navigation = useNavigation<NavigationProp<ParamListBase>>();
+  return (
+    <Screen
+      {...properties}
+      leading={<BackControl label={backLabel} onPress={onBack ?? navigation.goBack} />}
+    />
   );
 }
 
@@ -169,6 +235,7 @@ export function Field({
   multiline = false,
   error,
   secureTextEntry = false,
+  returnKeyType,
 }: {
   readonly label: string;
   readonly value: string;
@@ -178,6 +245,7 @@ export function Field({
   readonly multiline?: boolean | undefined;
   readonly error?: string | undefined;
   readonly secureTextEntry?: boolean | undefined;
+  readonly returnKeyType?: ComponentProps<typeof TextInput>['returnKeyType'];
 }) {
   return (
     <View style={styles.field}>
@@ -189,13 +257,76 @@ export function Field({
         onChangeText={onChangeText}
         placeholder={placeholder}
         placeholderTextColor="#8A9791"
-        returnKeyType={multiline ? 'default' : 'next'}
+        returnKeyType={returnKeyType ?? (multiline ? 'default' : 'next')}
         secureTextEntry={secureTextEntry}
         style={[styles.input, multiline && styles.multiline, Boolean(error) && styles.inputError]}
         textAlignVertical={multiline ? 'top' : 'center'}
         value={value}
       />
       {error && <Text style={styles.errorText}>{error}</Text>}
+    </View>
+  );
+}
+
+export function PasscodeInput({
+  label,
+  value,
+  onChange,
+  onComplete,
+  disabled = false,
+  autoFocus = false,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+  readonly onComplete?: ((value: string) => void) | undefined;
+  readonly disabled?: boolean | undefined;
+  readonly autoFocus?: boolean | undefined;
+}) {
+  const input = useRef<TextInput>(null);
+  const completed = useRef('');
+  useEffect(() => {
+    if (value.length !== 6) completed.current = '';
+    if (value.length === 6 && value !== completed.current) {
+      completed.current = value;
+      onComplete?.(value);
+    }
+  }, [onComplete, value]);
+  return (
+    <View style={styles.passcodeField}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <Pressable
+        accessibilityLabel={`${label}. ${value.length} of 6 digits entered.`}
+        accessibilityRole="button"
+        disabled={disabled}
+        onPress={() => input.current?.focus()}
+        style={styles.passcodeBoxes}
+      >
+        {Array.from({ length: 6 }, (_, index) => (
+          <View
+            key={index}
+            style={[styles.passcodeBox, index === value.length && styles.passcodeBoxActive]}
+          >
+            <Text style={styles.passcodeDot}>{index < value.length ? '●' : '○'}</Text>
+          </View>
+        ))}
+      </Pressable>
+      <TextInput
+        ref={input}
+        accessibilityLabel={label}
+        autoFocus={autoFocus}
+        caretHidden
+        contextMenuHidden
+        editable={!disabled}
+        inputMode="numeric"
+        keyboardType="number-pad"
+        maxLength={6}
+        onChangeText={(next) => onChange(next.replaceAll(/\D/g, '').slice(0, 6))}
+        returnKeyType="done"
+        secureTextEntry
+        style={styles.hiddenPasscodeInput}
+        value={value}
+      />
     </View>
   );
 }
@@ -295,6 +426,14 @@ export function Divider() {
 }
 
 const styles = StyleSheet.create({
+  backControl: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 44,
+    paddingRight: spacing.sm,
+  },
+  backControlText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
   badge: {
     alignSelf: 'flex-start',
     borderRadius: radius.pill,
@@ -397,9 +536,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
+  hiddenPasscodeInput: { height: 1, opacity: 0, position: 'absolute', width: 1 },
   inputError: { borderColor: colors.danger },
   leading: { alignItems: 'flex-start' },
   multiline: { minHeight: 112 },
+  nestedScreenContent: {
+    flexGrow: 1,
+    gap: spacing.md,
+    paddingBottom: 120,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  nestedScreenContentFlex: {
+    flex: 1,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  passcodeBox: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    height: 52,
+    justifyContent: 'center',
+    width: 40,
+  },
+  passcodeBoxActive: { borderColor: colors.primary, borderWidth: 2 },
+  passcodeBoxes: { flexDirection: 'row', gap: spacing.xxs },
+  passcodeDot: { color: colors.ink, fontSize: 22 },
+  passcodeField: { gap: spacing.sm },
   pressed: { opacity: 0.62 },
   safeArea: { backgroundColor: colors.background, flex: 1 },
   screenContent: {
@@ -435,5 +601,12 @@ const styles = StyleSheet.create({
   },
   stateMessage: { color: colors.subtleText, lineHeight: 21, textAlign: 'center' },
   stateTitle: { color: colors.ink, fontSize: 17, fontWeight: '800', textAlign: 'center' },
+  stickyNestedHeader: {
+    backgroundColor: colors.background,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xxs,
+  },
   subtitle: { color: colors.subtleText, lineHeight: 21, marginTop: spacing.xxs },
 });

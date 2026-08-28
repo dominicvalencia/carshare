@@ -14,6 +14,7 @@ import type { RequestPrincipal } from '../security/security-context';
 import { ClaimsService } from '../claims/claims.service';
 import {
   CreateClaimDto,
+  AdminHandoverResolutionDto,
   CreateIncidentDto,
   IncidentStatusDto,
   OperationalHoldDto,
@@ -52,6 +53,22 @@ export class RenterRentalsController {
     @Req() request: Request,
   ) {
     return this.rentals.initiateReturn(principal.userId, reference, requestMetadata(request));
+  }
+
+  @Post('return/inspection')
+  returnInspection(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: SubmitInspectionDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.submitInspection(
+      principal.userId,
+      reference,
+      InspectionType.RETURN,
+      input,
+      requestMetadata(request),
+    );
   }
 
   @Post('return/confirm')
@@ -152,6 +169,16 @@ export class OwnerRentalsController {
     );
   }
 
+  @Post('return/confirm')
+  confirmReturn(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: ReturnConfirmationDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.confirmReturn(principal.userId, reference, input, requestMetadata(request));
+  }
+
   @Post('claims')
   claim(
     @CurrentPrincipal() principal: RequestPrincipal,
@@ -214,6 +241,17 @@ export class AdminRentalsController {
     @Req() request: Request,
   ) {
     return this.rentals.setOperationalHold(principal, reference, input, requestMetadata(request));
+  }
+
+  @Post(':reference/handover-resolution')
+  @RequirePermissions('rentals.intervene')
+  resolveHandover(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: AdminHandoverResolutionDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.adminResolveHandover(principal, reference, input, requestMetadata(request));
   }
 
   @Post('incidents/:incidentId/status')

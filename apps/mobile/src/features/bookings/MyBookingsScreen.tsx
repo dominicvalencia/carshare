@@ -4,12 +4,14 @@ import { Alert, Linking, Modal, Pressable, StyleSheet, Text, View } from 'react-
 import type { NavigationProp, RouteProp } from '@react-navigation/native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { apiClient } from '../../auth/api-client';
-import type { RenterTabParamList } from '../../navigation/routes';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
+import type { RenterTabParamList, RootStackParamList } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { bookingStatusLabel, dateLabel, dateTimeLabel, money, titleCase } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import {
   Button,
+  BackControl,
   Card,
   Icon,
   Screen,
@@ -20,6 +22,7 @@ import {
 import { RenterClaimsPanel } from '../claims/ClaimsPanels';
 import { RenterRentalPanel } from '../rentals/RentalOperationsPanels';
 import { ReviewPanel } from '../reviews/ReviewPanel';
+import { bookingGroup, type BookingGroup } from './booking-presentation';
 
 interface ContentGrant {
   readonly contentPath: string;
@@ -34,6 +37,7 @@ export interface BookingView {
   readonly rentalEnd: string;
   readonly holdExpiresAt: string | null;
   readonly ownerResponseDeadlineAt: string | null;
+  readonly pickupWindow?: { readonly closesAt: string; readonly opensAt: string };
   readonly pricing: { totalMinor: number; currency: string };
   readonly payments: readonly {
     amountMinor: number;
@@ -56,14 +60,19 @@ export interface BookingView {
     reasonCode: string | null;
   }[];
 }
-type BookingGroup = 'Upcoming' | 'Active' | 'Completed' | 'Cancelled';
-export function MyBookingsScreen() {
-  const navigation = useNavigation<NavigationProp<RenterTabParamList>>();
+export function MyBookingsScreen({
+  initialBookingReference,
+  onClose,
+}: {
+  readonly initialBookingReference?: string;
+  readonly onClose?: () => void;
+} = {}) {
+  const navigation = useNavigation<NavigationProp<RenterTabParamList & RootStackParamList>>();
   const route = useRoute<RouteProp<RenterTabParamList, 'Bookings'>>();
   const client = useQueryClient();
   const [manualSelection, setManualSelection] = useState<string | null>(null);
-  const selected = manualSelection ?? route.params?.bookingId ?? null;
-  const [group, setGroup] = useState<BookingGroup>('Upcoming');
+  const selected = manualSelection ?? initialBookingReference ?? route.params?.bookingId ?? null;
+  const [group, setGroup] = useState<BookingGroup>('Current');
   const [filterOpen, setFilterOpen] = useState(false);
   const bookings = useQuery({
     queryKey: ['bookings'],
@@ -73,6 +82,12 @@ export function MyBookingsScreen() {
     enabled: Boolean(selected),
     queryKey: ['booking', selected],
     queryFn: () => apiClient.request<BookingView>(`/bookings/${selected}`),
+    refetchInterval: (query) =>
+      query.state.data && transitionalBookingStates.has(query.state.data.status) ? 5_000 : false,
+  });
+  useRefreshOnFocusAndForeground(() => {
+    void bookings.refetch();
+    if (selected) void detail.refetch();
   });
   const cancel = useMutation({
     mutationFn: (reference: string) =>
@@ -108,10 +123,14 @@ export function MyBookingsScreen() {
         loading={detail.isPending}
         error={detail.error}
         onBack={() => {
+          if (onClose) {
+            onClose();
+            return;
+          }
           setManualSelection(null);
           navigation.setParams({ bookingId: undefined });
         }}
-        onMessage={(conversationId) => navigation.navigate('Messages', { conversationId })}
+        onMessage={(conversationId) => navigation.navigate('Conversation', { conversationId })}
         cancel={cancel}
         payment={payment}
         refreshPayment={refreshPayment}
@@ -150,13 +169,13 @@ export function MyBookingsScreen() {
         <StateView
           icon="calendar-outline"
           title={
-            group === 'Upcoming'
-              ? "You don't have any bookings yet"
+            group === 'Current'
+              ? 'No rental needs your attention'
               : `No ${group.toLowerCase()} bookings`
           }
           message={
-            group === 'Upcoming'
-              ? 'Find a car and confirm your dates to start your next trip.'
+            group === 'Current'
+              ? 'Pickup-ready, active, and return-pending rentals will always appear here.'
               : 'Bookings will move here automatically as their status changes.'
           }
         />
@@ -200,7 +219,15 @@ export function MyBookingsScreen() {
   );
 }
 
-const bookingGroups = ['Upcoming', 'Active', 'Completed', 'Cancelled'] as const;
+const transitionalBookingStates = new Set([
+  'AWAITING_PAYMENT',
+  'AWAITING_OWNER',
+  'CAPTURE_PENDING',
+  'READY_FOR_PICKUP',
+  'RETURN_PENDING',
+]);
+
+const bookingGroups = ['Current', 'Upcoming', 'Past'] as const;
 function BookingFilter({
   group,
   open,
@@ -279,13 +306,13 @@ function BookingDetail({
 }) {
   if (loading)
     return (
-      <Screen title="Booking">
+      <Screen leading={<BackControl label="All bookings" onPress={onBack} />} title="Booking">
         <StateView loading title="Loading booking…" />
       </Screen>
     );
   if (error || !booking)
     return (
-      <Screen title="Booking">
+      <Screen leading={<BackControl label="All bookings" onPress={onBack} />} title="Booking">
         <StateView
           icon="alert-circle-outline"
           title="Booking unavailable"
@@ -307,6 +334,7 @@ function BookingDetail({
   ].includes(booking.status);
   return (
     <Screen
+      leading={<BackControl label="All bookings" onPress={onBack} />}
       eyebrow="Booking details"
       title={
         booking.vehicle.make && booking.vehicle.model
@@ -315,7 +343,6 @@ function BookingDetail({
       }
       subtitle={`Reference ${booking.publicReference}`}
     >
-      <Button icon="arrow-back" label="All bookings" onPress={onBack} variant="ghost" />
       <VehicleImage
         contentPath={booking.vehicle.coverPhoto?.contentPath}
         accessibilityLabel={`${booking.vehicle.make ?? ''} ${booking.vehicle.model ?? 'vehicle'}`.trim()}
@@ -468,13 +495,6 @@ function Detail({
 function refresh(client: ReturnType<typeof useQueryClient>, selected: string | null) {
   void client.invalidateQueries({ queryKey: ['bookings'] });
   void client.invalidateQueries({ queryKey: ['booking', selected] });
-}
-function bookingGroup(status: string): BookingGroup {
-  if (['ACTIVE', 'READY_FOR_PICKUP', 'RETURN_PENDING', 'RETURNED'].includes(status))
-    return 'Active';
-  if (status === 'COMPLETED') return 'Completed';
-  if (['CANCELLED', 'EXPIRED'].includes(status)) return 'Cancelled';
-  return 'Upcoming';
 }
 function statusTone(status: string): 'success' | 'warning' | 'neutral' | 'danger' {
   if (['CANCELLED', 'EXPIRED'].includes(status)) return 'danger';

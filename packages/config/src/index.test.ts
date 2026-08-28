@@ -27,6 +27,7 @@ describe('environment configuration', () => {
         PAYMENT_PROVIDER: 'fake',
         PAYOUT_MINIMUM_AMOUNT_MINOR: '10000',
         PAYOUT_PROVIDER: 'xendit',
+        PUSH_PROVIDER: 'in_app',
         REDIS_URL: 'redis://localhost:6379',
         XENDIT_SECRET_KEY: 'xnd_development_test_secret',
         XENDIT_WEBHOOK_TOKEN: 'test-callback-token',
@@ -48,5 +49,27 @@ describe('environment configuration', () => {
         REDIS_URL: 'redis://localhost:6379',
       }),
     ).toThrow('PAYOUT_PROVIDER must be xendit');
+  });
+
+  it('rejects the development authentication delivery provider in production', () => {
+    expect(() =>
+      parseApiEnvironment({
+        APP_ENV: 'production',
+        AUTH_DELIVERY_PROVIDER: 'development',
+        DATABASE_URL: 'postgresql://user:password@localhost:5432/database',
+        JWT_ACCESS_SECRET: 'test-access-secret-at-least-thirty-two-characters',
+        MAYA_AUTH_CAPTURE_ENABLED: 'true',
+        MAYA_PUBLIC_KEY: 'maya-public',
+        MAYA_SECRET_KEY: 'maya-secret',
+        PAYMENT_PROVIDER: 'maya',
+        PAYOUT_MINIMUM_AMOUNT_MINOR: '10000',
+        PAYOUT_PROVIDER: 'xendit',
+        PUSH_PROVIDER: 'in_app',
+        REDIS_URL: 'redis://localhost:6379',
+        TOKEN_HASH_SECRET: 'test-token-secret-at-least-thirty-two-characters',
+        XENDIT_SECRET_KEY: 'xnd-production-secret',
+        XENDIT_WEBHOOK_TOKEN: 'production-callback-token',
+      }),
+    ).toThrow('AUTH_DELIVERY_PROVIDER must not be development in production');
   });
 });

@@ -39,7 +39,7 @@ describe.sequential('Phase 2 identity integration', () => {
   const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const email = `renter-${unique}@example.test`;
   const password = 'correct horse battery staple';
-  const mobile = '+63917123' + String(Date.now()).slice(-4);
+  const mobile = `+63917${String(Math.floor(Math.random() * 10_000_000)).padStart(7, '0')}`;
   let accessToken = '';
   let firstRefreshToken = '';
   let ownerId = '';
@@ -212,6 +212,58 @@ describe.sequential('Phase 2 identity integration', () => {
       .post('/api/v1/sessions/logout-others')
       .set('Authorization', `Bearer ${accessToken}`)
       .expect(204);
+  });
+
+  it('adds, changes, and verifies a Philippine mobile number through the account flow', async () => {
+    const firstRequest = await request(app.getHttpServer())
+      .post('/api/v1/auth/mobile-verification/requests')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ mobileNumber: mobile, platform: 'WEB' })
+      .expect(202);
+    const firstCode = smsProvider.messages.findLast(
+      ({ template }) => template === 'MOBILE_VERIFICATION_OTP',
+    );
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/verifications')
+      .send({
+        challengeId: firstRequest.body.data.challengeId,
+        code: firstCode!.code,
+        platform: 'WEB',
+      })
+      .expect(200);
+    expect(
+      (await database.client.user.findUniqueOrThrow({ where: { normalizedEmail: email } }))
+        .mobileVerifiedAt,
+    ).not.toBeNull();
+
+    const changedMobile = mobile.replace('+63917', '+63918');
+    const changed = await request(app.getHttpServer())
+      .post('/api/v1/auth/mobile-verification/requests')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ mobileNumber: changedMobile.replace('+63', '0'), platform: 'WEB' })
+      .expect(202);
+    const afterChange = await database.client.user.findUniqueOrThrow({
+      where: { normalizedEmail: email },
+    });
+    expect(afterChange.normalizedMobileNumber).toBe(changedMobile);
+    expect(afterChange.mobileVerifiedAt).toBeNull();
+    const changedCode = smsProvider.messages.findLast(
+      ({ template, to }) => template === 'MOBILE_VERIFICATION_OTP' && to === changedMobile,
+    );
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/verifications')
+      .send({
+        challengeId: changed.body.data.challengeId,
+        code: changedCode!.code,
+        platform: 'WEB',
+      })
+      .expect(200);
+    const snapshot = await request(app.getHttpServer())
+      .get('/api/v1/renter-verification')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+    expect(snapshot.body.data.mobileNumber).toBe(changedMobile);
+    expect(snapshot.body.data.mobileVerifiedAt).toBeTruthy();
   });
 
   it('completes owner onboarding with an authorized sensitive file', async () => {

@@ -24,11 +24,19 @@ export type OwnerTabParamList = {
 export type RootStackParamList = {
   Marketplace: undefined;
   PersonalInformation: undefined;
+  Verification: undefined;
+  LoginSecurity: undefined;
   ActiveDevices: undefined;
   OwnerOnboarding: undefined;
   Notifications: undefined;
+  Favorites: undefined;
+  Reviews: undefined;
+  Conversation: { conversationId: string };
   Support: { ticketId?: string | undefined } | undefined;
   Settings: undefined;
   OwnerRentals: undefined;
   OwnerEarnings: undefined;
+  Booking: { bookingId: string };
+  Claim: { claimId: string };
+  Payout: { payoutId: string };
 };

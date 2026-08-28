@@ -117,6 +117,7 @@ export const BookingErrorCode = {
   QUOTE_NOT_OWNED: 'QUOTE_NOT_OWNED',
   QUOTE_REQUIRED: 'QUOTE_REQUIRED',
   QUOTE_VEHICLE_UNAVAILABLE: 'QUOTE_VEHICLE_UNAVAILABLE',
+  RENTER_VERIFICATION_REQUIRED: 'RENTER_VERIFICATION_REQUIRED',
 } as const;
 
 export type BookingErrorCode = (typeof BookingErrorCode)[keyof typeof BookingErrorCode];

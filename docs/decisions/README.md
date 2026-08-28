@@ -17,3 +17,5 @@
 - [ADR-0015: provider-independent owner payout settlement](0015-provider-independent-owner-payout-settlement.md)
 - [ADR-0016: marketplace communications, notifications, reputation, and support](0016-marketplace-communications-notifications-reputation-support.md)
 - [ADR-0017: mobile product experience and development location resolver](0017-mobile-product-experience-layer.md)
+- [ADR-0018: renter verification and rental eligibility](0018-renter-verification-and-rental-eligibility.md)
+- [ADR-0019: local app lock and platform-owned PSGC reference](0019-phase12-app-lock-and-psgc-reference.md)

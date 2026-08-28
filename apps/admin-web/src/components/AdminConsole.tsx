@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { Phase10AdminPanels } from './Phase10AdminPanels';
+import { RenterVerificationAdminPanel } from './RenterVerificationAdminPanel';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
 interface Envelope<T> {
@@ -485,6 +486,25 @@ export function AdminConsole() {
       void client.invalidateQueries({ queryKey: ['admin-rental', selectedRentalReference] });
     },
   });
+  const handoverResolution = useMutation({
+    mutationFn: ({
+      action,
+      reason,
+      reference,
+    }: {
+      action: 'CONFIRM_PICKUP' | 'CONFIRM_RETURN';
+      reason: string;
+      reference: string;
+    }) =>
+      api(`/admin/rentals/${reference}/handover-resolution`, {
+        body: JSON.stringify({ action, reason }),
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['admin-rentals'] });
+      void client.invalidateQueries({ queryKey: ['admin-rental', selectedRentalReference] });
+    },
+  });
   const incidentAction = useMutation({
     mutationFn: ({ id, status, reason }: { id: string; status: string; reason: string }) =>
       api(`/admin/rentals/incidents/${id}/status`, {
@@ -741,6 +761,7 @@ export function AdminConsole() {
           </div>
         )}
       </section>
+      <RenterVerificationAdminPanel accessToken={accessToken} />
       <Phase10AdminPanels accessToken={accessToken} />
       <section className="admin-card">
         <span className="eyebrow">RENTAL OPERATIONS</span>
@@ -874,6 +895,47 @@ export function AdminConsole() {
                 </li>
               ))}
             </ol>
+            {rentalDetail.data.status === 'READY_FOR_PICKUP' &&
+              rentalDetail.data.inspections.some(({ type }) => type === 'PICKUP') && (
+                <button
+                  className="danger"
+                  onClick={() => {
+                    const reason = window.prompt(
+                      'Reason for administratively confirming physical pickup after reviewing inspection, code activity, timestamps, participant reports, and evidence',
+                    );
+                    if (reason && reason.trim().length >= 10)
+                      handoverResolution.mutate({
+                        action: 'CONFIRM_PICKUP',
+                        reason,
+                        reference: selectedRentalReference,
+                      });
+                  }}
+                >
+                  Resolve physical pickup
+                </button>
+              )}
+            {rentalDetail.data.status === 'RETURN_PENDING' &&
+              rentalDetail.data.inspections.some(({ type }) => type === 'RETURN') && (
+                <button
+                  className="danger"
+                  onClick={() => {
+                    const reason = window.prompt(
+                      'Reason for administratively confirming physical return after reviewing all participant evidence',
+                    );
+                    if (reason && reason.trim().length >= 10)
+                      handoverResolution.mutate({
+                        action: 'CONFIRM_RETURN',
+                        reason,
+                        reference: selectedRentalReference,
+                      });
+                  }}
+                >
+                  Resolve physical return
+                </button>
+              )}
+            {handoverResolution.error && (
+              <p className="error-text">{handoverResolution.error.message}</p>
+            )}
             <button
               onClick={() => {
                 const reason = window.prompt(

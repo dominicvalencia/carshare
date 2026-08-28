@@ -28,6 +28,8 @@
     "db:migrate:dev": "pnpm --filter @carrental/database prisma:migrate:dev",
     "db:migrate:deploy": "pnpm --filter @carrental/database prisma:migrate:deploy",
     "db:seed": "pnpm --filter @carrental/database prisma:seed",
+    "db:psgc:normalize": "pnpm --filter @carrental/database psgc:normalize",
+    "db:psgc:sync": "pnpm --filter @carrental/database psgc:sync",
     "verify": "pnpm format:check && pnpm infra:validate && pnpm lint && pnpm typecheck && pnpm test && pnpm db:validate && pnpm build"
   },
   "devDependencies": {

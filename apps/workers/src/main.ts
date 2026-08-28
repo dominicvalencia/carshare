@@ -161,7 +161,9 @@ async function bootstrap(): Promise<void> {
               ${environment.PICKUP_WINDOW_EARLY_MINUTES},
               ${environment.PICKUP_WINDOW_GRACE_MINUTES}
             ) AS "ready",
-            "emit_rental_operational_notifications"() AS "notifications",
+            "emit_rental_operational_notifications"(
+              ${environment.RETURN_CONFIRMATION_GRACE_MINUTES}
+            ) AS "notifications",
             "emit_claim_financial_notifications"() AS "claimNotifications",
             "complete_due_returned_bookings"() AS "completed",
             "release_due_owner_earnings"() AS "earningsAvailable"

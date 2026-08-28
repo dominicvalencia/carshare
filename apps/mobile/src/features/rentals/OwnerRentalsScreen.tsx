@@ -2,15 +2,18 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import type { BookingView } from '../bookings/MyBookingsScreen';
 import { colors, spacing } from '../../theme/tokens';
 import { OwnerRentalPanel } from './RentalOperationsPanels';
 import { OwnerClaimsPanel } from '../claims/ClaimsPanels';
 import { ReviewPanel } from '../reviews/ReviewPanel';
 import { useNavigation } from '@react-navigation/native';
+import type { NavigationProp } from '@react-navigation/native';
+import type { RootStackParamList } from '../../navigation/routes';
 import { bookingStatusLabel, dateTimeLabel } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
-import { Button, Card, Screen, StateView, StatusBadge } from '../../ui/primitives';
+import { Card, NestedScreen, StateView, StatusBadge } from '../../ui/primitives';
 
 const operational = new Set([
   'CONFIRMED',
@@ -22,37 +25,32 @@ const operational = new Set([
 ]);
 
 export function OwnerRentalsScreen() {
-  const navigation = useNavigation<{
-    navigate(name: 'Messages', params?: { conversationId?: string }): void;
-  }>();
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [selected, setSelected] = useState<string | null>(null);
   const rentals = useQuery({
     queryKey: ['owner-rentals'],
     queryFn: () => apiClient.request<BookingView[]>('/owner/bookings/requests'),
   });
+  useRefreshOnFocusAndForeground(() => void rentals.refetch());
   const selectedBooking = rentals.data?.find(({ publicReference }) => publicReference === selected);
   const items = (rentals.data ?? []).filter(({ status }) => operational.has(status));
   return (
-    <Screen
+    <NestedScreen
+      backLabel={selected ? 'All rentals' : 'Back'}
+      onBack={selected ? () => setSelected(null) : undefined}
       eyebrow="Owner mode"
       title="Active rentals"
       subtitle="Pickup, return, claims, and renter coordination in one place."
     >
       {selected ? (
         <>
-          <Button
-            icon="arrow-back"
-            label="All rentals"
-            onPress={() => setSelected(null)}
-            variant="ghost"
-          />
           <OwnerRentalPanel reference={selected} />
           <OwnerClaimsPanel bookingReference={selected} />
           {selectedBooking?.conversationId && (
             <Pressable
               style={styles.action}
               onPress={() =>
-                navigation.navigate('Messages', {
+                navigation.navigate('Conversation', {
                   conversationId: selectedBooking.conversationId!,
                 })
               }
@@ -103,7 +101,7 @@ export function OwnerRentalsScreen() {
           ))}
         </>
       )}
-    </Screen>
+    </NestedScreen>
   );
 }
 
