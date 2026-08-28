@@ -17,3 +17,11 @@ the iOS and Android export acceptance check passes.
 The team gets repeatable native dependency alignment and build tooling while preserving React Native
 modules and React Navigation. Native capabilities requiring custom code will use development builds,
 not assume Expo Go support.
+
+## Current compatibility baseline
+
+Phase 12 currently pins Expo SDK 54 and React Native 0.81.5 so the repository matches the Expo Go 54
+clients used for pilot device and simulator acceptance. The package manifests and lockfile are the
+authoritative current dependency matrix; the SDK 55 choice above records the original Phase 1 decision.
+Any future SDK upgrade must realign the complete Expo dependency set and pass iOS and Android export
+verification before it replaces this baseline.

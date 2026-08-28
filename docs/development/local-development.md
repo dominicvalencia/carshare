@@ -20,9 +20,13 @@ Both `postgres` and `redis` should report `healthy`.
 ```bash
 pnpm db:validate
 pnpm db:generate
+pnpm db:migrate:deploy
+pnpm db:seed
 ```
 
-Phase 1 intentionally has no business models or initial migration.
+The current Phase 12 schema is managed by committed migrations. The seed synchronizes the bundled PSGC
+reference before creating idempotent local configuration and pilot data. For a complete clean-machine
+walkthrough, see [New Mac development setup](new-mac-setup.md).
 
 ## Start applications
 

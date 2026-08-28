@@ -35,6 +35,15 @@ moderation.
 
 ## Local setup
 
+On a new Mac, follow the [new Mac setup guide](docs/development/new-mac-setup.md), or after installing
+Xcode/Homebrew and cloning the private repository run:
+
+```bash
+bash tooling/setup-new-mac.sh --start
+```
+
+Manual equivalent:
+
 ```bash
 corepack enable
 corepack prepare pnpm@11.22.0 --activate
@@ -75,6 +84,7 @@ pnpm build
 Run the complete CI-equivalent sequence with `pnpm verify`.
 
 See [local development](docs/development/local-development.md), the
+[new Mac setup guide](docs/development/new-mac-setup.md), the
 [Phase 1 acceptance checklist](docs/development/phase-1-acceptance.md), and the
 [Phase 5 booking engine guide](docs/development/phase-5-booking-engine.md), and the
 [Phase 6 payments and ledger guide](docs/development/phase-6-payments-ledger.md), and the

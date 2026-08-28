@@ -18,6 +18,7 @@
     "format:check": "prettier --check .",
     "infra:validate": "node tooling/validate-compose.mjs",
     "lint": "turbo run lint",
+    "setup:mac": "bash tooling/setup-new-mac.sh",
     "typecheck": "pnpm db:generate && turbo run typecheck",
     "test": "turbo run test",
     "test:integration": "pnpm --filter @carrental/api test:integration",
