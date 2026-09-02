@@ -1,4 +1,5 @@
 export interface EmailMessage {
+  readonly actionUrl: string;
   readonly to: string;
   readonly template: 'EMAIL_VERIFICATION' | 'PASSWORD_RESET';
   readonly token: string;

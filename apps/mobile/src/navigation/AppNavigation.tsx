@@ -38,6 +38,7 @@ import type {
   RenterTabParamList,
   RootStackParamList,
 } from './routes';
+import { combinedActivityUnread, ownerBookingSurface } from './activity-routing';
 
 const RenterTabs = createBottomTabNavigator<RenterTabParamList>();
 const OwnerTabs = createBottomTabNavigator<OwnerTabParamList>();
@@ -76,8 +77,13 @@ function useBadges() {
       apiClient.request<{ items: { unreadCount: number }[] }>('/conversations?limit=50'),
     refetchInterval: 15_000,
   });
+  const notifications = useQuery({
+    queryKey: ['notification-summary'],
+    queryFn: () => apiClient.request<{ unreadCount: number }>('/notifications/summary'),
+    refetchInterval: 15_000,
+  });
   return {
-    messages: conversations.data?.items.reduce((sum, item) => sum + item.unreadCount, 0) ?? 0,
+    messages: combinedActivityUnread(conversations.data?.items, notifications.data?.unreadCount),
   };
 }
 
@@ -268,12 +274,19 @@ export function AppNavigation(properties: AppNavigationProperties) {
           )}
         </Stack.Screen>
         <Stack.Screen name="Booking" options={{ headerShown: false }}>
-          {({ navigation, route }) => (
-            <MyBookingsScreen
-              initialBookingReference={route.params.bookingId}
-              onClose={() => navigation.goBack()}
-            />
-          )}
+          {({ navigation, route }) =>
+            properties.mode === 'owner' ? (
+              <OwnerBookingDestination
+                reference={route.params.bookingId}
+                onClose={() => navigation.goBack()}
+              />
+            ) : (
+              <MyBookingsScreen
+                initialBookingReference={route.params.bookingId}
+                onClose={() => navigation.goBack()}
+              />
+            )
+          }
         </Stack.Screen>
         <Stack.Screen name="Claim" options={{ headerShown: false }}>
           {({ navigation, route }) => (
@@ -303,5 +316,41 @@ export function AppNavigation(properties: AppNavigationProperties) {
         </Stack.Screen>
       </Stack.Navigator>
     </NavigationContainer>
+  );
+}
+
+function OwnerBookingDestination({
+  reference,
+  onClose,
+}: {
+  readonly reference: string;
+  readonly onClose: () => void;
+}) {
+  const booking = useQuery({
+    queryKey: ['owner-booking-destination', reference],
+    queryFn: () => apiClient.request<{ status: string }>(`/owner/bookings/${reference}`),
+  });
+  if (booking.isPending)
+    return (
+      <Screen eyebrow="Owner mode" title="Opening booking">
+        <StateView loading title="Resolving current booking status…" />
+      </Screen>
+    );
+  if (booking.isError)
+    return (
+      <Screen eyebrow="Owner mode" title="Booking activity">
+        <StateView
+          icon="alert-circle-outline"
+          title="Booking unavailable"
+          message={booking.error.message}
+          actionLabel="Back"
+          onAction={onClose}
+        />
+      </Screen>
+    );
+  return ownerBookingSurface(booking.data.status) === 'rental' ? (
+    <OwnerRentalsScreen initialBookingReference={reference} onClose={onClose} />
+  ) : (
+    <OwnerBookingRequestsScreen initialBookingReference={reference} onClose={onClose} />
   );
 }

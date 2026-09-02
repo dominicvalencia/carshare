@@ -5,6 +5,7 @@ import {
   Alert,
   FlatList,
   Image,
+  Keyboard,
   Linking,
   Modal,
   Pressable,
@@ -17,6 +18,7 @@ import { apiClient } from '../../auth/api-client';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateOnlyField } from '../../ui/DateOnlyField';
 import { Button, Card, Field, Icon, Screen, StateView, StatusBadge } from '../../ui/primitives';
+import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
 import type { RenterVerificationSnapshot } from './AccountScreen';
 import {
   addressError,
@@ -28,6 +30,7 @@ import {
   regionSelection,
   scopeSelection,
 } from './renter-verification-form';
+import { invalidateRenterVerification } from '../../query/verification-invalidation';
 
 const stages = [
   'Personal information',
@@ -65,13 +68,23 @@ interface AreaResponse {
 }
 
 export function RenterVerificationWorkflow({
+  onboardingNavigation,
   snapshot,
 }: {
+  readonly onboardingNavigation?: {
+    readonly onBack: () => void;
+    readonly onNext: () => void;
+    readonly step: number;
+  };
   readonly snapshot: RenterVerificationSnapshot;
 }) {
   const client = useQueryClient();
   const profile = snapshot.profile;
-  const [step, setStep] = useState(() => Math.min(profile?.renterVerificationDraftStep ?? 0, 6));
+  const [internalStep, setInternalStep] = useState(() =>
+    Math.min(profile?.renterVerificationDraftStep ?? 0, 6),
+  );
+  const step = onboardingNavigation?.step ?? internalStep;
+  const setStep = (next: number) => setInternalStep(next);
   const [formError, setFormError] = useState('');
   const [editingApproved, setEditingApproved] = useState(false);
   const [barangaySearch, setBarangaySearch] = useState('');
@@ -136,8 +149,7 @@ export function RenterVerificationWorkflow({
       }),
     onSuccess: () => {
       setFormError('');
-      void client.invalidateQueries({ queryKey: ['renter-verification'] });
-      void client.invalidateQueries({ queryKey: ['me'] });
+      void invalidateRenterVerification(client);
     },
   });
   const upload = useMutation({
@@ -155,13 +167,15 @@ export function RenterVerificationWorkflow({
       });
     },
     onSuccess: () => {
-      setCapturedSelfie(null);
-      void client.invalidateQueries({ queryKey: ['renter-verification'] });
+      void invalidateRenterVerification(client);
     },
   });
   const submit = useMutation({
     mutationFn: () => apiClient.request('/renter-verification/submission', { method: 'POST' }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ['renter-verification'] }),
+    onSuccess: () => {
+      void invalidateRenterVerification(client);
+      onboardingNavigation?.onNext();
+    },
   });
   const documents = useMemo(
     () =>
@@ -184,28 +198,86 @@ export function RenterVerificationWorkflow({
 
   const saveStage = (body: Record<string, unknown>, nextStep: number) => {
     setFormError('');
-    save.mutate(body, { onSuccess: () => setStep(nextStep) });
+    save.mutate(body, {
+      onSuccess: () =>
+        onboardingNavigation ? onboardingNavigation.onNext() : setInternalStep(nextStep),
+    });
   };
-
+  const back = (nextStep: number) =>
+    onboardingNavigation ? onboardingNavigation.onBack() : setInternalStep(nextStep);
+  const advancePersonal = () => {
+    if (onboardingNavigation) return onboardingNavigation.onNext();
+    const error = personalError(form);
+    if (error) return setFormError(error);
+    saveStage(
+      {
+        dateOfBirth: form.dateOfBirth,
+        legalFirstName: form.legalFirstName.trim(),
+        legalLastName: form.legalLastName.trim(),
+        ...(form.middleName.trim() ? { middleName: form.middleName.trim() } : {}),
+        stage: 'PERSONAL_INFORMATION',
+      },
+      1,
+    );
+  };
+  const advanceAddress = () => {
+    if (onboardingNavigation) return onboardingNavigation.onNext();
+    const error = addressError(form);
+    if (error) return setFormError(error);
+    saveStage(
+      {
+        addressLine1: form.addressLine1.trim(),
+        addressScopeCode: form.addressScopeCode,
+        barangayCode: form.barangayCode,
+        cityMunicipalityCode: form.cityMunicipalityCode,
+        postalCode: form.postalCode,
+        ...(form.provinceCode ? { provinceCode: form.provinceCode } : {}),
+        regionCode: form.regionCode,
+        stage: 'RESIDENTIAL_ADDRESS',
+      },
+      2,
+    );
+  };
+  const advanceDriver = () => {
+    if (onboardingNavigation) return onboardingNavigation.onNext();
+    const error = driverError(form, Boolean(profile?.driverLicenseLastFour));
+    if (error) return setFormError(error);
+    saveStage(
+      {
+        driverLicenseClass: form.driverLicenseClass.trim(),
+        driverLicenseExpiry: form.driverLicenseExpiry,
+        ...(form.driverLicenseNumber.trim()
+          ? { driverLicenseNumber: form.driverLicenseNumber.trim() }
+          : {}),
+        ...(form.driverLicenseRestrictions.trim()
+          ? { driverLicenseRestrictions: form.driverLicenseRestrictions.trim() }
+          : {}),
+        stage: 'DRIVER_INFORMATION',
+      },
+      3,
+    );
+  };
   return (
     <>
-      <Card style={snapshot.eligibility.eligible ? undefined : styles.warningCard}>
-        <View style={styles.rowBetween}>
-          <Text style={styles.cardTitle}>Rental eligibility</Text>
-          <StatusBadge
-            label={verificationLabel(snapshot.eligibility.status)}
-            tone={snapshot.eligibility.eligible ? 'success' : 'warning'}
-          />
-        </View>
-        <Text style={styles.body}>
-          {snapshot.eligibility.eligible
-            ? 'You can reserve vehicles and authorize rental payments.'
-            : pending
-              ? 'Your evidence is with the platform verification team.'
-              : 'Search and quotes remain available while you complete verification.'}
-        </Text>
-      </Card>
-      {(locked || pending) && (
+      {!onboardingNavigation && (
+        <Card style={snapshot.eligibility.eligible ? undefined : styles.warningCard}>
+          <View style={styles.rowBetween}>
+            <Text style={styles.cardTitle}>Rental eligibility</Text>
+            <StatusBadge
+              label={verificationLabel(snapshot.eligibility.status)}
+              tone={snapshot.eligibility.eligible ? 'success' : 'warning'}
+            />
+          </View>
+          <Text style={styles.body}>
+            {snapshot.eligibility.eligible
+              ? 'You can reserve vehicles and authorize rental payments.'
+              : pending
+                ? 'Your evidence is with the platform verification team.'
+                : 'Search and quotes remain available while you complete verification.'}
+          </Text>
+        </Card>
+      )}
+      {!onboardingNavigation && (locked || pending) && (
         <>
           <StateView
             icon={locked ? 'checkmark-circle-outline' : 'time-outline'}
@@ -242,25 +314,27 @@ export function RenterVerificationWorkflow({
       )}
       {!locked && !pending && (
         <>
-          <Card style={styles.progressCard}>
-            <Text style={styles.progressText}>
-              Step {step + 1} of {stages.length}
-            </Text>
-            <Text style={styles.cardTitle}>{stages[step]}</Text>
-            <View style={styles.progressDots}>
-              {stages.map((label, index) => (
-                <Pressable
-                  accessibilityLabel={`Go to ${label}`}
-                  key={label}
-                  onPress={() =>
-                    index <= Math.max(profile?.renterVerificationDraftStep ?? 0, step) &&
-                    setStep(index)
-                  }
-                  style={[styles.progressDot, index <= step && styles.progressDotActive]}
-                />
-              ))}
-            </View>
-          </Card>
+          {!onboardingNavigation && (
+            <Card style={styles.progressCard}>
+              <Text style={styles.progressText}>
+                Step {step + 1} of {stages.length}
+              </Text>
+              <Text style={styles.cardTitle}>{stages[step]}</Text>
+              <View style={styles.progressDots}>
+                {stages.map((label, index) => (
+                  <Pressable
+                    accessibilityLabel={`Go to ${label}`}
+                    key={label}
+                    onPress={() =>
+                      index <= Math.max(profile?.renterVerificationDraftStep ?? 0, step) &&
+                      setStep(index)
+                    }
+                    style={[styles.progressDot, index <= step && styles.progressDotActive]}
+                  />
+                ))}
+              </View>
+            </Card>
+          )}
 
           {step === 0 && (
             <SectionCard
@@ -289,23 +363,10 @@ export function RenterVerificationWorkflow({
                 value={form.dateOfBirth}
                 onChange={(dateOfBirth) => setForm({ ...form, dateOfBirth })}
               />
-              <Button
-                disabled={save.isPending}
-                label={save.isPending ? 'Saving…' : 'Save & continue'}
-                onPress={() => {
-                  const error = personalError(form);
-                  if (error) return setFormError(error);
-                  saveStage(
-                    {
-                      dateOfBirth: form.dateOfBirth,
-                      legalFirstName: form.legalFirstName.trim(),
-                      legalLastName: form.legalLastName.trim(),
-                      ...(form.middleName.trim() ? { middleName: form.middleName.trim() } : {}),
-                      stage: 'PERSONAL_INFORMATION',
-                    },
-                    1,
-                  );
-                }}
+              <NavigationButtons
+                busy={save.isPending}
+                onBack={() => back(0)}
+                onNext={advancePersonal}
               />
               {step === 0 && formError && (
                 <Text accessibilityRole="alert" style={styles.error}>
@@ -371,24 +432,8 @@ export function RenterVerificationWorkflow({
               />
               <NavigationButtons
                 busy={save.isPending}
-                onBack={() => setStep(0)}
-                onNext={() => {
-                  const error = addressError(form);
-                  if (error) return setFormError(error);
-                  saveStage(
-                    {
-                      addressLine1: form.addressLine1.trim(),
-                      addressScopeCode: form.addressScopeCode,
-                      barangayCode: form.barangayCode,
-                      cityMunicipalityCode: form.cityMunicipalityCode,
-                      postalCode: form.postalCode,
-                      ...(form.provinceCode ? { provinceCode: form.provinceCode } : {}),
-                      regionCode: form.regionCode,
-                      stage: 'RESIDENTIAL_ADDRESS',
-                    },
-                    2,
-                  );
-                }}
+                onBack={() => back(0)}
+                onNext={advanceAddress}
               />
               {step === 1 && formError && (
                 <Text accessibilityRole="alert" style={styles.error}>
@@ -440,25 +485,8 @@ export function RenterVerificationWorkflow({
               />
               <NavigationButtons
                 busy={save.isPending}
-                onBack={() => setStep(1)}
-                onNext={() => {
-                  const error = driverError(form, Boolean(profile?.driverLicenseLastFour));
-                  if (error) return setFormError(error);
-                  saveStage(
-                    {
-                      driverLicenseClass: form.driverLicenseClass.trim(),
-                      driverLicenseExpiry: form.driverLicenseExpiry,
-                      ...(form.driverLicenseNumber.trim()
-                        ? { driverLicenseNumber: form.driverLicenseNumber.trim() }
-                        : {}),
-                      ...(form.driverLicenseRestrictions.trim()
-                        ? { driverLicenseRestrictions: form.driverLicenseRestrictions.trim() }
-                        : {}),
-                      stage: 'DRIVER_INFORMATION',
-                    },
-                    3,
-                  );
-                }}
+                onBack={() => back(1)}
+                onNext={advanceDriver}
               />
               {step === 2 && formError && (
                 <Text accessibilityRole="alert" style={styles.error}>
@@ -517,8 +545,9 @@ export function RenterVerificationWorkflow({
               />
               <NavigationButtons
                 busy={save.isPending}
-                onBack={() => setStep(2)}
+                onBack={() => back(2)}
                 onNext={() => {
+                  if (onboardingNavigation) return onboardingNavigation.onNext();
                   const error = emergencyError(form, snapshot.mobileNumber);
                   if (error) return setFormError(error);
                   saveStage(
@@ -555,8 +584,10 @@ export function RenterVerificationWorkflow({
               definitions={snapshot.definitions.filter(({ code }) => code !== 'SELFIE')}
               documents={documents}
               upload={upload}
-              onBack={() => setStep(3)}
-              onContinue={() => setStep(5)}
+              onBack={() => back(3)}
+              onContinue={() =>
+                onboardingNavigation ? onboardingNavigation.onNext() : setInternalStep(5)
+              }
             />
           )}
 
@@ -566,9 +597,11 @@ export function RenterVerificationWorkflow({
               definition={snapshot.definitions.find(({ code }) => code === 'SELFIE')}
               document={documents.get('SELFIE')}
               upload={upload}
-              onBack={() => setStep(4)}
+              onBack={() => back(4)}
               onCapture={setCapturedSelfie}
-              onContinue={() => setStep(6)}
+              onContinue={() =>
+                onboardingNavigation ? onboardingNavigation.onNext() : setInternalStep(6)
+              }
             />
           )}
 
@@ -618,8 +651,10 @@ export function RenterVerificationWorkflow({
                       ? 'Resubmit verification'
                       : 'Submit verification'
                 }
-                onBack={() => setStep(5)}
-                onNext={() => submit.mutate()}
+                onBack={() => back(5)}
+                onNext={() =>
+                  onboardingNavigation ? onboardingNavigation.onNext() : submit.mutate()
+                }
               />
             </SectionCard>
           )}
@@ -714,7 +749,7 @@ function ReferenceSelect({
           <View style={styles.searchBox}>
             <Icon color={colors.subtleText} name="search" size={19} />
             <TextInput
-              autoFocus
+              autoFocus={false}
               onChangeText={(value) => {
                 setQuery(value);
                 onSearch?.(value);
@@ -742,6 +777,7 @@ function ReferenceSelect({
               renderItem={({ item }) => (
                 <Pressable
                   onPress={() => {
+                    Keyboard.dismiss();
                     onSelect(item);
                     setQuery('');
                     onSearch?.('');
@@ -755,7 +791,14 @@ function ReferenceSelect({
               )}
             />
           )}
-          <Button label="Cancel" onPress={() => setOpen(false)} variant="ghost" />
+          <Button
+            label="Cancel"
+            onPress={() => {
+              Keyboard.dismiss();
+              setOpen(false);
+            }}
+            variant="ghost"
+          />
         </Screen>
       </Modal>
     </View>
@@ -797,6 +840,7 @@ function DocumentStage({
         const document = documents.get(definition.code);
         return (
           <DocumentCaptureRow
+            fileAssetId={document?.fileAsset.id}
             definition={definition}
             documentName={document?.fileAsset.originalName}
             key={definition.code}
@@ -812,10 +856,12 @@ function DocumentStage({
 function DocumentCaptureRow({
   definition,
   documentName,
+  fileAssetId,
   upload,
 }: {
   readonly definition: RenterVerificationSnapshot['definitions'][number];
   readonly documentName?: string | undefined;
+  readonly fileAssetId?: string | undefined;
   readonly upload: ReturnType<
     typeof useMutation<
       unknown,
@@ -848,57 +894,68 @@ function DocumentCaptureRow({
       quality: 0.9,
     });
     const asset = result.canceled ? undefined : result.assets[0];
-    if (asset) setCaptured(asset);
+    if (asset) {
+      setCaptured(asset);
+      upload.mutate({
+        definition,
+        asset: {
+          mimeType: asset.mimeType ?? 'image/jpeg',
+          name: asset.fileName ?? `${definition.code.toLowerCase()}-${Date.now()}.jpg`,
+          uri: asset.uri,
+        },
+      });
+    }
   };
   return (
-    <View style={styles.documentCapture}>
-      <View style={styles.flex}>
-        <Text style={styles.cardTitle}>
-          {definition.name}
-          {definition.required ? ' *' : ''}
-        </Text>
-        <Text style={styles.note}>{documentGuidance(definition.code)}</Text>
-        {documentName && <Text style={styles.success}>✓ Captured and securely uploaded</Text>}
-      </View>
-      {captured ? (
-        <>
-          <Image
-            accessibilityLabel={`${definition.name} camera preview`}
-            source={{ uri: captured.uri }}
-            style={styles.documentPreview}
-          />
-          <View style={styles.buttonRow}>
-            <Button label="Retake" onPress={() => void capture()} variant="secondary" />
-            <Button
-              disabled={upload.isPending}
-              label={upload.isPending ? 'Uploading…' : 'Use photo'}
-              onPress={() =>
-                upload.mutate(
-                  {
-                    definition,
-                    asset: {
-                      mimeType: captured.mimeType ?? 'image/jpeg',
-                      name:
-                        captured.fileName ?? `${definition.code.toLowerCase()}-${Date.now()}.jpg`,
-                      uri: captured.uri,
-                    },
-                  },
-                  { onSuccess: () => setCaptured(null) },
-                )
-              }
-            />
-          </View>
-        </>
-      ) : (
-        <Button
-          disabled={upload.isPending}
-          icon="camera-outline"
-          label={documentName ? 'Retake document' : 'Open camera'}
-          onPress={() => void capture()}
-          variant="secondary"
-        />
-      )}
-    </View>
+    <SecureCameraPhotoSlot
+      busy={upload.isPending}
+      guidance={documentGuidance(definition.code)}
+      name={definition.name}
+      onCapture={() => void capture()}
+      persistedPreview={
+        fileAssetId ? (
+          <AuthorizedDocumentPreview fileAssetId={fileAssetId} name={definition.name} />
+        ) : undefined
+      }
+      previewUri={captured?.uri}
+      required={definition.required}
+      uploaded={Boolean(documentName)}
+    />
+  );
+}
+
+function AuthorizedDocumentPreview({
+  fileAssetId,
+  name,
+}: {
+  readonly fileAssetId: string;
+  readonly name: string;
+}) {
+  const grant = useQuery({
+    queryKey: ['renter-document-preview', fileAssetId],
+    queryFn: () =>
+      apiClient.request<{ readonly contentPath: string; readonly expiresAt: string }>(
+        `/files/${fileAssetId}/access-grants`,
+        { method: 'POST' },
+      ),
+    refetchInterval: 4 * 60 * 1000,
+    staleTime: 3 * 60 * 1000,
+  });
+  if (!grant.data)
+    return (
+      <Text style={styles.note}>
+        {grant.isError
+          ? 'Preview unavailable. Tap Retake to replace it.'
+          : 'Loading secure preview…'}
+      </Text>
+    );
+  return (
+    <Image
+      accessibilityLabel={`${name} secure preview`}
+      onError={() => void grant.refetch()}
+      source={{ uri: apiClient.assetUrl(grant.data.contentPath) }}
+      style={securePhotoPreviewStyle}
+    />
   );
 }
 
@@ -957,7 +1014,19 @@ function SelfieStage({
       quality: 0.85,
     });
     const asset = result.canceled ? undefined : result.assets[0];
-    if (asset) onCapture(asset);
+    if (asset) {
+      onCapture(asset);
+      if (definition) {
+        upload.mutate({
+          definition,
+          asset: {
+            mimeType: asset.mimeType ?? 'image/jpeg',
+            name: asset.fileName ?? `selfie-${Date.now()}.jpg`,
+            uri: asset.uri,
+          },
+        });
+      }
+    }
   };
   return (
     <SectionCard
@@ -981,21 +1050,7 @@ function SelfieStage({
           />
           <View style={styles.buttonRow}>
             <Button label="Retake" onPress={() => void capture()} variant="secondary" />
-            <Button
-              disabled={!definition || upload.isPending}
-              label={upload.isPending ? 'Uploading…' : 'Use photo'}
-              onPress={() =>
-                definition &&
-                upload.mutate({
-                  definition,
-                  asset: {
-                    mimeType: captured.mimeType ?? 'image/jpeg',
-                    name: captured.fileName ?? `selfie-${Date.now()}.jpg`,
-                    uri: captured.uri,
-                  },
-                })
-              }
-            />
+            {upload.isPending && <Text style={styles.note}>Uploading securely…</Text>}
           </View>
         </>
       ) : (

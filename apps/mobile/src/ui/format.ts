@@ -71,7 +71,11 @@ export const bookingStatus: Readonly<Record<string, string>> = {
   EXPIRED: 'Expired',
 };
 
-export function bookingStatusLabel(status: string): string {
+export function bookingStatusLabel(
+  status: string,
+  perspective: 'owner' | 'renter' = 'renter',
+): string {
+  if (status === 'AWAITING_OWNER' && perspective === 'owner') return 'Waiting for your response';
   return bookingStatus[status] ?? titleCase(status);
 }
 

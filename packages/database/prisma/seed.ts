@@ -152,11 +152,45 @@ const categories = [
   ['SEDAN', 'Sedan'],
   ['HATCHBACK', 'Hatchback'],
   ['SUV', 'SUV'],
+  ['CROSSOVER', 'Crossover'],
   ['MPV', 'MPV'],
-  ['PICKUP', 'Pickup'],
+  ['PICKUP', 'Pickup Truck'],
   ['VAN', 'Van'],
   ['COUPE', 'Coupe'],
   ['CONVERTIBLE', 'Convertible'],
+  ['WAGON', 'Wagon'],
+  ['OTHER', 'Other'],
+] as const;
+
+const vehicleMakes = [
+  ['TOYOTA', 'Toyota'],
+  ['HONDA', 'Honda'],
+  ['MITSUBISHI', 'Mitsubishi'],
+  ['NISSAN', 'Nissan'],
+  ['SUZUKI', 'Suzuki'],
+  ['FORD', 'Ford'],
+  ['HYUNDAI', 'Hyundai'],
+  ['KIA', 'Kia'],
+  ['ISUZU', 'Isuzu'],
+  ['MAZDA', 'Mazda'],
+  ['SUBARU', 'Subaru'],
+  ['CHEVROLET', 'Chevrolet'],
+  ['MG', 'MG'],
+  ['GEELY', 'Geely'],
+  ['BYD', 'BYD'],
+  ['CHERY', 'Chery'],
+  ['GAC', 'GAC'],
+  ['JETOUR', 'Jetour'],
+  ['JAC', 'JAC'],
+  ['FOTON', 'Foton'],
+  ['VOLKSWAGEN', 'Volkswagen'],
+  ['BMW', 'BMW'],
+  ['MERCEDES_BENZ', 'Mercedes-Benz'],
+  ['AUDI', 'Audi'],
+  ['LEXUS', 'Lexus'],
+  ['VOLVO', 'Volvo'],
+  ['PORSCHE', 'Porsche'],
+  ['TESLA', 'Tesla'],
   ['OTHER', 'Other'],
 ] as const;
 
@@ -282,7 +316,6 @@ async function seed(): Promise<void> {
       });
       const user = await client.user.upsert({
         create: {
-          acceptedMimeTypes: code === 'SELFIE' ? ['image/jpeg', 'image/png'] : undefined,
           email: adminEmail,
           emailVerifiedAt: new Date(),
           normalizedEmail: adminEmail,
@@ -303,6 +336,13 @@ async function seed(): Promise<void> {
 
     for (const [sortOrder, [code, name]] of categories.entries()) {
       await client.vehicleCategory.upsert({
+        create: { code, name, sortOrder },
+        update: { active: true, name, sortOrder },
+        where: { code },
+      });
+    }
+    for (const [sortOrder, [code, name]] of vehicleMakes.entries()) {
+      await client.vehicleMake.upsert({
         create: { code, name, sortOrder },
         update: { active: true, name, sortOrder },
         where: { code },

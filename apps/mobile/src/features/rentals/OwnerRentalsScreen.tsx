@@ -24,9 +24,15 @@ const operational = new Set([
   'COMPLETED',
 ]);
 
-export function OwnerRentalsScreen() {
+export function OwnerRentalsScreen({
+  initialBookingReference,
+  onClose,
+}: {
+  readonly initialBookingReference?: string;
+  readonly onClose?: () => void;
+} = {}) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialBookingReference ?? null);
   const rentals = useQuery({
     queryKey: ['owner-rentals'],
     queryFn: () => apiClient.request<BookingView[]>('/owner/bookings/requests'),
@@ -37,7 +43,7 @@ export function OwnerRentalsScreen() {
   return (
     <NestedScreen
       backLabel={selected ? 'All rentals' : 'Back'}
-      onBack={selected ? () => setSelected(null) : undefined}
+      onBack={selected ? (onClose ?? (() => setSelected(null))) : undefined}
       eyebrow="Owner mode"
       title="Active rentals"
       subtitle="Pickup, return, claims, and renter coordination in one place."

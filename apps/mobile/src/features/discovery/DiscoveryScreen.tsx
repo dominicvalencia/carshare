@@ -23,6 +23,10 @@ import type { RenterTabParamList, RootStackParamList } from '../../navigation/ro
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateTimeField } from '../../ui/DateTimeField';
 import { VehicleImage } from '../../ui/VehicleImage';
+import {
+  SearchableReferenceSelector,
+  type ReferenceOption,
+} from '../../ui/SearchableReferenceSelector';
 import { dateTimeLabel, domainLabel, money, timeLabel } from '../../ui/format';
 import {
   BackControl,
@@ -38,6 +42,8 @@ import {
   StatusBadge,
 } from '../../ui/primitives';
 import type { BookingView } from '../bookings/MyBookingsScreen';
+import { invalidateRenterVerification } from '../../query/verification-invalidation';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 
 interface Grant {
   readonly contentPath: string;
@@ -55,6 +61,7 @@ export interface VehicleCardView {
   readonly year: number | null;
   readonly distanceKm: number;
   readonly favorite: boolean;
+  readonly category?: { readonly id: string; readonly code: string; readonly name: string } | null;
   readonly coverPhoto?: Grant;
   readonly approximateLocation: { city: string; province: string };
   readonly displayPrice: { amountMinor: number; label: string };
@@ -151,6 +158,7 @@ export function DiscoveryScreen({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const [make, setMake] = useState('');
+  const [categoryId, setCategoryId] = useState('');
   const [seats, setSeats] = useState('');
   const [transmission, setTransmission] = useState('');
   const [powertrain, setPowertrain] = useState('');
@@ -168,6 +176,7 @@ export function DiscoveryScreen({
       end: returnAt.toISOString(),
     });
     if (make.trim()) query.set('make', make.trim());
+    if (categoryId) query.set('categoryId', categoryId);
     if (seats) query.set('seats', seats);
     if (transmission) query.set('transmission', transmission);
     if (powertrain) query.set('powertrain', powertrain);
@@ -176,6 +185,7 @@ export function DiscoveryScreen({
     return query.toString();
   }, [
     make,
+    categoryId,
     maxPrice,
     minPrice,
     pickup,
@@ -245,6 +255,11 @@ export function DiscoveryScreen({
       void client.invalidateQueries({ queryKey: ['bookings'] });
       navigation.navigate('Bookings', { bookingId: booking.publicReference });
     },
+  });
+  useRefreshOnFocusAndForeground(() => {
+    if (mode !== 'detail' && mode !== 'quote') return;
+    reserve.reset();
+    void invalidateRenterVerification(client);
   });
 
   function openVehicle(id: string) {
@@ -387,6 +402,8 @@ export function DiscoveryScreen({
               setRadiusKm,
               make,
               setMake,
+              categoryId,
+              setCategoryId,
               seats,
               setSeats,
               transmission,
@@ -460,8 +477,16 @@ export function DiscoveryScreen({
         <Chip
           icon="options-outline"
           label={
-            activeFilterCount({ make, seats, transmission, powertrain, minPrice, maxPrice })
-              ? `${activeFilterCount({ make, seats, transmission, powertrain, minPrice, maxPrice })} filters`
+            activeFilterCount({
+              make,
+              categoryId,
+              seats,
+              transmission,
+              powertrain,
+              minPrice,
+              maxPrice,
+            })
+              ? `${activeFilterCount({ make, categoryId, seats, transmission, powertrain, minPrice, maxPrice })} filters`
               : 'Filters'
           }
           onPress={() => setFiltersOpen(true)}
@@ -526,6 +551,8 @@ export function DiscoveryScreen({
           setRadiusKm,
           make,
           setMake,
+          categoryId,
+          setCategoryId,
           seats,
           setSeats,
           transmission,
@@ -591,7 +618,8 @@ function VehicleCard({
             </Text>
           )}
           <Text style={styles.meta}>
-            {domainLabel(vehicle.transmission)} · {vehicle.seats ?? '—'} seats
+            {vehicle.category?.name ?? 'Vehicle'} · {domainLabel(vehicle.transmission)} ·{' '}
+            {vehicle.seats ?? '—'} seats
           </Text>
         </View>
         {vehicle.estimatedRentalTotal && (
@@ -626,6 +654,8 @@ function VehicleView(properties: {
   const scrollRef = useRef<ScrollView>(null);
   const quotePosition = useRef(0);
   const lastScrolledQuoteId = useRef<string | null>(null);
+  const [galleryIndex, setGalleryIndex] = useState(0);
+  const [galleryOpen, setGalleryOpen] = useState(false);
   const quoteData = properties.quote.data;
   if (properties.loading)
     return (
@@ -668,20 +698,50 @@ function VehicleView(properties: {
     >
       <ScrollView
         horizontal
+        onMomentumScrollEnd={(event) =>
+          setGalleryIndex(Math.round(event.nativeEvent.contentOffset.x / viewportWidth))
+        }
         pagingEnabled
         showsHorizontalScrollIndicator={false}
         style={styles.gallery}
       >
         {(vehicle.photos?.length ? vehicle.photos : [{ id: 'fallback', contentPath: '' }]).map(
           (photo) => (
-            <VehicleImage
-              key={photo.id}
-              contentPath={photo.contentPath}
-              style={[styles.heroImage, { width: viewportWidth }]}
-            />
+            <Pressable key={photo.id} onPress={() => setGalleryOpen(true)}>
+              <VehicleImage
+                contentPath={photo.contentPath}
+                style={[styles.heroImage, { width: viewportWidth }]}
+              />
+            </Pressable>
           ),
         )}
       </ScrollView>
+      <View pointerEvents="none" style={styles.galleryIndicator}>
+        <Text style={styles.galleryIndicatorText}>
+          {galleryIndex + 1} / {Math.max(1, vehicle.photos?.length ?? 0)}
+        </Text>
+      </View>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setGalleryOpen(false)}
+        visible={galleryOpen}
+      >
+        <View style={styles.fullGallery}>
+          <IconButton icon="close" label="Close gallery" onPress={() => setGalleryOpen(false)} />
+          <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
+            {(vehicle.photos?.length ? vehicle.photos : [{ id: 'fallback', contentPath: '' }]).map(
+              (photo) => (
+                <VehicleImage
+                  key={photo.id}
+                  contentPath={photo.contentPath}
+                  resizeMode="contain"
+                  style={{ height: '100%', width: viewportWidth }}
+                />
+              ),
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
       <View style={styles.detailMeta}>
         <StatusBadge
           label={
@@ -1102,6 +1162,8 @@ type FilterProperties = {
   readonly setRadiusKm: (value: number) => void;
   readonly make: string;
   readonly setMake: (value: string) => void;
+  readonly categoryId: string;
+  readonly setCategoryId: (value: string) => void;
   readonly seats: string;
   readonly setSeats: (value: string) => void;
   readonly transmission: string;
@@ -1115,8 +1177,16 @@ type FilterProperties = {
   readonly onApply: () => void;
 };
 function FilterSheet(properties: FilterProperties) {
+  const reference = useQuery({
+    queryKey: ['vehicle-reference-data'],
+    queryFn: () =>
+      apiClient.request<{ categories: ReferenceOption[]; makes: ReferenceOption[] }>(
+        '/vehicles/reference-data',
+      ),
+  });
   const clear = () => {
     properties.setMake('');
+    properties.setCategoryId('');
     properties.setSeats('');
     properties.setTransmission('');
     properties.setPowertrain('');
@@ -1146,14 +1216,25 @@ function FilterSheet(properties: FilterProperties) {
             />
           ))}
         </View>
-        <Field
+        <SearchableReferenceSelector
+          allowAny
+          anyLabel="Any make"
           label="Make"
+          options={(reference.data?.makes ?? []).map((item) => ({ ...item, id: item.name }))}
           value={properties.make}
-          onChangeText={properties.setMake}
-          placeholder="e.g. Toyota"
+          onChange={properties.setMake}
         />
+        <SearchableReferenceSelector
+          allowAny
+          anyLabel="Any vehicle type"
+          label="Vehicle type"
+          options={reference.data?.categories ?? []}
+          value={properties.categoryId}
+          onChange={properties.setCategoryId}
+        />
+        <SectionHeader title="Advanced filters" />
         <Field
-          label="Minimum seats"
+          label="Minimum seats (optional)"
           value={properties.seats}
           onChangeText={properties.setSeats}
           keyboardType="number-pad"
@@ -1279,6 +1360,18 @@ const styles = StyleSheet.create({
   favoriteImage: { borderRadius: radius.md, height: 88, width: 110 },
   flex: { flex: 1, minWidth: 0 },
   gallery: { marginHorizontal: -spacing.lg },
+  galleryIndicator: { alignItems: 'center', marginTop: -42, paddingBottom: spacing.sm },
+  galleryIndicatorText: {
+    backgroundColor: 'rgba(0,0,0,0.68)',
+    borderRadius: radius.pill,
+    color: colors.onPrimary,
+    fontSize: 12,
+    fontWeight: '800',
+    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+  },
+  fullGallery: { backgroundColor: '#000', flex: 1, paddingTop: 54 },
   heroImage: { height: 265 },
   hold: {
     backgroundColor: colors.primarySoft,

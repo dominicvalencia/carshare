@@ -836,6 +836,18 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
         })),
     );
     await request(app.getHttpServer())
+      .put(`/api/v1/owner/bookings/${reference}/rental/pickup/inspection/draft/media`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ ...pickupFiles[0], replace: true })
+      .expect(200);
+    const pickupDraft = await request(app.getHttpServer())
+      .get(`/api/v1/owner/bookings/${reference}/rental/pickup/inspection/draft`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(200);
+    expect(pickupDraft.body.data.media).toEqual([
+      expect.objectContaining({ fileAssetId: pickupFiles[0]?.fileAssetId }),
+    ]);
+    await request(app.getHttpServer())
       .post(`/api/v1/owner/bookings/${reference}/rental/pickup/inspection`)
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ fuelBasisPoints: 10000, media: pickupFiles, odometerMeters: '20000000' })
@@ -1251,6 +1263,19 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       .post(`/api/v1/bookings/${reference}/payment/authorize`)
       .set('Authorization', `Bearer ${renter.token}`)
       .expect(201);
+    const requestedBooking = await database.client.booking.findUniqueOrThrow({
+      where: { publicReference: reference },
+    });
+    const ownerRequestedEvent = await database.client.outboxEvent.findFirst({
+      where: {
+        aggregateId: requestedBooking.id,
+        eventType: 'BOOKING_OWNER_REQUESTED',
+      },
+    });
+    expect(ownerRequestedEvent?.payload).toMatchObject({
+      bookingId: requestedBooking.id,
+      ownerUserId: owner.userId,
+    });
     const ownerQueue = await request(app.getHttpServer())
       .get('/api/v1/owner/bookings/requests')
       .set('Authorization', `Bearer ${owner.token}`)

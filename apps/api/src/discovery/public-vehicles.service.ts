@@ -31,6 +31,22 @@ export class PublicVehiclesService {
     private readonly analytics: DiscoveryAnalyticsService,
   ) {}
 
+  async referenceData() {
+    const [categories, makes] = await Promise.all([
+      this.database.client.vehicleCategory.findMany({
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        select: { code: true, id: true, name: true },
+        where: { active: true },
+      }),
+      this.database.client.vehicleMake.findMany({
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        select: { code: true, id: true, name: true },
+        where: { active: true },
+      }),
+    ]);
+    return { categories, makes };
+  }
+
   async search(input: SearchVehiclesDto, principal?: RequestPrincipal, correlationId?: string) {
     this.assertSearch(input);
     const latitude = Number(input.latitude);
@@ -202,7 +218,7 @@ export class PublicVehiclesService {
     const featureIds = new Set(vehicle.features.map(({ feature }) => feature.id));
     return (
       (!input.categoryId || vehicle.category?.id === input.categoryId) &&
-      (!input.make || Boolean(vehicle.make?.toLowerCase().includes(input.make.toLowerCase()))) &&
+      (!input.make || vehicle.make?.toLowerCase() === input.make.toLowerCase()) &&
       (!input.model || Boolean(vehicle.model?.toLowerCase().includes(input.model.toLowerCase()))) &&
       (!input.transmission || vehicle.transmission === input.transmission) &&
       (!input.powertrain || vehicle.powertrain === input.powertrain) &&

@@ -1,20 +1,26 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
+import { Image } from 'expo-image';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { colors, spacing } from '../../theme/tokens';
 import { dateTimeLabel, domainLabel } from '../../ui/format';
+import { invalidateBookingLifecycle } from '../../query/booking-invalidation';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
+import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
 
 const perspectives = [
   'FRONT',
   'REAR',
   'DRIVER_SIDE',
   'PASSENGER_SIDE',
-  'INTERIOR_DASHBOARD',
+  'INTERIOR',
+  'DASHBOARD',
   'ODOMETER',
   'FUEL_OR_BATTERY_DISPLAY',
 ] as const;
+const multiPerspectives = ['INTERIOR', 'DASHBOARD', 'ADDITIONAL'] as const;
 
 const claimCategories = [
   'EXCESS_MILEAGE',
@@ -25,6 +31,20 @@ const claimCategories = [
   'DAMAGE',
   'OTHER',
 ] as const;
+
+interface CapturedFile {
+  readonly id: string;
+  readonly uri?: string;
+}
+
+interface InspectionDraft {
+  readonly inspectionId: string | null;
+  readonly media: readonly {
+    readonly evidenceSequence: number;
+    readonly fileAssetId: string;
+    readonly perspective: string;
+  }[];
+}
 
 interface RentalDetail {
   readonly publicReference: string;
@@ -45,7 +65,19 @@ interface RentalDetail {
     odometerMeters: string | null;
     fuelBasisPoints: number | null;
     batterySocBasisPoints: number | null;
+    notes: string | null;
     media: readonly { perspective: string; fileAsset: { id: string } }[];
+    amendments?: readonly {
+      id: string;
+      status: string;
+      reason: string;
+      reviewReason: string | null;
+      proposedOdometerMeters: string | null;
+      proposedFuelBasisPoints: number | null;
+      proposedBatterySocBasisPoints: number | null;
+      createdAt: string;
+      reviewedAt: string | null;
+    }[];
   }[];
   readonly usageSummary: {
     distanceTravelledKm: number;
@@ -75,21 +107,32 @@ interface RentalDetail {
 export function RenterRentalPanel({ reference }: { readonly reference: string }) {
   const client = useQueryClient();
   const [pickupCode, setPickupCode] = useState<string | null>(null);
+  const [pickupCodeExpiresAt, setPickupCodeExpiresAt] = useState<string | null>(null);
   const [odometer, setOdometer] = useState('');
   const [fuel, setFuel] = useState('');
   const [soc, setSoc] = useState('');
   const [notes, setNotes] = useState('');
-  const [files, setFiles] = useState<Record<string, string>>({});
+  const [files, setFiles] = useState<Record<string, CapturedFile[]>>({});
   const rental = useQuery({
     queryKey: ['rental', reference],
     queryFn: () => apiClient.request<RentalDetail>(`/bookings/${reference}/rental`),
+    refetchInterval: (query) =>
+      query.state.data &&
+      ['READY_FOR_PICKUP', 'ACTIVE', 'RETURN_PENDING'].includes(query.state.data.status)
+        ? 5_000
+        : false,
   });
+  useRefreshOnFocusAndForeground(() => void rental.refetch());
   const capture = useMutation({
     mutationFn: async (perspective: string) => {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted)
         throw new Error('Camera permission is required for return evidence.');
-      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.85 });
+      const result = await ImagePicker.launchCameraAsync({
+        cameraType: ImagePicker.CameraType.back,
+        mediaTypes: ['images'],
+        quality: 0.85,
+      });
       const asset = result.assets?.[0];
       if (!asset) return null;
       const uploaded = await apiClient.upload<{ id: string }>('/files', 'SENSITIVE', {
@@ -97,10 +140,13 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
         name: asset.fileName ?? `${perspective.toLowerCase()}.jpg`,
         uri: asset.uri,
       });
-      return { id: uploaded.id, perspective };
+      return { id: uploaded.id, perspective, uri: asset.uri };
     },
     onSuccess: (result) => {
-      if (result) setFiles((current) => ({ ...current, [result.perspective]: result.id }));
+      if (result)
+        setFiles((current) =>
+          addCapturedFile(current, result.perspective, { id: result.id, uri: result.uri }),
+        );
     },
   });
   const action = useMutation({
@@ -109,9 +155,12 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
         'pickup' | 'return' | 'inspection' | 'agree' | 'disagree' | 'incident' | 'pickup-overdue',
     ) => {
       if (operation === 'pickup') {
-        return apiClient.request<{ code: string }>(`/bookings/${reference}/rental/pickup/confirm`, {
-          method: 'POST',
-        });
+        return apiClient.request<{ code: string; expiresAt: string }>(
+          `/bookings/${reference}/rental/pickup/confirm`,
+          {
+            method: 'POST',
+          },
+        );
       }
       if (operation === 'return') {
         return apiClient.request(`/bookings/${reference}/rental/return/start`, { method: 'POST' });
@@ -143,10 +192,7 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
             odometerMeters: String(Math.round(Number(odometer) * 1000)),
             ...(fuel ? { fuelBasisPoints: Math.round(Number(fuel) * 100) } : {}),
             ...(soc ? { batterySocBasisPoints: Math.round(Number(soc) * 100) } : {}),
-            media: perspectives.map((perspective) => ({
-              fileAssetId: files[perspective],
-              perspective,
-            })),
+            media: inspectionMedia(files),
             notes:
               notes.trim() || 'Return inspection submitted by the renter during vehicle handover.',
           }),
@@ -166,6 +212,7 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
     onSuccess: (result, operation) => {
       if (operation === 'pickup' && result && typeof result === 'object' && 'code' in result) {
         setPickupCode(String(result.code));
+        if ('expiresAt' in result) setPickupCodeExpiresAt(String(result.expiresAt));
       }
       if (operation === 'inspection') setFiles({});
       invalidateRentalQueries(client, reference);
@@ -174,6 +221,7 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
   const detail = rental.data;
   if (!detail) return <Text style={styles.body}>Loading rental operations…</Text>;
   const pickup = detail.inspections.find(({ type }) => type === 'PICKUP');
+  const approvedPickupCorrection = pickup?.amendments?.find(({ status }) => status === 'APPROVED');
   const returned = detail.inspections.find(({ type }) => type === 'RETURN');
   const pickupOverdue =
     detail.status === 'READY_FOR_PICKUP' &&
@@ -193,17 +241,21 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
       )}
       <Text style={styles.body}>Scheduled return: {dateTimeLabel(detail.rentalEnd)}</Text>
       {detail.status === 'READY_FOR_PICKUP' && pickup && !pickupCode && (
-        <Action
-          label="Review vehicle condition and show pickup code"
-          onPress={() => action.mutate('pickup')}
-        />
+        <>
+          <InspectionEvidence title="Pickup inspection · Submitted by owner" inspection={pickup} />
+          <Action label="Everything looks correct" onPress={() => action.mutate('pickup')} />
+          <SecondaryAction label="Report a discrepancy" onPress={() => action.mutate('incident')} />
+        </>
       )}
-      {pickupCode && (
+      {detail.status === 'READY_FOR_PICKUP' && pickupCode && (
         <View style={styles.codeCard}>
-          <Text style={styles.code}>{pickupCode}</Text>
+          <Text style={styles.cardTitle}>Pickup code</Text>
           <Text style={styles.body}>
-            Show this short-lived, single-use code to the verified owner.
+            Show this code to the vehicle owner only when you are physically receiving the vehicle.
           </Text>
+          <Text style={styles.code}>{pickupCode}</Text>
+          {pickupCodeExpiresAt && <ExpiryCountdown expiresAt={pickupCodeExpiresAt} />}
+          <Text style={styles.body}>Keep this single-use code private until handover.</Text>
         </View>
       )}
       {detail.status === 'READY_FOR_PICKUP' && !pickup && (
@@ -223,9 +275,20 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
         </View>
       )}
       {detail.status === 'ACTIVE' && detail.actualPickupAt && (
-        <Text style={styles.success}>
-          Vehicle received · rental started {dateTimeLabel(detail.actualPickupAt)}
-        </Text>
+        <View style={styles.successCard}>
+          <Text style={styles.success}>✓ Vehicle received</Text>
+          <Text style={styles.cardTitle}>Rental in progress</Text>
+          <Text style={styles.body}>Started {dateTimeLabel(detail.actualPickupAt)}</Text>
+        </View>
+      )}
+      {approvedPickupCorrection && (
+        <View style={styles.infoCard}>
+          <Text style={styles.cardTitle}>Pickup inspection corrected</Text>
+          <Text style={styles.body}>
+            A measurement was corrected after administrative review. The original inspection remains
+            in the evidence history.
+          </Text>
+        </View>
       )}
       {detail.status === 'ACTIVE' && (
         <>
@@ -242,7 +305,8 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
           <View style={styles.inspectionHeader}>
             <Text style={styles.cardTitle}>Document the vehicle return</Text>
             <Text style={styles.progress}>
-              {Object.keys(files).length} of {perspectives.length} photos
+              {photoCount(files)} photos · {completedRequired(files)} of {perspectives.length}{' '}
+              required
             </Text>
           </View>
           <Text style={styles.body}>
@@ -274,13 +338,23 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
               placeholder="Battery SOC percentage"
             />
           )}
-          {perspectives.map((perspective) => (
-            <SecondaryAction
-              key={perspective}
-              label={`${files[perspective] ? '✓ ' : ''}${domainLabel(perspective)}`}
-              onPress={() => capture.mutate(perspective)}
-            />
-          ))}
+          {[...perspectives, ...multiPerspectives.filter((value) => value === 'ADDITIONAL')].map(
+            (perspective) => (
+              <View key={perspective}>
+                <SecondaryAction
+                  label={`${files[perspective]?.length ? `✓ ${files[perspective].length} ` : ''}${domainLabel(perspective)}${multiPerspectives.includes(perspective as never) ? ' (add photo)' : ''}`}
+                  onPress={() => capture.mutate(perspective)}
+                />
+                <CapturedPreviews files={files[perspective] ?? []} perspective={perspective} />
+                {files[perspective]?.length ? (
+                  <SecondaryAction
+                    label="Remove last photo"
+                    onPress={() => setFiles((current) => removeCapturedFile(current, perspective))}
+                  />
+                ) : null}
+              </View>
+            ),
+          )}
           <TextInput
             multiline
             onChangeText={setNotes}
@@ -290,7 +364,7 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
           />
           <Action
             label="Confirm vehicle returned to owner or agreed location"
-            disabled={Object.keys(files).length !== perspectives.length || !odometer}
+            disabled={!hasRequiredPhotos(files) || !odometer}
             onPress={() => action.mutate('inspection')}
           />
         </>
@@ -333,17 +407,47 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
   const [claimCategory, setClaimCategory] =
     useState<(typeof claimCategories)[number]>('EXCESS_MILEAGE');
   const [claimDescription, setClaimDescription] = useState('');
-  const [files, setFiles] = useState<Record<string, string>>({});
+  const [correctionOdometer, setCorrectionOdometer] = useState('');
+  const [correctionReason, setCorrectionReason] = useState('');
+  const [files, setFiles] = useState<Record<string, CapturedFile[]>>({});
   const rental = useQuery({
     queryKey: ['owner-rental', reference],
     queryFn: () => apiClient.request<RentalDetail>(`/owner/bookings/${reference}/rental`),
+    refetchInterval: (query) =>
+      query.state.data &&
+      ['READY_FOR_PICKUP', 'ACTIVE', 'RETURN_PENDING'].includes(query.state.data.status)
+        ? 5_000
+        : false,
   });
+  const pickupDraft = useQuery({
+    queryKey: ['owner-pickup-inspection-draft', reference],
+    queryFn: () =>
+      apiClient.request<InspectionDraft>(
+        `/owner/bookings/${reference}/rental/pickup/inspection/draft`,
+      ),
+  });
+  const draftFiles = useMemo(
+    () => capturedFilesFromDraft(pickupDraft.data?.media ?? []),
+    [pickupDraft.data?.media],
+  );
+  const inspectionFiles = Object.keys(files).length ? files : draftFiles;
+  useRefreshOnFocusAndForeground(() => void rental.refetch());
   const capture = useMutation({
-    mutationFn: async (perspective: string) => {
+    mutationFn: async ({
+      mode,
+      perspective,
+    }: {
+      mode: 'append' | 'replace';
+      perspective: string;
+    }) => {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted)
         throw new Error('Camera permission is required for inspection evidence.');
-      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.85 });
+      const result = await ImagePicker.launchCameraAsync({
+        cameraType: ImagePicker.CameraType.back,
+        mediaTypes: ['images'],
+        quality: 0.85,
+      });
       const asset = result.assets?.[0];
       if (!asset) return null;
       const uploaded = await apiClient.upload<{ id: string }>('/files', 'SENSITIVE', {
@@ -351,10 +455,30 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
         name: asset.fileName ?? `${perspective.toLowerCase()}.jpg`,
         uri: asset.uri,
       });
-      return { id: uploaded.id, perspective };
+      await apiClient.request(`/owner/bookings/${reference}/rental/pickup/inspection/draft/media`, {
+        body: JSON.stringify({
+          fileAssetId: uploaded.id,
+          perspective,
+          replace: mode === 'replace',
+        }),
+        method: 'PUT',
+      });
+      return { id: uploaded.id, mode, perspective, uri: asset.uri };
     },
     onSuccess: (result) => {
-      if (result) setFiles((current) => ({ ...current, [result.perspective]: result.id }));
+      if (result)
+        setFiles((current) => {
+          const captured = Object.keys(current).length ? current : draftFiles;
+          return result.mode === 'append'
+            ? appendCapturedFile(captured, result.perspective, {
+                id: result.id,
+                uri: result.uri,
+              })
+            : replaceCapturedFile(captured, result.perspective, {
+                id: result.id,
+                uri: result.uri,
+              });
+        });
     },
   });
   const action = useMutation({
@@ -368,6 +492,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
         | 'claim'
         | 'incident'
         | 'return-inspection'
+        | 'correction'
         | 'renter-no-show',
     ) => {
       const detail = rental.data;
@@ -377,6 +502,20 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
           body: JSON.stringify({ code }),
           method: 'POST',
         });
+      }
+      if (operation === 'correction') {
+        const pickup = detail.inspections.find(({ type }) => type === 'PICKUP');
+        if (!pickup) throw new Error('Pickup inspection is unavailable.');
+        return apiClient.request(
+          `/owner/bookings/${reference}/rental/inspections/${pickup.id}/corrections`,
+          {
+            body: JSON.stringify({
+              reason: correctionReason.trim(),
+              proposedOdometerMeters: String(Math.round(Number(correctionOdometer) * 1000)),
+            }),
+            method: 'POST',
+          },
+        );
       }
       if (operation === 'return') {
         return apiClient.request(`/owner/bookings/${reference}/rental/return/start`, {
@@ -427,10 +566,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
             odometerMeters: String(Math.round(Number(odometer) * 1000)),
             ...(fuel ? { fuelBasisPoints: Math.round(Number(fuel) * 100) } : {}),
             ...(soc ? { batterySocBasisPoints: Math.round(Number(soc) * 100) } : {}),
-            media: perspectives.map((perspective) => ({
-              fileAssetId: files[perspective],
-              perspective,
-            })),
+            media: inspectionMedia(files),
             notes: notes.trim() || 'Owner receipt inspection submitted from owner mobile mode.',
           }),
           method: 'POST',
@@ -452,17 +588,21 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
           odometerMeters: String(Math.round(Number(odometer) * 1000)),
           ...(fuel ? { fuelBasisPoints: Math.round(Number(fuel) * 100) } : {}),
           ...(soc ? { batterySocBasisPoints: Math.round(Number(soc) * 100) } : {}),
-          media: perspectives.map((perspective) => ({
-            fileAssetId: files[perspective],
-            perspective,
-          })),
+          media: inspectionMedia(inspectionFiles),
           notes: notes.trim() || 'Pickup inspection submitted from owner mobile mode.',
         }),
         method: 'POST',
       });
     },
-    onSuccess: () => {
+    onSuccess: (_result, operation) => {
       setFiles({});
+      if (operation === 'inspection')
+        void client.invalidateQueries({ queryKey: ['owner-pickup-inspection-draft', reference] });
+      if (operation === 'verify') setCode('');
+      if (operation === 'correction') {
+        setCorrectionOdometer('');
+        setCorrectionReason('');
+      }
       invalidateRentalQueries(client, reference);
     },
   });
@@ -472,9 +612,8 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
     detail.status === 'READY_FOR_PICKUP' &&
     !detail.inspections.some(({ type }) => type === 'PICKUP');
   const returned = detail.inspections.find(({ type }) => type === 'RETURN');
-  const ownerReturn = detail.inspections.find(
-    ({ type, version }) => type === 'RETURN' && version > (returned?.version ?? 0),
-  );
+  const pickup = detail.inspections.find(({ type }) => type === 'PICKUP');
+  const latestCorrection = pickup?.amendments?.[0];
   const pickupOverdue =
     detail.status === 'READY_FOR_PICKUP' &&
     Boolean(
@@ -493,14 +632,20 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
         </Text>
       )}
       {needsInspection && !handoverStarted && (
-        <Action label="Start handover" onPress={() => setHandoverStarted(true)} />
+        <View style={styles.actionCard}>
+          <Text style={styles.actionEyebrow}>Action required</Text>
+          <Text style={styles.cardTitle}>Complete pickup inspection</Text>
+          <Text style={styles.body}>Document the vehicle before handing it to the renter.</Text>
+          <Action label="Start handover" onPress={() => setHandoverStarted(true)} />
+        </View>
       )}
       {needsInspection && handoverStarted && (
         <>
           <View style={styles.inspectionHeader}>
             <Text style={styles.cardTitle}>Pickup inspection</Text>
             <Text style={styles.progress}>
-              {Object.keys(files).length} of {perspectives.length} photos
+              {photoCount(inspectionFiles)} photos · {completedRequired(inspectionFiles)} of{' '}
+              {perspectives.length} required
             </Text>
           </View>
           <Text style={styles.body}>
@@ -531,13 +676,42 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
               placeholder="Battery SOC percentage"
             />
           )}
-          {perspectives.map((perspective) => (
-            <SecondaryAction
-              key={perspective}
-              label={`${files[perspective] ? '✓ ' : ''}${domainLabel(perspective)}`}
-              onPress={() => capture.mutate(perspective)}
-            />
-          ))}
+          {[...perspectives, 'ADDITIONAL' as const].map((perspective) => {
+            const captured = inspectionFiles[perspective] ?? [];
+            const latest = captured.at(-1);
+            const multiple = (multiPerspectives as readonly string[]).includes(perspective);
+            return (
+              <View key={perspective}>
+                <SecureCameraPhotoSlot
+                  busy={capture.isPending && capture.variables?.perspective === perspective}
+                  guidance={inspectionPhotoGuidance(perspective)}
+                  name={domainLabel(perspective)}
+                  onCapture={() => capture.mutate({ mode: 'replace', perspective })}
+                  persistedPreview={
+                    latest && !latest.uri ? (
+                      <AuthorizedInspectionImage
+                        fileAssetId={latest.id}
+                        label={`${domainLabel(perspective)} secure draft preview`}
+                        large
+                      />
+                    ) : undefined
+                  }
+                  previewUri={latest?.uri}
+                  required={perspective !== 'ADDITIONAL'}
+                  uploaded={Boolean(latest)}
+                />
+                {multiple && latest && (
+                  <SecondaryAction
+                    label={`Add another ${domainLabel(perspective).toLowerCase()} photo`}
+                    onPress={() => capture.mutate({ mode: 'append', perspective })}
+                  />
+                )}
+                {captured.length > 1 && (
+                  <CapturedPreviews files={captured.slice(0, -1)} perspective={perspective} />
+                )}
+              </View>
+            );
+          })}
           <TextInput
             multiline
             onChangeText={setNotes}
@@ -547,28 +721,35 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
           />
           <Action
             label="Submit pickup inspection"
-            disabled={Object.keys(files).length !== perspectives.length || !odometer}
+            disabled={!hasRequiredPhotos(inspectionFiles) || !odometer}
             onPress={() => action.mutate('inspection')}
           />
         </>
       )}
       {detail.status === 'READY_FOR_PICKUP' &&
         detail.inspections.some(({ type }) => type === 'PICKUP') && (
-          <>
+          <View style={styles.actionCard}>
+            <Text style={styles.actionEyebrow}>Action required</Text>
+            <Text style={styles.cardTitle}>Confirm vehicle handover</Text>
+            <Text style={styles.body}>
+              Ask the renter for their 6-digit pickup code. The code confirms they reviewed the
+              pickup condition and received the vehicle.
+            </Text>
+            {pickup && <InspectionEvidence title="Submitted pickup evidence" inspection={pickup} />}
             <TextInput
               style={styles.input}
               value={code}
               onChangeText={setCode}
               keyboardType="number-pad"
               maxLength={6}
-              placeholder="Renter pickup code"
+              placeholder="6-digit pickup code"
             />
             <Action
-              label="Complete handover"
-              disabled={code.length !== 6}
+              label={action.isPending ? 'Verifying…' : 'Verify pickup code'}
+              disabled={code.length !== 6 || action.isPending}
               onPress={() => action.mutate('verify')}
             />
-          </>
+          </View>
         )}
       {pickupOverdue && (
         <View style={styles.overdueCard}>
@@ -588,6 +769,36 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
           Vehicle handed over · {dateTimeLabel(detail.actualPickupAt)}
         </Text>
       )}
+      {latestCorrection && (
+        <View style={styles.infoCard}>
+          <Text style={styles.cardTitle}>
+            {latestCorrection.status === 'PENDING_REVIEW'
+              ? 'Correction requested · Pending admin review'
+              : latestCorrection.status === 'APPROVED'
+                ? '✓ Correction approved'
+                : 'Correction rejected'}
+          </Text>
+          {latestCorrection.proposedOdometerMeters && (
+            <Text style={styles.body}>
+              Original: {odometerLabel(pickup?.odometerMeters)}
+              {`\n`}Corrected: {odometerLabel(latestCorrection.proposedOdometerMeters)}
+            </Text>
+          )}
+          {latestCorrection.proposedFuelBasisPoints !== null && (
+            <Text style={styles.body}>
+              Fuel correction: {latestCorrection.proposedFuelBasisPoints / 100}%
+            </Text>
+          )}
+          {latestCorrection.proposedBatterySocBasisPoints !== null && (
+            <Text style={styles.body}>
+              EV SOC correction: {latestCorrection.proposedBatterySocBasisPoints / 100}%
+            </Text>
+          )}
+          {latestCorrection.status === 'REJECTED' && latestCorrection.reviewReason && (
+            <Text style={styles.body}>{latestCorrection.reviewReason}</Text>
+          )}
+        </View>
+      )}
       {detail.status === 'ACTIVE' && (
         <Text style={styles.body}>
           Rental in progress. The renter can start return when the vehicle reaches the agreed
@@ -599,66 +810,12 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
           Waiting for the renter to submit the return photos and dashboard readings.
         </Text>
       )}
-      {detail.status === 'RETURN_PENDING' && returned && !ownerReturn && (
+      {detail.status === 'RETURN_PENDING' && returned && (
         <>
-          <Text style={styles.cardTitle}>Vehicle returned — perform receipt inspection</Text>
+          <InspectionEvidence title="Return evidence · Submitted by renter" inspection={returned} />
           <Text style={styles.body}>
-            Capture the vehicle as received. Original renter evidence remains immutable and both
-            inspection versions are available to operations if measurements differ.
-          </Text>
-          <TextInput
-            keyboardType="number-pad"
-            onChangeText={setOdometer}
-            placeholder="Receipt odometer reading (km)"
-            style={styles.input}
-            value={odometer}
-          />
-          {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' && (
-            <TextInput
-              keyboardType="decimal-pad"
-              onChangeText={setFuel}
-              placeholder="Receipt fuel percentage"
-              style={styles.input}
-              value={fuel}
-            />
-          )}
-          {['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID'].includes(detail.vehicle.powertrain ?? '') && (
-            <TextInput
-              keyboardType="decimal-pad"
-              onChangeText={setSoc}
-              placeholder="Receipt battery SOC percentage"
-              style={styles.input}
-              value={soc}
-            />
-          )}
-          {perspectives.map((perspective) => (
-            <SecondaryAction
-              key={perspective}
-              label={`${files[perspective] ? '✓ ' : ''}${domainLabel(perspective)}`}
-              onPress={() => capture.mutate(perspective)}
-            />
-          ))}
-          <TextInput
-            multiline
-            onChangeText={setNotes}
-            placeholder="Receipt condition notes (optional)"
-            style={styles.input}
-            value={notes}
-          />
-          <Action
-            disabled={Object.keys(files).length !== perspectives.length || !odometer}
-            label="Submit receipt inspection"
-            onPress={() => action.mutate('return-inspection')}
-          />
-        </>
-      )}
-      {detail.status === 'RETURN_PENDING' && returned && ownerReturn && (
-        <>
-          <Text style={styles.cardTitle}>Vehicle returned — inspect and confirm</Text>
-          <Text style={styles.body}>
-            Renter odometer: {odometerLabel(returned.odometerMeters)} · owner receipt odometer:{' '}
-            {odometerLabel(ownerReturn.odometerMeters)}. Agree only after checking both immutable
-            evidence sets. A disagreement opens the controlled review path.
+            Review the renter’s immutable evidence and confirm physical receipt. If the condition
+            differs, report an issue to open the controlled dispute and optional evidence pathway.
           </Text>
           <Action label="Confirm vehicle received" onPress={() => action.mutate('agree')} />
           <SecondaryAction label="Report an issue" onPress={() => action.mutate('disagree')} />
@@ -696,8 +853,136 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
         <SecondaryAction label="Report incident" onPress={() => action.mutate('incident')} />
       )}
       {action.isError && <Text style={styles.error}>{action.error.message}</Text>}
+      {action.isError &&
+        latestCorrection?.status !== 'PENDING_REVIEW' &&
+        /odometer.*lower|lower.*odometer/i.test(action.error.message) && (
+          <View style={styles.actionCard}>
+            <Text style={styles.cardTitle}>Pickup reading entered incorrectly?</Text>
+            <Text style={styles.body}>
+              The original evidence stays immutable. Submit a corrected reading and reason for
+              administrator review.
+            </Text>
+            <TextInput
+              keyboardType="decimal-pad"
+              onChangeText={setCorrectionOdometer}
+              placeholder="Correct pickup odometer (km)"
+              style={styles.input}
+              value={correctionOdometer}
+            />
+            <TextInput
+              multiline
+              onChangeText={setCorrectionReason}
+              placeholder="Explain the data-entry mistake"
+              style={styles.input}
+              value={correctionReason}
+            />
+            <Action
+              disabled={!correctionOdometer || correctionReason.trim().length < 10}
+              label="Request correction"
+              onPress={() => action.mutate('correction')}
+            />
+          </View>
+        )}
       {capture.isError && <Text style={styles.error}>{capture.error.message}</Text>}
     </View>
+  );
+}
+
+function CapturedPreviews({
+  files,
+  perspective,
+}: {
+  readonly files: readonly CapturedFile[];
+  readonly perspective: string;
+}) {
+  if (!files.length) return null;
+  return (
+    <View style={styles.evidenceGallery}>
+      {files.map((file, index) => (
+        <View key={file.id}>
+          {file.uri ? (
+            <Image
+              accessibilityLabel={`${domainLabel(perspective)} captured preview ${index + 1}`}
+              contentFit="cover"
+              source={{ uri: file.uri }}
+              style={styles.evidenceImage}
+            />
+          ) : (
+            <AuthorizedInspectionImage
+              fileAssetId={file.id}
+              label={`${domainLabel(perspective)} secure draft preview ${index + 1}`}
+            />
+          )}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function InspectionEvidence({
+  inspection,
+  title,
+}: {
+  readonly inspection: RentalDetail['inspections'][number];
+  readonly title: string;
+}) {
+  return (
+    <View style={styles.evidenceCard}>
+      <Text style={styles.cardTitle}>{title}</Text>
+      <Text style={styles.body}>Odometer: {odometerLabel(inspection.odometerMeters)}</Text>
+      {inspection.fuelBasisPoints !== null && (
+        <Text style={styles.body}>Fuel: {inspection.fuelBasisPoints / 100}%</Text>
+      )}
+      {inspection.batterySocBasisPoints !== null && (
+        <Text style={styles.body}>Battery SOC: {inspection.batterySocBasisPoints / 100}%</Text>
+      )}
+      {inspection.notes && <Text style={styles.body}>Condition notes: {inspection.notes}</Text>}
+      <View style={styles.evidenceGallery}>
+        {inspection.media.map((item, index) => (
+          <AuthorizedInspectionImage
+            fileAssetId={item.fileAsset.id}
+            key={`${item.fileAsset.id}-${index}`}
+            label={`${domainLabel(item.perspective)} evidence ${index + 1}`}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function AuthorizedInspectionImage({
+  fileAssetId,
+  label,
+  large = false,
+}: {
+  readonly fileAssetId: string;
+  readonly label: string;
+  readonly large?: boolean;
+}) {
+  const grant = useQuery({
+    queryKey: ['inspection-media-preview', fileAssetId],
+    queryFn: () =>
+      apiClient.request<{ readonly contentPath: string }>(`/files/${fileAssetId}/access-grants`, {
+        method: 'POST',
+      }),
+    staleTime: 3 * 60 * 1000,
+  });
+  if (!grant.data)
+    return (
+      <View
+        style={[large ? securePhotoPreviewStyle : styles.evidenceImage, styles.evidencePlaceholder]}
+      >
+        <Text style={styles.progress}>{grant.isError ? 'Unavailable' : 'Loading…'}</Text>
+      </View>
+    );
+  return (
+    <Image
+      accessibilityLabel={label}
+      contentFit="cover"
+      onError={() => void grant.refetch()}
+      source={{ uri: apiClient.assetUrl(grant.data.contentPath) }}
+      style={large ? securePhotoPreviewStyle : styles.evidenceImage}
+    />
   );
 }
 
@@ -755,7 +1040,7 @@ function SecondaryAction({
 }
 function friendlyStatus(status: string) {
   const labels: Record<string, string> = {
-    ACTIVE: 'Active rental',
+    ACTIVE: 'Rental in progress',
     COMPLETED: 'Completed',
     CONFIRMED: 'Upcoming',
     READY_FOR_PICKUP: 'Ready for pickup',
@@ -768,6 +1053,104 @@ function friendlyStatus(status: string) {
 function odometerLabel(meters: string | null | undefined) {
   if (!meters) return '—';
   return `${(Number(meters) / 1000).toLocaleString('en-PH', { maximumFractionDigits: 1 })} km`;
+}
+
+function addCapturedFile(
+  current: Record<string, CapturedFile[]>,
+  perspective: string,
+  file: CapturedFile,
+) {
+  const multiple = (multiPerspectives as readonly string[]).includes(perspective);
+  return {
+    ...current,
+    [perspective]: multiple ? [...(current[perspective] ?? []), file] : [file],
+  };
+}
+
+function capturedFilesFromDraft(media: InspectionDraft['media']) {
+  return media.reduce<Record<string, CapturedFile[]>>((grouped, item) => {
+    grouped[item.perspective] = [...(grouped[item.perspective] ?? []), { id: item.fileAssetId }];
+    return grouped;
+  }, {});
+}
+
+function replaceCapturedFile(
+  current: Record<string, CapturedFile[]>,
+  perspective: string,
+  file: CapturedFile,
+) {
+  return { ...current, [perspective]: [file] };
+}
+
+function appendCapturedFile(
+  current: Record<string, CapturedFile[]>,
+  perspective: string,
+  file: CapturedFile,
+) {
+  return { ...current, [perspective]: [...(current[perspective] ?? []), file] };
+}
+
+function inspectionPhotoGuidance(perspective: string): string {
+  const guidance: Record<string, string> = {
+    FRONT: 'Take a clear photo showing the front exterior condition.',
+    REAR: 'Take a clear photo showing the rear exterior condition.',
+    DRIVER_SIDE: 'Capture the full driver side with visible body condition.',
+    PASSENGER_SIDE: 'Capture the full passenger side with visible body condition.',
+    INTERIOR: 'Take a clear photo showing the vehicle interior condition.',
+    DASHBOARD: 'Capture the dashboard with warning lights and displays clearly visible.',
+    ODOMETER: 'Capture the dashboard with the odometer reading clearly visible.',
+    FUEL_OR_BATTERY_DISPLAY: 'Capture the current fuel level or EV battery state of charge.',
+    ADDITIONAL: 'Capture any additional condition evidence that should be recorded.',
+  };
+  return guidance[perspective] ?? 'Capture a clear inspection evidence photo.';
+}
+
+function removeCapturedFile(current: Record<string, CapturedFile[]>, perspective: string) {
+  const next = { ...current };
+  const remaining = (next[perspective] ?? []).slice(0, -1);
+  if (remaining.length) next[perspective] = remaining;
+  else delete next[perspective];
+  return next;
+}
+
+function inspectionMedia(files: Record<string, CapturedFile[]>) {
+  return Object.entries(files).flatMap(([perspective, items]) =>
+    items.map((file, index) => ({
+      evidenceSequence: index + 1,
+      fileAssetId: file.id,
+      perspective,
+    })),
+  );
+}
+
+function photoCount(files: Record<string, CapturedFile[]>) {
+  return Object.values(files).reduce((total, entries) => total + entries.length, 0);
+}
+
+function completedRequired(files: Record<string, CapturedFile[]>) {
+  return perspectives.filter((perspective) => Boolean(files[perspective]?.length)).length;
+}
+
+function hasRequiredPhotos(files: Record<string, CapturedFile[]>) {
+  return completedRequired(files) === perspectives.length;
+}
+
+function ExpiryCountdown({ expiresAt }: { readonly expiresAt: string }) {
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    const initialize = setTimeout(() => setNow(Date.now()), 0);
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => {
+      clearTimeout(initialize);
+      clearInterval(timer);
+    };
+  }, []);
+  const seconds = now ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - now) / 1_000)) : 0;
+  return (
+    <Text style={styles.countdown}>
+      Expires in {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}
+    </Text>
+  );
 }
 
 function isReturnConfirmationOverdue(
@@ -787,25 +1170,25 @@ function invalidateRentalQueries(
   client: ReturnType<typeof useQueryClient>,
   reference: string,
 ): void {
-  for (const queryKey of [
-    ['rental', reference],
-    ['owner-rental', reference],
-    ['bookings'],
-    ['booking', reference],
-    ['owner-rentals'],
-    ['owner-booking-requests'],
-    ['owner-booking', reference],
-    ['vehicles'],
-    ['public-search'],
-    ['public-vehicle'],
-    ['notifications'],
-    ['notification-summary'],
-  ]) {
-    void client.invalidateQueries({ queryKey });
-  }
+  invalidateBookingLifecycle(client, reference);
 }
 
 const styles = StyleSheet.create({
+  actionCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.primary,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: spacing.md,
+    padding: spacing.lg,
+  },
+  actionEyebrow: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '900',
+    marginBottom: spacing.xs,
+    textTransform: 'uppercase',
+  },
   body: { color: colors.subtleText, lineHeight: 21, marginTop: spacing.xs },
   button: {
     alignItems: 'center',
@@ -824,8 +1207,30 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     padding: spacing.lg,
   },
+  countdown: { color: colors.primary, fontWeight: '800', marginTop: spacing.sm },
   disabled: { opacity: 0.45 },
   error: { color: '#A12626', marginTop: spacing.md },
+  evidenceCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: spacing.xs,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  evidenceGallery: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  evidenceImage: { borderRadius: 10, height: 88, width: 88 },
+  evidencePlaceholder: {
+    alignItems: 'center',
+    backgroundColor: colors.muted,
+    justifyContent: 'center',
+  },
   heading: { color: colors.ink, fontSize: 19, fontWeight: '800', marginTop: spacing.sm },
   input: {
     backgroundColor: colors.surface,
@@ -840,6 +1245,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginTop: spacing.md,
+  },
+  infoCard: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: 14,
+    marginTop: spacing.md,
+    padding: spacing.lg,
   },
   overdueCard: {
     backgroundColor: colors.warningSoft,
@@ -865,6 +1276,12 @@ const styles = StyleSheet.create({
   secondaryText: { color: colors.primary, fontWeight: '800' },
   status: { color: colors.primary, fontWeight: '700', marginTop: spacing.xs },
   success: { color: colors.primary, fontWeight: '800', marginTop: spacing.sm },
+  successCard: {
+    backgroundColor: colors.muted,
+    borderRadius: 14,
+    marginTop: spacing.md,
+    padding: spacing.lg,
+  },
   summary: {
     backgroundColor: colors.surface,
     borderRadius: 14,

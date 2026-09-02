@@ -12,6 +12,7 @@ import {
   FileAssetStatus,
   FileClassification,
   InspectionConfirmationDecision,
+  InspectionAmendmentStatus,
   InspectionParticipantRole,
   InspectionPerspective,
   InspectionStatus,
@@ -25,6 +26,49 @@ import {
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { AuditService } from '../audit/audit.service';
+
+const inspectionCorrectionAdminInclude = {
+  createdBy: { select: { id: true, email: true, profile: { select: { displayName: true } } } },
+  reviewedBy: { select: { id: true, email: true, profile: { select: { displayName: true } } } },
+  inspection: {
+    include: {
+      amendments: {
+        include: {
+          createdBy: { select: { id: true, profile: { select: { displayName: true } } } },
+          reviewedBy: { select: { id: true, profile: { select: { displayName: true } } } },
+        },
+        orderBy: { createdAt: 'desc' as const },
+      },
+      booking: {
+        select: {
+          id: true,
+          publicReference: true,
+          status: true,
+          owner: { select: { id: true, profile: { select: { displayName: true } } } },
+          renter: { select: { id: true, profile: { select: { displayName: true } } } },
+          statusHistory: { orderBy: { occurredAt: 'asc' as const } },
+          vehicle: { select: { id: true, make: true, model: true, modelYear: true } },
+          inspections: {
+            orderBy: [{ type: 'asc' as const }, { version: 'asc' as const }],
+            select: {
+              id: true,
+              type: true,
+              version: true,
+              odometerMeters: true,
+              fuelBasisPoints: true,
+              batterySocBasisPoints: true,
+              finalizedAt: true,
+            },
+          },
+        },
+      },
+      media: {
+        include: { fileAsset: { select: { id: true, originalName: true } } },
+        orderBy: [{ perspective: 'asc' as const }, { evidenceSequence: 'asc' as const }],
+      },
+    },
+  },
+} satisfies Prisma.InspectionAmendmentInclude;
 import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata, RequestPrincipal } from '../security/security-context';
 import type {
@@ -35,6 +79,9 @@ import type {
   OperationalHoldDto,
   ReturnConfirmationDto,
   SubmitInspectionDto,
+  UpsertInspectionDraftMediaDto,
+  RequestInspectionCorrectionDto,
+  ReviewInspectionCorrectionDto,
 } from './rentals.dto';
 import { calculateBookingUsage } from './usage-calculation';
 
@@ -43,14 +90,21 @@ const requiredPerspectives = [
   InspectionPerspective.REAR,
   InspectionPerspective.DRIVER_SIDE,
   InspectionPerspective.PASSENGER_SIDE,
-  InspectionPerspective.INTERIOR_DASHBOARD,
   InspectionPerspective.ODOMETER,
   InspectionPerspective.FUEL_OR_BATTERY_DISPLAY,
 ] as const;
 
 const rentalInclude = {
   inspections: {
+    where: { status: InspectionStatus.FINALIZED },
     include: {
+      amendments: {
+        include: {
+          createdBy: { select: { profile: { select: { displayName: true } } } },
+          reviewedBy: { select: { profile: { select: { displayName: true } } } },
+        },
+        orderBy: { createdAt: 'asc' as const },
+      },
       confirmations: { orderBy: { confirmedAt: 'asc' as const } },
       media: {
         include: {
@@ -146,6 +200,101 @@ export class RentalsService {
     return this.serialize(booking);
   }
 
+  async ownerPickupInspectionDraft(ownerUserId: string, reference: string) {
+    const booking = await this.database.client.booking.findUniqueOrThrow({
+      select: { id: true, ownerUserId: true },
+      where: { publicReference: reference },
+    });
+    if (booking.ownerUserId !== ownerUserId) this.denied();
+    const draft = await this.database.client.inspection.findFirst({
+      include: {
+        media: {
+          orderBy: [{ perspective: 'asc' }, { evidenceSequence: 'asc' }],
+          select: { evidenceSequence: true, fileAssetId: true, perspective: true },
+        },
+      },
+      where: {
+        bookingId: booking.id,
+        status: InspectionStatus.DRAFT,
+        submittedByUserId: ownerUserId,
+        type: InspectionType.PICKUP,
+      },
+    });
+    return { inspectionId: draft?.id ?? null, media: draft?.media ?? [] };
+  }
+
+  async upsertOwnerPickupInspectionDraftMedia(
+    ownerUserId: string,
+    reference: string,
+    input: UpsertInspectionDraftMediaDto,
+  ) {
+    await this.database.client.$transaction(async (transaction) => {
+      await this.lockBooking(transaction, reference);
+      let booking = await transaction.booking.findUniqueOrThrow({
+        include: { ownerProfile: true },
+        where: { publicReference: reference },
+      });
+      if (booking.ownerUserId !== ownerUserId) this.denied();
+      if (booking.ownerProfile.status !== OwnerProfileStatus.VERIFIED) {
+        throw new ApplicationException(
+          'OWNER_NOT_VERIFIED',
+          'Owner verification is required for rental handover.',
+          HttpStatus.FORBIDDEN,
+        );
+      }
+      booking = await this.ensureReady(transaction, booking);
+      this.assertPickupWindow(booking);
+      if (booking.status !== BookingStatus.READY_FOR_PICKUP) {
+        this.invalidState('Pickup evidence requires a booking ready for pickup.');
+      }
+      await this.validateEvidenceFiles(transaction, ownerUserId, [input.fileAssetId]);
+      let draft = await transaction.inspection.findFirst({
+        where: {
+          bookingId: booking.id,
+          status: InspectionStatus.DRAFT,
+          submittedByUserId: ownerUserId,
+          type: InspectionType.PICKUP,
+        },
+      });
+      if (!draft) {
+        const latest = await transaction.inspection.findFirst({
+          orderBy: { version: 'desc' },
+          where: { bookingId: booking.id, type: InspectionType.PICKUP },
+        });
+        draft = await transaction.inspection.create({
+          data: {
+            bookingId: booking.id,
+            id: randomUUID(),
+            submittedByUserId: ownerUserId,
+            type: InspectionType.PICKUP,
+            version: (latest?.version ?? 0) + 1,
+          },
+        });
+      }
+      if (input.replace) {
+        await transaction.inspectionMedia.deleteMany({
+          where: { inspectionId: draft.id, perspective: input.perspective },
+        });
+      }
+      const latestSequence = await transaction.inspectionMedia.aggregate({
+        _max: { evidenceSequence: true },
+        where: { inspectionId: draft.id, perspective: input.perspective },
+      });
+      await transaction.inspectionMedia.create({
+        data: {
+          clientCapturedAt: input.clientCapturedAt ? new Date(input.clientCapturedAt) : null,
+          evidenceSequence: input.replace ? 1 : (latestSequence._max.evidenceSequence ?? 0) + 1,
+          fileAssetId: input.fileAssetId,
+          id: randomUUID(),
+          inspectionId: draft.id,
+          perspective: input.perspective,
+          submittedById: ownerUserId,
+        },
+      });
+    });
+    return this.ownerPickupInspectionDraft(ownerUserId, reference);
+  }
+
   async submitInspection(
     userId: string,
     reference: string,
@@ -200,23 +349,43 @@ export class RentalsService {
         },
       });
       if (existing) return existing.id;
+      const draft = await transaction.inspection.findFirst({
+        where: {
+          bookingId: booking.id,
+          status: InspectionStatus.DRAFT,
+          submittedByUserId: userId,
+          type,
+        },
+      });
       const latest = await transaction.inspection.findFirst({
         orderBy: { version: 'desc' },
         where: { bookingId: booking.id, type },
       });
-      const inspection = await transaction.inspection.create({
-        data: {
-          batterySocBasisPoints: input.batterySocBasisPoints ?? null,
-          bookingId: booking.id,
-          fuelBasisPoints: input.fuelBasisPoints ?? null,
-          id: randomUUID(),
-          notes: input.notes ?? null,
-          odometerMeters: BigInt(input.odometerMeters),
-          submittedByUserId: userId,
-          type,
-          version: (latest?.version ?? 0) + 1,
-        },
-      });
+      const inspection = draft
+        ? await transaction.inspection.update({
+            data: {
+              batterySocBasisPoints: input.batterySocBasisPoints ?? null,
+              fuelBasisPoints: input.fuelBasisPoints ?? null,
+              notes: input.notes ?? null,
+              odometerMeters: BigInt(input.odometerMeters),
+            },
+            where: { id: draft.id },
+          })
+        : await transaction.inspection.create({
+            data: {
+              batterySocBasisPoints: input.batterySocBasisPoints ?? null,
+              bookingId: booking.id,
+              fuelBasisPoints: input.fuelBasisPoints ?? null,
+              id: randomUUID(),
+              notes: input.notes ?? null,
+              odometerMeters: BigInt(input.odometerMeters),
+              submittedByUserId: userId,
+              type,
+              version: (latest?.version ?? 0) + 1,
+            },
+          });
+      if (draft)
+        await transaction.inspectionMedia.deleteMany({ where: { inspectionId: draft.id } });
       await transaction.inspectionMedia.createMany({
         data: input.media.map((media) => ({
           clientCapturedAt: media.clientCapturedAt ? new Date(media.clientCapturedAt) : null,
@@ -514,6 +683,12 @@ export class RentalsService {
         this.invalidState('Booking is not waiting for return confirmation.');
       }
       const pickup = await transaction.inspection.findFirstOrThrow({
+        include: {
+          amendments: {
+            orderBy: { reviewedAt: 'desc' },
+            where: { status: InspectionAmendmentStatus.APPROVED },
+          },
+        },
         where: {
           bookingId: booking.id,
           status: InspectionStatus.FINALIZED,
@@ -528,23 +703,7 @@ export class RentalsService {
           type: InspectionType.RETURN,
         },
       });
-      if (participantRole === InspectionParticipantRole.OWNER) {
-        const ownerReceiptInspection = await transaction.inspection.findFirst({
-          where: {
-            bookingId: booking.id,
-            status: InspectionStatus.FINALIZED,
-            submittedByUserId: booking.ownerUserId,
-            type: InspectionType.RETURN,
-          },
-        });
-        if (!ownerReceiptInspection) {
-          throw new ApplicationException(
-            'OWNER_RETURN_INSPECTION_REQUIRED',
-            'Complete the owner receipt inspection before confirming physical return.',
-            HttpStatus.CONFLICT,
-          );
-        }
-      }
+      const effectivePickup = this.effectiveInspection(pickup);
       const existing = await transaction.inspectionConfirmation.findUnique({
         where: {
           inspectionId_role: { inspectionId: returned.id, role: participantRole },
@@ -579,14 +738,14 @@ export class RentalsService {
       ) {
         return;
       }
-      if (pickup.odometerMeters === null || returned.odometerMeters === null) {
+      if (effectivePickup.odometerMeters === null || returned.odometerMeters === null) {
         throw new ApplicationException(
           'INSPECTION_MEASUREMENT_REQUIRED',
           'Both inspections require odometer measurements.',
           HttpStatus.CONFLICT,
         );
       }
-      if (returned.odometerMeters < pickup.odometerMeters) {
+      if (returned.odometerMeters < effectivePickup.odometerMeters) {
         throw new ApplicationException(
           'RETURN_ODOMETER_INVALID',
           'Return odometer cannot be lower than pickup odometer.',
@@ -605,9 +764,9 @@ export class RentalsService {
         actualReturnAt: now,
         decision: input.decision,
         pickup: {
-          batterySocBasisPoints: pickup.batterySocBasisPoints,
-          fuelBasisPoints: pickup.fuelBasisPoints,
-          odometerMeters: pickup.odometerMeters,
+          batterySocBasisPoints: effectivePickup.batterySocBasisPoints,
+          fuelBasisPoints: effectivePickup.fuelBasisPoints,
+          odometerMeters: effectivePickup.odometerMeters,
         },
         policy: booking.policySnapshot,
         pricing: booking.pricingSnapshot,
@@ -688,6 +847,177 @@ export class RentalsService {
       await this.analytics(transaction, booking, 'RETURN_COMPLETED', metadata);
     });
     return this.participantDetailById(userId, reference);
+  }
+
+  async requestInspectionCorrection(
+    ownerUserId: string,
+    reference: string,
+    inspectionId: string,
+    input: RequestInspectionCorrectionDto,
+    metadata: RequestMetadata,
+  ) {
+    if (
+      input.proposedOdometerMeters === undefined &&
+      input.proposedFuelBasisPoints === undefined &&
+      input.proposedBatterySocBasisPoints === undefined
+    ) {
+      throw new ApplicationException(
+        'INSPECTION_CORRECTION_EMPTY',
+        'Provide at least one corrected measurement.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    const correction = await this.database.client.$transaction(async (transaction) => {
+      await this.lockBooking(transaction, reference);
+      const inspection = await transaction.inspection.findFirstOrThrow({
+        include: { booking: true },
+        where: { id: inspectionId, booking: { publicReference: reference } },
+      });
+      if (
+        inspection.booking.ownerUserId !== ownerUserId ||
+        inspection.submittedByUserId !== ownerUserId ||
+        inspection.type !== InspectionType.PICKUP ||
+        inspection.status !== InspectionStatus.FINALIZED
+      )
+        this.denied();
+      if (
+        inspection.booking.status !== BookingStatus.ACTIVE &&
+        inspection.booking.status !== BookingStatus.RETURN_PENDING
+      )
+        this.invalidState(
+          'Pickup measurement corrections are available only during an active or returning rental.',
+        );
+      const pending = await transaction.inspectionAmendment.findFirst({
+        select: { id: true },
+        where: { inspectionId, status: InspectionAmendmentStatus.PENDING_REVIEW },
+      });
+      if (pending) {
+        throw new ApplicationException(
+          'INSPECTION_CORRECTION_PENDING',
+          'A correction request for this inspection is already pending administrator review.',
+          HttpStatus.CONFLICT,
+        );
+      }
+      const created = await transaction.inspectionAmendment.create({
+        data: {
+          createdByUserId: ownerUserId,
+          evidence: {
+            originalBatterySocBasisPoints: inspection.batterySocBasisPoints,
+            originalFuelBasisPoints: inspection.fuelBasisPoints,
+            originalOdometerMeters: inspection.odometerMeters?.toString() ?? null,
+          },
+          id: randomUUID(),
+          inspectionId,
+          proposedBatterySocBasisPoints: input.proposedBatterySocBasisPoints ?? null,
+          proposedFuelBasisPoints: input.proposedFuelBasisPoints ?? null,
+          proposedOdometerMeters:
+            input.proposedOdometerMeters === undefined
+              ? null
+              : BigInt(input.proposedOdometerMeters),
+          reason: input.reason,
+        },
+      });
+      await this.outbox(transaction, inspection.booking.id, 'INSPECTION_CORRECTION_REQUESTED', {
+        bookingId: inspection.booking.id,
+        correctionId: created.id,
+        inspectionId,
+      });
+      return { bookingId: inspection.booking.id, correction: created };
+    });
+    await this.audit.record({
+      action: 'INSPECTION_CORRECTION_REQUESTED',
+      actorUserId: ownerUserId,
+      metadata: { bookingId: correction.bookingId, inspectionId },
+      reason: input.reason,
+      request: metadata,
+      targetId: correction.correction.id,
+      targetType: 'INSPECTION_AMENDMENT',
+    });
+    return this.toSerializable(correction.correction);
+  }
+
+  async adminInspectionCorrections(
+    status: InspectionAmendmentStatus = InspectionAmendmentStatus.PENDING_REVIEW,
+  ) {
+    const corrections = await this.database.client.inspectionAmendment.findMany({
+      include: inspectionCorrectionAdminInclude,
+      orderBy: [{ status: 'asc' }, { createdAt: 'asc' }],
+      where: { status },
+    });
+    return this.toSerializable(corrections);
+  }
+
+  async adminInspectionCorrection(correctionId: string) {
+    const correction = await this.database.client.inspectionAmendment.findUniqueOrThrow({
+      include: inspectionCorrectionAdminInclude,
+      where: { id: correctionId },
+    });
+    return this.toSerializable(correction);
+  }
+
+  async reviewInspectionCorrection(
+    principal: RequestPrincipal,
+    correctionId: string,
+    input: ReviewInspectionCorrectionDto,
+    metadata: RequestMetadata,
+  ) {
+    const review = await this.database.client.$transaction(async (transaction) => {
+      const correction = await transaction.inspectionAmendment.findUniqueOrThrow({
+        include: { inspection: { include: { booking: true } } },
+        where: { id: correctionId },
+      });
+      if (correction.createdByUserId === principal.userId) {
+        throw new ApplicationException(
+          'INSPECTION_CORRECTION_SELF_REVIEW',
+          'Correction requesters cannot review their own request.',
+          HttpStatus.FORBIDDEN,
+        );
+      }
+      await this.lockBooking(transaction, correction.inspection.booking.publicReference);
+      if (correction.status !== InspectionAmendmentStatus.PENDING_REVIEW) {
+        if ((correction.status === InspectionAmendmentStatus.APPROVED) === input.approved)
+          return { changed: false, correction };
+        throw new ApplicationException(
+          'INSPECTION_CORRECTION_REVIEWED',
+          'This correction request has already been reviewed.',
+          HttpStatus.CONFLICT,
+        );
+      }
+      const status = input.approved
+        ? InspectionAmendmentStatus.APPROVED
+        : InspectionAmendmentStatus.REJECTED;
+      const result = await transaction.inspectionAmendment.update({
+        data: {
+          reviewReason: input.reason,
+          reviewedAt: new Date(),
+          reviewedByUserId: principal.userId,
+          status,
+        },
+        where: { id: correctionId },
+      });
+      await this.outbox(
+        transaction,
+        correction.inspection.booking.id,
+        `INSPECTION_CORRECTION_${status}`,
+        {
+          bookingId: correction.inspection.booking.id,
+          correctionId,
+          inspectionId: correction.inspectionId,
+        },
+      );
+      return { changed: true, correction: result };
+    });
+    if (review.changed) {
+      await this.audit.record({
+        action: `INSPECTION_CORRECTION_${review.correction.status}`,
+        actorUserId: principal.userId,
+        reason: input.reason,
+        request: metadata,
+        targetId: correctionId,
+        targetType: 'INSPECTION_AMENDMENT',
+      });
+    }
+    return this.toSerializable(review.correction);
   }
 
   async submitClaim(
@@ -932,6 +1262,12 @@ export class RentalsService {
         }
         const [pickup, returned, existingUsage] = await Promise.all([
           transaction.inspection.findFirst({
+            include: {
+              amendments: {
+                orderBy: { reviewedAt: 'desc' },
+                where: { status: InspectionAmendmentStatus.APPROVED },
+              },
+            },
             where: {
               bookingId: booking.id,
               status: InspectionStatus.FINALIZED,
@@ -961,6 +1297,14 @@ export class RentalsService {
             HttpStatus.CONFLICT,
           );
         }
+        const effectivePickup = this.effectiveInspection(pickup);
+        if (effectivePickup.odometerMeters === null) {
+          throw new ApplicationException(
+            'RETURN_EVIDENCE_REQUIRED',
+            'An effective pickup odometer is required for administrative resolution.',
+            HttpStatus.CONFLICT,
+          );
+        }
         if (!booking.policySnapshot || !booking.pricingSnapshot) {
           throw new ApplicationException(
             'BOOKING_SNAPSHOT_MISSING',
@@ -973,9 +1317,9 @@ export class RentalsService {
             actualReturnAt: occurredAt,
             decision: InspectionConfirmationDecision.AGREED,
             pickup: {
-              batterySocBasisPoints: pickup.batterySocBasisPoints,
-              fuelBasisPoints: pickup.fuelBasisPoints,
-              odometerMeters: pickup.odometerMeters,
+              batterySocBasisPoints: effectivePickup.batterySocBasisPoints,
+              fuelBasisPoints: effectivePickup.fuelBasisPoints,
+              odometerMeters: effectivePickup.odometerMeters,
             },
             policy: booking.policySnapshot,
             pricing: booking.pricingSnapshot,
@@ -1252,6 +1596,23 @@ export class RentalsService {
         );
       }
     }
+    const interiorCount = input.media.filter(
+      (item) =>
+        item.perspective === InspectionPerspective.INTERIOR_DASHBOARD ||
+        item.perspective === InspectionPerspective.INTERIOR,
+    ).length;
+    const dashboardCount = input.media.filter(
+      (item) =>
+        item.perspective === InspectionPerspective.INTERIOR_DASHBOARD ||
+        item.perspective === InspectionPerspective.DASHBOARD,
+    ).length;
+    if (interiorCount < 1 || dashboardCount < 1) {
+      throw new ApplicationException(
+        'INSPECTION_MEDIA_INCOMPLETE',
+        'At least one interior and one dashboard image are required.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
   }
 
   private validatePowertrainMeasurements(
@@ -1379,6 +1740,25 @@ export class RentalsService {
         returnConfirmationGraceMinutes: this.returnConfirmationGraceMinutes,
       },
     });
+  }
+
+  private effectiveInspection(inspection: {
+    readonly odometerMeters: bigint | null;
+    readonly fuelBasisPoints: number | null;
+    readonly batterySocBasisPoints: number | null;
+    readonly amendments: ReadonlyArray<{
+      readonly proposedOdometerMeters: bigint | null;
+      readonly proposedFuelBasisPoints: number | null;
+      readonly proposedBatterySocBasisPoints: number | null;
+    }>;
+  }) {
+    const amendment = inspection.amendments[0];
+    return {
+      batterySocBasisPoints:
+        amendment?.proposedBatterySocBasisPoints ?? inspection.batterySocBasisPoints,
+      fuelBasisPoints: amendment?.proposedFuelBasisPoints ?? inspection.fuelBasisPoints,
+      odometerMeters: amendment?.proposedOdometerMeters ?? inspection.odometerMeters,
+    };
   }
 
   private toSerializable<T>(value: T): T {

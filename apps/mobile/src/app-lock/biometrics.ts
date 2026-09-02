@@ -11,7 +11,8 @@ export const appBiometrics = {
 
   async confirmEnable() {
     const result = await LocalAuthentication.authenticateAsync({
-      cancelLabel: 'Use PIN only',
+      cancelLabel: 'Cancel',
+      disableDeviceFallback: true,
       promptMessage: 'Enable biometric app unlock',
     });
     return result.success;
@@ -28,7 +29,7 @@ export const appBiometrics = {
 
   async unlock() {
     const result = await LocalAuthentication.authenticateAsync({
-      cancelLabel: 'Use PIN',
+      cancelLabel: 'Cancel',
       disableDeviceFallback: true,
       promptMessage: 'Unlock Car Rental',
     });

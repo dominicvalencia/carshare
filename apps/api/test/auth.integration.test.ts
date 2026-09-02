@@ -139,14 +139,26 @@ describe.sequential('Phase 2 identity integration', () => {
       (message) => message.template === 'EMAIL_VERIFICATION',
     );
     expect(verification).toBeDefined();
+    expect(verification!.actionUrl).toContain(encodeURIComponent(verification!.token));
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/email-verification/requests')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(202);
+    const replacement = emailProvider.messages.at(-1)!;
+    expect(replacement.token).not.toBe(verification!.token);
     await request(app.getHttpServer())
       .post('/api/v1/auth/email-verification/confirmations')
       .send({ token: verification!.token })
+      .expect(422);
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/email-verification/confirmations')
+      .send({ token: replacement.token })
       .expect(204);
     await request(app.getHttpServer())
       .post('/api/v1/auth/email-verification/confirmations')
-      .send({ token: verification!.token })
-      .expect(204);
+      .send({ token: replacement.token })
+      .expect(422)
+      .expect(({ body }) => expect(body.error.code).toBe('EMAIL_VERIFICATION_TOKEN_INVALID'));
   });
 
   it('rotates refresh tokens and revokes the family on reuse', async () => {

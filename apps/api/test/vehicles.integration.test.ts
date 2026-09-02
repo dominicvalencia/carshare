@@ -87,7 +87,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
     await request(app.getHttpServer())
       .patch(`/api/v1/owner/vehicles/${preVerificationVehicleId}`)
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ make: 'Draft make', model: 'Draft model' })
+      .send({ make: 'Toyota', model: 'Draft model' })
       .expect(200);
     await request(app.getHttpServer())
       .post(`/api/v1/owner/vehicles/${preVerificationVehicleId}/submission`)
@@ -412,6 +412,19 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
       .post(`/api/v1/owner/vehicles/${vehicleId}/submission`)
       .set('Authorization', `Bearer ${ownerToken}`)
       .expect(201);
+    await request(app.getHttpServer())
+      .get(`/api/v1/admin/vehicles/${vehicleId}`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get(`/api/v1/admin/vehicles/${vehicleId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data.location.latitude).toEqual(expect.any(String));
+        expect(body.data.location.longitude).toEqual(expect.any(String));
+        expect(body.data.documents[0].fileAsset).not.toHaveProperty('storageKey');
+      });
     await request(app.getHttpServer())
       .post(`/api/v1/admin/vehicles/${vehicleId}/approval`)
       .set('Authorization', `Bearer ${supportToken}`)

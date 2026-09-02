@@ -58,7 +58,11 @@ export class GeographyService {
     const items = await this.database.client.geographicArea.findMany({
       orderBy: { name: 'asc' },
       select: { cityClass: true, code: true, level: true, name: true, provinceCode: true },
-      where: { active: true, level: { in: [...LOCALITY_LEVELS] }, parentCode: scopeCode },
+      where: {
+        active: true,
+        level: { in: [...LOCALITY_LEVELS] },
+        OR: [{ parentCode: scopeCode }, { provinceCode: scopeCode }],
+      },
     });
     return this.withVersion(items);
   }
@@ -102,9 +106,9 @@ export class GeographyService {
     ]);
     if (
       scope.regionCode !== region.code ||
-      city.parentCode !== scope.code ||
+      (city.parentCode !== scope.code && city.provinceCode !== scope.code) ||
       city.regionCode !== region.code ||
-      city.provinceCode !== (province?.code ?? null)
+      (province ? city.provinceCode !== province.code : false)
     )
       throw hierarchyError('The selected city or municipality does not belong to that address.');
     if (province?.regionCode !== region.code)

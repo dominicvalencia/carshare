@@ -77,6 +77,7 @@ export class ApiClient {
         },
       });
     }
+    if (response.ok && response.status === 204) return undefined as T;
     const envelope = (await response.json().catch(() => ({}))) as ApiEnvelope<T>;
     if (!response.ok || !envelope.success)
       throw new ApiError(

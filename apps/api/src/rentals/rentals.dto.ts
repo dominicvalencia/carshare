@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   InspectionConfirmationDecision,
+  InspectionAmendmentStatus,
   InspectionPerspective,
   PostReturnClaimCategory,
   RentalIncidentCategory,
@@ -37,6 +38,12 @@ export class InspectionMediaDto {
   @ApiPropertyOptional() @IsOptional() @IsString() clientCapturedAt?: string;
 }
 
+export class UpsertInspectionDraftMediaDto extends InspectionMediaDto {
+  @ApiProperty({ description: 'Replace the current perspective slot instead of appending.' })
+  @IsBoolean()
+  replace!: boolean;
+}
+
 export class SubmitInspectionDto {
   @ApiProperty({ example: '20000000', description: 'Normalized integer odometer metres.' })
   @IsString()
@@ -62,7 +69,7 @@ export class SubmitInspectionDto {
   @ApiProperty({ type: [InspectionMediaDto] })
   @IsArray()
   @ArrayMinSize(7)
-  @ArrayMaxSize(20)
+  @ArrayMaxSize(30)
   @ValidateNested({ each: true })
   @Type(() => InspectionMediaDto)
   media!: InspectionMediaDto[];
@@ -127,4 +134,37 @@ export class AdminHandoverResolutionDto {
   @ApiProperty() @IsString() @MinLength(10) @MaxLength(1000) reason!: string;
   @ApiPropertyOptional() @IsOptional() @IsDateString() occurredAt?: string;
   @ApiPropertyOptional() @IsOptional() @IsUUID() incidentId?: string;
+}
+
+export class RequestInspectionCorrectionDto {
+  @ApiProperty() @IsString() @MinLength(10) @MaxLength(1000) reason!: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{1,15}$/)
+  proposedOdometerMeters?: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(10000)
+  proposedFuelBasisPoints?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(10000)
+  proposedBatterySocBasisPoints?: number;
+}
+
+export class ReviewInspectionCorrectionDto {
+  @ApiProperty() @IsBoolean() approved!: boolean;
+  @ApiProperty() @IsString() @MinLength(10) @MaxLength(1000) reason!: string;
+}
+
+export class AdminInspectionCorrectionQueryDto {
+  @ApiPropertyOptional({ enum: InspectionAmendmentStatus })
+  @IsOptional()
+  @IsEnum(InspectionAmendmentStatus)
+  status?: InspectionAmendmentStatus;
 }

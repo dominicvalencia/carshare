@@ -5,6 +5,9 @@ import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { apiClient } from '../auth/api-client';
 import { useAuth } from '../auth/AuthProvider';
+import { useQueryClient } from '@tanstack/react-query';
+import { invalidateBookingLifecycle } from '../query/booking-invalidation';
+import { invalidateRenterVerification } from '../query/verification-invalidation';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -17,17 +20,27 @@ Notifications.setNotificationHandler({
 
 export function PushRegistration() {
   const auth = useAuth();
+  const client = useQueryClient();
   useEffect(() => {
     if (!auth.user) return;
     const responseSubscription = Notifications.addNotificationResponseReceivedListener(
       (response) => {
+        invalidateBookingLifecycle(client);
+        void invalidateRenterVerification(client);
         const link = response.notification.request.content.data?.deepLink;
         if (typeof link === 'string' && link.startsWith('carrental://')) void Linking.openURL(link);
       },
     );
+    const receivedSubscription = Notifications.addNotificationReceivedListener(() => {
+      invalidateBookingLifecycle(client);
+      void invalidateRenterVerification(client);
+    });
     if (Device.isDevice && (Platform.OS === 'ios' || Platform.OS === 'android')) void register();
-    return () => responseSubscription.remove();
-  }, [auth.user]);
+    return () => {
+      responseSubscription.remove();
+      receivedSubscription.remove();
+    };
+  }, [auth.user, client]);
   return null;
 }
 

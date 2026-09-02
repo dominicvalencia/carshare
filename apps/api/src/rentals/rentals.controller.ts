@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { InspectionType, RoleCode } from '@carrental/database';
@@ -15,11 +15,15 @@ import { ClaimsService } from '../claims/claims.service';
 import {
   CreateClaimDto,
   AdminHandoverResolutionDto,
+  AdminInspectionCorrectionQueryDto,
   CreateIncidentDto,
   IncidentStatusDto,
   OperationalHoldDto,
+  RequestInspectionCorrectionDto,
+  ReviewInspectionCorrectionDto,
   ReturnConfirmationDto,
   SubmitInspectionDto,
+  UpsertInspectionDraftMediaDto,
   VerifyPickupDto,
 } from './rentals.dto';
 import { RentalsService } from './rentals.service';
@@ -111,6 +115,23 @@ export class OwnerRentalsController {
   @Get()
   detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('reference') reference: string) {
     return this.rentals.ownerDetail(principal, reference);
+  }
+
+  @Get('pickup/inspection/draft')
+  pickupInspectionDraft(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+  ) {
+    return this.rentals.ownerPickupInspectionDraft(principal.userId, reference);
+  }
+
+  @Put('pickup/inspection/draft/media')
+  pickupInspectionDraftMedia(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: UpsertInspectionDraftMediaDto,
+  ) {
+    return this.rentals.upsertOwnerPickupInspectionDraftMedia(principal.userId, reference, input);
   }
 
   @Post('pickup/inspection')
@@ -212,6 +233,23 @@ export class OwnerRentalsController {
       requestMetadata(request),
     );
   }
+
+  @Post('inspections/:inspectionId/corrections')
+  requestCorrection(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Param('inspectionId') inspectionId: string,
+    @Body() input: RequestInspectionCorrectionDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.requestInspectionCorrection(
+      principal.userId,
+      reference,
+      inspectionId,
+      input,
+      requestMetadata(request),
+    );
+  }
 }
 
 @ApiBearerAuth()
@@ -225,6 +263,16 @@ export class AdminRentalsController {
   @Get()
   queue() {
     return this.rentals.adminQueue();
+  }
+
+  @Get('inspection-corrections')
+  corrections(@Query() query: AdminInspectionCorrectionQueryDto) {
+    return this.rentals.adminInspectionCorrections(query.status);
+  }
+
+  @Get('inspection-corrections/:correctionId')
+  correction(@Param('correctionId') correctionId: string) {
+    return this.rentals.adminInspectionCorrection(correctionId);
   }
 
   @Get(':reference')
@@ -263,5 +311,21 @@ export class AdminRentalsController {
     @Req() request: Request,
   ) {
     return this.rentals.setIncidentStatus(principal, incidentId, input, requestMetadata(request));
+  }
+
+  @Post('inspection-corrections/:correctionId/review')
+  @RequirePermissions('rentals.intervene')
+  reviewCorrection(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('correctionId') correctionId: string,
+    @Body() input: ReviewInspectionCorrectionDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.reviewInspectionCorrection(
+      principal,
+      correctionId,
+      input,
+      requestMetadata(request),
+    );
   }
 }

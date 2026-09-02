@@ -37,9 +37,15 @@ interface OwnerBookingView extends BookingView {
 
 type Filter = 'Needs response' | 'Upcoming' | 'All';
 
-export function OwnerBookingRequestsScreen() {
+export function OwnerBookingRequestsScreen({
+  initialBookingReference,
+  onClose,
+}: {
+  readonly initialBookingReference?: string;
+  readonly onClose?: () => void;
+} = {}) {
   const client = useQueryClient();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialBookingReference ?? null);
   const [filter, setFilter] = useState<Filter>('Needs response');
   const requests = useQuery({
     queryKey: ['owner-booking-requests'],
@@ -84,7 +90,7 @@ export function OwnerBookingRequestsScreen() {
         booking={detail.data}
         error={detail.error}
         loading={detail.isPending}
-        onBack={() => setSelected(null)}
+        onBack={onClose ?? (() => setSelected(null))}
         decision={decision}
       />
     );
@@ -150,7 +156,7 @@ export function OwnerBookingRequestsScreen() {
               </Text>
               <View style={styles.metaRow}>
                 <StatusBadge
-                  label={bookingStatusLabel(booking.status)}
+                  label={bookingStatusLabel(booking.status, 'owner')}
                   tone={booking.status === 'AWAITING_OWNER' ? 'warning' : 'success'}
                 />
                 <Text style={styles.price}>
@@ -214,13 +220,21 @@ function OwnerRequestDetail({
       <VehicleImage contentPath={booking.vehicle.coverPhoto?.contentPath} style={styles.hero} />
       <View style={styles.metaRow}>
         <StatusBadge
-          label={bookingStatusLabel(booking.status)}
+          label={bookingStatusLabel(booking.status, 'owner')}
           tone={booking.status === 'AWAITING_OWNER' ? 'warning' : 'success'}
         />
         <Text style={styles.price}>
           {money(booking.pricing.totalMinor, booking.pricing.currency)}
         </Text>
       </View>
+      {booking.status === 'AWAITING_OWNER' && (
+        <Card style={styles.notice}>
+          <Text style={styles.title}>Waiting for your response</Text>
+          <Text style={styles.body}>
+            The renter is waiting for you to accept or decline this booking request.
+          </Text>
+        </Card>
+      )}
       <Card>
         <Info icon="person-outline" label="Renter" value={booking.renter.displayName} />
         <Info icon="calendar-outline" label="Pickup" value={dateTimeLabel(booking.rentalStart)} />
@@ -349,7 +363,7 @@ function OwnerRequestDetail({
               {index < booking.statusHistory.length - 1 && <View style={styles.timelineLine} />}
             </View>
             <View style={styles.flex}>
-              <Text style={styles.infoValue}>{bookingStatusLabel(entry.toStatus)}</Text>
+              <Text style={styles.infoValue}>{bookingStatusLabel(entry.toStatus, 'owner')}</Text>
               <Text style={styles.body}>{dateTimeLabel(entry.occurredAt)}</Text>
             </View>
           </View>

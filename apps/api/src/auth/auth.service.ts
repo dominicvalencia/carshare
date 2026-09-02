@@ -272,15 +272,22 @@ export class AuthService {
     await this.events.record('SESSION_REVOKED', { ...metadata, sessionId, userId: session.userId });
   }
 
-  async requestEmailVerification(userId: string): Promise<void> {
+  async requestEmailVerification(userId: string, metadata: RequestMetadata): Promise<void> {
+    await this.rateLimits.assertAllowed(
+      'email-verification',
+      [metadata.ipAddress ?? 'unknown', userId],
+      5,
+      3600,
+    );
     const user = await this.database.client.user.findUnique({ where: { id: userId } });
     if (!user?.normalizedEmail || user.emailVerifiedAt) return;
     await this.issueEmailToken(user.id, user.normalizedEmail, AuthTokenType.EMAIL_VERIFICATION);
+    await this.events.record('EMAIL_VERIFICATION_REQUESTED', { ...metadata, userId });
   }
 
   async confirmEmailVerification(rawToken: string, metadata: RequestMetadata): Promise<void> {
     const token = await this.findAuthToken(rawToken, AuthTokenType.EMAIL_VERIFICATION);
-    if (token.consumedAt) return;
+    if (token.consumedAt) throw this.invalidEmailToken();
     if (token.expiresAt <= new Date()) {
       throw new ApplicationException(
         IdentityErrorCode.EMAIL_VERIFICATION_TOKEN_EXPIRED,
@@ -565,16 +572,30 @@ export class AuthService {
         : 'PASSWORD_RESET_TTL_MINUTES',
       { infer: true },
     );
-    await this.database.client.authToken.create({
-      data: {
-        expiresAt: new Date(Date.now() + minutes * 60_000),
-        id,
-        tokenHash: token.hash,
-        type,
-        userId,
-      },
-    });
+    const issuedAt = new Date();
+    await this.database.client.$transaction([
+      this.database.client.authToken.updateMany({
+        data: { consumedAt: issuedAt },
+        where: { consumedAt: null, type, userId },
+      }),
+      this.database.client.authToken.create({
+        data: {
+          expiresAt: new Date(issuedAt.getTime() + minutes * 60_000),
+          id,
+          tokenHash: token.hash,
+          type,
+          userId,
+        },
+      }),
+    ]);
+    const publicUrl = this.configuration.getOrThrow('API_PUBLIC_URL', { infer: true });
+    const actionBase = `${publicUrl}${
+      type === AuthTokenType.EMAIL_VERIFICATION
+        ? '/api/v1/auth/email-verification'
+        : '/reset-password'
+    }`;
     await this.emailProvider.send({
+      actionUrl: `${actionBase}?token=${encodeURIComponent(token.raw)}`,
       template: type === AuthTokenType.EMAIL_VERIFICATION ? 'EMAIL_VERIFICATION' : 'PASSWORD_RESET',
       to: email,
       token: token.raw,

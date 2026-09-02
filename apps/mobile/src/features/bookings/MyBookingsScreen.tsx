@@ -77,6 +77,7 @@ export function MyBookingsScreen({
   const bookings = useQuery({
     queryKey: ['bookings'],
     queryFn: () => apiClient.request<BookingView[]>('/bookings'),
+    refetchInterval: 10_000,
   });
   const detail = useQuery({
     enabled: Boolean(selected),
@@ -123,6 +124,7 @@ export function MyBookingsScreen({
         loading={detail.isPending}
         error={detail.error}
         onBack={() => {
+          void bookings.refetch();
           if (onClose) {
             onClose();
             return;

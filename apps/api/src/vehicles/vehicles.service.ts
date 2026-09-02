@@ -17,6 +17,7 @@ import { OccupancyService } from '../bookings/occupancy.service';
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { FilesService } from '../files/files.service';
+import { GeographyService } from '../geography/geography.service';
 import { OwnersService } from '../owners/owners.service';
 import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata } from '../security/security-context';
@@ -89,12 +90,27 @@ export class VehiclesService {
     private readonly audit: AuditService,
     private readonly occupancy: OccupancyService,
     private readonly files: FilesService,
+    private readonly geography: GeographyService,
   ) {}
 
   categories() {
     return this.database.client.vehicleCategory.findMany({
       orderBy: { sortOrder: 'asc' },
       where: { active: true },
+    });
+  }
+
+  makes() {
+    return this.database.client.vehicleMake.findMany({
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      where: { active: true },
+    });
+  }
+
+  models(makeId: string) {
+    return this.database.client.vehicleModel.findMany({
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      where: { active: true, makeId },
     });
   }
 
@@ -116,11 +132,12 @@ export class VehiclesService {
     await this.owners.assertDraftCapable(userId);
     const owner = await this.database.client.ownerProfile.findUniqueOrThrow({ where: { userId } });
     if (input.categoryId) await this.assertCategory(input.categoryId);
+    const make = input.make === undefined ? undefined : await this.canonicalMake(input.make);
     const vehicle = await this.database.client.$transaction(async (transaction) => {
       const created = await transaction.vehicle.create({
         data: {
           ...(input.categoryId ? { categoryId: input.categoryId } : {}),
-          ...(input.make === undefined ? {} : { make: input.make.trim() || null }),
+          ...(make === undefined ? {} : { make }),
           ...(input.model === undefined ? {} : { model: input.model.trim() || null }),
           ownerProfileId: owner.id,
           ownerUserId: userId,
@@ -143,6 +160,7 @@ export class VehiclesService {
     const vehicles = await this.database.client.vehicle.findMany({
       include: {
         category: true,
+        location: true,
         photos: {
           include: { fileAsset: { select: safeFileSelect } },
           orderBy: { displayOrder: 'asc' },
@@ -180,6 +198,7 @@ export class VehiclesService {
       this.invalidState('Material vehicle details are locked in this listing state.');
     }
     if (input.categoryId) await this.assertCategory(input.categoryId);
+    const make = input.make === undefined ? undefined : await this.canonicalMake(input.make);
     if (input.modelYear && input.modelYear > new Date().getUTCFullYear() + 1) {
       throw new ApplicationException(
         VehicleErrorCode.INVALID_VEHICLE_SPECIFICATION,
@@ -219,6 +238,7 @@ export class VehiclesService {
       ...(input.seatCount === undefined ? {} : { seatCount: input.seatCount }),
       ...(input.doorCount === undefined ? {} : { doorCount: input.doorCount }),
     };
+    if (make !== undefined) data.make = make;
     if (input.plateNumber !== undefined) {
       const value = this.normalizeIdentifier(input.plateNumber);
       data.plateNumber = input.plateNumber.trim() || null;
@@ -422,24 +442,59 @@ export class VehiclesService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
+    const hasStructuredAddress = Boolean(
+      input.regionCode ||
+      input.addressScopeCode ||
+      input.cityMunicipalityCode ||
+      input.barangayCode,
+    );
+    const address = hasStructuredAddress
+      ? await this.geography.validateAddress({
+          regionCode: input.regionCode ?? '',
+          addressScopeCode: input.addressScopeCode ?? '',
+          ...(input.provinceCode ? { provinceCode: input.provinceCode } : {}),
+          cityMunicipalityCode: input.cityMunicipalityCode ?? '',
+          barangayCode: input.barangayCode ?? '',
+        })
+      : null;
+    const city = address?.city.name ?? input.city.trim();
+    const province = address?.province?.name ?? address?.scope.name ?? input.province.trim();
+    const structured = address
+      ? {
+          addressScopeCode: address.scope.code,
+          barangay: address.barangay.name,
+          barangayCode: address.barangay.code,
+          cityMunicipalityCode: address.city.code,
+          provinceCode: address.province?.code ?? null,
+          regionCode: address.region.code,
+        }
+      : {};
     await this.database.client.vehicleLocation.upsert({
       create: {
-        city: input.city.trim(),
+        ...structured,
+        addressLine1: this.clean(input.addressLine1) ?? null,
+        barangay: address?.barangay.name ?? this.clean(input.barangay) ?? null,
+        city,
         country: (input.country ?? 'PH').toUpperCase(),
         latitude,
         longitude,
         pickupAreaLabel: this.clean(input.pickupAreaLabel) ?? null,
-        province: input.province.trim(),
+        landmark: this.clean(input.landmark) ?? null,
+        province,
         timezone: input.timezone ?? 'Asia/Manila',
         vehicleId: id,
       },
       update: {
-        city: input.city.trim(),
+        ...structured,
+        addressLine1: this.clean(input.addressLine1) ?? null,
+        barangay: address?.barangay.name ?? this.clean(input.barangay) ?? null,
+        city,
         country: (input.country ?? 'PH').toUpperCase(),
         latitude,
         longitude,
         pickupAreaLabel: this.clean(input.pickupAreaLabel) ?? null,
-        province: input.province.trim(),
+        landmark: this.clean(input.landmark) ?? null,
+        province,
         timezone: input.timezone ?? 'Asia/Manila',
       },
       where: { vehicleId: id },
@@ -648,6 +703,7 @@ export class VehiclesService {
 
   private withOwnerPhotoGrants<
     T extends {
+      location: { latitude: unknown; longitude: unknown } | null;
       photos: Array<{
         fileAsset: { id: string; status: FileAssetStatus };
       }>;
@@ -655,6 +711,7 @@ export class VehiclesService {
   >(vehicle: T) {
     return {
       ...vehicle,
+      ...this.serializedLocation(vehicle),
       photos: vehicle.photos.map((photo) => ({
         ...photo,
         fileAsset: {
@@ -699,7 +756,21 @@ export class VehiclesService {
         where: { targetId: id, targetType: 'VEHICLE' },
       }),
     ]);
-    return { ...vehicle, auditLogs };
+    return { ...vehicle, ...this.serializedLocation(vehicle), auditLogs };
+  }
+
+  private serializedLocation(vehicle: {
+    location?: { latitude: unknown; longitude: unknown } | null;
+  }) {
+    return vehicle.location
+      ? {
+          location: {
+            ...vehicle.location,
+            latitude: String(vehicle.location.latitude),
+            longitude: String(vehicle.location.longitude),
+          },
+        }
+      : {};
   }
 
   async approve(id: string, actorUserId: string, request: RequestMetadata) {
@@ -709,7 +780,10 @@ export class VehiclesService {
       [VehicleLifecycleStatus.PENDING_APPROVAL],
       'Only pending vehicles can be approved.',
     );
-    const detail = await this.adminDetail(id);
+    const detail = await this.database.client.vehicle.findUniqueOrThrow({
+      include: ownerVehicleInclude,
+      where: { id },
+    });
     const failures = await this.readinessFailures(detail);
     if (failures.length) {
       throw new ApplicationException(
@@ -1063,6 +1137,23 @@ export class VehiclesService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
+  }
+
+  private async canonicalMake(value: string): Promise<string | null> {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const make = await this.database.client.vehicleMake.findFirst({
+      where: { active: true, name: { equals: normalized, mode: 'insensitive' } },
+      select: { name: true },
+    });
+    if (!make) {
+      throw new ApplicationException(
+        VehicleErrorCode.INVALID_VEHICLE_SPECIFICATION,
+        'Select a supported vehicle make.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    return make.name;
   }
 
   private assertState(

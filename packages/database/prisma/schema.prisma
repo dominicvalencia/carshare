@@ -147,6 +147,10 @@ enum VehiclePhotoPerspective {
   DRIVER_SIDE
   PASSENGER_SIDE
   INTERIOR_DASHBOARD
+  INTERIOR
+  DASHBOARD
+  CARGO
+  ADDITIONAL
   OTHER
 }
 
@@ -350,6 +354,8 @@ enum InspectionPerspective {
   DRIVER_SIDE
   PASSENGER_SIDE
   INTERIOR_DASHBOARD
+  INTERIOR
+  DASHBOARD
   ODOMETER
   FUEL_OR_BATTERY_DISPLAY
   ADDITIONAL
@@ -363,6 +369,13 @@ enum InspectionParticipantRole {
 enum InspectionConfirmationDecision {
   AGREED
   DISAGREED
+}
+
+enum InspectionAmendmentStatus {
+  LEGACY_RECORDED
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
 }
 
 enum PostReturnClaimCategory {
@@ -731,69 +744,70 @@ model User {
   createdAt              DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt              DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  profile                   UserProfile?
-  roles                     UserRole[]
-  sessions                  Session[]
-  authTokens                AuthToken[]
-  otpChallenges             OtpChallenge[]
-  ownerProfile              OwnerProfile?
-  verifications             Verification[]                    @relation("VerificationSubject")
-  reviewedVerifications     Verification[]                    @relation("VerificationReviewer")
-  addressAssessments        Verification[]                    @relation("VerificationAddressAssessor")
-  uploadedFiles             FileAsset[]
-  securityEvents            SecurityEvent[]
-  auditLogs                 AuditLog[]                        @relation("AuditActor")
-  ownedVehicles             Vehicle[]                         @relation("VehicleOwnerUser")
-  vehiclePolicyVersions     VehiclePolicyVersion[]            @relation("VehiclePolicyCreator")
-  vehicleBlocksCreated      VehicleBlockedPeriod[]            @relation("VehicleBlockCreator")
-  vehicleStatusChanges      VehicleStatusHistory[]            @relation("VehicleStatusActor")
-  vehicleDocumentsReviewed  VehicleDocument[]                 @relation("VehicleDocumentReviewer")
-  favorites                 UserFavorite[]
-  pricingQuotes             PricingQuote[]                    @relation("QuoteRenter")
-  analyticsEvents           AnalyticsEvent[]
-  renterBookings            Booking[]                         @relation("BookingRenter")
-  ownerBookings             Booking[]                         @relation("BookingOwner")
-  bookingStatusActions      BookingStatusHistory[]            @relation("BookingStatusActor")
-  bookingCancellations      BookingCancellation[]             @relation("BookingCancellationActor")
-  bookingOwnerDecisions     BookingOwnerDecision[]            @relation("BookingOwnerDecisionActor")
-  bookingIdempotency        BookingIdempotencyRecord[]
-  commissionRulesCreated    CommissionRule[]                  @relation("CommissionRuleCreator")
-  inspectionsSubmitted      Inspection[]                      @relation("InspectionSubmitter")
-  inspectionMediaSubmitted  InspectionMedia[]                 @relation("InspectionMediaSubmitter")
-  inspectionConfirmations   InspectionConfirmation[]
-  pickupChallengesIssued    InspectionVerificationChallenge[] @relation("PickupChallengeIssuer")
-  pickupChallengesConsumed  InspectionVerificationChallenge[] @relation("PickupChallengeConsumer")
-  inspectionAmendments      InspectionAmendment[]             @relation("InspectionAmendmentCreator")
-  postReturnClaims          PostReturnClaim[]                 @relation("PostReturnClaimSubmitter")
-  claimLateOverrides        PostReturnClaim[]                 @relation("ClaimLateOverride")
-  claimEvidenceSubmitted    PostReturnClaimEvidence[]         @relation("ClaimEvidenceSubmitter")
-  claimResponses            ClaimResponse[]                   @relation("ClaimResponseRenter")
-  claimAdjudications        ClaimAdjudication[]               @relation("ClaimAdjudicator")
-  disputesOpened            Dispute[]                         @relation("DisputeOpener")
-  disputesResolved          Dispute[]                         @relation("DisputeResolver")
-  disputeEvidenceSubmitted  DisputeEvidence[]                 @relation("DisputeEvidenceSubmitter")
-  earningHoldsCreated       EarningHold[]                     @relation("EarningHoldCreator")
-  earningHoldsReleased      EarningHold[]                     @relation("EarningHoldReleaser")
-  rentalIncidents           RentalIncident[]                  @relation("RentalIncidentReporter")
-  payoutAccountsCreated     OwnerPayoutAccount[]              @relation("PayoutAccountCreator")
-  payoutEligibilitiesSet    PayoutEligibility[]               @relation("PayoutEligibilityActor")
-  payoutBatchesCreated      PayoutBatch[]                     @relation("PayoutBatchCreator")
-  payoutsCreated            Payout[]                          @relation("PayoutCreator")
-  payoutsApproved           Payout[]                          @relation("PayoutApprover")
-  payoutOperations          PayoutOperation[]                 @relation("PayoutOperationActor")
-  conversationParticipants  ConversationParticipant[]
-  sentMessages              Message[]                         @relation("MessageSender")
-  notifications             Notification[]
-  notificationPreferences   NotificationPreference[]
-  devicePushTokens          DevicePushToken[]
-  authoredReviews           Review[]                          @relation("ReviewAuthor")
-  subjectReviews            Review[]                          @relation("ReviewSubjectUser")
-  supportTicketsCreated     SupportTicket[]                   @relation("SupportTicketCreator")
-  supportTicketsAssigned    SupportTicket[]                   @relation("SupportTicketAssignee")
-  supportMessages           SupportTicketMessage[]
-  moderationReportsCreated  ModerationReport[]                @relation("ModerationReporter")
-  moderationReportsAgainst  ModerationReport[]                @relation("ModerationReportedUser")
-  moderationReportsResolved ModerationReport[]                @relation("ModerationResolver")
+  profile                    UserProfile?
+  roles                      UserRole[]
+  sessions                   Session[]
+  authTokens                 AuthToken[]
+  otpChallenges              OtpChallenge[]
+  ownerProfile               OwnerProfile?
+  verifications              Verification[]                    @relation("VerificationSubject")
+  reviewedVerifications      Verification[]                    @relation("VerificationReviewer")
+  addressAssessments         Verification[]                    @relation("VerificationAddressAssessor")
+  uploadedFiles              FileAsset[]
+  securityEvents             SecurityEvent[]
+  auditLogs                  AuditLog[]                        @relation("AuditActor")
+  ownedVehicles              Vehicle[]                         @relation("VehicleOwnerUser")
+  vehiclePolicyVersions      VehiclePolicyVersion[]            @relation("VehiclePolicyCreator")
+  vehicleBlocksCreated       VehicleBlockedPeriod[]            @relation("VehicleBlockCreator")
+  vehicleStatusChanges       VehicleStatusHistory[]            @relation("VehicleStatusActor")
+  vehicleDocumentsReviewed   VehicleDocument[]                 @relation("VehicleDocumentReviewer")
+  favorites                  UserFavorite[]
+  pricingQuotes              PricingQuote[]                    @relation("QuoteRenter")
+  analyticsEvents            AnalyticsEvent[]
+  renterBookings             Booking[]                         @relation("BookingRenter")
+  ownerBookings              Booking[]                         @relation("BookingOwner")
+  bookingStatusActions       BookingStatusHistory[]            @relation("BookingStatusActor")
+  bookingCancellations       BookingCancellation[]             @relation("BookingCancellationActor")
+  bookingOwnerDecisions      BookingOwnerDecision[]            @relation("BookingOwnerDecisionActor")
+  bookingIdempotency         BookingIdempotencyRecord[]
+  commissionRulesCreated     CommissionRule[]                  @relation("CommissionRuleCreator")
+  inspectionsSubmitted       Inspection[]                      @relation("InspectionSubmitter")
+  inspectionMediaSubmitted   InspectionMedia[]                 @relation("InspectionMediaSubmitter")
+  inspectionConfirmations    InspectionConfirmation[]
+  pickupChallengesIssued     InspectionVerificationChallenge[] @relation("PickupChallengeIssuer")
+  pickupChallengesConsumed   InspectionVerificationChallenge[] @relation("PickupChallengeConsumer")
+  inspectionAmendments       InspectionAmendment[]             @relation("InspectionAmendmentCreator")
+  inspectionAmendmentReviews InspectionAmendment[]             @relation("InspectionAmendmentReviewer")
+  postReturnClaims           PostReturnClaim[]                 @relation("PostReturnClaimSubmitter")
+  claimLateOverrides         PostReturnClaim[]                 @relation("ClaimLateOverride")
+  claimEvidenceSubmitted     PostReturnClaimEvidence[]         @relation("ClaimEvidenceSubmitter")
+  claimResponses             ClaimResponse[]                   @relation("ClaimResponseRenter")
+  claimAdjudications         ClaimAdjudication[]               @relation("ClaimAdjudicator")
+  disputesOpened             Dispute[]                         @relation("DisputeOpener")
+  disputesResolved           Dispute[]                         @relation("DisputeResolver")
+  disputeEvidenceSubmitted   DisputeEvidence[]                 @relation("DisputeEvidenceSubmitter")
+  earningHoldsCreated        EarningHold[]                     @relation("EarningHoldCreator")
+  earningHoldsReleased       EarningHold[]                     @relation("EarningHoldReleaser")
+  rentalIncidents            RentalIncident[]                  @relation("RentalIncidentReporter")
+  payoutAccountsCreated      OwnerPayoutAccount[]              @relation("PayoutAccountCreator")
+  payoutEligibilitiesSet     PayoutEligibility[]               @relation("PayoutEligibilityActor")
+  payoutBatchesCreated       PayoutBatch[]                     @relation("PayoutBatchCreator")
+  payoutsCreated             Payout[]                          @relation("PayoutCreator")
+  payoutsApproved            Payout[]                          @relation("PayoutApprover")
+  payoutOperations           PayoutOperation[]                 @relation("PayoutOperationActor")
+  conversationParticipants   ConversationParticipant[]
+  sentMessages               Message[]                         @relation("MessageSender")
+  notifications              Notification[]
+  notificationPreferences    NotificationPreference[]
+  devicePushTokens           DevicePushToken[]
+  authoredReviews            Review[]                          @relation("ReviewAuthor")
+  subjectReviews             Review[]                          @relation("ReviewSubjectUser")
+  supportTicketsCreated      SupportTicket[]                   @relation("SupportTicketCreator")
+  supportTicketsAssigned     SupportTicket[]                   @relation("SupportTicketAssignee")
+  supportMessages            SupportTicketMessage[]
+  moderationReportsCreated   ModerationReport[]                @relation("ModerationReporter")
+  moderationReportsAgainst   ModerationReport[]                @relation("ModerationReportedUser")
+  moderationReportsResolved  ModerationReport[]                @relation("ModerationResolver")
 
   @@index([status])
   @@map("users")
@@ -1197,6 +1211,38 @@ model VehicleCategory {
   @@map("vehicle_categories")
 }
 
+model VehicleMake {
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique @db.VarChar(50)
+  name      String   @unique @db.VarChar(100)
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  models VehicleModel[]
+
+  @@index([active, sortOrder])
+  @@map("vehicle_makes")
+}
+
+model VehicleModel {
+  id        String   @id @default(uuid()) @db.Uuid
+  makeId    String   @map("make_id") @db.Uuid
+  code      String   @db.VarChar(75)
+  name      String   @db.VarChar(100)
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  make VehicleMake @relation(fields: [makeId], references: [id], onDelete: Restrict)
+
+  @@unique([makeId, code])
+  @@index([makeId, active, sortOrder])
+  @@map("vehicle_models")
+}
+
 model VehicleFeature {
   id          String   @id @default(uuid()) @db.Uuid
   code        String   @unique @db.VarChar(50)
@@ -1346,18 +1392,26 @@ model VehicleDocument {
 }
 
 model VehicleLocation {
-  id              String                    @id @default(uuid()) @db.Uuid
-  vehicleId       String                    @unique @map("vehicle_id") @db.Uuid
-  latitude        Decimal                   @db.Decimal(9, 6)
-  longitude       Decimal                   @db.Decimal(9, 6)
-  point           Unsupported("geography")? @default(dbgenerated("(st_setsrid(st_makepoint((longitude)::double precision, (latitude)::double precision), 4326))::geography"))
-  city            String                    @db.VarChar(120)
-  province        String                    @db.VarChar(120)
-  country         String                    @default("PH") @db.Char(2)
-  timezone        String                    @default("Asia/Manila") @db.VarChar(64)
-  pickupAreaLabel String?                   @map("pickup_area_label") @db.VarChar(150)
-  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt       DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                   String                    @id @default(uuid()) @db.Uuid
+  vehicleId            String                    @unique @map("vehicle_id") @db.Uuid
+  latitude             Decimal                   @db.Decimal(9, 6)
+  longitude            Decimal                   @db.Decimal(9, 6)
+  point                Unsupported("geography")? @default(dbgenerated("(st_setsrid(st_makepoint((longitude)::double precision, (latitude)::double precision), 4326))::geography"))
+  city                 String                    @db.VarChar(120)
+  province             String                    @db.VarChar(120)
+  country              String                    @default("PH") @db.Char(2)
+  timezone             String                    @default("Asia/Manila") @db.VarChar(64)
+  pickupAreaLabel      String?                   @map("pickup_area_label") @db.VarChar(150)
+  regionCode           String?                   @map("region_code") @db.VarChar(10)
+  addressScopeCode     String?                   @map("address_scope_code") @db.VarChar(10)
+  provinceCode         String?                   @map("province_code") @db.VarChar(10)
+  cityMunicipalityCode String?                   @map("city_municipality_code") @db.VarChar(10)
+  barangayCode         String?                   @map("barangay_code") @db.VarChar(10)
+  barangay             String?                   @db.VarChar(120)
+  addressLine1         String?                   @map("address_line1") @db.VarChar(255)
+  landmark             String?                   @db.VarChar(255)
+  createdAt            DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
 
@@ -1675,17 +1729,26 @@ model InspectionVerificationChallenge {
 }
 
 model InspectionAmendment {
-  id              String   @id @default(uuid()) @db.Uuid
-  inspectionId    String   @map("inspection_id") @db.Uuid
-  createdByUserId String   @map("created_by_user_id") @db.Uuid
-  reason          String   @db.VarChar(1000)
-  evidence        Json?
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  id                            String                    @id @default(uuid()) @db.Uuid
+  inspectionId                  String                    @map("inspection_id") @db.Uuid
+  createdByUserId               String                    @map("created_by_user_id") @db.Uuid
+  reviewedByUserId              String?                   @map("reviewed_by_user_id") @db.Uuid
+  status                        InspectionAmendmentStatus @default(PENDING_REVIEW)
+  reason                        String                    @db.VarChar(1000)
+  reviewReason                  String?                   @map("review_reason") @db.VarChar(1000)
+  proposedOdometerMeters        BigInt?                   @map("proposed_odometer_meters")
+  proposedFuelBasisPoints       Int?                      @map("proposed_fuel_basis_points")
+  proposedBatterySocBasisPoints Int?                      @map("proposed_battery_soc_basis_points")
+  evidence                      Json?
+  reviewedAt                    DateTime?                 @map("reviewed_at") @db.Timestamptz(3)
+  createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
 
   inspection Inspection @relation(fields: [inspectionId], references: [id], onDelete: Restrict)
   createdBy  User       @relation("InspectionAmendmentCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  reviewedBy User?      @relation("InspectionAmendmentReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
 
   @@index([inspectionId, createdAt])
+  @@index([status, createdAt])
   @@map("inspection_amendments")
 }
 

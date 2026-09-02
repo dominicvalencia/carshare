@@ -38,11 +38,12 @@ describe('renter selfie capture regression', () => {
 });
 
 describe('renter document capture regression', () => {
-  it('uses a new rear-camera image with explicit preview actions', () => {
+  it('uses a new rear-camera image, attaches immediately, and retains retake preview', () => {
     expect(documentSource).toContain('launchCameraAsync');
     expect(documentSource).toContain('CameraType.back');
     expect(documentSource).toContain('Retake');
-    expect(documentSource).toContain('Use photo');
+    expect(documentSource).toContain('upload.mutate');
+    expect(documentSource).not.toContain('Use photo');
   });
 
   it('contains no gallery or file-picker fallback', () => {

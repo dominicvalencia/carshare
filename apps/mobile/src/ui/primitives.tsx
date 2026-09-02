@@ -42,6 +42,7 @@ export function Screen({
   action,
   scroll = true,
   scrollRef,
+  safeTop = true,
 }: ScreenProperties) {
   const header = (
     <>
@@ -69,9 +70,9 @@ export function Screen({
     </>
   );
   return (
-    <SafeAreaView edges={['top']} style={styles.safeArea}>
+    <SafeAreaView edges={safeTop ? ['top'] : []} style={styles.safeArea}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.flex}
       >
         {leading ? (
@@ -80,7 +81,9 @@ export function Screen({
             {scroll ? (
               <ScrollView
                 ref={scrollRef}
+                automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
                 contentContainerStyle={styles.nestedScreenContent}
+                keyboardDismissMode="on-drag"
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
               >
@@ -93,7 +96,9 @@ export function Screen({
         ) : scroll ? (
           <ScrollView
             ref={scrollRef}
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
             contentContainerStyle={styles.screenContent}
+            keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
@@ -116,6 +121,7 @@ interface ScreenProperties {
   readonly action?: ReactNode | undefined;
   readonly scroll?: boolean | undefined;
   readonly scrollRef?: RefObject<ScrollView | null> | undefined;
+  readonly safeTop?: boolean | undefined;
 }
 
 export function BackControl({

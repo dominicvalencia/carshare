@@ -181,6 +181,8 @@ function validateAuthDeliveryEnvironment<T extends ApiEnvironment>(environment: 
   ) {
     throw new Error('AUTH_DELIVERY_PROVIDER must not be development in production.');
   }
+  if (environment.APP_ENV === 'production' && !environment.API_PUBLIC_URL.startsWith('https://'))
+    throw new Error('API_PUBLIC_URL must use HTTPS in production.');
   return environment;
 }
 

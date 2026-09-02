@@ -31,6 +31,18 @@ export function renderNotification(
       body: `Payment status changed for ${reference}.`,
     },
     'rental.updated': { title: 'Rental update', body: `There is an update for ${reference}.` },
+    'inspection-correction.requested': {
+      title: 'Correction submitted',
+      body: `Your inspection correction for ${reference} is pending administrator review.`,
+    },
+    'inspection-correction.approved': {
+      title: 'Inspection correction approved',
+      body: `An inspection measurement for ${reference} was corrected after administrative review.`,
+    },
+    'inspection-correction.rejected': {
+      title: 'Inspection correction not approved',
+      body: `Your inspection correction for ${reference} was rejected.`,
+    },
     'claim.updated': { title: 'Claim update', body: `There is a claim update for ${reference}.` },
     'earning.updated': { title: 'Earnings update', body: 'Your owner earnings have been updated.' },
     'payout.updated': { title: 'Payout update', body: 'Your payout status has been updated.' },

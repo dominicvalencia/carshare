@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -197,6 +198,12 @@ export class VehicleReferenceDataController {
 
   @Get('categories') categories() {
     return this.vehicles.categories();
+  }
+  @Get('makes') makes() {
+    return this.vehicles.makes();
+  }
+  @Get('models') models(@Query('makeId') makeId: string) {
+    return this.vehicles.models(makeId);
   }
   @Get('features') features() {
     return this.vehicles.features();

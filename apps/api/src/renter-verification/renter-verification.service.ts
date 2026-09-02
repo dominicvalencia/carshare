@@ -728,7 +728,7 @@ function submissionRequirements(
     LEGAL_LAST_NAME: profile?.lastName,
     POSTAL_CODE: profile?.postalCode,
     REGION: profile?.regionCode,
-    VERIFICATION_DRAFT: (profile?.renterVerificationDraftStep ?? 0) >= 4,
+    VERIFICATION_DRAFT: (profile?.renterVerificationDraftStep ?? 0) >= 3,
   }))
     if (!value) missing.push(`${field}_REQUIRED`);
   if (profile?.driverLicenseExpiry && profile.driverLicenseExpiry <= new Date())

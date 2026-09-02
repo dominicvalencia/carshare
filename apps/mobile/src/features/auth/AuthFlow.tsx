@@ -18,7 +18,11 @@ import { useAuth } from '../../auth/AuthProvider';
 import { colors, spacing } from '../../theme/tokens';
 
 type Screen = 'welcome' | 'login' | 'register' | 'forgot' | 'reset' | 'email' | 'otp';
-const credentialsSchema = z.object({ identifier: z.string(), password: z.string() });
+const credentialsSchema = z.object({
+  confirmPassword: z.string(),
+  identifier: z.string(),
+  password: z.string(),
+});
 type Credentials = z.infer<typeof credentialsSchema>;
 
 export function AuthFlow() {
@@ -100,9 +104,16 @@ function CredentialScreen({
         path: ['password'],
       });
     }
+    if (mode === 'register' && value.confirmPassword !== value.password) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Passwords do not match.',
+        path: ['confirmPassword'],
+      });
+    }
   });
   const form = useForm<Credentials>({
-    defaultValues: { identifier: '', password: '' },
+    defaultValues: { confirmPassword: '', identifier: '', password: '' },
     resolver: zodResolver(schema),
   });
   const mutation = useMutation({
@@ -197,8 +208,32 @@ function CredentialScreen({
           )}
         />
       )}
+      {(mode === 'register' || mode === 'reset') && (
+        <Text style={styles.requirement}>Password must contain at least 12 characters.</Text>
+      )}
       {form.formState.errors.password?.message && (
         <Text style={styles.fieldError}>{form.formState.errors.password.message}</Text>
+      )}
+      {mode === 'register' && (
+        <Controller
+          control={form.control}
+          name="confirmPassword"
+          render={({ field: { onChange, value } }) => (
+            <TextInput
+              accessibilityLabel="Confirm password"
+              autoComplete="new-password"
+              onChangeText={onChange}
+              placeholder="Confirm password"
+              secureTextEntry
+              style={styles.input}
+              textContentType="newPassword"
+              value={value}
+            />
+          )}
+        />
+      )}
+      {form.formState.errors.confirmPassword?.message && (
+        <Text style={styles.fieldError}>{form.formState.errors.confirmPassword.message}</Text>
       )}
       <Button
         disabled={mutation.isPending || utility.isPending}
@@ -272,6 +307,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   link: { color: colors.primary, marginTop: spacing.lg, textAlign: 'center' },
+  requirement: { color: colors.subtleText, fontSize: 13, marginTop: spacing.xs },
   page: {
     backgroundColor: colors.background,
     flex: 1,

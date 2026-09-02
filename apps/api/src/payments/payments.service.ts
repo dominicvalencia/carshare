@@ -655,6 +655,10 @@ export class PaymentsService {
         bookingId: booking.id,
         paymentId: payment.id,
       });
+      await this.outbox(transaction, booking.id, 'BOOKING_OWNER_REQUESTED', {
+        bookingId: booking.id,
+        ownerUserId: booking.ownerUserId,
+      });
     });
   }
 

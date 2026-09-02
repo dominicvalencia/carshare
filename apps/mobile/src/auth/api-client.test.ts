@@ -118,4 +118,13 @@ describe('mobile API authentication lifecycle', () => {
       ),
     );
   });
+
+  it('treats a successful no-content response as success', async () => {
+    const client = new ApiClient('https://api.example.test/api/v1');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+
+    await expect(
+      client.request('/auth/email-verification/confirmations', { method: 'POST' }),
+    ).resolves.toBeUndefined();
+  });
 });

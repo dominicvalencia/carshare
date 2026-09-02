@@ -8,17 +8,19 @@ export function VehicleImage({
   contentPath,
   style,
   accessibilityLabel = 'Vehicle photo',
+  resizeMode = 'cover',
 }: {
   readonly contentPath?: string | null | undefined;
   readonly style: StyleProp<ImageStyle>;
   readonly accessibilityLabel?: string | undefined;
+  readonly resizeMode?: 'cover' | 'contain';
 }) {
   const [failedPath, setFailedPath] = useState<string | null>(null);
   const failed = Boolean(contentPath && failedPath === contentPath);
   return (
     <Image
       accessibilityLabel={accessibilityLabel}
-      contentFit="cover"
+      contentFit={resizeMode}
       onError={() => contentPath && setFailedPath(contentPath)}
       source={!failed && contentPath ? { uri: apiClient.assetUrl(contentPath) } : demoImage}
       style={style}

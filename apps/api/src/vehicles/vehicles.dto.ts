@@ -6,9 +6,11 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsIn,
   IsInt,
   IsLatitude,
   IsLongitude,
+  Matches,
   IsOptional,
   IsString,
   IsUUID,
@@ -68,7 +70,12 @@ export class UpdateVehicleDto {
   @IsString()
   @MaxLength(2000)
   rentalRequirements?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(50) lastCompletedSection?: string;
+  @ApiPropertyOptional({
+    enum: ['DETAILS', 'FEATURES', 'PHOTOS', 'DOCUMENTS', 'LOCATION', 'POLICIES', 'AVAILABILITY'],
+  })
+  @IsOptional()
+  @IsIn(['DETAILS', 'FEATURES', 'PHOTOS', 'DOCUMENTS', 'LOCATION', 'POLICIES', 'AVAILABILITY'])
+  lastCompletedSection?: string;
 }
 
 export class SetVehicleFeaturesDto {
@@ -126,6 +133,14 @@ export class SetVehicleLocationDto {
   @MaxLength(64)
   timezone?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(150) pickupAreaLabel?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(/^\d{10}$/) regionCode?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(/^\d{10}$/) addressScopeCode?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(/^\d{10}$/) provinceCode?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(/^\d{10}$/) cityMunicipalityCode?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(/^\d{10}$/) barangayCode?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(120) barangay?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) addressLine1?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) landmark?: string;
 }
 
 export class CreateVehiclePolicyVersionDto {

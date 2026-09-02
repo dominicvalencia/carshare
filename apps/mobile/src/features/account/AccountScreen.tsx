@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { NavigationProp } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -25,6 +25,8 @@ import {
 } from '../../ui/primitives';
 import { RenterVerificationWorkflow } from './RenterVerificationWorkflow';
 import { AppLockSettings } from '../../app-lock/AppLockSettings';
+import { invalidateRenterVerification } from '../../query/verification-invalidation';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 
 interface Session {
   readonly id: string;
@@ -604,25 +606,40 @@ export function OwnerOnboardingScreen() {
   );
 }
 
-export function VerificationScreen() {
+export function VerificationScreen({ onBack }: { readonly onBack?: () => void } = {}) {
   const auth = useAuth();
   const client = useQueryClient();
   const [mobileNumber, setMobileNumber] = useState('');
   const [challengeId, setChallengeId] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [emailToken, setEmailToken] = useState('');
-  const [contactMessage, setContactMessage] = useState('');
+  const [emailMessage, setEmailMessage] = useState('');
+  const [mobileMessage, setMobileMessage] = useState('');
+  const [mobileCooldown, setMobileCooldown] = useState(0);
+  const [changingMobile, setChangingMobile] = useState(false);
+  useEffect(() => {
+    if (mobileCooldown <= 0) return;
+    const timer = setInterval(() => setMobileCooldown((value) => Math.max(0, value - 1)), 1_000);
+    return () => clearInterval(timer);
+  }, [mobileCooldown]);
   const verification = useQuery({
     queryKey: ['renter-verification'],
     queryFn: () => apiClient.request<RenterVerificationSnapshot>('/renter-verification'),
+    refetchInterval: (query) =>
+      ['SUBMITTED', 'UNDER_REVIEW', 'MORE_INFORMATION_REQUIRED'].includes(
+        query.state.data?.eligibility.status ?? '',
+      )
+        ? 5_000
+        : false,
   });
+  useRefreshOnFocusAndForeground(() => void refreshVerification(client, auth.refreshIdentity));
   const requestEmail = useMutation({
     mutationFn: () =>
       apiClient.request<{ message: string }>('/auth/email-verification/requests', {
         method: 'POST',
       }),
     onSuccess: () => {
-      setContactMessage('Verification sent. It expires according to the account security policy.');
+      setEmailMessage('Verification sent. It expires according to the account security policy.');
       void developmentInbox.refetch();
     },
   });
@@ -642,7 +659,8 @@ export function VerificationScreen() {
       setChallengeId(result.challengeId ?? '');
       setMobileNumber(result.mobileNumber);
       setOtpCode('');
-      setContactMessage(
+      if (result.challengeId) setMobileCooldown(60);
+      setMobileMessage(
         result.challengeId ? 'Verification code sent.' : 'This mobile number is already verified.',
       );
       void developmentInbox.refetch();
@@ -658,7 +676,11 @@ export function VerificationScreen() {
     onSuccess: () => {
       setChallengeId('');
       setOtpCode('');
-      setContactMessage('Mobile number verified successfully.');
+      setMobileMessage('✓ Mobile number verified successfully.');
+      setChangingMobile(false);
+      client.setQueryData<RenterVerificationSnapshot>(['renter-verification'], (current) =>
+        current ? { ...current, mobileVerifiedAt: new Date().toISOString() } : current,
+      );
       void refreshVerification(client, auth.refreshIdentity);
     },
   });
@@ -670,15 +692,19 @@ export function VerificationScreen() {
       }),
     onSuccess: () => {
       setEmailToken('');
-      setContactMessage('Email address verified successfully.');
+      setEmailMessage('✓ Email address verified successfully.');
+      client.setQueryData<RenterVerificationSnapshot>(['renter-verification'], (current) =>
+        current ? { ...current, emailVerifiedAt: new Date().toISOString() } : current,
+      );
       void refreshVerification(client, auth.refreshIdentity);
     },
   });
   const developmentInbox = useQuery({
     enabled: false,
     queryKey: ['development-auth-deliveries'],
-    queryFn: () =>
-      apiClient.request<{
+    queryFn: () => {
+      if (!__DEV__) throw new Error('Development verification deliveries are disabled.');
+      return apiClient.request<{
         items: readonly {
           id: string;
           channel: 'EMAIL' | 'SMS';
@@ -686,7 +712,8 @@ export function VerificationScreen() {
           secret: string;
           createdAt: string;
         }[];
-      }>('/development/auth-deliveries'),
+      }>('/development/auth-deliveries');
+    },
     retry: false,
   });
   const latestEmail = developmentInbox.data?.items.find(
@@ -698,6 +725,7 @@ export function VerificationScreen() {
   return (
     <NestedScreen
       eyebrow="Account"
+      onBack={onBack}
       title="Verification"
       subtitle="Contact and identity checks are separate from your personal profile."
     >
@@ -729,7 +757,7 @@ export function VerificationScreen() {
               verified={Boolean(verification.data.emailVerifiedAt)}
             >
               {!verification.data.emailVerifiedAt && verification.data.email && (
-                <>
+                <View style={styles.verificationActions}>
                   <Button
                     disabled={requestEmail.isPending}
                     label={requestEmail.isPending ? 'Sending…' : 'Verify email'}
@@ -741,14 +769,28 @@ export function VerificationScreen() {
                     placeholder="Paste the token from the verification email"
                     returnKeyType="done"
                     value={emailToken}
-                    onChangeText={setEmailToken}
+                    onChangeText={(value) => {
+                      verifyEmail.reset();
+                      setEmailMessage('');
+                      setEmailToken(value);
+                    }}
                   />
                   <Button
                     disabled={!emailToken.trim() || verifyEmail.isPending}
                     label={verifyEmail.isPending ? 'Verifying…' : 'Confirm email'}
-                    onPress={() => verifyEmail.mutate()}
+                    onPress={() => {
+                      verifyEmail.reset();
+                      setEmailMessage('');
+                      verifyEmail.mutate();
+                    }}
                   />
-                </>
+                  {emailMessage && <Text style={styles.success}>{emailMessage}</Text>}
+                  {(requestEmail.error || verifyEmail.error) && (
+                    <Text accessibilityRole="alert" style={styles.error}>
+                      {contactVerificationError(requestEmail.error ?? verifyEmail.error, 'email')}
+                    </Text>
+                  )}
+                </View>
               )}
             </VerificationCard>
             <VerificationCard
@@ -756,45 +798,85 @@ export function VerificationScreen() {
               value={verification.data.mobileNumber ?? 'Not added'}
               verified={Boolean(verification.data.mobileVerifiedAt)}
             >
-              <Field
-                keyboardType="phone-pad"
-                label={verification.data.mobileNumber ? 'Mobile number' : 'Add mobile number'}
-                placeholder="09XXXXXXXXX"
-                returnKeyType="done"
-                value={mobileNumber || verification.data.mobileNumber || ''}
-                onChangeText={setMobileNumber}
-              />
-              <Button
-                disabled={
-                  requestMobile.isPending || !(mobileNumber || verification.data.mobileNumber)
-                }
-                label={
-                  requestMobile.isPending
-                    ? 'Sending…'
-                    : verification.data.mobileVerifiedAt
-                      ? 'Change and reverify'
-                      : 'Send verification code'
-                }
-                onPress={() => {
-                  requestMobile.mutate();
-                }}
-                variant="secondary"
-              />
-              {challengeId && (
-                <>
-                  <Field
-                    keyboardType="number-pad"
-                    label="6-digit mobile verification code"
-                    placeholder="123456"
-                    returnKeyType="done"
-                    value={otpCode}
-                    onChangeText={(value) => setOtpCode(value.replaceAll(/\D/g, '').slice(0, 6))}
-                  />
+              {verification.data.mobileVerifiedAt && !changingMobile ? (
+                <View style={styles.verificationActions}>
+                  <Text style={styles.success}>✓ Mobile number verified</Text>
                   <Button
-                    disabled={otpCode.length !== 6 || verifyMobile.isPending}
-                    label={verifyMobile.isPending ? 'Verifying…' : 'Verify mobile'}
-                    onPress={() => verifyMobile.mutate()}
+                    label="Change"
+                    onPress={() => {
+                      requestMobile.reset();
+                      verifyMobile.reset();
+                      setChallengeId('');
+                      setMobileMessage(
+                        'Enter the new number. It will remain unverified until you confirm its code.',
+                      );
+                      setMobileNumber('');
+                      setChangingMobile(true);
+                    }}
+                    variant="secondary"
                   />
+                </View>
+              ) : (
+                <>
+                  <View style={styles.verificationActions}>
+                    {changingMobile && <Text style={styles.note}>{mobileMessage}</Text>}
+                    <Field
+                      keyboardType="phone-pad"
+                      label={verification.data.mobileNumber ? 'Mobile number' : 'Add mobile number'}
+                      placeholder="09XXXXXXXXX"
+                      returnKeyType="done"
+                      value={mobileNumber || verification.data.mobileNumber || ''}
+                      onChangeText={setMobileNumber}
+                    />
+                    <Button
+                      disabled={
+                        requestMobile.isPending ||
+                        mobileCooldown > 0 ||
+                        !(mobileNumber || verification.data.mobileNumber)
+                      }
+                      label={
+                        requestMobile.isPending
+                          ? 'Sending…'
+                          : mobileCooldown > 0
+                            ? `Resend in ${mobileCooldown}s`
+                            : challengeId
+                              ? 'Resend verification code'
+                              : 'Send verification code'
+                      }
+                      onPress={() => requestMobile.mutate()}
+                      variant="secondary"
+                    />
+                    {requestMobile.error && (
+                      <Text accessibilityRole="alert" style={styles.error}>
+                        {contactVerificationError(requestMobile.error, 'mobile')}
+                      </Text>
+                    )}
+                  </View>
+                  {challengeId && (
+                    <View style={styles.verificationActions}>
+                      <Field
+                        keyboardType="number-pad"
+                        label="6-digit mobile verification code"
+                        placeholder="123456"
+                        returnKeyType="done"
+                        value={otpCode}
+                        onChangeText={(value) =>
+                          setOtpCode(value.replaceAll(/\D/g, '').slice(0, 6))
+                        }
+                      />
+                      <Button
+                        disabled={otpCode.length !== 6 || verifyMobile.isPending}
+                        label={verifyMobile.isPending ? 'Verifying…' : 'Verify mobile'}
+                        onPress={() => verifyMobile.mutate()}
+                      />
+                      {mobileMessage && <Text style={styles.success}>{mobileMessage}</Text>}
+                      {verifyMobile.error && (
+                        <Text accessibilityRole="alert" style={styles.error}>
+                          {contactVerificationError(verifyMobile.error, 'mobile')}
+                        </Text>
+                      )}
+                    </View>
+                  )}
                 </>
               )}
             </VerificationCard>
@@ -819,7 +901,12 @@ export function VerificationScreen() {
                 {latestEmail && (
                   <Button
                     label="Use latest email token"
-                    onPress={() => setEmailToken(latestEmail.secret)}
+                    onPress={() => {
+                      verifyEmail.reset();
+                      requestEmail.reset();
+                      setEmailMessage('');
+                      setEmailToken(latestEmail.secret);
+                    }}
                     variant="secondary"
                   />
                 )}
@@ -840,22 +927,6 @@ export function VerificationScreen() {
                 Local delivery viewer is unavailable outside local/test environments.
               </Text>
             )}
-            {contactMessage && <Text style={styles.success}>{contactMessage}</Text>}
-            {(requestEmail.error ||
-              requestMobile.error ||
-              verifyMobile.error ||
-              verifyEmail.error) && (
-              <Text accessibilityRole="alert" style={styles.error}>
-                {
-                  (
-                    requestEmail.error ??
-                    requestMobile.error ??
-                    verifyMobile.error ??
-                    verifyEmail.error
-                  )?.message
-                }
-              </Text>
-            )}
           </Card>
           <RenterVerificationWorkflow snapshot={verification.data} />
         </>
@@ -864,16 +935,22 @@ export function VerificationScreen() {
   );
 }
 
+function contactVerificationError(error: unknown, channel: 'email' | 'mobile') {
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  if (message.includes('invalid') || message.includes('expired'))
+    return channel === 'email'
+      ? 'Incorrect or expired verification code. Please check the code and try again.'
+      : 'Incorrect or expired mobile code. Please check the code and try again.';
+  if (message.includes('wait') || message.includes('rate') || message.includes('too many'))
+    return 'Please wait before requesting another verification code.';
+  return "We couldn't complete verification right now. Please try again.";
+}
+
 async function refreshVerification(
   client: ReturnType<typeof useQueryClient>,
   refreshIdentity: () => Promise<void>,
 ) {
-  await Promise.all([
-    client.invalidateQueries({ queryKey: ['renter-verification'] }),
-    client.invalidateQueries({ queryKey: ['me'] }),
-    client.invalidateQueries({ queryKey: ['bookings'] }),
-    refreshIdentity(),
-  ]);
+  await Promise.all([invalidateRenterVerification(client), refreshIdentity()]);
 }
 
 export function LegacyRenterVerificationWorkflow({
@@ -1425,6 +1502,7 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   menu: { padding: 0 },
   localInbox: { backgroundColor: colors.primarySoft, gap: spacing.sm },
+  verificationActions: { gap: spacing.md, marginTop: spacing.sm },
   menuDetail: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
   menuDisabled: { color: colors.subtleText },
   menuIcon: {

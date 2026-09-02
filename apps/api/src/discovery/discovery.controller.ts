@@ -41,6 +41,11 @@ export class PublicVehiclesController {
     return this.vehicles.search(input, request.principal, requestMetadata(request).correlationId);
   }
 
+  @Get('reference-data')
+  referenceData() {
+    return this.vehicles.referenceData();
+  }
+
   @Get(':vehicleId/availability')
   availability(@Param('vehicleId') id: string, @Query() input: AvailabilityQueryDto) {
     return this.vehicles.availabilityFor(id, input.start, input.end);

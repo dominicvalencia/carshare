@@ -67,7 +67,7 @@ export async function consumeDomainEvent(
         sourceId,
         stableKey,
         variables: (reference ? { reference } : {}) as Prisma.InputJsonValue,
-        deepLink: deepLink(policy, eventType, payload),
+        deepLink: deepLink(policy, eventType, payload, reference),
       },
       update: {},
     });
@@ -293,6 +293,24 @@ function policyFor(eventType: string): EventPolicy | null {
       templateKey: 'payment.updated',
       recipients: 'RENTER',
     };
+  if (eventType === 'INSPECTION_CORRECTION_REQUESTED')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'inspection-correction.requested',
+      recipients: 'OWNER',
+    };
+  if (eventType === 'INSPECTION_CORRECTION_APPROVED')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'inspection-correction.approved',
+      recipients: 'BOTH',
+    };
+  if (eventType === 'INSPECTION_CORRECTION_REJECTED')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'inspection-correction.rejected',
+      recipients: 'OWNER',
+    };
   if (eventType.startsWith('EARNING_'))
     return {
       category: NotificationCategory.EARNINGS,
@@ -397,7 +415,12 @@ async function bookingReference(database: PrismaClient, bookingId: string | null
       )?.publicReference ?? null)
     : null;
 }
-function deepLink(policy: EventPolicy, eventType: string, payload: Payload): string | null {
+function deepLink(
+  policy: EventPolicy,
+  eventType: string,
+  payload: Payload,
+  bookingPublicReference: string | null,
+): string | null {
   const claimId = uuid(payload.claimId);
   if (policy.category === NotificationCategory.CLAIMS && claimId)
     return `carrental://claims/${claimId}`;
@@ -410,7 +433,7 @@ function deepLink(policy: EventPolicy, eventType: string, payload: Payload): str
     ? `carrental://messages/${id}`
     : policy.category === NotificationCategory.SUPPORT
       ? `carrental://support/${id}`
-      : `carrental://bookings/${id}`;
+      : `carrental://bookings/${bookingPublicReference ?? id}`;
 }
 function sourceType(eventType: string) {
   return eventType.startsWith('PAYOUT_')

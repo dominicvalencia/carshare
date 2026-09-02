@@ -27,6 +27,7 @@ describe('development authentication delivery inbox', () => {
     );
     const sms = new DevelopmentSmsProvider(log as never, configuration('local') as never, inbox);
     await email.send({
+      actionUrl: 'http://localhost/verify?token=opaque.secret',
       template: 'EMAIL_VERIFICATION',
       to: 'renter@example.test',
       token: 'opaque.secret',
@@ -50,7 +51,12 @@ describe('development authentication delivery inbox', () => {
       inbox,
     );
     await expect(
-      email.send({ template: 'EMAIL_VERIFICATION', to: 'renter@example.test', token: 'secret' }),
+      email.send({
+        actionUrl: 'https://example.test/verify?token=secret',
+        template: 'EMAIL_VERIFICATION',
+        to: 'renter@example.test',
+        token: 'secret',
+      }),
     ).rejects.toThrow('External email delivery provider is not configured');
     expect(inbox.list(['renter@example.test'])).toHaveLength(0);
   });

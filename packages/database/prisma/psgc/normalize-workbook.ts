@@ -95,8 +95,11 @@ async function normalize() {
         specialAreaCode = code;
       } else if (level === 'CITY' || level === 'MUNICIPALITY') {
         const isIndependentCity = cityClass === 'HUC' || cityClass === 'ICC';
-        if (isIndependentCity) provinceCode = null;
-        parentCode = provinceCode ?? specialAreaCode ?? regionCode;
+        // HUC/ICC cities remain administratively parented to the region, while
+        // provinceCode preserves their geographic association from source order.
+        parentCode = isIndependentCity
+          ? regionCode
+          : (provinceCode ?? specialAreaCode ?? regionCode);
         localityCode = code;
         immediateBarangayParent = code;
       } else if (level === 'SUBMUNICIPALITY') {

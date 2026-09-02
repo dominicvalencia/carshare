@@ -12,14 +12,17 @@ import { apiClient } from './api-client';
 import type { AuthUser } from './auth.types';
 import { tokenStorage } from './token-storage';
 import { appLockStorage } from '../app-lock/storage';
+import { renterOnboardingStorage } from './renter-onboarding-storage';
 
 interface AuthContextValue {
   readonly booting: boolean;
   readonly user: AuthUser | null;
+  readonly renterOnboardingPending: boolean;
   login(identifier: string, password: string): Promise<void>;
   register(email: string, password: string): Promise<void>;
   logout(): Promise<void>;
   refreshIdentity(): Promise<void>;
+  skipRenterOnboarding(): Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -27,6 +30,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const [booting, setBooting] = useState(true);
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [renterOnboardingPending, setRenterOnboardingPending] = useState(false);
   const sessionGeneration = useRef(0);
 
   const accept = useCallback(
@@ -39,6 +43,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       if (expectedGeneration !== sessionGeneration.current) return false;
       apiClient.setAccessToken(result.accessToken);
       setUser(result.user);
+      setRenterOnboardingPending(await renterOnboardingStorage.isPending(result.user.id));
       return true;
     },
     [],
@@ -80,6 +85,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const value = useMemo<AuthContextValue>(
     () => ({
       booting,
+      renterOnboardingPending,
       user,
       login: async (identifier, password) => {
         sessionGeneration.current += 1;
@@ -87,7 +93,16 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       },
       register: async (email, password) => {
         sessionGeneration.current += 1;
-        await accept(await apiClient.register(email, password));
+        const result = await apiClient.register(email, password);
+        try {
+          await renterOnboardingStorage.markPending(result.user.id);
+        } catch {
+          // The guided onboarding marker is additive; server registration remains authoritative.
+        }
+        // A device-storage failure must not leave a successfully created account looking like
+        // registration failed.
+        await accept(result);
+        setRenterOnboardingPending(true);
       },
       logout: async () => {
         const currentUserId = user?.id;
@@ -99,6 +114,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
           await tokenStorage.clear();
           if (currentUserId) await appLockStorage.clearAccount(currentUserId);
           setUser(null);
+          setRenterOnboardingPending(false);
         }
       },
       refreshIdentity: async () => {
@@ -106,8 +122,13 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
         const refreshToken = await tokenStorage.getRefreshToken();
         if (refreshToken) await accept(await apiClient.refresh(refreshToken), expectedGeneration);
       },
+      skipRenterOnboarding: async () => {
+        if (!user) return;
+        await renterOnboardingStorage.clear(user.id);
+        setRenterOnboardingPending(false);
+      },
     }),
-    [accept, booting, user],
+    [accept, booting, renterOnboardingPending, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

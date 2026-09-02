@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { Phase10AdminPanels } from './Phase10AdminPanels';
 import { RenterVerificationAdminPanel } from './RenterVerificationAdminPanel';
+import { InspectionCorrectionsAdminPanel } from './InspectionCorrectionsAdminPanel';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
 interface Envelope<T> {
@@ -762,6 +763,7 @@ export function AdminConsole() {
         )}
       </section>
       <RenterVerificationAdminPanel accessToken={accessToken} />
+      <InspectionCorrectionsAdminPanel accessToken={accessToken} />
       <Phase10AdminPanels accessToken={accessToken} />
       <section className="admin-card">
         <span className="eyebrow">RENTAL OPERATIONS</span>
