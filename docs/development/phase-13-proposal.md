@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposal only and explicitly deferred on September 2, 2026. Phase 13 has not started and no
-implementation is authorized by this document. The Admin UX stabilization baseline is being completed
-before this proposal is reconsidered.
+Approved on September 4, 2026 only for the incremental Phase 13A dependency/security remediation and
+Phase 13B native development-build preparation. Phase 13C, provider activation, observability,
+staging/production deployment, and all later work remain deferred. The authoritative execution records
+are [`phase-13a-dependency-security-audit.md`](phase-13a-dependency-security-audit.md) and
+[`phase-13b-native-development-build-setup.md`](phase-13b-native-development-build-setup.md).
 
 ## Objective
 

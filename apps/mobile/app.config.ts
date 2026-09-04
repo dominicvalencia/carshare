@@ -20,7 +20,18 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     package: 'ph.com.carrental.mobile',
   },
   plugins: [
+    'expo-font',
     '@react-native-community/datetimepicker',
+    [
+      'expo-image-picker',
+      {
+        cameraPermission:
+          'Allow Car Rental to use your camera for identity, vehicle, pickup, and return evidence.',
+        photosPermission:
+          'Allow Car Rental to access selected photos for vehicle and rental evidence.',
+        microphonePermission: false,
+      },
+    ],
     'expo-notifications',
     'expo-secure-store',
     [

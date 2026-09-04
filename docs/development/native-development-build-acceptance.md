@@ -2,9 +2,12 @@
 
 ## Status and boundary
 
-Planning checklist only. Phase 12 is functionally accepted; Phase 13 has not started. The next
-acceptance environment should be signed native iOS and Android development builds rather than Expo Go.
-No item below is considered executed merely because this document exists.
+Phase 13B preparation began September 4, 2026 after Phase 12 acceptance. The repository configuration
+is ready to produce native development clients, but no signed physical-device build or checklist item
+below is accepted merely because the setup exists. See
+[`phase-13b-native-development-build-setup.md`](phase-13b-native-development-build-setup.md) for build,
+environment, signing, device, and user-owned prerequisite instructions. Phase 13C and later remain
+deferred.
 
 Legend:
 
