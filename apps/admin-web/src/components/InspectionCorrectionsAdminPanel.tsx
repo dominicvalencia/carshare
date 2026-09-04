@@ -1,7 +1,21 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import Link from 'next/link';
 import { useState } from 'react';
+import {
+  AdminActionBar,
+  AdminDefinitionList,
+  AdminDetailHeader,
+  AdminEvidenceCard,
+  AdminSection,
+  AdminSummaryCard,
+  AdminSummaryGrid,
+  AdminTimeline,
+  DataTable,
+  EmptyState,
+  StatusBadge,
+} from './AdminPrimitives';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
 type CorrectionStatus = 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED' | 'LEGACY_RECORDED';
@@ -65,10 +79,18 @@ interface Envelope<T> {
   readonly error?: { message: string };
 }
 
-export function InspectionCorrectionsAdminPanel({ accessToken }: { readonly accessToken: string }) {
+export function InspectionCorrectionsAdminPanel({
+  accessToken,
+  initialSelectedId,
+  onUnauthorized,
+}: {
+  readonly accessToken: string;
+  readonly initialSelectedId?: string;
+  readonly onUnauthorized: () => void;
+}) {
   const client = useQueryClient();
   const [status, setStatus] = useState<CorrectionStatus>('PENDING_REVIEW');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId ?? null);
   const [reviewReason, setReviewReason] = useState('');
   const api = async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
     const response = await fetch(`${API_URL}${path}`, {
@@ -81,6 +103,10 @@ export function InspectionCorrectionsAdminPanel({ accessToken }: { readonly acce
       },
     });
     const envelope = (await response.json()) as Envelope<T>;
+    if (response.status === 401) {
+      onUnauthorized();
+      throw new Error('Your administrative session expired. Sign in again.');
+    }
     if (!response.ok || !envelope.success)
       throw new Error(envelope.error?.message ?? 'Request failed.');
     return envelope.data as T;
@@ -109,11 +135,18 @@ export function InspectionCorrectionsAdminPanel({ accessToken }: { readonly acce
       void client.invalidateQueries({ queryKey: ['admin-rentals'] });
     },
   });
-  const openFile = async (fileId: string) => {
-    const grant = await api<{ contentPath: string }>(`/files/${fileId}/access-grants`, {
-      method: 'POST',
-    });
-    window.open(`${new URL(API_URL).origin}${grant.contentPath}`, '_blank', 'noopener,noreferrer');
+  const grantFile = async (fileId: string) => {
+    const grant = await api<{ contentPath: string; expiresAt: string; mimeType: string }>(
+      `/files/${fileId}/access-grants`,
+      {
+        method: 'POST',
+      },
+    );
+    return {
+      url: `${new URL(API_URL).origin}${grant.contentPath}`,
+      mimeType: grant.mimeType,
+      expiresAt: grant.expiresAt,
+    };
   };
   const decide = (approved: boolean) => {
     if (reviewReason.trim().length < 10) return;
@@ -147,109 +180,152 @@ export function InspectionCorrectionsAdminPanel({ accessToken }: { readonly acce
       </label>
       {queue.isLoading && <p>Loading correction queue…</p>}
       {queue.isError && <p className="error-text">{queue.error.message}</p>}
-      {queue.data?.length === 0 && <p>No {statusLabel(status).toLowerCase()} corrections.</p>}
-      {queue.data?.map((item) => (
-        <button
-          className="review-row review-button"
-          key={item.id}
-          onClick={() => setSelectedId(item.id)}
-        >
-          <span>
-            <strong>
-              {item.inspection.booking.publicReference} · {vehicleLabel(item)}
-            </strong>
-            <span>
-              {measurementNames(item)} · {item.inspection.type.toLowerCase()} inspection
-            </span>
-            <span>
-              {personLabel(item.createdBy)} · {new Date(item.createdAt).toLocaleString()}
-            </span>
-          </span>
-          <span className={`status-pill status-${item.status.toLowerCase()}`}>
-            {statusLabel(item.status)}
-          </span>
-        </button>
-      ))}
+      {queue.data?.length === 0 && (
+        <EmptyState
+          title={`No ${statusLabel(status).toLowerCase()} corrections`}
+          description="No inspection amendment records match the selected review state."
+        />
+      )}
+      {queue.data && queue.data.length > 0 && (
+        <DataTable label="Inspection correction queue">
+          <thead>
+            <tr>
+              <th>Booking</th>
+              <th>Vehicle</th>
+              <th>Inspection</th>
+              <th>Requested by</th>
+              <th>Created</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {queue.data.map((item) => (
+              <tr key={item.id}>
+                <td>
+                  <strong>{item.inspection.booking.publicReference}</strong>
+                </td>
+                <td>{vehicleLabel(item)}</td>
+                <td>
+                  {measurementNames(item)}
+                  <small>{item.inspection.type.toLowerCase()} inspection</small>
+                </td>
+                <td>{personLabel(item.createdBy)}</td>
+                <td>{new Date(item.createdAt).toLocaleString()}</td>
+                <td>
+                  <StatusBadge value={item.status} />
+                </td>
+                <td>
+                  <Link
+                    href={`/admin/operations/inspection-corrections/${item.id}`}
+                    onClick={() => setSelectedId(item.id)}
+                  >
+                    Review
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </DataTable>
+      )}
       {detail.isError && <p className="error-text">{detail.error.message}</p>}
       {correction && (
-        <div className="vehicle-detail correction-detail">
-          <div className="detail-heading">
-            <div>
-              <span className="eyebrow">INSPECTION CORRECTION REQUEST</span>
-              <h3>{correction.inspection.booking.publicReference}</h3>
-              <p>
-                {vehicleLabel(correction)} · {correction.inspection.type.toLowerCase()} inspection v
-                {correction.inspection.version}
-              </p>
+        <div className="detail-page correction-detail">
+          <AdminDetailHeader
+            backHref="/admin/operations/inspection-corrections"
+            backLabel="Inspection correction queue"
+            eyebrow="Inspection correction request"
+            title={correction.inspection.booking.publicReference}
+            status={correction.status}
+            description={`${vehicleLabel(correction)} · ${correction.inspection.type.toLowerCase()} inspection v${correction.inspection.version}`}
+          />
+          <AdminSummaryGrid>
+            <AdminSummaryCard
+              label="Requested by"
+              value={personLabel(correction.createdBy)}
+              detail={new Date(correction.createdAt).toLocaleString()}
+            />
+            <AdminSummaryCard
+              label="Inspection"
+              value={`${correction.inspection.type} v${correction.inspection.version}`}
+              detail={
+                correction.inspection.finalizedAt
+                  ? `Finalized ${new Date(correction.inspection.finalizedAt).toLocaleString()}`
+                  : 'Draft inspection'
+              }
+            />
+            <AdminSummaryCard
+              label="Vehicle"
+              value={vehicleLabel(correction)}
+              detail="Original evidence remains immutable"
+            />
+          </AdminSummaryGrid>
+          <AdminSection
+            title="Requested measurement changes"
+            description="Approval changes the effective reading only; the submitted inspection remains preserved."
+          >
+            <div className="correction-comparison">
+              {measurements(correction).map((field) => (
+                <div className="comparison-field" key={field.label}>
+                  <h4>{field.label}</h4>
+                  <div>
+                    <span>Original recorded value</span>
+                    <strong>{field.original}</strong>
+                  </div>
+                  <div className="proposed-value">
+                    <span>Proposed correction</span>
+                    <strong>{field.proposed}</strong>
+                  </div>
+                </div>
+              ))}
             </div>
-            <button className="quiet" onClick={() => setSelectedId(null)}>
-              Close
-            </button>
-          </div>
-          <div className="correction-comparison">
-            {measurements(correction).map((field) => (
-              <div className="comparison-field" key={field.label}>
-                <h4>{field.label}</h4>
-                <div>
-                  <span>Original recorded value</span>
-                  <strong>{field.original}</strong>
-                </div>
-                <div className="proposed-value">
-                  <span>Proposed correction</span>
-                  <strong>{field.proposed}</strong>
-                </div>
-              </div>
-            ))}
-          </div>
-          <h4>Reason from owner</h4>
-          <blockquote>{correction.reason}</blockquote>
-          <p>
-            Requested {new Date(correction.createdAt).toLocaleString()} by{' '}
-            {personLabel(correction.createdBy)}
-          </p>
-          <h4>Supporting protected evidence</h4>
-          <div className="actions">
-            {correction.inspection.media.map((media) => (
-              <button
-                className="quiet"
-                key={media.fileAsset.id}
-                onClick={() => void openFile(media.fileAsset.id)}
-              >
-                {media.perspective} · {media.fileAsset.originalName}
-              </button>
-            ))}
-          </div>
-          <h4>Related inspection readings</h4>
-          {correction.inspection.booking.inspections.map((item) => (
-            <p key={item.id}>
-              {item.type} v{item.version}: odometer {formatOdometer(item.odometerMeters)} · fuel{' '}
-              {formatBasisPoints(item.fuelBasisPoints)} · SOC{' '}
-              {formatBasisPoints(item.batterySocBasisPoints)} ·{' '}
-              {item.finalizedAt ? new Date(item.finalizedAt).toLocaleString() : 'draft'}
-            </p>
-          ))}
-          <h4>Amendment history</h4>
-          {correction.inspection.amendments.map((item) => (
-            <p key={item.id}>
-              {statusLabel(item.status)} · {new Date(item.createdAt).toLocaleString()} ·{' '}
-              {item.reason}
-              {item.reviewReason ? ` · Review: ${item.reviewReason}` : ''}
-            </p>
-          ))}
-          <h4>Booking timeline</h4>
-          <ol className="history">
-            {correction.inspection.booking.statusHistory.map((entry) => (
-              <li key={entry.id}>
-                <strong>{entry.toStatus}</strong>
-                <span>
-                  {new Date(entry.occurredAt).toLocaleString()} ·{' '}
-                  {entry.reasonCode ?? 'state transition'}
-                </span>
-              </li>
-            ))}
-          </ol>
+            <AdminDefinitionList items={[{ label: 'Owner reason', value: correction.reason }]} />
+          </AdminSection>
+          <AdminSection
+            title="Supporting protected evidence"
+            description="Previewing or opening a file creates a five-minute audited access grant."
+          >
+            <div className="admin-evidence-grid">
+              {correction.inspection.media.map((media) => (
+                <AdminEvidenceCard
+                  key={media.fileAsset.id}
+                  displayMode="photo"
+                  label={`${media.perspective} · ${media.fileAsset.originalName}`}
+                  note="Original inspection evidence"
+                  requestAccess={() => grantFile(media.fileAsset.id)}
+                />
+              ))}
+            </div>
+            {correction.inspection.media.length === 0 && (
+              <EmptyState
+                title="No supporting media"
+                description="This request relies on the recorded measurements and owner explanation."
+              />
+            )}
+          </AdminSection>
+          <AdminSection title="Review history">
+            <AdminTimeline
+              events={[
+                ...correction.inspection.booking.statusHistory.map((entry) => ({
+                  id: entry.id,
+                  title: entry.toStatus,
+                  occurredAt: entry.occurredAt,
+                  detail: entry.reasonCode ?? 'Booking state transition',
+                })),
+                ...correction.inspection.amendments.map((item) => ({
+                  id: item.id,
+                  title: statusLabel(item.status),
+                  occurredAt: item.reviewedAt ?? item.createdAt,
+                  detail: item.reviewReason ?? item.reason,
+                })),
+              ]}
+            />
+          </AdminSection>
           {correction.status === 'PENDING_REVIEW' ? (
-            <>
+            <AdminActionBar
+              title="Correction decision"
+              description="A decision note of at least 10 characters is required. Original evidence is never overwritten."
+            >
               <label className="admin-field">
                 Decision note/reason
                 <textarea
@@ -258,30 +334,41 @@ export function InspectionCorrectionsAdminPanel({ accessToken }: { readonly acce
                   placeholder="Explain the evidence and basis for the decision (minimum 10 characters)."
                 />
               </label>
-              <div className="actions">
-                <button
-                  disabled={review.isPending || reviewReason.trim().length < 10}
-                  onClick={() => decide(true)}
-                >
-                  Approve correction
-                </button>
-                <button
-                  className="danger"
-                  disabled={review.isPending || reviewReason.trim().length < 10}
-                  onClick={() => decide(false)}
-                >
-                  Reject correction
-                </button>
-              </div>
-            </>
+              <button
+                disabled={review.isPending || reviewReason.trim().length < 10}
+                onClick={() => decide(true)}
+              >
+                Approve correction
+              </button>
+              <button
+                className="danger"
+                disabled={review.isPending || reviewReason.trim().length < 10}
+                onClick={() => decide(false)}
+              >
+                Reject correction
+              </button>
+            </AdminActionBar>
           ) : (
-            <p>
-              <strong>{statusLabel(correction.status)}</strong>{' '}
-              {correction.reviewedAt ? new Date(correction.reviewedAt).toLocaleString() : ''} by{' '}
-              {correction.reviewedBy ? personLabel(correction.reviewedBy) : '—'}
-              <br />
-              {correction.reviewReason}
-            </p>
+            <AdminSection title="Recorded decision">
+              <AdminDefinitionList
+                items={[
+                  { label: 'Outcome', value: <StatusBadge value={correction.status} /> },
+                  {
+                    label: 'Reviewed',
+                    value: correction.reviewedAt
+                      ? new Date(correction.reviewedAt).toLocaleString()
+                      : 'Not recorded',
+                  },
+                  {
+                    label: 'Reviewer',
+                    value: correction.reviewedBy
+                      ? personLabel(correction.reviewedBy)
+                      : 'Not recorded',
+                  },
+                  { label: 'Reason', value: correction.reviewReason ?? 'Not recorded' },
+                ]}
+              />
+            </AdminSection>
           )}
           {review.isError && <p className="error-text">{review.error.message}</p>}
         </div>

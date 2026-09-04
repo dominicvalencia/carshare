@@ -20,4 +20,23 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('lastScrolledQuoteId.current === quoteData.id');
     expect(source).toContain('scrollRef.current?.scrollTo');
   });
+
+  it('uses server cursors for incremental loading and preserves the result offset', () => {
+    expect(source).toContain('useInfiniteQuery');
+    expect(source).toContain('getNextPageParam');
+    expect(source).toContain('onEndReachedThreshold={0.25}');
+    expect(source).toContain('search.fetchNextPage()');
+    expect(source).toContain('resultScrollOffset.current');
+  });
+
+  it('renders only projected positive long-trip discounts before price check', () => {
+    expect(source).toContain('positiveDurationDiscounts(vehicle.pricing.durationDiscounts)');
+    expect(source).toContain('durationDiscounts.length > 0');
+    expect(source).toContain('Save more on longer trips');
+    expect(source).toContain('Discount is applied automatically when your rental dates qualify.');
+    expect(source.indexOf('Save more on longer trips')).toBeLessThan(
+      source.indexOf('<SectionHeader title="Your trip" />'),
+    );
+    expect(source).not.toContain('policyVersionId');
+  });
 });

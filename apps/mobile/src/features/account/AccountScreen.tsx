@@ -100,6 +100,7 @@ export interface RenterVerificationSnapshot {
     readonly emergencyContactRelation: string | null;
     readonly emergencyContactRelationOther: string | null;
     readonly firstName: string | null;
+    readonly displayName: string | null;
     readonly lastName: string | null;
     readonly middleName: string | null;
     readonly postalCode: string | null;

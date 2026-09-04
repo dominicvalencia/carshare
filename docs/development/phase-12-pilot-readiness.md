@@ -168,14 +168,23 @@ pnpm verify
 pnpm --filter @carrental/mobile build
 ```
 
-Final Phase 12 verification passed:
+Final Phase 12 verification was rerun on 2 September 2026 against accepted baseline commit
+`8f003e2` and passed:
 
-- `pnpm verify`: formatting, Compose validation, 18/18 lint tasks, 18/18 typecheck tasks, 19 unit/E2E
-  test files with 45 tests, Prisma validation, and 11/11 build tasks.
-- `pnpm test:integration`: 7 files and 42 tests, including renter verification, protected evidence,
+- `pnpm verify`: formatting, Compose validation, 18/18 lint tasks, 18/18 typecheck tasks, all package
+  unit/E2E suites (including 20 mobile files with 104 tests), Prisma validation, and 11/11 build tasks.
+- `pnpm test:integration`: 8 files and 48 tests, including renter verification, protected evidence,
   booking/occupancy concurrency, and the complete pilot lifecycle.
+- The local development and isolated test databases each report all 35 committed migrations applied
+  with no pending or unresolved failed migration. The development ledger preserves three resolved,
+  rolled-back zero-step attempts from the initial marketplace-completeness correction; its later
+  successful row and the clean isolated migration run remain authoritative.
 - Expo production export: iOS and Android Hermes bundles plus 26 assets.
 - Next.js admin, NestJS API, worker, database, and shared-package builds all completed.
+
+The product owner completed manual acceptance on 2 September 2026 for registration, KYC, vehicle and
+booking flow, pickup/handover, and return. This is the accepted Phase 12 functional baseline. It does
+not constitute production-provider certification or Android physical-device acceptance.
 
 Visual inspection was performed in Expo Go on iPhone 17 Pro and iPhone 17 Pro Max iOS 26.5 simulators
 (with the earlier compact-screen pass retained). Inspected states included renter home, search results, vehicle detail and price
@@ -193,13 +202,19 @@ Android was export/build verified only because no Android emulator was available
   autocomplete provider remains intentionally unselected; the exact stored vehicle point remains private.
 - Push delivery uses the existing provider abstraction. Real Expo credentials and physical-device token,
   delivery, receipt, permission, and deep-link behavior require device testing.
-- No Detox or Maestro native-E2E framework existed in the repository, so Phase 12 does not add dependency
+- No committed Detox or Maestro native-E2E framework exists in the repository. The complete lifecycle
+  is automated at the HTTP/domain boundary, but camera, permission, browser, notification, and
+  gesture regressions still rely partly on manual device acceptance.
+- Physical iOS manual acceptance covers the Phase 12 registration-through-return path. Physical Android
+  acceptance remains outstanding.
+- Phase 12 does not add dependency
   churn solely for this hardening pass. The complete lifecycle is automated at the HTTP/domain boundary;
   exported mobile bundles and representative simulator screens are verified separately. Physical iOS and
-  Android camera, document picker, location permission, notification, and payment-browser flows remain
-  required before a public pilot.
+  Android notification delivery/receipt behavior and production payment-browser behavior remain required
+  before a public pilot.
 - The bundled fallback vehicle image is intentionally used only when a listing has no usable projection;
   production media variants/CDN optimization remain provider work.
 
-No ADR was added: Phase 12 restores conformance to existing ADRs and adds presentation/readiness fixes,
-not a new architectural decision.
+No ADR was required for the original presentation/readiness fixes. The later marketplace-completeness
+work introduced significant decisions recorded in ADRs 0021–0024. See the
+[current system baseline](../architecture/current-system-baseline.md) for the synchronized result.

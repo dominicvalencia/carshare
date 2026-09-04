@@ -2,6 +2,10 @@
 
 Status: Accepted (Phase 10)
 
+Amended in Phase 12 by [ADR-0023](0023-double-blind-review-publication.md) and
+[ADR-0024](0024-public-host-profile-privacy.md) for double-blind publication and the opaque public Host
+Profile privacy boundary.
+
 ## Context
 
 The marketplace needs private booking communication, lifecycle notifications, verified-rental reviews, and support/moderation without weakening the transactional-outbox, authorization, evidence, or financial boundaries established in Phases 1–9.

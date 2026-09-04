@@ -4,6 +4,11 @@
 
 Accepted for Phase 12 pilot stabilization.
 
+The custom PIN/PBKDF2 app-lock portion is superseded by
+[ADR-0025](0025-biometric-only-local-app-lock.md). The platform-owned PSGC decision below remains
+accepted. The historical PIN text is retained to record the original decision and benchmark that led
+to its replacement.
+
 ## Context
 
 Authenticated renters need an optional local privacy barrier that does not shorten or replace the API

@@ -17,10 +17,10 @@ and are not recalculated later from mutable configuration.
 
 ```text
 CONFIRMED → READY_FOR_PICKUP
-owner finalizes pickup inspection → renter acknowledges and receives OTP
-owner verifies OTP → ACTIVE
-either participant starts return → RETURN_PENDING
-owner finalizes return inspection → renter agrees or disagrees → RETURNED
+owner finalizes pickup inspection → renter reviews/acknowledges and receives OTP
+verified owner consumes OTP → ACTIVE
+renter submits return evidence → RETURN_PENDING
+owner submits an independent receipt inspection → owner acknowledges/disagrees → RETURNED
 24-hour claim window + no blockers → COMPLETED
 ```
 
@@ -28,6 +28,11 @@ Each inspection requires front, rear, both sides, interior/dashboard, odometer, 
 images. Upload them as `PRIVATE` or `SENSITIVE` through `/api/v1/files` before associating them with
 an inspection. Evidence is available only to the booking participants and explicitly permissioned
 operations staff.
+
+Participant perspectives are separate immutable records. Discrepancy/counter-evidence is additive,
+and correction requests use permissioned Admin amendment review rather than overwriting the original.
+Pickup/return non-response produces notifications/incidents; only the audited Admin handover-resolution
+command can establish custody as a fallback.
 
 Mileage, fuel, EV SOC, and lateness are measured facts. Phase 7 never creates an additional payment,
 refund, ledger posting, payout, or available earning.
@@ -38,6 +43,7 @@ refund, ledger posting, payout, or available earning.
 GET  /api/v1/bookings/:reference/rental
 POST /api/v1/bookings/:reference/rental/pickup/confirm
 POST /api/v1/bookings/:reference/rental/return/start
+POST /api/v1/bookings/:reference/rental/return/inspection
 POST /api/v1/bookings/:reference/rental/return/confirm
 POST /api/v1/bookings/:reference/rental/incidents
 
@@ -46,12 +52,14 @@ POST /api/v1/owner/bookings/:reference/rental/pickup/inspection
 POST /api/v1/owner/bookings/:reference/rental/pickup/verify
 POST /api/v1/owner/bookings/:reference/rental/return/start
 POST /api/v1/owner/bookings/:reference/rental/return/inspection
+POST /api/v1/owner/bookings/:reference/rental/return/confirm
 POST /api/v1/owner/bookings/:reference/rental/claims
 POST /api/v1/owner/bookings/:reference/rental/incidents
 
 GET  /api/v1/admin/rentals
 GET  /api/v1/admin/rentals/:reference
 POST /api/v1/admin/rentals/:reference/operational-hold
+POST /api/v1/admin/rentals/:reference/handover-resolution
 POST /api/v1/admin/rentals/incidents/:incidentId/status
 ```
 

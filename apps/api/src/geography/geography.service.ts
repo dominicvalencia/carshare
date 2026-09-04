@@ -111,7 +111,7 @@ export class GeographyService {
       (province ? city.provinceCode !== province.code : false)
     )
       throw hierarchyError('The selected city or municipality does not belong to that address.');
-    if (province?.regionCode !== region.code)
+    if (province && province.regionCode !== region.code)
       throw hierarchyError('The selected province does not belong to that region.');
     if (barangay.cityMunicipalityCode !== city.code)
       throw hierarchyError('The selected barangay does not belong to that city or municipality.');

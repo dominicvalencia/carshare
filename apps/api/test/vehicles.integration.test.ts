@@ -388,9 +388,16 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
       .post(`/api/v1/files/${sensitiveDocumentFileId}/access-grants`)
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(201);
+    expect(grant.body.data).toMatchObject({
+      mimeType: 'application/pdf',
+      originalName: expect.any(String),
+    });
+    expect(new Date(grant.body.data.expiresAt).getTime()).toBeGreaterThan(Date.now());
     await request(app.getHttpServer())
       .get(`/api/v1/file-access/${sensitiveDocumentFileId}`)
       .query({ grant: grant.body.data.grant })
+      .expect('Cross-Origin-Resource-Policy', 'cross-origin')
+      .expect('Content-Disposition', /inline/)
       .expect(200);
     await request(app.getHttpServer())
       .get(`/api/v1/file-access/${sensitiveDocumentFileId}`)

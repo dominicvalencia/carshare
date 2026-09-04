@@ -211,6 +211,80 @@ describe.sequential('Phase 4 public discovery integration', () => {
       .expect(201);
   });
 
+  it('returns stable cursor pages without duplicates when availability changes between requests', async () => {
+    const owner = await database.client.ownerProfile.findFirstOrThrow({
+      where: { userId: ownerUserId },
+    });
+    const vehicleIds: string[] = [];
+    for (let index = 0; index < 22; index += 1) {
+      vehicleIds.push(
+        await createPublicVehicle(
+          owner.id,
+          ownerUserId,
+          `Page-${String(index).padStart(2, '0')}`,
+          13.9414 + index * 0.0001,
+          121.623,
+          200_000 + index,
+        ),
+      );
+    }
+    const query = {
+      latitude: 13.9414,
+      longitude: 121.623,
+      make: `PhaseFour-${unique}`,
+      model: 'Page-',
+      radius: 25,
+      sort: 'DISTANCE',
+      limit: 10,
+    };
+    const first = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query(query)
+      .expect(200);
+    expect(first.body.data.items).toHaveLength(10);
+    expect(first.body.data.pageInfo.hasNextPage).toBe(true);
+
+    const repeated = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query(query)
+      .expect(200);
+    expect(repeated.body.data.items.map((item: { vehicleId: string }) => item.vehicleId)).toEqual(
+      first.body.data.items.map((item: { vehicleId: string }) => item.vehicleId),
+    );
+
+    await database.client.vehicle.update({
+      data: { operationalStatus: VehicleOperationalStatus.MAINTENANCE },
+      where: { id: vehicleIds[10] },
+    });
+    const second = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query({ ...query, cursor: first.body.data.pageInfo.nextCursor })
+      .expect(200);
+    expect(second.body.data.items).toHaveLength(10);
+    const third = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query({ ...query, cursor: second.body.data.pageInfo.nextCursor })
+      .expect(200);
+    expect(third.body.data.items).toHaveLength(1);
+    expect(third.body.data.pageInfo).toEqual({ hasNextPage: false, nextCursor: null });
+    const allIds = [
+      ...first.body.data.items,
+      ...second.body.data.items,
+      ...third.body.data.items,
+    ].map((item: { vehicleId: string }) => item.vehicleId);
+    expect(new Set(allIds).size).toBe(21);
+    expect(allIds).not.toContain(vehicleIds[10]);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query({ ...query, cursor: Buffer.from('{}').toString('base64') })
+      .expect(400);
+    await database.client.vehicle.updateMany({
+      data: { operationalStatus: VehicleOperationalStatus.MAINTENANCE },
+      where: { id: { in: vehicleIds } },
+    });
+  }, 120_000);
+
   afterAll(async () => {
     await app.close();
   });
@@ -264,6 +338,19 @@ describe.sequential('Phase 4 public discovery integration', () => {
     const publicJson = JSON.stringify(detail.body.data);
     expect(publicJson).not.toContain('Private Legal Name');
     expect(publicJson).not.toContain(`phase4-owner-${unique}@example.test`);
+    expect(detail.body.data.pricing.durationDiscounts).toEqual([]);
+    expect(hasKey(detail.body.data, 'policyVersionId')).toBe(false);
+    expect(detail.body.data.owner.publicReference).toMatch(/^HOST-|^[a-z0-9]+$/i);
+    const host = await request(app.getHttpServer())
+      .get(`/api/v1/hosts/${detail.body.data.owner.publicReference}`)
+      .expect(200);
+    expect(
+      host.body.data.availableVehicles.some(
+        (item: { vehicleId: string }) => item.vehicleId === firstVehicleId,
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(host.body.data)).not.toContain('Private Legal Name');
+    expect(hasKey(host.body.data, 'id')).toBe(false);
 
     await request(app.getHttpServer())
       .put(`/api/v1/favorites/${firstVehicleId}`)
@@ -304,6 +391,67 @@ describe.sequential('Phase 4 public discovery integration', () => {
       .expect(201);
     expect(secondQuote.body.data.totalMinor).toBe(600_000);
     expect(secondQuote.body.data.policyVersionId).not.toBe(firstPolicyId);
+
+    await database.client.vehiclePolicyVersion.create({
+      data: { ...policy(secondVehicleId, 2, 220_000), weeklyDiscountBps: 1_000 },
+    });
+    const detailWithDiscount = await request(app.getHttpServer())
+      .get(`/api/v1/vehicles/${secondVehicleId}`)
+      .expect(200);
+    expect(detailWithDiscount.body.data.pricing.durationDiscounts).toEqual([
+      { discountBps: 1_000, minimumDays: 7 },
+    ]);
+    expect(hasKey(detailWithDiscount.body.data, 'policyVersionId')).toBe(false);
+    const discountStart = new Date(start);
+    discountStart.setUTCDate(discountStart.getUTCDate() + 20);
+    const discountEnd = new Date(discountStart);
+    discountEnd.setUTCDate(discountEnd.getUTCDate() + 7);
+    const discountedQuote = await request(app.getHttpServer())
+      .post(`/api/v1/vehicles/${secondVehicleId}/quotes`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .send({ end: discountEnd.toISOString(), start: discountStart.toISOString() })
+      .expect(201);
+    expect(discountedQuote.body.data).toMatchObject({
+      baseRentalAmountMinor: 1_540_000,
+      discountedRentalSubtotalMinor: 1_386_000,
+      durationDiscountAmountMinor: 154_000,
+      durationDiscountBps: 1_000,
+      durationDiscountTier: 'WEEKLY_7_DAY',
+      totalMinor: 1_386_000,
+    });
+    expect(discountedQuote.body.data.lines.map((line: { code: string }) => line.code)).toEqual([
+      'RENTAL_BASE',
+      'DURATION_DISCOUNT',
+    ]);
+    const discountedHold = await request(app.getHttpServer())
+      .post('/api/v1/bookings')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .set('Idempotency-Key', `discount-hold-${unique}`)
+      .send({ quoteId: discountedQuote.body.data.id })
+      .expect(201);
+    await database.client.vehiclePolicyVersion.create({
+      data: { ...policy(secondVehicleId, 3, 220_000), weeklyDiscountBps: 2_000 },
+    });
+    const frozenBooking = await database.client.booking.findUniqueOrThrow({
+      include: { pricingSnapshot: true },
+      where: { publicReference: discountedHold.body.data.publicReference },
+    });
+    expect(frozenBooking.pricingSnapshot).toMatchObject({
+      durationDiscountBps: 1_000,
+      totalMinor: 1_386_000,
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${discountedHold.body.data.publicReference}/continue`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${discountedHold.body.data.publicReference}/payment/authorize`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .expect(201);
+    const authorizedPayment = await database.client.payment.findFirstOrThrow({
+      where: { bookingId: frozenBooking.id, purpose: 'RENTAL' },
+    });
+    expect(authorizedPayment.amountMinor).toBe(1_386_000n);
 
     await database.client.$transaction(async (transaction) => {
       const occupancy = await transaction.vehicleOccupancy.create({

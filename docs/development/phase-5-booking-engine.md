@@ -2,6 +2,9 @@
 
 > The development funding gate documented below was removed by Phase 6. See
 > [Phase 6 payments and ledger](phase-6-payments-ledger.md) for the production lifecycle.
+> This file records the Phase 5 delivery boundary; it is not the current end-to-end lifecycle. See the
+> [current system baseline](../architecture/current-system-baseline.md) for the implemented Phase 12
+> payment, pickup, return, claim-window, and completion transitions.
 
 ## Delivered lifecycle
 

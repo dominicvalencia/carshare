@@ -4,9 +4,25 @@ import { FilesService } from '../files/files.service';
 import type { AdvisoryAvailability } from './availability.service';
 import type { PublicVehicleRecord } from './public-eligibility.service';
 
+function publicDurationDiscounts(policy: PublicVehicleRecord['policyVersions'][number]) {
+  return [
+    { discountBps: policy.shortDurationDiscountBps, minimumDays: 3 },
+    { discountBps: policy.weeklyDiscountBps, minimumDays: 7 },
+    { discountBps: policy.extendedTripDiscountBps, minimumDays: 14 },
+    { discountBps: policy.monthlyDiscountBps, minimumDays: 30 },
+  ].filter(
+    (tier): tier is { discountBps: number; minimumDays: number } =>
+      tier.discountBps !== null && tier.discountBps > 0,
+  );
+}
+
 @Injectable()
 export class PublicProjectionService {
   constructor(private readonly files: FilesService) {}
+
+  publicFile(fileId: string) {
+    return this.files.trustedPublicGrant(fileId);
+  }
 
   card(
     vehicle: PublicVehicleRecord,
@@ -101,6 +117,7 @@ export class PublicProjectionService {
             : null,
         displayName: profile?.displayName ?? profile?.firstName ?? 'Verified owner',
         memberSince: vehicle.ownerProfile.user.createdAt,
+        publicReference: vehicle.ownerProfile.publicReference,
         rating: ratings?.owner ?? { averageRating: null, label: 'New', reviewCount: 0 },
         verified: true,
       },
@@ -114,6 +131,7 @@ export class PublicProjectionService {
         authoritative: false,
         currency: policy.currency,
         dailyRateMinor: policy.dailyRateMinor,
+        durationDiscounts: publicDurationDiscounts(policy),
         label: 'From',
       },
       rentalRequirements: vehicle.rentalRequirements,

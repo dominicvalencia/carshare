@@ -370,6 +370,24 @@ describe.sequential('Phase 2 identity integration', () => {
     });
     expect(ownerUser.roles.map(({ role }) => role.code)).toContain(RoleCode.OWNER);
     expect(admin.id).toBeTruthy();
+    await request(app.getHttpServer())
+      .get(`/api/v1/admin/users/${ownerUser.id}`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toMatchObject({
+          id: ownerUser.id,
+          ownerBookings: expect.any(Array),
+          ownedVehicles: expect.any(Array),
+          renterBookings: expect.any(Array),
+          roles: expect.any(Array),
+          verifications: expect.any(Array),
+        });
+        expect(body.data).not.toHaveProperty('passwordHash');
+        expect(body.data).not.toHaveProperty('sessions');
+        expect(body.data.profile).not.toHaveProperty('addressLine1');
+        expect(JSON.stringify(body.data)).not.toContain('fileAsset');
+      });
 
     const otherStarted = await request(app.getHttpServer())
       .post('/api/v1/owners/onboarding')

@@ -402,7 +402,10 @@ export class ClaimsService {
       orderBy: { postedAt: 'asc' },
       where: { sourceId: { in: ledgerSourceIds } },
     });
-    return this.serialize({ claim, ledger });
+    return this.serialize({
+      claim: { ...claim, severity: this.claimSeverity(claim) },
+      ledger,
+    });
   }
 
   async adjudicate(

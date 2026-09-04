@@ -304,8 +304,13 @@ export class BookingProjectionService {
     const pricing = booking.pricingSnapshot;
     if (!pricing) return null;
     return {
+      baseRentalAmountMinor: pricing.baseRentalAmountMinor,
       chargeableDays: pricing.chargeableDays,
       currency: pricing.currency,
+      discountedRentalSubtotalMinor: pricing.discountedRentalSubtotalMinor,
+      durationDiscountAmountMinor: pricing.durationDiscountAmountMinor,
+      durationDiscountBps: pricing.durationDiscountBps,
+      durationDiscountTier: pricing.durationDiscountTier,
       excessKilometerRateMinor: pricing.excessKilometerRateMinor,
       includedMileageKm: pricing.includedMileageKm,
       lines: pricing.lines.map((line) => ({

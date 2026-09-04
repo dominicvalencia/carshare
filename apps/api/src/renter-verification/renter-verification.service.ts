@@ -391,6 +391,12 @@ export class RenterVerificationService {
     return this.database.client.verification.findUniqueOrThrow({
       where: { id },
       include: {
+        addressAssessedBy: {
+          select: { email: true, profile: { select: { displayName: true } } },
+        },
+        reviewedBy: {
+          select: { email: true, profile: { select: { displayName: true } } },
+        },
         documents: {
           where: { replacedAt: null },
           include: {
@@ -454,6 +460,12 @@ export class RenterVerificationService {
       throw new ApplicationException(
         'RENTER_ADDRESS_ASSESSMENT_REQUIRED',
         'Record an address-versus-document assessment before approval.',
+        HttpStatus.CONFLICT,
+      );
+    if (!root.addressReviewNotes?.trim())
+      throw new ApplicationException(
+        'RENTER_REVIEW_NOTES_REQUIRED',
+        'Save reviewer notes documenting the verification checks before approval.',
         HttpStatus.CONFLICT,
       );
     const [definitions, privateProfile] = await Promise.all([

@@ -51,6 +51,14 @@ export function renderNotification(
       title: 'Share your experience',
       body: `Reviews are available for ${reference}.`,
     },
+    'review.counterpart-submitted': {
+      title: 'A review is waiting',
+      body: `The other party reviewed ${reference}. Their review remains private until you submit or the review window closes.`,
+    },
+    'review.published': {
+      title: 'Reviews published',
+      body: `Reviews for ${reference} are now available.`,
+    },
     'support.updated': { title: 'Support update', body: 'Your support ticket has a new update.' },
   };
   return (

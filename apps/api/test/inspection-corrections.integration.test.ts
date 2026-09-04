@@ -85,6 +85,7 @@ describe.sequential('Phase 12 inspection correction workflow', () => {
     const end = new Date(Date.now() + 86_400_000);
     const quote = await database.client.pricingQuote.create({
       data: {
+        baseRentalAmountMinor: 100_000,
         renterUserId: renter.userId,
         vehicleId: vehicle.id,
         policyVersionId: policy.id,
@@ -94,6 +95,7 @@ describe.sequential('Phase 12 inspection correction workflow', () => {
         chargeableDays: 1,
         currency: 'PHP',
         subtotalMinor: 100_000,
+        discountedRentalSubtotalMinor: 100_000,
         totalMinor: 100_000,
         unlimitedMileage: true,
         turnaroundMinutes: 120,

@@ -428,6 +428,7 @@ describe.sequential('Phase 9 owner payout settlement', () => {
     const rentalEnd = new Date(Date.now() - 2 * 86_400_000);
     const quote = await database.client.pricingQuote.create({
       data: {
+        baseRentalAmountMinor: 100_000,
         chargeableDays: 1,
         currency: 'PHP',
         excessKilometerRateMinor: 1_000,
@@ -440,6 +441,7 @@ describe.sequential('Phase 9 owner payout settlement', () => {
         rentalStart,
         renterUserId: renter.userId,
         subtotalMinor: 100_000,
+        discountedRentalSubtotalMinor: 100_000,
         totalMinor: 100_000,
         turnaroundMinutes: 120,
         unlimitedMileage: false,

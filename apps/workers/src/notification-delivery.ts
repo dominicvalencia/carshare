@@ -350,6 +350,18 @@ function policyFor(eventType: string): EventPolicy | null {
       templateKey: 'review.available',
       recipients: 'BOTH',
     };
+  if (eventType === 'REVIEW_SUBMITTED')
+    return {
+      category: NotificationCategory.REVIEWS,
+      templateKey: 'review.counterpart-submitted',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'REVIEWS_PUBLISHED')
+    return {
+      category: NotificationCategory.REVIEWS,
+      templateKey: 'review.published',
+      recipients: 'BOTH',
+    };
   if (eventType === 'BOOKING_COMPLETED')
     return {
       category: NotificationCategory.REVIEWS,

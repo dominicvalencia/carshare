@@ -18,6 +18,7 @@ import {
   RenterOnboardingContactPage,
   RenterOnboardingKycPage,
 } from './src/features/account/RenterOnboardingPages';
+import { RenterOnboardingDraftProvider } from './src/features/account/RenterVerificationWorkflow';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { activeRoleStorage } from './src/navigation/active-role-storage';
@@ -201,31 +202,33 @@ function RenterOnboarding({ onSkip }: { readonly onSkip: () => void }) {
   };
   const pages = Array.from({ length: 8 }, (_, page) => page);
   return (
-    <SafeAreaView
-      accessibilityHint="Swipe left for next or right for previous"
-      edges={['top']}
-      style={styles.onboardingShell}
-      {...pager.panHandlers}
-    >
-      <View style={styles.onboardingProgressHeader}>
-        <PageIndicator count={8} current={stage} />
-        <Button label="Skip onboarding" onPress={onSkip} variant="ghost" />
-      </View>
-      <View style={styles.onboardingViewport} {...pager.panHandlers}>
-        <Animated.View
-          style={[
-            styles.onboardingTrack,
-            { transform: [{ translateX }], width: width * pages.length },
-          ]}
-        >
-          {pages.map((page) => (
-            <View key={page} style={{ width }}>
-              {renderPage(page)}
-            </View>
-          ))}
-        </Animated.View>
-      </View>
-    </SafeAreaView>
+    <RenterOnboardingDraftProvider>
+      <SafeAreaView
+        accessibilityHint="Swipe left for next or right for previous"
+        edges={['top']}
+        style={styles.onboardingShell}
+        {...pager.panHandlers}
+      >
+        <View style={styles.onboardingProgressHeader}>
+          <PageIndicator count={8} current={stage} />
+          <Button label="Skip onboarding" onPress={onSkip} variant="ghost" />
+        </View>
+        <View style={styles.onboardingViewport} {...pager.panHandlers}>
+          <Animated.View
+            style={[
+              styles.onboardingTrack,
+              { transform: [{ translateX }], width: width * pages.length },
+            ]}
+          >
+            {pages.map((page) => (
+              <View key={page} style={{ width }}>
+                {renderPage(page)}
+              </View>
+            ))}
+          </Animated.View>
+        </View>
+      </SafeAreaView>
+    </RenterOnboardingDraftProvider>
   );
 }
 

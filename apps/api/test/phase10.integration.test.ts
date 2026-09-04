@@ -97,6 +97,7 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
     const end = new Date(start.getTime() + 86_400_000);
     const quote = await database.client.pricingQuote.create({
       data: {
+        baseRentalAmountMinor: 100_000,
         renterUserId: renter.userId,
         vehicleId,
         policyVersionId: policy.id,
@@ -106,6 +107,7 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
         chargeableDays: 1,
         currency: 'PHP',
         subtotalMinor: 100_000,
+        discountedRentalSubtotalMinor: 100_000,
         totalMinor: 100_000,
         unlimitedMileage: true,
         turnaroundMinutes: 120,
@@ -273,7 +275,7 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
         ).send({
           type: 'VEHICLE',
           rating: 5,
-          categoryRatings: { condition: 5, value: 5 },
+          categoryRatings: { accuracy: 5, cleanliness: 5, condition: 5 },
           text: 'Accurate vehicle and smooth rental.',
         }),
       ),
@@ -283,6 +285,22 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
     const review = await database.client.review.findFirstOrThrow({
       where: { bookingId, authorUserId: renter.userId, type: 'VEHICLE' },
     });
+    expect(review.publicationStatus).toBe('PENDING');
+    expect(
+      await database.client.ratingProjection.findUnique({
+        where: { subjectType_subjectId: { subjectType: 'VEHICLE', subjectId: vehicleId } },
+      }),
+    ).toBeNull();
+    await auth(
+      request(app.getHttpServer()).post(`/api/v1/bookings/${bookingReference}/reviews`),
+      owner,
+    )
+      .send({
+        type: 'RENTER',
+        rating: 5,
+        categoryRatings: { cleanliness: 5, communication: 5, punctuality: 5 },
+      })
+      .expect(201);
     expect(
       (
         await database.client.ratingProjection.findUniqueOrThrow({

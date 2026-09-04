@@ -1,5 +1,9 @@
 # Phase 6 — Payments, ledger, commission, and pending earnings
 
+> Phase 12 pricing amendment: an authoritative quote may contain a negative `DURATION_DISCOUNT` line.
+> Its discounted subtotal is copied into the immutable booking snapshot and is the commission basis;
+> later policy changes cannot reprice the booking. See ADR-0022.
+
 ## Local provider
 
 Local and test environments default to `PAYMENT_PROVIDER=fake`. It performs deterministic

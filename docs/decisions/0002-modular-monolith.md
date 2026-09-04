@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-08-19
+- Implementation note: the transactional outbox and separate worker process described as future work
+  below are implemented in the current Phase 12 baseline.
 
 ## Decision
 

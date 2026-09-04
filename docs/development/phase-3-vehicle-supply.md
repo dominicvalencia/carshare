@@ -1,5 +1,10 @@
 # Phase 3 vehicle supply
 
+> Historical phase guide. The current Phase 12 rule allows an owner with the stable `OWNER` capability
+> to build drafts before verification; submission/publication and protected operations still require
+> the applicable verified status. Current reference data also includes makes, models, and categories.
+> See the [current system baseline](../architecture/current-system-baseline.md).
+
 ## Scope
 
 Phase 3 provides owner fleet management and administrative listing review. It does not expose public

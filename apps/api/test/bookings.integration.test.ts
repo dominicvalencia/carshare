@@ -303,6 +303,19 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/admin/renter-verifications/${identityId}/approval`)
       .set('Authorization', `Bearer ${admin.token}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('RENTER_REVIEW_NOTES_REQUIRED'));
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/renter-verifications/${identityId}/address-assessment`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({
+        assessment: AddressMatchAssessment.MATCH,
+        notes: 'Identity, address, and driving evidence reviewed and found consistent.',
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/renter-verifications/${identityId}/approval`)
+      .set('Authorization', `Bearer ${admin.token}`)
       .expect(201);
 
     const approved = await hold(renter.token, quoteId, `verification-approved-${unique}`).expect(
@@ -1414,7 +1427,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       .post(`/api/v1/bookings/${reference}/reviews`)
       .set('Authorization', `Bearer ${renter.token}`)
       .send({
-        categoryRatings: { condition: 5, value: 5 },
+        categoryRatings: { accuracy: 5, cleanliness: 5, condition: 5 },
         rating: 5,
         text: 'A smooth pilot rental from booking through return.',
         type: 'VEHICLE',
@@ -1828,6 +1841,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     const amount = 250_000 * days;
     const quote = await database.client.pricingQuote.create({
       data: {
+        baseRentalAmountMinor: amount,
         chargeableDays: days,
         currency: 'PHP',
         excessKilometerRateMinor: 1_000,
@@ -1849,6 +1863,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
         rentalStart,
         renterUserId,
         subtotalMinor: amount,
+        discountedRentalSubtotalMinor: amount,
         totalMinor: amount,
         turnaroundMinutes: 120,
         unlimitedMileage: false,

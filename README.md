@@ -1,24 +1,16 @@
 # Car Rental Platform
 
-Production-oriented monorepo foundation for a Philippines peer-to-peer car rental marketplace.
-Phase 1 contains platform tooling and infrastructure. Phase 2 adds authentication, identity, rotating
-sessions, role/permission authorization, secure file access, owner onboarding, and the administrative
-owner-verification foundation. Phase 3 adds verified-owner fleet drafts, structured vehicle listings,
-PostGIS-ready private locations, versioned vehicle policies, secure media/documents, availability
-blocks, and permissioned administrative review. Phase 4 adds privacy-safe public discovery,
-favorites, advisory availability, and immutable pricing quotes. Phase 5 converts quotes into
-authoritative checkout holds, protects unified vehicle occupancy with PostgreSQL, and adds safe
-booking lifecycle foundations. Phase 6 adds provider-independent rental authorization and capture,
-the Maya hosted-checkout adapter, reconciliation, immutable double-entry accounting, versioned
-commission snapshots, and pending owner earnings. Phase 7 adds secure pickup verification, immutable
-pickup/return inspections, active-rental operations, measured usage, the 24-hour claim window,
-incident escalation, and safe automatic completion. Phase 8 adds controlled post-return claims,
-renter responses and disputes, immutable admin adjudication,
-formula-backed additional charges, provider-aware collection/refunds, earning holds, safe booking
-completion, and the `PENDING` to `AVAILABLE` earning transition. Phase 9 adds controlled,
-provider-independent owner payout settlement. Phase 10 adds booking conversations, in-app and push
-notifications, verified-rental reviews and rating projections, support tickets, and report-led
-moderation.
+Production-oriented monorepo for a Philippines peer-to-peer car rental marketplace. The implemented
+Phase 12 baseline includes identity and renter/owner KYC, structured vehicle supply, privacy-safe
+cursor-paginated discovery, immutable pricing and duration discounts, authoritative booking and
+occupancy, provider-independent payments/ledger/payouts, two-party pickup and return, claims,
+messaging/notifications, double-blind reviews, public Host Profiles, and routed Admin operations.
+
+Provider integrations remain abstractions or development adapters unless explicitly documented.
+Security deposits are disabled. Phase 13 is proposed and has not started. See the
+[current system baseline](docs/architecture/current-system-baseline.md) for the cross-domain design and
+the [accepted Phase 12 baseline](docs/development/phase-12-accepted-baseline.md) for verification and
+known limitations.
 
 ## Applications
 
@@ -85,6 +77,7 @@ Run the complete CI-equivalent sequence with `pnpm verify`.
 
 See [local development](docs/development/local-development.md), the
 [new Mac setup guide](docs/development/new-mac-setup.md), the
+[current system baseline](docs/architecture/current-system-baseline.md), the
 [Phase 1 acceptance checklist](docs/development/phase-1-acceptance.md), and the
 [Phase 5 booking engine guide](docs/development/phase-5-booking-engine.md), and the
 [Phase 6 payments and ledger guide](docs/development/phase-6-payments-ledger.md), and the
@@ -92,4 +85,9 @@ See [local development](docs/development/local-development.md), the
 [Phase 8 claims and financial resolution guide](docs/development/phase-8-claims-financial-resolution.md), and the
 [Phase 9 owner payouts guide](docs/development/phase-9-owner-payouts.md), the
 [Phase 10 marketplace experience guide](docs/development/phase-10-marketplace-experience.md), and the
+[Phase 11 mobile product UX guide](docs/development/phase-11-mobile-product-ux.md), the
+[accepted Phase 12 baseline](docs/development/phase-12-accepted-baseline.md), the
+[proposed Phase 13 plan](docs/development/phase-13-proposal.md), the
+[native development-build acceptance plan](docs/development/native-development-build-acceptance.md), the
+[Admin UX stabilization baseline](docs/development/admin-ux-stabilization.md), and the
 [architecture decisions](docs/decisions/README.md).

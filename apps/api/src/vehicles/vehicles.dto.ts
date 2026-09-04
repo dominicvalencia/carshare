@@ -145,6 +145,15 @@ export class SetVehicleLocationDto {
 
 export class CreateVehiclePolicyVersionDto {
   @ApiProperty() @IsInt() @Min(1) dailyRateMinor!: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(4000)
+  shortDurationDiscountBps?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) @Max(4000) weeklyDiscountBps?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) @Max(4000) extendedTripDiscountBps?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) @Max(4000) monthlyDiscountBps?: number;
   @ApiPropertyOptional({ default: 'PHP' })
   @IsOptional()
   @IsString()

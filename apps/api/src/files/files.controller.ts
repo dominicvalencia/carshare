@@ -7,11 +7,12 @@ import {
   StreamableFile,
   Query,
   Req,
+  Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { AccessTokenGuard } from '../authorization/access-token.guard';
@@ -73,10 +74,15 @@ export class SignedFileAccessController {
   constructor(private readonly files: FilesService) {}
 
   @Get(':id')
-  async content(@Param('id') id: string, @Query('grant') grant = '') {
+  async content(
+    @Param('id') id: string,
+    @Query('grant') grant = '',
+    @Res({ passthrough: true }) response: Response,
+  ) {
     const { asset, stream } = await this.files.signedContent(id, grant);
+    response.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     return new StreamableFile(stream, {
-      disposition: `attachment; filename="${asset.originalName.replaceAll('"', '')}"`,
+      disposition: `inline; filename="${asset.originalName.replaceAll('"', '')}"`,
       type: asset.mimeType,
     });
   }

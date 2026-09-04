@@ -47,16 +47,11 @@ private documents. Staff must record `MATCH`, `POSSIBLE_MATCH`, `MISMATCH`, or `
 approval. Notes are mandatory for possible matches and mismatches. This is a manual assessment; no OCR,
 document-authenticity, face-match, or liveness provider is implied.
 
-The optional local app lock described by ADR 0019 adds an account-scoped SecureStore PIN verifier and
-OS biometrics. Its five-minute policy gates protected mobile content without changing API session
-expiry. Normal logout and forgot-PIN recovery clear only the current account's local lock state.
-
-Set `EXPO_PUBLIC_APP_LOCK_BENCHMARK=1` only for a local development Metro session to run the throwaway
-app-lock timing probe. It records operation and phase durations with the simulator/device label, never
-the PIN, salt, or verifier, and deletes its temporary record after the run. The Phase 12 simulator
-measurements are recorded in ADR 0019. The Expo Go/Hermes JavaScript fallback remains too slow at the
-approved work factor, so a native-crypto development build and physical-device benchmark remain pilot
-release prerequisites.
+The current optional local app lock is biometric-only as specified by ADR 0025. It stores account-scoped
+enablement/inactivity state in SecureStore and delegates authentication to the operating system. Its
+five-minute background policy gates protected mobile content without changing API session expiry. The
+former custom PIN/PBKDF2 implementation and benchmark switch are not present; legacy PIN records are
+deleted during storage loading so they cannot trap a user.
 
 ## Contact verification and local manual testing
 

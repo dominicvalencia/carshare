@@ -1,10 +1,36 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState, type FormEvent } from 'react';
+import Link from 'next/link';
+import { useState } from 'react';
+import {
+  AdminActionBar,
+  AdminDefinitionList,
+  AdminDetailHeader,
+  AdminEvidenceCard,
+  AdminSection,
+  AdminSummaryCard,
+  AdminSummaryGrid,
+  AdminTechnicalDetails,
+  AdminTimeline,
+  DataTable,
+  EmptyState,
+  StatusBadge,
+} from './AdminPrimitives';
+import {
+  adminLabel,
+  evidenceLabel,
+  formatBasisPoints,
+  formatDate,
+  formatMoney,
+  visibilityReason,
+} from './admin-presentation';
+import { AdminUserDetail } from './AdminUserDetail';
 import { Phase10AdminPanels } from './Phase10AdminPanels';
 import { RenterVerificationAdminPanel } from './RenterVerificationAdminPanel';
+import { OwnerVerificationAdminPanel } from './OwnerVerificationAdminPanel';
 import { InspectionCorrectionsAdminPanel } from './InspectionCorrectionsAdminPanel';
+import { useAdminSession } from './AdminSession';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
 interface Envelope<T> {
@@ -27,7 +53,20 @@ interface User {
   readonly email: string | null;
   readonly mobileNumber: string | null;
   readonly status: string;
+  readonly createdAt: string;
+  readonly profile: {
+    readonly displayName: string | null;
+    readonly firstName: string | null;
+    readonly lastName: string | null;
+  } | null;
+  readonly roles: readonly { readonly role: { readonly code: string } }[];
+  readonly verifications?: readonly { readonly status: string; readonly type: string }[];
   readonly ownerProfile: { readonly status: string } | null;
+  readonly _count: {
+    readonly ownedVehicles: number;
+    readonly ownerBookings: number;
+    readonly renterBookings: number;
+  };
 }
 interface VehicleSummary {
   readonly id: string;
@@ -35,6 +74,8 @@ interface VehicleSummary {
   readonly make: string | null;
   readonly model: string | null;
   readonly submittedAt: string | null;
+  readonly operationalStatus: string;
+  readonly category: { readonly name: string } | null;
   readonly ownerProfile: {
     readonly status: string;
     readonly legalName: string | null;
@@ -42,6 +83,7 @@ interface VehicleSummary {
   };
 }
 interface VehicleDetail extends VehicleSummary {
+  readonly publishedRating: { readonly averageRating: string | null; readonly reviewCount: number };
   readonly modelYear: number | null;
   readonly powertrain: string | null;
   readonly fuelType: string | null;
@@ -289,19 +331,121 @@ interface AdminPayout {
   readonly status: string;
 }
 
-export function AdminConsole() {
-  const [accessToken, setAccessToken] = useState<string | null>(null);
+export type AdminModule =
+  | 'bookings'
+  | 'claims'
+  | 'commissions'
+  | 'dashboard'
+  | 'inspection-corrections'
+  | 'owner-verification'
+  | 'payouts'
+  | 'renter-verification'
+  | 'rentals'
+  | 'support'
+  | 'trust-safety'
+  | 'users'
+  | 'vehicles';
+
+const moduleTitles: Record<AdminModule, { eyebrow: string; title: string; description: string }> = {
+  dashboard: {
+    eyebrow: 'OPERATIONS OVERVIEW',
+    title: 'Dashboard',
+    description: 'Actionable queues and marketplace operations at a glance.',
+  },
+  users: {
+    eyebrow: 'USER OPERATIONS',
+    title: 'Accounts',
+    description: 'Look up renter and owner accounts without changing identity authority.',
+  },
+  'renter-verification': {
+    eyebrow: 'VERIFICATION',
+    title: 'Renter KYC',
+    description: 'Review submitted identity evidence through audited, temporary access.',
+  },
+  'owner-verification': {
+    eyebrow: 'VERIFICATION',
+    title: 'Owner verification',
+    description: 'Review owners waiting for operational approval.',
+  },
+  vehicles: {
+    eyebrow: 'VEHICLE OPERATIONS',
+    title: 'Vehicle review',
+    description: 'Review listing evidence, configuration, and public eligibility.',
+  },
+  bookings: {
+    eyebrow: 'BOOKINGS',
+    title: 'Booking diagnostics',
+    description: 'Inspect authoritative lifecycle, occupancy, and financial timelines.',
+  },
+  rentals: {
+    eyebrow: 'RENTAL OPERATIONS',
+    title: 'Pickup, active, and return queue',
+    description: 'Investigate evidence and use audited intervention commands.',
+  },
+  claims: {
+    eyebrow: 'CLAIMS & DISPUTES',
+    title: 'Claims review',
+    description: 'Review evidence, adjudication, disputes, and approved charges.',
+  },
+  payouts: {
+    eyebrow: 'PAYMENTS & PAYOUTS',
+    title: 'Owner payout operations',
+    description: 'Control eligibility, submission, and provider reconciliation.',
+  },
+  support: {
+    eyebrow: 'CUSTOMER OPERATIONS',
+    title: 'Support',
+    description: 'Manage customer cases and internal operational notes.',
+  },
+  'trust-safety': {
+    eyebrow: 'TRUST & SAFETY',
+    title: 'Moderation reports',
+    description: 'Review reports through scoped moderation workflows.',
+  },
+  'inspection-corrections': {
+    eyebrow: 'OPERATIONS',
+    title: 'Inspection corrections',
+    description: 'Review proposed corrections without mutating original evidence.',
+  },
+  commissions: {
+    eyebrow: 'PLATFORM SETTINGS',
+    title: 'Commission configuration',
+    description: 'Manage prospective versioned rules; historical snapshots remain immutable.',
+  },
+};
+
+export function AdminConsole({
+  activeModule,
+  detailId,
+}: {
+  readonly activeModule: AdminModule;
+  readonly detailId?: string;
+}) {
+  const { accessToken, logout } = useAdminSession();
   const [query, setQuery] = useState('');
-  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
-  const [selectedFinanceReference, setSelectedFinanceReference] = useState<string | null>(null);
-  const [selectedRentalReference, setSelectedRentalReference] = useState<string | null>(null);
-  const [selectedClaimId, setSelectedClaimId] = useState<string | null>(null);
-  const [selectedPayoutId, setSelectedPayoutId] = useState<string | null>(null);
+  const [userRoleFilter, setUserRoleFilter] = useState('ALL');
+  const [userStatusFilter, setUserStatusFilter] = useState('ALL');
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(
+    activeModule === 'vehicles' ? (detailId ?? null) : null,
+  );
+  const [selectedFinanceReference, setSelectedFinanceReference] = useState<string | null>(
+    activeModule === 'bookings' ? (detailId ?? null) : null,
+  );
+  const [selectedRentalReference, setSelectedRentalReference] = useState<string | null>(
+    activeModule === 'rentals' ? (detailId ?? null) : null,
+  );
+  const [selectedClaimId, setSelectedClaimId] = useState<string | null>(
+    activeModule === 'claims' ? (detailId ?? null) : null,
+  );
+  const [selectedPayoutId, setSelectedPayoutId] = useState<string | null>(
+    activeModule === 'payouts' ? (detailId ?? null) : null,
+  );
   const [claimStatus, setClaimStatus] = useState('');
   const [claimCategory, setClaimCategory] = useState('');
   const [claimSeverity, setClaimSeverity] = useState('');
   const [claimMinimumAgeHours, setClaimMinimumAgeHours] = useState('');
   const client = useQueryClient();
+  const isActive = (...modules: AdminModule[]) => modules.includes(activeModule);
   const api = async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
     const response = await fetch(`${API_URL}${path}`, {
       ...init,
@@ -313,6 +457,10 @@ export function AdminConsole() {
       },
     });
     const envelope = (await response.json()) as Envelope<T>;
+    if (response.status === 401) {
+      logout();
+      throw new Error('Your administrative session expired. Sign in again.');
+    }
     if (!response.ok || !envelope.success)
       throw new Error(envelope.error?.message ?? 'Request failed.');
     return envelope.data as T;
@@ -320,52 +468,52 @@ export function AdminConsole() {
   const owners = useQuery({
     queryKey: ['admin-owners'],
     queryFn: () => api<Owner[]>('/admin/owners?status=PENDING_VERIFICATION'),
-    enabled: Boolean(accessToken),
+    enabled: activeModule === 'dashboard' || isActive('owner-verification'),
   });
   const users = useQuery({
     queryKey: ['admin-users', query],
     queryFn: () => api<User[]>(`/admin/users?query=${encodeURIComponent(query)}`),
-    enabled: Boolean(accessToken),
+    enabled: isActive('users'),
   });
   const vehicles = useQuery({
     queryKey: ['admin-vehicles'],
     queryFn: () => api<VehicleSummary[]>('/admin/vehicles?status=PENDING_APPROVAL'),
-    enabled: Boolean(accessToken),
+    enabled: activeModule === 'dashboard' || isActive('vehicles'),
   });
   const vehicle = useQuery({
     queryKey: ['admin-vehicle', selectedVehicleId],
     queryFn: () => api<VehicleDetail>(`/admin/vehicles/${selectedVehicleId}`),
-    enabled: Boolean(accessToken && selectedVehicleId),
+    enabled: Boolean(isActive('vehicles') && selectedVehicleId),
   });
   const publicVisibility = useQuery({
     queryKey: ['admin-vehicle-public-visibility', selectedVehicleId],
     queryFn: () => api<PublicVisibility>(`/admin/vehicles/${selectedVehicleId}/public-visibility`),
-    enabled: Boolean(accessToken && selectedVehicleId),
+    enabled: Boolean(isActive('vehicles') && selectedVehicleId),
   });
   const bookings = useQuery({
     queryKey: ['admin-bookings'],
     queryFn: () => api<AdminBooking[]>('/admin/bookings'),
-    enabled: Boolean(accessToken),
+    enabled: activeModule === 'dashboard' || isActive('bookings'),
   });
   const financialDetail = useQuery({
     queryKey: ['admin-finance-booking', selectedFinanceReference],
     queryFn: () => api<FinancialDetail>(`/admin/finance/bookings/${selectedFinanceReference}`),
-    enabled: Boolean(accessToken && selectedFinanceReference),
+    enabled: Boolean(isActive('bookings') && selectedFinanceReference),
   });
   const commissionRules = useQuery({
     queryKey: ['commission-rules'],
     queryFn: () => api<CommissionRule[]>('/admin/finance/commission-rules'),
-    enabled: Boolean(accessToken),
+    enabled: isActive('commissions'),
   });
   const rentalQueue = useQuery({
     queryKey: ['admin-rentals'],
     queryFn: () => api<OperationalRental[]>('/admin/rentals'),
-    enabled: Boolean(accessToken),
+    enabled: activeModule === 'dashboard' || isActive('rentals'),
   });
   const rentalDetail = useQuery({
     queryKey: ['admin-rental', selectedRentalReference],
     queryFn: () => api<OperationalRental>(`/admin/rentals/${selectedRentalReference}`),
-    enabled: Boolean(accessToken && selectedRentalReference),
+    enabled: Boolean(isActive('rentals') && selectedRentalReference),
   });
   const claimQueue = useQuery({
     queryKey: ['admin-claims', claimStatus, claimCategory, claimSeverity, claimMinimumAgeHours],
@@ -378,27 +526,27 @@ export function AdminConsole() {
       const queryString = parameters.toString();
       return api<ClaimQueue>(`/admin/claims${queryString ? `?${queryString}` : ''}`);
     },
-    enabled: Boolean(accessToken),
+    enabled: activeModule === 'dashboard' || isActive('claims'),
   });
   const claimDetail = useQuery({
     queryKey: ['admin-claim', selectedClaimId],
     queryFn: () => api<ClaimDetail>(`/admin/claims/${selectedClaimId}`),
-    enabled: Boolean(accessToken && selectedClaimId),
+    enabled: Boolean(isActive('claims') && selectedClaimId),
   });
   const payoutQueue = useQuery({
     queryKey: ['admin-payout-queue'],
     queryFn: () => api<PayoutQueueItem[]>('/admin/payouts/queue'),
-    enabled: Boolean(accessToken),
+    enabled: activeModule === 'dashboard' || isActive('payouts'),
   });
   const payouts = useQuery({
     queryKey: ['admin-payouts'],
     queryFn: () => api<AdminPayout[]>('/admin/payouts'),
-    enabled: Boolean(accessToken),
+    enabled: activeModule === 'dashboard' || isActive('payouts'),
   });
   const payoutDetail = useQuery({
     queryKey: ['admin-payout', selectedPayoutId],
     queryFn: () => api<AdminPayout>(`/admin/payouts/${selectedPayoutId}`),
-    enabled: Boolean(accessToken && selectedPayoutId),
+    enabled: Boolean(isActive('payouts') && selectedPayoutId),
   });
   const payoutAction = useMutation({
     mutationFn: ({ body, path }: { body?: Record<string, unknown>; path: string }) =>
@@ -535,14 +683,6 @@ export function AdminConsole() {
       ),
     onSuccess: () => void client.invalidateQueries({ queryKey: ['commission-rules'] }),
   });
-  const action = useMutation({
-    mutationFn: ({ id, operation, reason }: { id: string; operation: string; reason?: string }) =>
-      api(`/admin/owners/${id}/${operation}`, {
-        ...(reason ? { body: JSON.stringify({ reason }) } : {}),
-        method: 'POST',
-      }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ['admin-owners'] }),
-  });
   const vehicleAction = useMutation({
     mutationFn: ({ id, operation, reason }: { id: string; operation: string; reason?: string }) =>
       api(`/admin/vehicles/${id}/${operation}`, {
@@ -557,1106 +697,1822 @@ export function AdminConsole() {
       });
     },
   });
-  const openFile = async (id: string) => {
-    const grant = await api<{ contentPath: string }>(`/files/${id}/access-grants`, {
-      method: 'POST',
-    });
-    window.open(`${new URL(API_URL).origin}${grant.contentPath}`, '_blank', 'noopener,noreferrer');
+  const grantFile = async (id: string) => {
+    const grant = await api<{ contentPath: string; expiresAt: string; mimeType: string }>(
+      `/files/${id}/access-grants`,
+      { method: 'POST' },
+    );
+    return {
+      expiresAt: grant.expiresAt,
+      mimeType: grant.mimeType,
+      url: `${new URL(API_URL).origin}${grant.contentPath}`,
+    };
   };
-  if (!accessToken) return <AdminLogin onAuthenticated={setAccessToken} />;
+  const heading = moduleTitles[activeModule];
+  const visibleUsers = users.data?.filter(
+    (user) =>
+      (userRoleFilter === 'ALL' || user.roles.some(({ role }) => role.code === userRoleFilter)) &&
+      (userStatusFilter === 'ALL' || user.status === userStatusFilter),
+  );
   return (
-    <div className="admin-grid">
-      <section className="admin-card vehicle-review-card">
-        <span className="eyebrow">VEHICLE REVIEW</span>
-        <h2>Pending listings</h2>
-        {vehicles.isLoading && <p>Loading queue…</p>}
-        {vehicles.data?.map((item) => (
-          <button
-            className="review-row review-button"
-            key={item.id}
-            onClick={() => setSelectedVehicleId(item.id)}
-          >
-            <span>
-              <strong>
-                {item.make && item.model ? `${item.make} ${item.model}` : 'Vehicle draft'}
-              </strong>
-              <span>{item.ownerProfile.legalName ?? item.ownerProfile.user.email}</span>
-            </span>
-            <span>Review →</span>
-          </button>
-        ))}
-        {selectedVehicleId && vehicle.data && (
-          <div className="vehicle-detail">
-            <div className="detail-heading">
-              <div>
-                <span className="eyebrow">SECURE REVIEW WORKSPACE</span>
-                <h3>
-                  {vehicle.data.make} {vehicle.data.model} · {vehicle.data.modelYear}
-                </h3>
-              </div>
-              <button className="quiet" onClick={() => setSelectedVehicleId(null)}>
-                Close
-              </button>
-            </div>
-            <p>
-              {vehicle.data.powertrain} · {vehicle.data.fuelType} · owner{' '}
-              {vehicle.data.ownerProfile.status}
-            </p>
-            <h4>Public discovery diagnostic</h4>
-            {publicVisibility.isLoading ? (
-              <p>Checking public eligibility…</p>
-            ) : publicVisibility.data?.discoverable ? (
-              <p>Discoverable · public projection is eligible</p>
-            ) : (
-              <p>
-                Not discoverable ·{' '}
-                {publicVisibility.data?.reasons.join(', ') ?? 'diagnostic unavailable'}
-              </p>
-            )}
-            {vehicle.data.location && (
-              <p>
-                Private location: {vehicle.data.location.latitude},{' '}
-                {vehicle.data.location.longitude} · {vehicle.data.location.city},{' '}
-                {vehicle.data.location.province}
-              </p>
-            )}
-            <h4>Photos</h4>
-            <div className="file-grid">
-              {vehicle.data.photos.map((photo) => (
-                <button
-                  className="file-button"
-                  key={photo.id}
-                  onClick={() => void openFile(photo.fileAsset.id)}
-                >
-                  {photo.perspective}
-                  <small>{photo.fileAsset.originalName}</small>
-                </button>
-              ))}
-            </div>
-            <h4>Sensitive documents</h4>
-            <div className="file-grid">
-              {vehicle.data.documents
-                .filter((document) => !document.replacedAt)
-                .map((document) => (
-                  <button
-                    className="file-button sensitive"
-                    key={document.id}
-                    onClick={() => void openFile(document.fileAsset.id)}
-                  >
-                    {document.definition.name}
-                    <small>Open with 5-minute grant</small>
-                  </button>
+    <div className="admin-console" data-module={activeModule}>
+      <header className="page-heading">
+        <div>
+          <span className="eyebrow">{heading.eyebrow}</span>
+          <h1>{heading.title}</h1>
+          <p>{heading.description}</p>
+        </div>
+        <span className="environment">Live local operations</span>
+      </header>
+      {activeModule === 'dashboard' && (
+        <section className="dashboard-grid" aria-label="Actionable operation counts">
+          <MetricCard
+            href="/admin/verification/owners"
+            label="Pending owner verification"
+            value={owners.data?.length}
+          />
+          <MetricCard
+            href="/admin/vehicles"
+            label="Pending vehicle listings"
+            value={vehicles.data?.length}
+          />
+          <MetricCard
+            href="/admin/rentals"
+            label="Active rental operations"
+            value={rentalQueue.data?.length}
+          />
+          <MetricCard
+            href="/admin/claims"
+            label="Claims needing review"
+            value={claimQueue.data?.items.length}
+          />
+          <MetricCard
+            href="/admin/payouts"
+            label="Pending payout owners"
+            value={payoutQueue.data?.length}
+          />
+          <MetricCard
+            href="/admin/bookings"
+            label="Booking records"
+            value={bookings.data?.length}
+          />
+        </section>
+      )}
+      <div className="admin-grid">
+        <section
+          className={`admin-card vehicle-review-card module-section module-vehicles ${selectedVehicleId ? 'is-detail-route' : ''}`}
+        >
+          <span className="eyebrow">VEHICLE REVIEW</span>
+          <h2>Pending listings</h2>
+          {vehicles.isLoading && <p>Loading queue…</p>}
+          {vehicles.data?.length === 0 && (
+            <EmptyState
+              title="No vehicles awaiting review"
+              description="All submitted vehicle listings have been reviewed."
+            />
+          )}
+          {vehicles.data && vehicles.data.length > 0 && (
+            <DataTable label="Vehicle review queue">
+              <thead>
+                <tr>
+                  <th>Vehicle</th>
+                  <th>Owner</th>
+                  <th>Category</th>
+                  <th>Submitted</th>
+                  <th>Review state</th>
+                  <th>Availability</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vehicles.data.map((item) => (
+                  <tr key={item.id}>
+                    <td>
+                      <strong>
+                        {item.make && item.model ? `${item.make} ${item.model}` : 'Vehicle draft'}
+                      </strong>
+                    </td>
+                    <td>{item.ownerProfile.legalName ?? item.ownerProfile.user.email}</td>
+                    <td>{item.category?.name ?? '—'}</td>
+                    <td>
+                      {item.submittedAt
+                        ? new Date(item.submittedAt).toLocaleString()
+                        : 'Not submitted'}
+                    </td>
+                    <td>
+                      <StatusBadge value={item.status} />
+                    </td>
+                    <td>
+                      <StatusBadge value={item.operationalStatus} />
+                    </td>
+                    <td>
+                      <Link
+                        href={`/admin/vehicles/${item.id}`}
+                        onClick={() => setSelectedVehicleId(item.id)}
+                      >
+                        Review
+                      </Link>
+                    </td>
+                  </tr>
                 ))}
-            </div>
-            <h4>Current configuration</h4>
-            {vehicle.data.policyVersions[0] ? (
-              <p>
-                ₱{(vehicle.data.policyVersions[0].dailyRateMinor / 100).toLocaleString()} / day ·{' '}
-                {vehicle.data.policyVersions[0].mileagePolicy} ·{' '}
-                {vehicle.data.policyVersions[0].turnaroundMinutes / 60}h turnaround · version{' '}
-                {vehicle.data.policyVersions[0].version}
-              </p>
-            ) : (
-              <p>Missing policy</p>
-            )}
-            <h4>Status history</h4>
-            <ol className="history">
-              {vehicle.data.statusHistory.map((entry) => (
-                <li key={entry.id}>
-                  <strong>
-                    {entry.previousStatus ?? 'START'} → {entry.newStatus}
-                  </strong>
-                  <span>
-                    {new Date(entry.occurredAt).toLocaleString()}
-                    {entry.reason ? ` · ${entry.reason}` : ''}
-                  </span>
-                </li>
-              ))}
-            </ol>
-            <h4>Administrative audit trail</h4>
-            <ol className="history">
-              {vehicle.data.auditLogs.map((entry) => (
-                <li key={entry.id}>
-                  <strong>{entry.action}</strong>
-                  <span>
-                    {new Date(entry.occurredAt).toLocaleString()}
-                    {entry.reason ? ` · ${entry.reason}` : ''}
-                    {entry.correlationId ? ` · ${entry.correlationId}` : ''}
-                  </span>
-                </li>
-              ))}
-            </ol>
-            <div className="actions">
-              {vehicle.data.status === 'PENDING_APPROVAL' && (
-                <>
+              </tbody>
+            </DataTable>
+          )}
+          {selectedVehicleId && vehicle.data && (
+            <div className="detail-page">
+              <AdminDetailHeader
+                backHref="/admin/vehicles"
+                backLabel="Vehicle queue"
+                eyebrow="Vehicle review workspace"
+                title={
+                  `${vehicle.data.modelYear ?? ''} ${vehicle.data.make ?? ''} ${vehicle.data.model ?? ''}`.trim() ||
+                  'Vehicle listing'
+                }
+                status={vehicle.data.status}
+                description={`Owner: ${vehicle.data.ownerProfile.legalName ?? vehicle.data.ownerProfile.user.email ?? 'Not available'}`}
+              />
+              <AdminSummaryGrid>
+                <AdminSummaryCard
+                  label="Owner verification"
+                  value={adminLabel(vehicle.data.ownerProfile.status)}
+                />
+                <AdminSummaryCard
+                  label="Location"
+                  value={
+                    vehicle.data.location
+                      ? `${vehicle.data.location.city}, ${vehicle.data.location.province}`
+                      : 'Not configured'
+                  }
+                />
+                <AdminSummaryCard
+                  label="Daily price"
+                  value={
+                    vehicle.data.policyVersions[0]
+                      ? formatMoney(vehicle.data.policyVersions[0].dailyRateMinor)
+                      : 'Not configured'
+                  }
+                />
+                <AdminSummaryCard
+                  label="Discovery"
+                  value={publicVisibility.data?.discoverable ? 'Eligible' : 'Not eligible'}
+                  detail={publicVisibility.isLoading ? 'Checking…' : undefined}
+                />
+                <AdminSummaryCard
+                  label="Published rating"
+                  value={
+                    vehicle.data.publishedRating.averageRating
+                      ? `★ ${vehicle.data.publishedRating.averageRating}`
+                      : 'No rating'
+                  }
+                  detail={`${vehicle.data.publishedRating.reviewCount} published reviews`}
+                />
+              </AdminSummaryGrid>
+
+              <AdminSection
+                title="Vehicle details"
+                description="Authoritative listing and operating configuration."
+              >
+                <AdminDefinitionList
+                  items={[
+                    { label: 'Category', value: vehicle.data.category?.name ?? 'Not configured' },
+                    { label: 'Powertrain', value: adminLabel(vehicle.data.powertrain) },
+                    { label: 'Fuel', value: adminLabel(vehicle.data.fuelType) },
+                    {
+                      label: 'Operational status',
+                      value: <StatusBadge value={vehicle.data.operationalStatus} />,
+                    },
+                    {
+                      label: 'Mileage policy',
+                      value: adminLabel(vehicle.data.policyVersions[0]?.mileagePolicy),
+                    },
+                    {
+                      label: 'Turnaround',
+                      value: vehicle.data.policyVersions[0]
+                        ? `${vehicle.data.policyVersions[0].turnaroundMinutes / 60} hours`
+                        : 'Not configured',
+                    },
+                    {
+                      label: 'Pricing version',
+                      value: vehicle.data.policyVersions[0]
+                        ? `Version ${vehicle.data.policyVersions[0].version}`
+                        : 'Not configured',
+                    },
+                    { label: 'Submitted', value: formatDate(vehicle.data.submittedAt) },
+                  ]}
+                />
+              </AdminSection>
+
+              <AdminSection
+                title="Photo review"
+                description="Open each protected image at full size to visually review the listing."
+              >
+                <div className="admin-evidence-grid">
+                  {vehicle.data.photos.map((photo, index) => (
+                    <AdminEvidenceCard
+                      key={photo.id}
+                      label={evidenceLabel(photo.perspective)}
+                      {...(index === 0 ? { status: 'COVER' } : {})}
+                      note="Temporary audited access"
+                      displayMode="photo"
+                      requestAccess={() => grantFile(photo.fileAsset.id)}
+                    />
+                  ))}
+                </div>
+              </AdminSection>
+
+              <AdminSection
+                title="Document review"
+                description="Registration and insurance evidence remain protected by five-minute audited grants."
+              >
+                <div className="admin-evidence-grid">
+                  {vehicle.data.documents
+                    .filter((document) => !document.replacedAt)
+                    .map((document) => (
+                      <AdminEvidenceCard
+                        key={document.id}
+                        label={document.definition.name}
+                        note="Temporary audited access"
+                        requestAccess={() => grantFile(document.fileAsset.id)}
+                      />
+                    ))}
+                </div>
+              </AdminSection>
+
+              <AdminSection
+                title="Public listing eligibility"
+                description="Reasons the vehicle can or cannot appear in renter discovery."
+              >
+                {publicVisibility.isLoading ? (
+                  <p>Checking public eligibility…</p>
+                ) : (
+                  <ul className="eligibility-checklist">
+                    <li
+                      className={vehicle.data.ownerProfile.status === 'APPROVED' ? 'pass' : 'fail'}
+                    >
+                      Owner verified
+                    </li>
+                    <li className={vehicle.data.policyVersions[0] ? 'pass' : 'fail'}>
+                      Pricing configured
+                    </li>
+                    <li className={vehicle.data.status === 'APPROVED' ? 'pass' : 'fail'}>
+                      Listing approved
+                    </li>
+                    {publicVisibility.data?.reasons.map((reason) => (
+                      <li className="fail" key={reason}>
+                        {visibilityReason(reason)}
+                      </li>
+                    ))}
+                    {publicVisibility.data?.discoverable && (
+                      <li className="pass">Public projection is eligible</li>
+                    )}
+                  </ul>
+                )}
+              </AdminSection>
+
+              <AdminSection title="Status history">
+                <AdminTimeline
+                  events={vehicle.data.statusHistory.map((entry) => ({
+                    id: entry.id,
+                    title: adminLabel(entry.newStatus),
+                    occurredAt: entry.occurredAt,
+                    detail:
+                      entry.reason ??
+                      (entry.previousStatus
+                        ? `Previously ${adminLabel(entry.previousStatus)}`
+                        : 'Listing created'),
+                  }))}
+                />
+              </AdminSection>
+
+              <AdminTechnicalDetails
+                summary={`Administrative audit trail (${vehicle.data.auditLogs.length})`}
+              >
+                <DataTable label="Vehicle administrative audit trail">
+                  <thead>
+                    <tr>
+                      <th>Action</th>
+                      <th>Date/time</th>
+                      <th>Reason</th>
+                      <th>Correlation</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {vehicle.data.auditLogs.map((entry) => (
+                      <tr key={entry.id}>
+                        <td>{adminLabel(entry.action)}</td>
+                        <td>{formatDate(entry.occurredAt)}</td>
+                        <td>{entry.reason ?? '—'}</td>
+                        <td>
+                          <small>{entry.correlationId ?? '—'}</small>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              </AdminTechnicalDetails>
+
+              <AdminActionBar description="Review commands retain existing authorization and audit behavior.">
+                {vehicle.data.status === 'PENDING_APPROVAL' && (
+                  <>
+                    <button
+                      onClick={() =>
+                        vehicleAction.mutate({ id: vehicle.data.id, operation: 'approval' })
+                      }
+                    >
+                      Approve
+                    </button>
+                    <button
+                      className="warning"
+                      onClick={() => {
+                        const reason = window.prompt('Required changes');
+                        if (reason)
+                          vehicleAction.mutate({
+                            id: vehicle.data.id,
+                            operation: 'change-request',
+                            reason,
+                          });
+                      }}
+                    >
+                      Request changes
+                    </button>
+                    <button
+                      className="danger"
+                      onClick={() => {
+                        const reason = window.prompt('Rejection reason');
+                        if (reason)
+                          vehicleAction.mutate({
+                            id: vehicle.data.id,
+                            operation: 'rejection',
+                            reason,
+                          });
+                      }}
+                    >
+                      Reject
+                    </button>
+                  </>
+                )}
+                {vehicle.data.status === 'APPROVED' && (
                   <button
-                    onClick={() =>
-                      vehicleAction.mutate({ id: vehicle.data.id, operation: 'approval' })
-                    }
-                  >
-                    Approve
-                  </button>
-                  <button
-                    className="warning"
+                    className="danger"
                     onClick={() => {
-                      const reason = window.prompt('Required changes');
+                      const reason = window.prompt('Suspension reason');
                       if (reason)
                         vehicleAction.mutate({
                           id: vehicle.data.id,
-                          operation: 'change-request',
+                          operation: 'suspension',
                           reason,
                         });
                     }}
                   >
-                    Request changes
+                    Suspend
+                  </button>
+                )}
+                {vehicle.data.status === 'SUSPENDED' && (
+                  <button
+                    onClick={() => {
+                      const reason = window.prompt('Restoration reason');
+                      if (reason)
+                        vehicleAction.mutate({
+                          id: vehicle.data.id,
+                          operation: 'restoration',
+                          reason,
+                        });
+                    }}
+                  >
+                    Restore
+                  </button>
+                )}
+              </AdminActionBar>
+              {vehicleAction.error && <p className="error-text">{vehicleAction.error.message}</p>}
+            </div>
+          )}
+        </section>
+        {activeModule === 'renter-verification' && (
+          <RenterVerificationAdminPanel
+            accessToken={accessToken}
+            {...(detailId ? { initialSelectedId: detailId } : {})}
+            onUnauthorized={logout}
+          />
+        )}
+        {activeModule === 'inspection-corrections' && (
+          <InspectionCorrectionsAdminPanel
+            accessToken={accessToken}
+            {...(detailId ? { initialSelectedId: detailId } : {})}
+            onUnauthorized={logout}
+          />
+        )}
+        {activeModule === 'support' && (
+          <Phase10AdminPanels
+            accessToken={accessToken}
+            {...(detailId ? { initialSelectedId: detailId } : {})}
+            module="support"
+            onUnauthorized={logout}
+          />
+        )}
+        {activeModule === 'trust-safety' && (
+          <Phase10AdminPanels
+            accessToken={accessToken}
+            {...(detailId ? { initialSelectedId: detailId } : {})}
+            module="trust-safety"
+            onUnauthorized={logout}
+          />
+        )}
+        <section
+          className={`admin-card module-section module-rentals ${selectedRentalReference ? 'is-detail-route' : ''}`}
+        >
+          <span className="eyebrow">RENTAL OPERATIONS</span>
+          <h2>Pickup, active and return queue</h2>
+          <p>Operational evidence is read-only. Holds require an explicit audited command.</p>
+          {rentalQueue.isLoading && <p>Loading rental queue…</p>}
+          {rentalQueue.data?.length === 0 && (
+            <EmptyState
+              title="No active rental operations"
+              description="There are no pickup, active, or return cases requiring attention."
+            />
+          )}
+          {rentalQueue.data && rentalQueue.data.length > 0 && (
+            <DataTable label="Rental operations queue">
+              <thead>
+                <tr>
+                  <th>Reference</th>
+                  <th>Vehicle</th>
+                  <th>Start</th>
+                  <th>End</th>
+                  <th>Lifecycle</th>
+                  <th>Attention</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rentalQueue.data.map((rental) => (
+                  <tr key={rental.id}>
+                    <td>
+                      <strong>{rental.publicReference}</strong>
+                    </td>
+                    <td>
+                      {rental.vehicle.make} {rental.vehicle.model}
+                    </td>
+                    <td>{new Date(rental.rentalStart).toLocaleString()}</td>
+                    <td>{new Date(rental.rentalEnd).toLocaleString()}</td>
+                    <td>
+                      <StatusBadge value={rental.status} />
+                    </td>
+                    <td>
+                      {rental.operationalHold ? (
+                        <StatusBadge value="OPERATIONAL_HOLD" />
+                      ) : rental.rentalIncidents.length ? (
+                        `${rental.rentalIncidents.length} incident(s)`
+                      ) : (
+                        'None'
+                      )}
+                    </td>
+                    <td>
+                      <Link
+                        href={`/admin/rentals/${rental.publicReference}`}
+                        onClick={() => setSelectedRentalReference(rental.publicReference)}
+                      >
+                        Inspect
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          )}
+          {selectedRentalReference && rentalDetail.data && (
+            <div className="detail-page">
+              <AdminDetailHeader
+                backHref="/admin/rentals"
+                backLabel="Rental queue"
+                eyebrow="Rental operations"
+                title={selectedRentalReference}
+                status={rentalDetail.data.status}
+                description={`${rentalDetail.data.vehicle.make ?? ''} ${rentalDetail.data.vehicle.model ?? ''}`.trim()}
+              />
+              <AdminSummaryGrid>
+                <AdminSummaryCard
+                  label="Scheduled pickup"
+                  value={formatDate(rentalDetail.data.rentalStart)}
+                />
+                <AdminSummaryCard
+                  label="Actual pickup"
+                  value={formatDate(rentalDetail.data.actualPickupAt)}
+                />
+                <AdminSummaryCard
+                  label="Scheduled return"
+                  value={formatDate(rentalDetail.data.rentalEnd)}
+                />
+                <AdminSummaryCard
+                  label="Actual return"
+                  value={formatDate(rentalDetail.data.actualReturnAt)}
+                />
+              </AdminSummaryGrid>
+
+              <AdminSection
+                title="Rental lifecycle"
+                description="Only persisted server-authoritative transitions are shown as completed."
+              >
+                <AdminTimeline
+                  events={rentalDetail.data.statusHistory.map((entry) => ({
+                    id: entry.id,
+                    title: adminLabel(entry.toStatus),
+                    occurredAt: entry.occurredAt,
+                    detail: entry.reasonCode
+                      ? adminLabel(entry.reasonCode)
+                      : 'Lifecycle transition',
+                  }))}
+                />
+              </AdminSection>
+
+              {rentalDetail.data.inspections.map((inspection, inspectionIndex) => (
+                <AdminSection
+                  key={inspection.id}
+                  title={`${adminLabel(inspection.type)} inspection${inspectionIndex > 1 ? ` ${inspectionIndex + 1}` : ''}`}
+                  description={
+                    inspection.type === 'PICKUP'
+                      ? 'Vehicle condition recorded before handover.'
+                      : inspectionIndex === 1
+                        ? 'Return condition submitted by the participant.'
+                        : 'Additional receipt or corrected return evidence.'
+                  }
+                >
+                  <AdminDefinitionList
+                    items={[
+                      {
+                        label: 'Odometer',
+                        value: inspection.odometerMeters
+                          ? `${Number(inspection.odometerMeters).toLocaleString()} metres`
+                          : 'Not recorded',
+                      },
+                      { label: 'Fuel level', value: formatBasisPoints(inspection.fuelBasisPoints) },
+                      {
+                        label: 'Battery level',
+                        value: formatBasisPoints(inspection.batterySocBasisPoints),
+                      },
+                      { label: 'Evidence files', value: String(inspection.media.length) },
+                    ]}
+                  />
+                  <div className="admin-evidence-grid">
+                    {inspection.media.map((media) => (
+                      <AdminEvidenceCard
+                        key={media.fileAsset.id}
+                        displayMode="photo"
+                        label={evidenceLabel(media.perspective)}
+                        note="Protected inspection evidence"
+                        requestAccess={() => grantFile(media.fileAsset.id)}
+                      />
+                    ))}
+                  </div>
+                </AdminSection>
+              ))}
+
+              {rentalDetail.data.usageSummary && (
+                <AdminSection
+                  title="Return usage summary"
+                  description={
+                    rentalDetail.data.usageSummary.returnDisputed
+                      ? 'The submitted measurements are disputed.'
+                      : 'Calculated from persisted pickup and return measurements.'
+                  }
+                >
+                  <AdminSummaryGrid>
+                    <AdminSummaryCard
+                      label="Distance travelled"
+                      value={`${rentalDetail.data.usageSummary.distanceTravelledKm} km`}
+                    />
+                    <AdminSummaryCard
+                      label="Included distance"
+                      value={
+                        rentalDetail.data.usageSummary.includedDistanceKm === null
+                          ? 'Unlimited'
+                          : `${rentalDetail.data.usageSummary.includedDistanceKm} km`
+                      }
+                    />
+                    <AdminSummaryCard
+                      label="Excess distance"
+                      value={`${rentalDetail.data.usageSummary.excessDistanceKm} km`}
+                    />
+                    <AdminSummaryCard
+                      label="Late duration"
+                      value={`${Math.ceil(rentalDetail.data.usageSummary.lateDurationSeconds / 60)} minutes`}
+                    />
+                  </AdminSummaryGrid>
+                </AdminSection>
+              )}
+
+              <AdminSection
+                title="Incidents and claims"
+                description="Each record remains separate and immutable even when multiple reports concern the same rental."
+              >
+                {rentalDetail.data.postReturnClaims.map((claim) => (
+                  <p key={claim.id}>
+                    <Link href={`/admin/claims/${claim.id}`}>{adminLabel(claim.category)}</Link> ·{' '}
+                    <StatusBadge value={claim.status} /> · submitted {formatDate(claim.submittedAt)}
+                  </p>
+                ))}
+                {rentalDetail.data.rentalIncidents.map((incident, index) => (
+                  <article className="compact-panel" key={incident.id}>
+                    <h3>
+                      {adminLabel(incident.category)} <small>Incident {index + 1}</small>
+                    </h3>
+                    <p>
+                      <StatusBadge value={incident.severity} />{' '}
+                      <StatusBadge value={incident.status} />
+                    </p>
+                    <AdminTechnicalDetails summary="Incident identifier">
+                      <small>{incident.id}</small>
+                    </AdminTechnicalDetails>
+                    {['OPEN', 'ACKNOWLEDGED'].includes(incident.status) && (
+                      <div className="actions">
+                        {incident.status === 'OPEN' && (
+                          <button
+                            className="quiet"
+                            onClick={() => {
+                              const reason = window.prompt('Acknowledgement reason');
+                              if (reason)
+                                incidentAction.mutate({
+                                  id: incident.id,
+                                  reason,
+                                  status: 'ACKNOWLEDGED',
+                                });
+                            }}
+                          >
+                            Acknowledge
+                          </button>
+                        )}
+                        <button
+                          className="quiet"
+                          onClick={() => {
+                            const reason = window.prompt('Resolution reason');
+                            if (reason)
+                              incidentAction.mutate({
+                                id: incident.id,
+                                reason,
+                                status: 'RESOLVED',
+                              });
+                          }}
+                        >
+                          Resolve
+                        </button>
+                      </div>
+                    )}
+                  </article>
+                ))}
+                {rentalDetail.data.postReturnClaims.length === 0 &&
+                  rentalDetail.data.rentalIncidents.length === 0 && (
+                    <EmptyState
+                      title="No incidents or claims"
+                      description="No operational exceptions are recorded for this rental."
+                    />
+                  )}
+              </AdminSection>
+
+              <AdminActionBar
+                title="Administrative intervention"
+                description="Use only after reviewing participant reports, timestamps, inspection evidence, and the effect on the rental lifecycle."
+                danger
+              >
+                {rentalDetail.data.status === 'READY_FOR_PICKUP' &&
+                  rentalDetail.data.inspections.some(({ type }) => type === 'PICKUP') && (
+                    <button
+                      className="danger"
+                      onClick={() => {
+                        const reason = window.prompt(
+                          'Reason for administratively confirming physical pickup after reviewing inspection, code activity, timestamps, participant reports, and evidence',
+                        );
+                        if (reason && reason.trim().length >= 10)
+                          handoverResolution.mutate({
+                            action: 'CONFIRM_PICKUP',
+                            reason,
+                            reference: selectedRentalReference,
+                          });
+                      }}
+                    >
+                      Resolve physical pickup
+                    </button>
+                  )}
+                {rentalDetail.data.status === 'RETURN_PENDING' &&
+                  rentalDetail.data.inspections.some(({ type }) => type === 'RETURN') && (
+                    <button
+                      className="danger"
+                      onClick={() => {
+                        const reason = window.prompt(
+                          'Reason for administratively confirming physical return after reviewing all participant evidence',
+                        );
+                        if (reason && reason.trim().length >= 10)
+                          handoverResolution.mutate({
+                            action: 'CONFIRM_RETURN',
+                            reason,
+                            reference: selectedRentalReference,
+                          });
+                      }}
+                    >
+                      Resolve physical return
+                    </button>
+                  )}
+                {handoverResolution.error && (
+                  <p className="error-text">{handoverResolution.error.message}</p>
+                )}
+                <button
+                  onClick={() => {
+                    const reason = window.prompt(
+                      rentalDetail.data.operationalHold
+                        ? 'Reason to release hold'
+                        : 'Reason to place hold',
+                    );
+                    if (reason)
+                      rentalHold.mutate({
+                        hold: !rentalDetail.data.operationalHold,
+                        reason,
+                        reference: selectedRentalReference,
+                      });
+                  }}
+                >
+                  {rentalDetail.data.operationalHold
+                    ? 'Release operational hold'
+                    : 'Place operational hold'}
+                </button>
+              </AdminActionBar>
+            </div>
+          )}
+        </section>
+        <section
+          className={`admin-card module-section module-claims ${selectedClaimId ? 'is-detail-route' : ''}`}
+        >
+          <span className="eyebrow">CLAIMS &amp; DISPUTES</span>
+          <h2>Structured post-return review</h2>
+          <p>
+            Review inspections, measurements, evidence, renter response, financial exposure, holds,
+            and ledger history in one workspace. Owners cannot set charge amounts.
+          </p>
+          <div className="filter-toolbar">
+            <label>
+              Status
+              <select value={claimStatus} onChange={(event) => setClaimStatus(event.target.value)}>
+                <option value="">All statuses</option>
+                {[
+                  'RENTER_REVIEW',
+                  'UNDER_ADMIN_REVIEW',
+                  'PAYMENT_PENDING',
+                  'WITHDRAWN',
+                  'RESOLVED',
+                ].map((status) => (
+                  <option key={status} value={status}>
+                    {status.replaceAll('_', ' ')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Category
+              <select
+                value={claimCategory}
+                onChange={(event) => setClaimCategory(event.target.value)}
+              >
+                <option value="">All categories</option>
+                {[
+                  'EXCESS_MILEAGE',
+                  'FUEL_DEFICIENCY',
+                  'EV_BATTERY_DEFICIENCY',
+                  'LATE_RETURN',
+                  'CLEANING',
+                  'DAMAGE',
+                  'OTHER',
+                ].map((category) => (
+                  <option key={category} value={category}>
+                    {category.replaceAll('_', ' ')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Severity
+              <select
+                value={claimSeverity}
+                onChange={(event) => setClaimSeverity(event.target.value)}
+              >
+                <option value="">All severities</option>
+                {['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((severity) => (
+                  <option key={severity} value={severity}>
+                    {severity}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Minimum age (hours)
+              <input
+                min="0"
+                type="number"
+                value={claimMinimumAgeHours}
+                onChange={(event) => setClaimMinimumAgeHours(event.target.value)}
+              />
+            </label>
+          </div>
+          {claimQueue.isLoading && <p>Loading claim queue…</p>}
+          {claimQueue.data?.items.length === 0 && (
+            <EmptyState
+              title="No matching claims"
+              description="No claim or dispute records match the selected operational filters."
+            />
+          )}
+          {claimQueue.data && claimQueue.data.items.length > 0 && (
+            <DataTable label="Claims and disputes queue">
+              <thead>
+                <tr>
+                  <th>Booking</th>
+                  <th>Category</th>
+                  <th>Severity</th>
+                  <th>Submitted</th>
+                  <th>Renter response</th>
+                  <th>Exposure</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {claimQueue.data.items.map((claim) => (
+                  <tr key={claim.id}>
+                    <td>
+                      <strong>{claim.booking.publicReference}</strong>
+                    </td>
+                    <td>{claim.category.replaceAll('_', ' ')}</td>
+                    <td>
+                      <StatusBadge value={claim.severity} />
+                    </td>
+                    <td>{new Date(claim.submittedAt).toLocaleString()}</td>
+                    <td>{claim.response?.decision?.replaceAll('_', ' ') ?? 'Awaiting response'}</td>
+                    <td>
+                      ₱{((claim.calculations.at(-1)?.amountMinor ?? 0) / 100).toLocaleString()}
+                    </td>
+                    <td>
+                      <StatusBadge value={claim.status} />
+                    </td>
+                    <td>
+                      <Link
+                        href={`/admin/claims/${claim.id}`}
+                        onClick={() => setSelectedClaimId(claim.id)}
+                      >
+                        Review
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          )}
+          {selectedClaimId && claimDetail.data && (
+            <div className="detail-page">
+              <AdminDetailHeader
+                backHref="/admin/claims"
+                backLabel="Claims queue"
+                eyebrow="Claim case management"
+                title={`${claimDetail.data.claim.booking.publicReference} · ${adminLabel(claimDetail.data.claim.category)}`}
+                status={claimDetail.data.claim.status}
+                description={`Submitted ${formatDate(claimDetail.data.claim.submittedAt)}`}
+              />
+              <AdminSummaryGrid>
+                <AdminSummaryCard
+                  label="Category"
+                  value={adminLabel(claimDetail.data.claim.category)}
+                />
+                <AdminSummaryCard
+                  label="Severity"
+                  value={<StatusBadge value={claimDetail.data.claim.severity} />}
+                />
+                <AdminSummaryCard
+                  label="Calculated exposure"
+                  value={formatMoney(claimDetail.data.claim.calculations.at(-1)?.amountMinor)}
+                />
+                <AdminSummaryCard
+                  label="Renter response"
+                  value={
+                    claimDetail.data.claim.response
+                      ? adminLabel(claimDetail.data.claim.response.decision)
+                      : 'Awaiting response'
+                  }
+                  detail={
+                    claimDetail.data.claim.responseDeadlineAt
+                      ? `Deadline ${formatDate(claimDetail.data.claim.responseDeadlineAt)}`
+                      : undefined
+                  }
+                />
+              </AdminSummaryGrid>
+
+              <AdminSection title="Claim summary">
+                <AdminDefinitionList
+                  items={[
+                    { label: 'Issue description', value: claimDetail.data.claim.description },
+                    {
+                      label: 'Booking',
+                      value: (
+                        <Link
+                          href={`/admin/rentals/${claimDetail.data.claim.booking.publicReference}`}
+                        >
+                          {claimDetail.data.claim.booking.publicReference}
+                        </Link>
+                      ),
+                    },
+                    {
+                      label: 'Vehicle',
+                      value:
+                        `${claimDetail.data.claim.booking.vehicle.make ?? ''} ${claimDetail.data.claim.booking.vehicle.model ?? ''}`.trim() ||
+                        'Not available',
+                    },
+                    { label: 'Submitted', value: formatDate(claimDetail.data.claim.submittedAt) },
+                    {
+                      label: 'Renter explanation',
+                      value:
+                        claimDetail.data.claim.response?.explanation ?? 'No explanation submitted',
+                    },
+                  ]}
+                />
+              </AdminSection>
+
+              {claimDetail.data.claim.booking.usageSummary && (
+                <AdminSection
+                  title="Usage & calculation"
+                  description="Persisted inspection measurements used by the server calculation."
+                >
+                  <AdminSummaryGrid>
+                    <AdminSummaryCard
+                      label="Distance used"
+                      value={`${claimDetail.data.claim.booking.usageSummary.distanceTravelledKm} km`}
+                    />
+                    <AdminSummaryCard
+                      label="Excess mileage"
+                      value={`${claimDetail.data.claim.booking.usageSummary.excessDistanceKm} km`}
+                    />
+                    <AdminSummaryCard
+                      label="Fuel deficiency"
+                      value={formatBasisPoints(
+                        claimDetail.data.claim.booking.usageSummary.fuelDeficiencyBasisPoints,
+                      )}
+                    />
+                    <AdminSummaryCard
+                      label="Late duration"
+                      value={`${Math.ceil(claimDetail.data.claim.booking.usageSummary.lateDurationSeconds / 60)} minutes`}
+                    />
+                  </AdminSummaryGrid>
+                  <AdminTechnicalDetails summary="Calculation formula details">
+                    <AdminDefinitionList
+                      items={claimDetail.data.claim.calculations.flatMap((calculation, index) => [
+                        {
+                          label: `Calculation ${index + 1}`,
+                          value: `${calculation.quantity} ${adminLabel(calculation.unit)} × ${formatMoney(calculation.unitRateMinor)} = ${formatMoney(calculation.amountMinor)}`,
+                        },
+                        {
+                          label: `Formula version ${index + 1}`,
+                          value: calculation.formulaVersion,
+                        },
+                      ])}
+                    />
+                  </AdminTechnicalDetails>
+                </AdminSection>
+              )}
+
+              <AdminSection
+                title="Evidence"
+                description="Open protected claim evidence through the existing audited temporary grant."
+              >
+                <div className="admin-evidence-grid">
+                  {claimDetail.data.claim.evidence.map((evidence) => (
+                    <AdminEvidenceCard
+                      key={evidence.id}
+                      displayMode={evidence.evidenceType === 'PHOTO' ? 'photo' : 'document'}
+                      label={evidenceLabel(evidence.evidenceType)}
+                      note={`Submitted by ${adminLabel(evidence.participantRole)}`}
+                      requestAccess={() => grantFile(evidence.fileAsset.id)}
+                    />
+                  ))}
+                </div>
+                {claimDetail.data.claim.evidence.length === 0 && (
+                  <EmptyState
+                    title="No claim evidence"
+                    description="No additional evidence files are attached to this claim."
+                  />
+                )}
+              </AdminSection>
+
+              {claimDetail.data.claim.booking.ownerEarning && (
+                <AdminSection title="Financial exposure">
+                  <AdminSummaryGrid>
+                    <AdminSummaryCard
+                      label="Calculated amount"
+                      value={formatMoney(claimDetail.data.claim.calculations.at(-1)?.amountMinor)}
+                    />
+                    <AdminSummaryCard
+                      label="Owner earning"
+                      value={formatMoney(
+                        claimDetail.data.claim.booking.ownerEarning.netEarningAmountMinor,
+                      )}
+                      detail={adminLabel(claimDetail.data.claim.booking.ownerEarning.status)}
+                    />
+                    <AdminSummaryCard
+                      label="Active holds"
+                      value={String(
+                        claimDetail.data.claim.booking.ownerEarning.holds.filter(
+                          (hold) => hold.status === 'ACTIVE',
+                        ).length,
+                      )}
+                    />
+                    <AdminSummaryCard
+                      label="Additional compensation"
+                      value={formatMoney(
+                        claimDetail.data.claim.booking.ownerEarning.additionalCompensationMinor,
+                      )}
+                    />
+                  </AdminSummaryGrid>
+                </AdminSection>
+              )}
+              <AdminSection
+                title="Decision history"
+                description="Adjudications are immutable operational decisions."
+              >
+                {claimDetail.data.claim.adjudications.map((decision) => (
+                  <article className="compact-panel" key={decision.id}>
+                    <strong>{adminLabel(decision.outcome)}</strong>
+                    <p>
+                      {formatMoney(decision.approvedAmountMinor)} · {decision.reason}
+                    </p>
+                  </article>
+                ))}
+                {claimDetail.data.claim.adjudications.length === 0 && (
+                  <EmptyState
+                    title="No decision recorded"
+                    description="This claim has not yet received an immutable adjudication."
+                  />
+                )}
+              </AdminSection>
+              {claimDetail.data.claim.status === 'UNDER_ADMIN_REVIEW' && (
+                <AdminActionBar
+                  title="Claim decision"
+                  description="Review the evidence and financial effect before recording an immutable decision."
+                >
+                  <button
+                    onClick={() => {
+                      const amount = window.prompt(
+                        'Approved amount in centavos. Leave blank for the full server formula.',
+                      );
+                      const reason = window.prompt('Approval reason');
+                      if (reason)
+                        claimAction.mutate({
+                          id: selectedClaimId,
+                          outcome: 'APPROVED',
+                          reason,
+                          ...(amount ? { approvedAmountMinor: Number(amount) } : {}),
+                        });
+                    }}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    onClick={() => {
+                      const amount = window.prompt('Partially approved amount in centavos');
+                      const reason = window.prompt('Partial approval reason');
+                      if (amount && reason)
+                        claimAction.mutate({
+                          approvedAmountMinor: Number(amount),
+                          id: selectedClaimId,
+                          outcome: 'PARTIALLY_APPROVED',
+                          reason,
+                        });
+                    }}
+                  >
+                    Partial approval
                   </button>
                   <button
                     className="danger"
                     onClick={() => {
                       const reason = window.prompt('Rejection reason');
                       if (reason)
-                        vehicleAction.mutate({
-                          id: vehicle.data.id,
-                          operation: 'rejection',
-                          reason,
-                        });
+                        claimAction.mutate({ id: selectedClaimId, outcome: 'REJECTED', reason });
                     }}
                   >
                     Reject
                   </button>
-                </>
-              )}
-              {vehicle.data.status === 'APPROVED' && (
-                <button
-                  className="danger"
-                  onClick={() => {
-                    const reason = window.prompt('Suspension reason');
-                    if (reason)
-                      vehicleAction.mutate({
-                        id: vehicle.data.id,
-                        operation: 'suspension',
-                        reason,
-                      });
-                  }}
-                >
-                  Suspend
-                </button>
-              )}
-              {vehicle.data.status === 'SUSPENDED' && (
-                <button
-                  onClick={() => {
-                    const reason = window.prompt('Restoration reason');
-                    if (reason)
-                      vehicleAction.mutate({
-                        id: vehicle.data.id,
-                        operation: 'restoration',
-                        reason,
-                      });
-                  }}
-                >
-                  Restore
-                </button>
-              )}
-            </div>
-            {vehicleAction.error && <p className="error-text">{vehicleAction.error.message}</p>}
-          </div>
-        )}
-      </section>
-      <RenterVerificationAdminPanel accessToken={accessToken} />
-      <InspectionCorrectionsAdminPanel accessToken={accessToken} />
-      <Phase10AdminPanels accessToken={accessToken} />
-      <section className="admin-card">
-        <span className="eyebrow">RENTAL OPERATIONS</span>
-        <h2>Pickup, active and return queue</h2>
-        <p>Operational evidence is read-only. Holds require an explicit audited command.</p>
-        {rentalQueue.isLoading && <p>Loading rental queue…</p>}
-        {rentalQueue.data?.map((rental) => (
-          <article className="review-row" key={rental.id}>
-            <div>
-              <strong>
-                {rental.publicReference} · {rental.vehicle.make} {rental.vehicle.model}
-              </strong>
-              <span>
-                {rental.status}
-                {rental.operationalHold ? ' · operational hold' : ''}
-              </span>
-              <span>
-                {new Date(rental.rentalStart).toLocaleString()} →{' '}
-                {new Date(rental.rentalEnd).toLocaleString()}
-              </span>
-              {rental.claimDeadlineAt && (
-                <span>Claim deadline {new Date(rental.claimDeadlineAt).toLocaleString()}</span>
-              )}
-            </div>
-            <button
-              className="quiet"
-              onClick={() => setSelectedRentalReference(rental.publicReference)}
-            >
-              Inspect operations
-            </button>
-          </article>
-        ))}
-        {selectedRentalReference && rentalDetail.data && (
-          <div className="vehicle-detail">
-            <div className="detail-heading">
-              <h3>Operational timeline · {selectedRentalReference}</h3>
-              <button className="quiet" onClick={() => setSelectedRentalReference(null)}>
-                Close
-              </button>
-            </div>
-            <p>
-              Actual pickup{' '}
-              {rentalDetail.data.actualPickupAt
-                ? new Date(rentalDetail.data.actualPickupAt).toLocaleString()
-                : '—'}{' '}
-              · Actual return{' '}
-              {rentalDetail.data.actualReturnAt
-                ? new Date(rentalDetail.data.actualReturnAt).toLocaleString()
-                : '—'}
-            </p>
-            {rentalDetail.data.inspections.map((inspection) => (
-              <div key={inspection.id}>
-                <h4>{inspection.type} inspection</h4>
-                <p>
-                  Odometer {inspection.odometerMeters ?? '—'} m · fuel{' '}
-                  {inspection.fuelBasisPoints ?? 'N/A'} bp · SOC{' '}
-                  {inspection.batterySocBasisPoints ?? 'N/A'} bp
-                </p>
-                <div className="actions">
-                  {inspection.media.map((media) => (
-                    <button
-                      className="quiet"
-                      key={media.fileAsset.id}
-                      onClick={() => void openFile(media.fileAsset.id)}
-                    >
-                      {media.perspective}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-            {rentalDetail.data.usageSummary && (
-              <p>
-                Travelled {rentalDetail.data.usageSummary.distanceTravelledKm} km · included{' '}
-                {rentalDetail.data.usageSummary.includedDistanceKm ?? 'unlimited'} · excess{' '}
-                {rentalDetail.data.usageSummary.excessDistanceKm} km · late{' '}
-                {Math.ceil(rentalDetail.data.usageSummary.lateDurationSeconds / 60)} minutes
-                {rentalDetail.data.usageSummary.returnDisputed ? ' · measurements disputed' : ''}
-              </p>
-            )}
-            {rentalDetail.data.postReturnClaims.map((claim) => (
-              <p key={claim.id}>
-                Claim · {claim.category} · {claim.status}
-              </p>
-            ))}
-            {rentalDetail.data.rentalIncidents.map((incident) => (
-              <div key={incident.id}>
-                <p>
-                  Incident · {incident.category} · {incident.severity} · {incident.status}
-                </p>
-                {['OPEN', 'ACKNOWLEDGED'].includes(incident.status) && (
-                  <div className="actions">
-                    {incident.status === 'OPEN' && (
-                      <button
-                        className="quiet"
-                        onClick={() => {
-                          const reason = window.prompt('Acknowledgement reason');
-                          if (reason)
-                            incidentAction.mutate({
-                              id: incident.id,
-                              reason,
-                              status: 'ACKNOWLEDGED',
-                            });
-                        }}
-                      >
-                        Acknowledge
-                      </button>
-                    )}
-                    <button
-                      className="quiet"
-                      onClick={() => {
-                        const reason = window.prompt('Resolution reason');
-                        if (reason)
-                          incidentAction.mutate({ id: incident.id, reason, status: 'RESOLVED' });
-                      }}
-                    >
-                      Resolve
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-            <ol className="history">
-              {rentalDetail.data.statusHistory.map((entry) => (
-                <li key={entry.id}>
-                  <strong>{entry.toStatus}</strong>
-                  <span>
-                    {new Date(entry.occurredAt).toLocaleString()} ·{' '}
-                    {entry.reasonCode ?? 'state transition'}
-                  </span>
-                </li>
-              ))}
-            </ol>
-            {rentalDetail.data.status === 'READY_FOR_PICKUP' &&
-              rentalDetail.data.inspections.some(({ type }) => type === 'PICKUP') && (
-                <button
-                  className="danger"
-                  onClick={() => {
-                    const reason = window.prompt(
-                      'Reason for administratively confirming physical pickup after reviewing inspection, code activity, timestamps, participant reports, and evidence',
-                    );
-                    if (reason && reason.trim().length >= 10)
-                      handoverResolution.mutate({
-                        action: 'CONFIRM_PICKUP',
-                        reason,
-                        reference: selectedRentalReference,
-                      });
-                  }}
-                >
-                  Resolve physical pickup
-                </button>
-              )}
-            {rentalDetail.data.status === 'RETURN_PENDING' &&
-              rentalDetail.data.inspections.some(({ type }) => type === 'RETURN') && (
-                <button
-                  className="danger"
-                  onClick={() => {
-                    const reason = window.prompt(
-                      'Reason for administratively confirming physical return after reviewing all participant evidence',
-                    );
-                    if (reason && reason.trim().length >= 10)
-                      handoverResolution.mutate({
-                        action: 'CONFIRM_RETURN',
-                        reason,
-                        reference: selectedRentalReference,
-                      });
-                  }}
-                >
-                  Resolve physical return
-                </button>
-              )}
-            {handoverResolution.error && (
-              <p className="error-text">{handoverResolution.error.message}</p>
-            )}
-            <button
-              onClick={() => {
-                const reason = window.prompt(
-                  rentalDetail.data.operationalHold
-                    ? 'Reason to release hold'
-                    : 'Reason to place hold',
-                );
-                if (reason)
-                  rentalHold.mutate({
-                    hold: !rentalDetail.data.operationalHold,
-                    reason,
-                    reference: selectedRentalReference,
-                  });
-              }}
-            >
-              {rentalDetail.data.operationalHold
-                ? 'Release operational hold'
-                : 'Place operational hold'}
-            </button>
-          </div>
-        )}
-      </section>
-      <section className="admin-card">
-        <span className="eyebrow">CLAIMS &amp; DISPUTES</span>
-        <h2>Structured post-return review</h2>
-        <p>
-          Review inspections, measurements, evidence, renter response, financial exposure, holds,
-          and ledger history in one workspace. Owners cannot set charge amounts.
-        </p>
-        <div className="form-grid">
-          <label>
-            Status
-            <select value={claimStatus} onChange={(event) => setClaimStatus(event.target.value)}>
-              <option value="">All statuses</option>
-              {[
-                'RENTER_REVIEW',
-                'UNDER_ADMIN_REVIEW',
-                'PAYMENT_PENDING',
-                'WITHDRAWN',
-                'RESOLVED',
-              ].map((status) => (
-                <option key={status} value={status}>
-                  {status.replaceAll('_', ' ')}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Category
-            <select
-              value={claimCategory}
-              onChange={(event) => setClaimCategory(event.target.value)}
-            >
-              <option value="">All categories</option>
-              {[
-                'EXCESS_MILEAGE',
-                'FUEL_DEFICIENCY',
-                'EV_BATTERY_DEFICIENCY',
-                'LATE_RETURN',
-                'CLEANING',
-                'DAMAGE',
-                'OTHER',
-              ].map((category) => (
-                <option key={category} value={category}>
-                  {category.replaceAll('_', ' ')}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Severity
-            <select
-              value={claimSeverity}
-              onChange={(event) => setClaimSeverity(event.target.value)}
-            >
-              <option value="">All severities</option>
-              {['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((severity) => (
-                <option key={severity} value={severity}>
-                  {severity}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Minimum age (hours)
-            <input
-              min="0"
-              type="number"
-              value={claimMinimumAgeHours}
-              onChange={(event) => setClaimMinimumAgeHours(event.target.value)}
-            />
-          </label>
-        </div>
-        {claimQueue.isLoading && <p>Loading claim queue…</p>}
-        {claimQueue.data?.items.map((claim) => (
-          <article className="review-row" key={claim.id}>
-            <div>
-              <strong>
-                {claim.booking.publicReference} · {claim.category.replaceAll('_', ' ')}
-              </strong>
-              <span>
-                {claim.status.replaceAll('_', ' ')} · {claim.severity} severity · submitted{' '}
-                {new Date(claim.submittedAt).toLocaleString()}
-              </span>
-              <span>
-                Calculated ₱{((claim.calculations.at(-1)?.amountMinor ?? 0) / 100).toLocaleString()}{' '}
-                · renter {claim.response?.decision ?? 'awaiting response'}
-              </span>
-            </div>
-            <button className="quiet" onClick={() => setSelectedClaimId(claim.id)}>
-              Review claim
-            </button>
-          </article>
-        ))}
-        {selectedClaimId && claimDetail.data && (
-          <div className="vehicle-detail">
-            <div className="detail-heading">
-              <h3>
-                {claimDetail.data.claim.booking.publicReference} ·{' '}
-                {claimDetail.data.claim.category.replaceAll('_', ' ')}
-              </h3>
-              <button className="quiet" onClick={() => setSelectedClaimId(null)}>
-                Close
-              </button>
-            </div>
-            <p>{claimDetail.data.claim.description}</p>
-            {claimDetail.data.claim.booking.usageSummary && (
-              <p>
-                Usage: {claimDetail.data.claim.booking.usageSummary.distanceTravelledKm} km · excess{' '}
-                {claimDetail.data.claim.booking.usageSummary.excessDistanceKm} km · fuel deficiency{' '}
-                {claimDetail.data.claim.booking.usageSummary.fuelDeficiencyBasisPoints ?? 0} bp · EV
-                deficiency{' '}
-                {claimDetail.data.claim.booking.usageSummary.socDeficiencyBasisPoints ?? 0} bp ·
-                late{' '}
-                {Math.ceil(claimDetail.data.claim.booking.usageSummary.lateDurationSeconds / 60)}{' '}
-                min
-              </p>
-            )}
-            {claimDetail.data.claim.calculations.map((calculation) => (
-              <p key={calculation.formulaVersion}>
-                Formula {calculation.formulaVersion} · {calculation.quantity} {calculation.unit} × ₱
-                {(calculation.unitRateMinor / 100).toLocaleString()} = ₱
-                {(calculation.amountMinor / 100).toLocaleString()}
-              </p>
-            ))}
-            <p>
-              Renter response: {claimDetail.data.claim.response?.decision ?? 'NO RESPONSE'} ·{' '}
-              {claimDetail.data.claim.response?.explanation ?? 'No explanation submitted.'}
-            </p>
-            <div className="actions">
-              {claimDetail.data.claim.evidence.map((evidence) => (
-                <button
-                  className="quiet"
-                  key={evidence.id}
-                  onClick={() => void openFile(evidence.fileAsset.id)}
-                >
-                  {evidence.participantRole} · {evidence.evidenceType}
-                </button>
-              ))}
-            </div>
-            {claimDetail.data.claim.booking.ownerEarning && (
-              <p>
-                Owner earning {claimDetail.data.claim.booking.ownerEarning.status} · ₱
-                {(
-                  claimDetail.data.claim.booking.ownerEarning.netEarningAmountMinor / 100
-                ).toLocaleString()}
-                {' · '}active holds{' '}
-                {
-                  claimDetail.data.claim.booking.ownerEarning.holds.filter(
-                    (hold) => hold.status === 'ACTIVE',
-                  ).length
-                }
-              </p>
-            )}
-            {claimDetail.data.claim.adjudications.map((decision) => (
-              <p key={decision.id}>
-                Immutable decision · {decision.outcome} · ₱
-                {(decision.approvedAmountMinor / 100).toLocaleString()} · {decision.reason}
-              </p>
-            ))}
-            {claimDetail.data.claim.status === 'UNDER_ADMIN_REVIEW' && (
-              <div className="actions">
-                <button
-                  onClick={() => {
-                    const amount = window.prompt(
-                      'Approved amount in centavos. Leave blank for the full server formula.',
-                    );
-                    const reason = window.prompt('Approval reason');
-                    if (reason)
-                      claimAction.mutate({
-                        id: selectedClaimId,
-                        outcome: 'APPROVED',
-                        reason,
-                        ...(amount ? { approvedAmountMinor: Number(amount) } : {}),
-                      });
-                  }}
-                >
-                  Approve
-                </button>
-                <button
-                  onClick={() => {
-                    const amount = window.prompt('Partially approved amount in centavos');
-                    const reason = window.prompt('Partial approval reason');
-                    if (amount && reason)
-                      claimAction.mutate({
-                        approvedAmountMinor: Number(amount),
-                        id: selectedClaimId,
-                        outcome: 'PARTIALLY_APPROVED',
-                        reason,
-                      });
-                  }}
-                >
-                  Partial approval
-                </button>
-                <button
-                  className="danger"
-                  onClick={() => {
-                    const reason = window.prompt('Rejection reason');
-                    if (reason)
-                      claimAction.mutate({ id: selectedClaimId, outcome: 'REJECTED', reason });
-                  }}
-                >
-                  Reject
-                </button>
-                <button
-                  className="quiet"
-                  onClick={() => {
-                    const reason = window.prompt('Evidence request');
-                    if (reason)
-                      claimAction.mutate({
-                        id: selectedClaimId,
-                        outcome: 'REQUEST_MORE_EVIDENCE',
-                        reason,
-                      });
-                  }}
-                >
-                  Request evidence
-                </button>
-                <button
-                  className="quiet"
-                  onClick={() => {
-                    const reason = window.prompt('Dispute escalation reason');
-                    if (reason)
-                      claimAction.mutate({
-                        id: selectedClaimId,
-                        outcome: 'ESCALATED_TO_DISPUTE',
-                        reason,
-                      });
-                  }}
-                >
-                  Escalate dispute
-                </button>
-              </div>
-            )}
-            {claimDetail.data.claim.disputes.map((dispute) => (
-              <div key={dispute.id}>
-                <p>
-                  Dispute · {dispute.status} · {dispute.reason}
-                </p>
-                {['OPEN', 'EVIDENCE_COLLECTION', 'UNDER_REVIEW'].includes(dispute.status) && (
-                  <div className="actions">
-                    {(
-                      ['RESOLVED_FOR_RENTER', 'RESOLVED_FOR_OWNER', 'PARTIALLY_RESOLVED'] as const
-                    ).map((status) => (
-                      <button
-                        className="quiet"
-                        key={status}
-                        onClick={() => {
-                          const reason = window.prompt(`Reason for ${status}`);
-                          if (reason) disputeAction.mutate({ id: dispute.id, reason, status });
-                        }}
-                      >
-                        {status.replaceAll('_', ' ')}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-            {claimDetail.data.claim.additionalCharge && (
-              <p>
-                Additional charge · {claimDetail.data.claim.additionalCharge.status} · approved ₱
-                {(
-                  claimDetail.data.claim.additionalCharge.approvedAmountMinor / 100
-                ).toLocaleString()}
-                {' · '}collected ₱
-                {(
-                  claimDetail.data.claim.additionalCharge.collectedAmountMinor / 100
-                ).toLocaleString()}
-                {claimDetail.data.claim.additionalCharge.status === 'PAID' && (
                   <button
                     className="quiet"
                     onClick={() => {
-                      const amount = window.prompt('Refund amount in centavos');
-                      const reason = window.prompt('Refund reason');
-                      if (amount && reason)
-                        chargeRefund.mutate({
-                          amountMinor: Number(amount),
-                          id: claimDetail.data.claim.additionalCharge!.id,
+                      const reason = window.prompt('Evidence request');
+                      if (reason)
+                        claimAction.mutate({
+                          id: selectedClaimId,
+                          outcome: 'REQUEST_MORE_EVIDENCE',
                           reason,
                         });
                     }}
                   >
-                    Provider-aware refund
+                    Request evidence
+                  </button>
+                  <button
+                    className="quiet"
+                    onClick={() => {
+                      const reason = window.prompt('Dispute escalation reason');
+                      if (reason)
+                        claimAction.mutate({
+                          id: selectedClaimId,
+                          outcome: 'ESCALATED_TO_DISPUTE',
+                          reason,
+                        });
+                    }}
+                  >
+                    Escalate dispute
+                  </button>
+                </AdminActionBar>
+              )}
+              {claimDetail.data.claim.disputes.map((dispute) => (
+                <AdminSection key={dispute.id} title="Dispute" description={dispute.reason}>
+                  <p>
+                    <StatusBadge value={dispute.status} />
+                  </p>
+                  {['OPEN', 'EVIDENCE_COLLECTION', 'UNDER_REVIEW'].includes(dispute.status) && (
+                    <div className="actions">
+                      {(
+                        ['RESOLVED_FOR_RENTER', 'RESOLVED_FOR_OWNER', 'PARTIALLY_RESOLVED'] as const
+                      ).map((status) => (
+                        <button
+                          className="quiet"
+                          key={status}
+                          onClick={() => {
+                            const reason = window.prompt(`Reason for ${status}`);
+                            if (reason) disputeAction.mutate({ id: dispute.id, reason, status });
+                          }}
+                        >
+                          {adminLabel(status)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </AdminSection>
+              ))}
+              {claimDetail.data.claim.additionalCharge && (
+                <p>
+                  Additional charge · {claimDetail.data.claim.additionalCharge.status} · approved ₱
+                  {(
+                    claimDetail.data.claim.additionalCharge.approvedAmountMinor / 100
+                  ).toLocaleString()}
+                  {' · '}collected ₱
+                  {(
+                    claimDetail.data.claim.additionalCharge.collectedAmountMinor / 100
+                  ).toLocaleString()}
+                  {claimDetail.data.claim.additionalCharge.status === 'PAID' && (
+                    <button
+                      className="quiet"
+                      onClick={() => {
+                        const amount = window.prompt('Refund amount in centavos');
+                        const reason = window.prompt('Refund reason');
+                        if (amount && reason)
+                          chargeRefund.mutate({
+                            amountMinor: Number(amount),
+                            id: claimDetail.data.claim.additionalCharge!.id,
+                            reason,
+                          });
+                      }}
+                    >
+                      Provider-aware refund
+                    </button>
+                  )}
+                </p>
+              )}
+              <AdminTechnicalDetails
+                summary={`Technical ledger details (${claimDetail.data.ledger.length})`}
+              >
+                <DataTable label="Claim technical ledger entries">
+                  <thead>
+                    <tr>
+                      <th>Event</th>
+                      <th>Posted</th>
+                      <th>Account</th>
+                      <th>Minor units</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {claimDetail.data.ledger.flatMap((entry) =>
+                      entry.entries.map((line, index) => (
+                        <tr key={`${entry.id}-${index}`}>
+                          <td>{adminLabel(entry.type)}</td>
+                          <td>{formatDate(entry.postedAt)}</td>
+                          <td>{line.account.code}</td>
+                          <td>{line.amountMinor}</td>
+                        </tr>
+                      )),
+                    )}
+                  </tbody>
+                </DataTable>
+              </AdminTechnicalDetails>
+              {(claimAction.error || disputeAction.error || chargeRefund.error) && (
+                <p className="error-text">
+                  {claimAction.error?.message ??
+                    disputeAction.error?.message ??
+                    chargeRefund.error?.message}
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+        <section className="admin-card module-section module-payouts">
+          <span className="eyebrow">OWNER PAYOUT OPERATIONS</span>
+          <h2>Admin-controlled payout queue</h2>
+          <p>
+            Only eligible AVAILABLE earnings are shown. Approval is separate from provider
+            submission, and provider confirmation is required before PAID.
+          </p>
+          {payoutQueue.isLoading && <p>Loading payout readiness…</p>}
+          {payoutQueue.data?.length === 0 && (
+            <EmptyState
+              title="No owners ready for payout"
+              description="There are currently no eligible owner earnings requiring payout action."
+            />
+          )}
+          {payoutQueue.data && payoutQueue.data.length > 0 && (
+            <DataTable label="Payout readiness queue">
+              <thead>
+                <tr>
+                  <th>Owner</th>
+                  <th>Eligibility</th>
+                  <th>Eligible earnings</th>
+                  <th>Destination</th>
+                  <th>Provider</th>
+                  <th>Attention</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payoutQueue.data.map((item) => (
+                  <tr key={item.owner.id}>
+                    <td>
+                      <strong>{item.owner.displayName ?? item.owner.id}</strong>
+                      <small>{item.owner.status}</small>
+                    </td>
+                    <td>
+                      <StatusBadge value={item.payoutEligibility} />
+                    </td>
+                    <td>₱{(item.availableEligibleMinor / 100).toLocaleString()}</td>
+                    <td>
+                      {item.destination
+                        ? `${item.destination.destinationChannel} ${item.destination.maskedAccountIdentifier}`
+                        : 'Missing'}
+                    </td>
+                    <td>{item.provider}</td>
+                    <td>
+                      {item.blockers.length
+                        ? item.blockers.join(', ')
+                        : item.previousFailures
+                          ? `${item.previousFailures} previous failure(s)`
+                          : 'None'}
+                    </td>
+                    <td>
+                      <div className="table-actions">
+                        {item.payoutEligibility !== 'ELIGIBLE' && (
+                          <button
+                            className="quiet compact"
+                            onClick={() => {
+                              const reason = window.prompt('Eligibility review reason');
+                              if (reason)
+                                payoutAction.mutate({
+                                  body: { reason, status: 'ELIGIBLE' },
+                                  path: `owners/${item.owner.id}/payout-eligibility`,
+                                });
+                            }}
+                          >
+                            Mark eligible
+                          </button>
+                        )}
+                        <button
+                          className="compact"
+                          disabled={item.blockers.length > 0 || item.availableEligibleMinor <= 0}
+                          onClick={() =>
+                            payoutAction.mutate({
+                              body: { ownerProfileId: item.owner.id },
+                              path: 'payouts',
+                            })
+                          }
+                        >
+                          Create payout
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          )}
+          <h3>Payout history and reconciliation</h3>
+          {payouts.data?.length === 0 && (
+            <EmptyState
+              title="No payout history"
+              description="No payout records have been created in this environment."
+            />
+          )}
+          {payouts.data?.map((payout) => (
+            <article className="review-row" key={payout.id}>
+              <div>
+                <strong>
+                  {payout.publicReference} · ₱{(payout.amountMinor / 100).toLocaleString()}
+                </strong>
+                <span>
+                  {payout.owner.displayName ?? payout.owner.id} · {payout.status} ·{' '}
+                  {payout.destination.channel} {payout.destination.maskedIdentifier}
+                </span>
+                <span>
+                  Provider {payout.providerState ?? 'not submitted'} · settlement{' '}
+                  {payout.diagnostics.ledgerSettlementStatus}
+                  {payout.diagnostics.problem ? ' · diagnostic problem' : ''}
+                </span>
+              </div>
+              <div className="actions">
+                <button className="quiet" onClick={() => setSelectedPayoutId(payout.id)}>
+                  Diagnostics
+                </button>
+                {payout.status === 'PENDING_APPROVAL' && (
+                  <button
+                    onClick={() => {
+                      const note = window.prompt('Approval note');
+                      if (note)
+                        payoutAction.mutate({
+                          body: { note },
+                          path: `payouts/${payout.id}/approve`,
+                        });
+                    }}
+                  >
+                    Approve
                   </button>
                 )}
-              </p>
-            )}
-            <ol className="history">
-              {claimDetail.data.ledger.map((entry) => (
-                <li key={entry.id}>
-                  <strong>{entry.type}</strong>
-                  <span>
-                    {entry.entries
-                      .map((line) => `${line.account.code} ${line.amountMinor}`)
-                      .join(' / ')}
-                  </span>
-                </li>
-              ))}
-            </ol>
-            {(claimAction.error || disputeAction.error || chargeRefund.error) && (
-              <p className="error-text">
-                {claimAction.error?.message ??
-                  disputeAction.error?.message ??
-                  chargeRefund.error?.message}
-              </p>
-            )}
-          </div>
-        )}
-      </section>
-      <section className="admin-card">
-        <span className="eyebrow">OWNER PAYOUT OPERATIONS</span>
-        <h2>Admin-controlled payout queue</h2>
-        <p>
-          Only eligible AVAILABLE earnings are shown. Approval is separate from provider submission,
-          and provider confirmation is required before PAID.
-        </p>
-        {payoutQueue.isLoading && <p>Loading payout readiness…</p>}
-        {payoutQueue.data?.map((item) => (
-          <article className="review-row" key={item.owner.id}>
-            <div>
-              <strong>{item.owner.displayName ?? item.owner.id}</strong>
-              <span>
-                Owner {item.owner.status} · payout {item.payoutEligibility} · {item.provider}
-              </span>
-              <span>
-                Eligible ₱{(item.availableEligibleMinor / 100).toLocaleString()} · destination{' '}
-                {item.destination
-                  ? `${item.destination.destinationChannel} ${item.destination.maskedAccountIdentifier}`
-                  : 'missing'}
-              </span>
-              {item.blockers.length > 0 && <span>Blockers: {item.blockers.join(', ')}</span>}
-              {item.previousFailures > 0 && (
-                <span>Previous payout failures: {item.previousFailures}</span>
-              )}
-            </div>
-            <div className="actions">
-              {item.payoutEligibility !== 'ELIGIBLE' && (
-                <button
-                  className="quiet"
-                  onClick={() => {
-                    const reason = window.prompt('Eligibility review reason');
-                    if (reason)
-                      payoutAction.mutate({
-                        body: { reason, status: 'ELIGIBLE' },
-                        path: `owners/${item.owner.id}/payout-eligibility`,
-                      });
-                  }}
-                >
-                  Mark eligible
-                </button>
-              )}
-              <button
-                disabled={item.blockers.length > 0 || item.availableEligibleMinor <= 0}
-                onClick={() =>
-                  payoutAction.mutate({
-                    body: { ownerProfileId: item.owner.id },
-                    path: 'payouts',
-                  })
-                }
-              >
-                Create payout
-              </button>
-            </div>
-          </article>
-        ))}
-        <h3>Payout history and reconciliation</h3>
-        {payouts.data?.map((payout) => (
-          <article className="review-row" key={payout.id}>
-            <div>
-              <strong>
-                {payout.publicReference} · ₱{(payout.amountMinor / 100).toLocaleString()}
-              </strong>
-              <span>
-                {payout.owner.displayName ?? payout.owner.id} · {payout.status} ·{' '}
-                {payout.destination.channel} {payout.destination.maskedIdentifier}
-              </span>
-              <span>
-                Provider {payout.providerState ?? 'not submitted'} · settlement{' '}
-                {payout.diagnostics.ledgerSettlementStatus}
-                {payout.diagnostics.problem ? ' · diagnostic problem' : ''}
-              </span>
-            </div>
-            <div className="actions">
-              <button className="quiet" onClick={() => setSelectedPayoutId(payout.id)}>
-                Diagnostics
-              </button>
-              {payout.status === 'PENDING_APPROVAL' && (
-                <button
-                  onClick={() => {
-                    const note = window.prompt('Approval note');
-                    if (note)
-                      payoutAction.mutate({
-                        body: { note },
-                        path: `payouts/${payout.id}/approve`,
-                      });
-                  }}
-                >
-                  Approve
-                </button>
-              )}
-              {payout.status === 'APPROVED' && (
-                <button
-                  onClick={() => payoutAction.mutate({ path: `payouts/${payout.id}/submit` })}
-                >
-                  Submit
-                </button>
-              )}
-              {['PENDING_APPROVAL', 'APPROVED'].includes(payout.status) && (
-                <button
-                  className="danger"
-                  onClick={() => {
-                    const reason = window.prompt('Cancellation reason');
-                    if (reason)
-                      payoutAction.mutate({
-                        body: { reason },
-                        path: `payouts/${payout.id}/cancel`,
-                      });
-                  }}
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-          </article>
-        ))}
-        {selectedPayoutId && payoutDetail.data && (
-          <div className="vehicle-detail">
-            <div className="detail-heading">
-              <h3>Reconciliation · {payoutDetail.data.publicReference}</h3>
-              <button className="quiet" onClick={() => setSelectedPayoutId(null)}>
-                Close
-              </button>
-            </div>
-            <p>
-              Internal {payoutDetail.data.status} · provider{' '}
-              {payoutDetail.data.providerState ?? 'unknown'} · reference{' '}
-              {payoutDetail.data.diagnostics.providerReference ?? 'not acknowledged'}
-            </p>
-            <p>
-              Ledger {payoutDetail.data.diagnostics.ledgerSettlementStatus} · balanced{' '}
-              {payoutDetail.data.diagnostics.ledgerBalanced ? 'yes' : 'no'} · difference{' '}
-              {payoutDetail.data.diagnostics.differenceMinor}
-            </p>
-            <ol className="history">
-              {payoutDetail.data.items.map((item) => (
-                <li key={item.earningId}>
-                  <strong>{item.bookingReference}</strong>
-                  <span>
-                    earning {item.earningId} · {item.amountMinor}
-                  </span>
-                </li>
-              ))}
-            </ol>
-            {['SUBMITTING', 'PROCESSING'].includes(payoutDetail.data.status) && (
-              <button
-                onClick={() =>
-                  payoutAction.mutate({ path: `payouts/${payoutDetail.data.id}/reconcile` })
-                }
-              >
-                Retrieve provider truth
-              </button>
-            )}
-          </div>
-        )}
-        {payoutAction.error && <p className="error-text">{payoutAction.error.message}</p>}
-      </section>
-      <section className="admin-card">
-        <span className="eyebrow">BOOKING DIAGNOSTICS</span>
-        <h2>Authoritative holds</h2>
-        <p>
-          Read-only lifecycle and occupancy visibility. No financial or arbitrary status controls.
-        </p>
-        {bookings.isLoading && <p>Loading bookings…</p>}
-        {bookings.data?.length === 0 && <p>No booking holds yet.</p>}
-        {bookings.data?.map((booking) => (
-          <article className="review-row" key={booking.bookingId}>
-            <div>
-              <strong>
-                {booking.publicReference} · {booking.vehicle.make} {booking.vehicle.model}
-              </strong>
-              <span>
-                {booking.status} · occupancy{' '}
-                {booking.diagnostics.occupancy?.active ? 'blocking' : 'released'}
-              </span>
-              <span>
-                {new Date(booking.rentalStart).toLocaleString()} →{' '}
-                {new Date(booking.rentalEnd).toLocaleString()}
-              </span>
-              {booking.diagnostics.reason && <span>{booking.diagnostics.reason}</span>}
-              <button
-                className="quiet"
-                onClick={() => setSelectedFinanceReference(booking.publicReference)}
-              >
-                Financial timeline
-              </button>
-            </div>
-          </article>
-        ))}
-        {selectedFinanceReference && (
-          <div className="vehicle-detail">
-            <div className="detail-heading">
-              <h3>Financial timeline · {selectedFinanceReference}</h3>
-              <button className="quiet" onClick={() => setSelectedFinanceReference(null)}>
-                Close
-              </button>
-            </div>
-            {financialDetail.isLoading && <p>Loading authoritative finance records…</p>}
-            {financialDetail.data?.payments.map((payment) => (
-              <div key={payment.paymentId}>
-                <h4>
-                  {payment.provider} payment · {payment.status}
-                </h4>
-                <p>
-                  ₱{(payment.amountMinor / 100).toLocaleString()} · provider{' '}
-                  {payment.providerState ?? 'pending'}
-                  {payment.reconciliationRequired ? ' · reconciliation required' : ''}
-                </p>
+                {payout.status === 'APPROVED' && (
+                  <button
+                    onClick={() => payoutAction.mutate({ path: `payouts/${payout.id}/submit` })}
+                  >
+                    Submit
+                  </button>
+                )}
+                {['PENDING_APPROVAL', 'APPROVED'].includes(payout.status) && (
+                  <button
+                    className="danger"
+                    onClick={() => {
+                      const reason = window.prompt('Cancellation reason');
+                      if (reason)
+                        payoutAction.mutate({
+                          body: { reason },
+                          path: `payouts/${payout.id}/cancel`,
+                        });
+                    }}
+                  >
+                    Cancel
+                  </button>
+                )}
               </div>
-            ))}
-            {financialDetail.data?.commission && (
+            </article>
+          ))}
+          {selectedPayoutId && payoutDetail.data && (
+            <div className="vehicle-detail">
+              <div className="detail-heading">
+                <h3>Reconciliation · {payoutDetail.data.publicReference}</h3>
+                <button className="quiet" onClick={() => setSelectedPayoutId(null)}>
+                  Close
+                </button>
+              </div>
               <p>
-                Commission {financialDetail.data.commission.rateBasisPoints / 100}% · ₱
-                {(financialDetail.data.commission.calculatedCommissionMinor / 100).toLocaleString()}{' '}
-                · {financialDetail.data.commission.scope}
+                Internal {payoutDetail.data.status} · provider{' '}
+                {payoutDetail.data.providerState ?? 'unknown'} · reference{' '}
+                {payoutDetail.data.diagnostics.providerReference ?? 'not acknowledged'}
               </p>
-            )}
-            {financialDetail.data?.earning && (
               <p>
-                Owner earning ₱
-                {(financialDetail.data.earning.netEarningAmountMinor / 100).toLocaleString()} ·{' '}
-                {financialDetail.data.earning.status}
+                Ledger {payoutDetail.data.diagnostics.ledgerSettlementStatus} · balanced{' '}
+                {payoutDetail.data.diagnostics.ledgerBalanced ? 'yes' : 'no'} · difference{' '}
+                {payoutDetail.data.diagnostics.differenceMinor}
               </p>
-            )}
-            <ol className="history">
-              {financialDetail.data?.ledger.map((entry) => (
-                <li key={entry.id}>
-                  <strong>{entry.type}</strong>
-                  <span>
-                    {new Date(entry.postedAt).toLocaleString()} ·{' '}
-                    {entry.entries
-                      .map((line) => `${line.account.code} ${line.amountMinor}`)
-                      .join(' / ')}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
-      </section>
-      <section className="admin-card">
-        <span className="eyebrow">COMMISSION CONFIGURATION</span>
-        <h2>Versioned rules</h2>
-        <p>
-          Historical booking snapshots never change. New rules take precedence owner → category →
-          platform.
-        </p>
-        <button
-          onClick={() => {
-            const bps = window.prompt('New platform default basis points', '1500');
-            const reason = window.prompt('Reason for this new version');
-            if (bps && reason)
-              commissionAction.mutate({
-                operation: 'create',
-                body: { scope: 'PLATFORM_DEFAULT', rateBasisPoints: Number(bps), reason },
-              });
-          }}
+              <ol className="history">
+                {payoutDetail.data.items.map((item) => (
+                  <li key={item.earningId}>
+                    <strong>{item.bookingReference}</strong>
+                    <span>
+                      earning {item.earningId} · {item.amountMinor}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              {['SUBMITTING', 'PROCESSING'].includes(payoutDetail.data.status) && (
+                <button
+                  onClick={() =>
+                    payoutAction.mutate({ path: `payouts/${payoutDetail.data.id}/reconcile` })
+                  }
+                >
+                  Retrieve provider truth
+                </button>
+              )}
+            </div>
+          )}
+          {payoutAction.error && <p className="error-text">{payoutAction.error.message}</p>}
+        </section>
+        <section
+          className={`admin-card module-section module-bookings ${selectedFinanceReference ? 'is-detail-route' : ''}`}
         >
-          Add platform-default version
-        </button>
-        {commissionRules.data?.map((rule) => (
-          <article className="review-row" key={rule.id}>
-            <div>
-              <strong>
-                {rule.scope} · v{rule.version} · {rule.rateBasisPoints / 100}%
-              </strong>
-              <span>
-                {rule.disabledAt ? 'Disabled' : 'Active'} · {rule.reason}
-              </span>
+          <span className="eyebrow">BOOKING DIAGNOSTICS</span>
+          <h2>Authoritative holds</h2>
+          <p>
+            Read-only lifecycle and occupancy visibility. No financial or arbitrary status controls.
+          </p>
+          {bookings.isLoading && <p>Loading bookings…</p>}
+          {bookings.data?.length === 0 && (
+            <EmptyState
+              title="No booking records"
+              description="No authoritative booking lifecycle records are available yet."
+            />
+          )}
+          {bookings.data && bookings.data.length > 0 && (
+            <DataTable label="Admin bookings">
+              <thead>
+                <tr>
+                  <th>Reference</th>
+                  <th>Vehicle</th>
+                  <th>Rental period</th>
+                  <th>Lifecycle</th>
+                  <th>Occupancy</th>
+                  <th>Financial attention</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bookings.data.map((booking) => (
+                  <tr key={booking.bookingId}>
+                    <td>
+                      <strong>{booking.publicReference}</strong>
+                    </td>
+                    <td>
+                      {booking.vehicle.make} {booking.vehicle.model}
+                    </td>
+                    <td>
+                      {new Date(booking.rentalStart).toLocaleDateString()} –{' '}
+                      {new Date(booking.rentalEnd).toLocaleDateString()}
+                    </td>
+                    <td>
+                      <StatusBadge value={booking.status} />
+                    </td>
+                    <td>
+                      <StatusBadge
+                        value={booking.diagnostics.occupancy?.active ? 'BLOCKING' : 'RELEASED'}
+                      />
+                    </td>
+                    <td>{booking.diagnostics.reason?.replaceAll('_', ' ') ?? 'None'}</td>
+                    <td>
+                      <Link
+                        href={`/admin/bookings/${booking.publicReference}`}
+                        onClick={() => setSelectedFinanceReference(booking.publicReference)}
+                      >
+                        Open detail
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          )}
+          {selectedFinanceReference && (
+            <div className="detail-page">
+              <AdminDetailHeader
+                backHref="/admin/bookings"
+                backLabel="Booking queue"
+                eyebrow="Booking & financial operations"
+                title={selectedFinanceReference}
+                {...(() => {
+                  const status = bookings.data?.find(
+                    (booking) => booking.publicReference === selectedFinanceReference,
+                  )?.status;
+                  return status ? { status } : {};
+                })()}
+                description={(() => {
+                  const booking = bookings.data?.find(
+                    (item) => item.publicReference === selectedFinanceReference,
+                  );
+                  return booking
+                    ? `${booking.vehicle.make ?? ''} ${booking.vehicle.model ?? ''} · ${formatDate(booking.rentalStart)} to ${formatDate(booking.rentalEnd)}`
+                    : 'Authoritative booking finance records';
+                })()}
+              />
+              {financialDetail.isLoading && <p>Loading authoritative finance records…</p>}
+              {financialDetail.data && (
+                <>
+                  <AdminSection title="Payment summary">
+                    <AdminSummaryGrid>
+                      <AdminSummaryCard
+                        label="Total payment"
+                        value={formatMoney(
+                          financialDetail.data.payments.reduce(
+                            (sum, payment) => sum + payment.amountMinor,
+                            0,
+                          ),
+                        )}
+                      />
+                      <AdminSummaryCard
+                        label="Captured"
+                        value={formatMoney(
+                          financialDetail.data.payments.reduce(
+                            (sum, payment) => sum + payment.capturedAmountMinor,
+                            0,
+                          ),
+                        )}
+                      />
+                      <AdminSummaryCard
+                        label="Payment status"
+                        value={
+                          financialDetail.data.payments[0]
+                            ? adminLabel(financialDetail.data.payments[0].status)
+                            : 'No payment'
+                        }
+                      />
+                      <AdminSummaryCard
+                        label="Provider"
+                        value={financialDetail.data.payments[0]?.provider ?? 'Not assigned'}
+                        detail={
+                          financialDetail.data.payments.some(
+                            (payment) => payment.reconciliationRequired,
+                          )
+                            ? 'Reconciliation required'
+                            : 'No reconciliation flag'
+                        }
+                      />
+                    </AdminSummaryGrid>
+                  </AdminSection>
+
+                  <AdminSection
+                    title="Financial breakdown"
+                    description="Human-readable allocation from immutable financial records."
+                  >
+                    <AdminDefinitionList
+                      items={[
+                        {
+                          label: 'Rental total',
+                          value: formatMoney(
+                            financialDetail.data.payments.reduce(
+                              (sum, payment) => sum + payment.capturedAmountMinor,
+                              0,
+                            ),
+                          ),
+                        },
+                        {
+                          label: 'Platform commission',
+                          value: formatMoney(
+                            financialDetail.data.commission?.calculatedCommissionMinor,
+                          ),
+                        },
+                        {
+                          label: 'Owner earning',
+                          value: formatMoney(financialDetail.data.earning?.netEarningAmountMinor),
+                        },
+                        {
+                          label: 'Commission rate',
+                          value: financialDetail.data.commission
+                            ? `${financialDetail.data.commission.rateBasisPoints / 100}%`
+                            : 'Not calculated',
+                        },
+                      ]}
+                    />
+                  </AdminSection>
+
+                  <AdminSection
+                    title="Financial timeline"
+                    description="Business events are shown first; accounting lines remain available below for audit."
+                  >
+                    <AdminTimeline
+                      events={financialDetail.data.ledger.map((entry) => ({
+                        id: entry.id,
+                        title: adminLabel(entry.type),
+                        occurredAt: entry.postedAt,
+                        detail: `${entry.entries.length} balanced accounting line${entry.entries.length === 1 ? '' : 's'}`,
+                      }))}
+                    />
+                  </AdminSection>
+
+                  <AdminTechnicalDetails
+                    summary={`Technical ledger details (${financialDetail.data.ledger.length})`}
+                  >
+                    <DataTable label="Booking technical ledger">
+                      <thead>
+                        <tr>
+                          <th>Event</th>
+                          <th>Posted</th>
+                          <th>Account</th>
+                          <th>Minor units</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {financialDetail.data.ledger.flatMap((entry) =>
+                          entry.entries.map((line, index) => (
+                            <tr key={`${entry.id}-${index}`}>
+                              <td>{adminLabel(entry.type)}</td>
+                              <td>{formatDate(entry.postedAt)}</td>
+                              <td>{line.account.code}</td>
+                              <td>{line.amountMinor}</td>
+                            </tr>
+                          )),
+                        )}
+                      </tbody>
+                    </DataTable>
+                  </AdminTechnicalDetails>
+                </>
+              )}
             </div>
-            {!rule.disabledAt && (
-              <button
-                className="danger"
-                onClick={() => {
-                  const reason = window.prompt('Reason for disabling this rule');
-                  if (reason)
-                    commissionAction.mutate({
-                      operation: 'disable',
-                      id: rule.id,
-                      body: { reason },
-                    });
-                }}
-              >
-                Disable
-              </button>
-            )}
-          </article>
-        ))}
-      </section>
-      <section className="admin-card">
-        <span className="eyebrow">OWNER VERIFICATION</span>
-        <h2>Pending review</h2>
-        {owners.isLoading && <p>Loading queue…</p>}
-        {owners.data?.map((owner) => (
-          <article className="review-row" key={owner.id}>
-            <div>
-              <strong>
-                {owner.legalName ?? owner.user.profile?.displayName ?? owner.user.email}
-              </strong>
-              <span>{owner.status}</span>
-            </div>
-            <div className="actions">
-              <button onClick={() => action.mutate({ id: owner.id, operation: 'approval' })}>
-                Approve
-              </button>
-              <button
-                className="danger"
-                onClick={() => {
-                  const reason = window.prompt('Rejection reason');
-                  if (reason) action.mutate({ id: owner.id, operation: 'rejection', reason });
-                }}
-              >
-                Reject
-              </button>
-            </div>
-          </article>
-        ))}
-      </section>
-      <section className="admin-card">
-        <span className="eyebrow">USER LOOKUP</span>
-        <h2>Accounts</h2>
-        <input
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Email or mobile"
-          value={query}
-        />
-        {users.data?.map((user) => (
-          <article className="review-row" key={user.id}>
-            <div>
-              <strong>{user.email ?? user.mobileNumber}</strong>
-              <span>
-                {user.status}
-                {user.ownerProfile ? ` · Owner ${user.ownerProfile.status}` : ''}
-              </span>
-            </div>
-          </article>
-        ))}
-      </section>
+          )}
+        </section>
+        <section className="admin-card module-section module-commissions">
+          <span className="eyebrow">COMMISSION CONFIGURATION</span>
+          <h2>Versioned rules</h2>
+          <p>
+            Historical booking snapshots never change. New rules take precedence owner → category →
+            platform.
+          </p>
+          <button
+            onClick={() => {
+              const bps = window.prompt('New platform default basis points', '1500');
+              const reason = window.prompt('Reason for this new version');
+              if (bps && reason)
+                commissionAction.mutate({
+                  operation: 'create',
+                  body: { scope: 'PLATFORM_DEFAULT', rateBasisPoints: Number(bps), reason },
+                });
+            }}
+          >
+            Add platform-default version
+          </button>
+          {commissionRules.data && commissionRules.data.length > 0 && (
+            <DataTable label="Commission rule versions">
+              <thead>
+                <tr>
+                  <th>Scope</th>
+                  <th>Version</th>
+                  <th>Rate</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {commissionRules.data.map((rule) => (
+                  <tr key={rule.id}>
+                    <td>
+                      <strong>{rule.scope}</strong>
+                    </td>
+                    <td>v{rule.version}</td>
+                    <td>{rule.rateBasisPoints / 100}%</td>
+                    <td>{rule.reason}</td>
+                    <td>
+                      <StatusBadge value={rule.disabledAt ? 'DISABLED' : 'ACTIVE'} />
+                    </td>
+                    <td>
+                      {!rule.disabledAt && (
+                        <button
+                          className="danger compact"
+                          onClick={() => {
+                            const reason = window.prompt('Reason for disabling this rule');
+                            if (reason)
+                              commissionAction.mutate({
+                                operation: 'disable',
+                                id: rule.id,
+                                body: { reason },
+                              });
+                          }}
+                        >
+                          Disable
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          )}
+        </section>
+        {activeModule === 'owner-verification' && (
+          <OwnerVerificationAdminPanel
+            accessToken={accessToken}
+            {...(detailId ? { initialSelectedId: detailId } : {})}
+            onUnauthorized={logout}
+          />
+        )}
+        <section className="admin-card module-section module-users">
+          {detailId ? (
+            <AdminUserDetail accessToken={accessToken} onUnauthorized={logout} userId={detailId} />
+          ) : (
+            <>
+              <span className="eyebrow">USER LOOKUP</span>
+              <h2>Accounts</h2>
+              <div className="filter-toolbar">
+                <label>
+                  Search
+                  <input
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="Email or mobile"
+                    value={query}
+                  />
+                </label>
+                <label>
+                  Role
+                  <select
+                    onChange={(event) => setUserRoleFilter(event.target.value)}
+                    value={userRoleFilter}
+                  >
+                    <option value="ALL">All roles</option>
+                    <option value="RENTER">Renter</option>
+                    <option value="OWNER">Owner</option>
+                  </select>
+                </label>
+                <label>
+                  Status
+                  <select
+                    onChange={(event) => setUserStatusFilter(event.target.value)}
+                    value={userStatusFilter}
+                  >
+                    <option value="ALL">All states</option>
+                    <option value="ACTIVE">Active</option>
+                    <option value="SUSPENDED">Suspended</option>
+                    <option value="DISABLED">Disabled</option>
+                  </select>
+                </label>
+              </div>
+              {users.isLoading && <div className="state-panel">Loading accounts…</div>}
+              {users.error && <div className="state-panel error-text">{users.error.message}</div>}
+              {visibleUsers?.length ? (
+                <DataTable label="User accounts">
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Contact</th>
+                      <th>Roles</th>
+                      <th>Verification</th>
+                      <th>Status</th>
+                      <th>Joined</th>
+                      <th>Activity</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleUsers.map((user) => {
+                      const roles = user.roles.map(({ role }) => role.code);
+                      const verification =
+                        user.verifications?.[0]?.status ??
+                        user.ownerProfile?.status ??
+                        'NOT_SUBMITTED';
+                      return (
+                        <tr key={user.id}>
+                          <td>
+                            <strong>
+                              {(user.profile?.displayName ??
+                                [user.profile?.firstName, user.profile?.lastName]
+                                  .filter(Boolean)
+                                  .join(' ')) ||
+                                'Unnamed account'}
+                            </strong>
+                          </td>
+                          <td>{user.email ?? user.mobileNumber ?? 'No contact'}</td>
+                          <td>{roles.join(' / ') || '—'}</td>
+                          <td>
+                            <StatusBadge value={verification} />
+                          </td>
+                          <td>
+                            <StatusBadge value={user.status} />
+                          </td>
+                          <td>{new Date(user.createdAt).toLocaleDateString()}</td>
+                          <td>
+                            {user._count.renterBookings} renter · {user._count.ownedVehicles}{' '}
+                            vehicles · {user._count.ownerBookings} owner
+                          </td>
+                          <td>
+                            <Link href={`/admin/users/${user.id}`}>View account</Link>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </DataTable>
+              ) : !users.isLoading && !users.error ? (
+                <EmptyState
+                  title="No matching accounts"
+                  description="Adjust the search or filters to find another account."
+                />
+              ) : null}
+            </>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
 
-function AdminLogin({ onAuthenticated }: { readonly onAuthenticated: (token: string) => void }) {
-  const [identifier, setIdentifier] = useState('');
-  const [password, setPassword] = useState('');
-  const login = useMutation({
-    mutationFn: async () => {
-      const response = await fetch(`${API_URL}/admin/auth/login`, {
-        body: JSON.stringify({ identifier, password, platform: 'WEB' }),
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        method: 'POST',
-      });
-      const envelope = (await response.json()) as Envelope<{ accessToken: string }>;
-      if (!response.ok || !envelope.data)
-        throw new Error(envelope.error?.message ?? 'Login failed.');
-      return envelope.data.accessToken;
-    },
-    onSuccess: onAuthenticated,
-  });
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    login.mutate();
-  };
+function MetricCard({
+  href,
+  label,
+  value,
+}: {
+  readonly href: string;
+  readonly label: string;
+  readonly value: number | undefined;
+}) {
   return (
-    <form className="login-card" onSubmit={submit}>
-      <span className="eyebrow">PROTECTED ADMINISTRATION</span>
-      <h2>Administrator sign in</h2>
-      <label>
-        Email or mobile
-        <input
-          autoComplete="username"
-          onChange={(event) => setIdentifier(event.target.value)}
-          value={identifier}
-        />
-      </label>
-      <label>
-        Password
-        <input
-          autoComplete="current-password"
-          onChange={(event) => setPassword(event.target.value)}
-          type="password"
-          value={password}
-        />
-      </label>
-      <button disabled={login.isPending} type="submit">
-        {login.isPending ? 'Signing in…' : 'Sign in'}
-      </button>
-      {login.error && <p className="error-text">{login.error.message}</p>}
-    </form>
+    <Link className="metric-card" href={href}>
+      <span>{label}</span>
+      <strong>{value ?? '—'}</strong>
+      <small>Open queue →</small>
+    </Link>
   );
 }

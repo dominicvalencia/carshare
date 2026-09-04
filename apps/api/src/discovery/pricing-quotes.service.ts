@@ -8,6 +8,7 @@ import { DatabaseService } from '../infrastructure/database/database.service';
 import { RedisService } from '../infrastructure/redis/redis.service';
 import { AnalyticsEventType, DiscoveryAnalyticsService } from './analytics.service';
 import { AvailabilityService } from './availability.service';
+import { durationDiscount } from './duration-discounts';
 import { PRICING_ENGINE_VERSION, RentalDurationService } from './duration.service';
 import { PublicVehiclesService } from './public-vehicles.service';
 
@@ -55,16 +56,40 @@ export class PricingQuotesService {
     const { chargeableDays, end, start } = this.duration.calculate(startInput, endInput);
     this.availability.assertQuotable(await this.availability.check(vehicle, startInput, endInput));
     const policy = vehicle.policyVersions[0]!;
-    const totalMinor = policy.dailyRateMinor * chargeableDays;
-    if (!Number.isSafeInteger(totalMinor) || totalMinor > 2_147_483_647) {
+    const baseRentalAmountMinor = policy.dailyRateMinor * chargeableDays;
+    if (!Number.isSafeInteger(baseRentalAmountMinor) || baseRentalAmountMinor > 2_147_483_647) {
       throw new ApplicationException(
         DiscoveryErrorCode.INVALID_RENTAL_PERIOD,
         'The calculated rental amount exceeds the supported range.',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
+    const discount = durationDiscount(baseRentalAmountMinor, chargeableDays, policy);
+    const lines = [
+      {
+        amountMinor: baseRentalAmountMinor,
+        code: 'RENTAL_BASE',
+        description: `${chargeableDays} chargeable day${chargeableDays === 1 ? '' : 's'}`,
+        displayOrder: 0,
+        quantity: chargeableDays,
+        unitAmountMinor: policy.dailyRateMinor,
+      },
+      ...(discount.tier
+        ? [
+            {
+              amountMinor: -discount.amountMinor,
+              code: 'DURATION_DISCOUNT',
+              description: `${discount.label} (${(discount.basisPoints / 100).toFixed(2).replace(/\.00$/, '')}%)`,
+              displayOrder: 1,
+              quantity: 1,
+              unitAmountMinor: -discount.amountMinor,
+            },
+          ]
+        : []),
+    ];
     const created = await this.database.client.pricingQuote.create({
       data: {
+        baseRentalAmountMinor,
         chargeableDays,
         currency: policy.currency,
         evReturnPolicy: policy.evReturnPolicy,
@@ -78,23 +103,18 @@ export class PricingQuotesService {
           policy.mileagePolicy === MileagePolicyType.LIMITED
             ? policy.includedKilometersPerDay! * chargeableDays
             : null,
-        lines: {
-          create: {
-            amountMinor: totalMinor,
-            code: 'RENTAL_BASE',
-            description: `${chargeableDays} chargeable day${chargeableDays === 1 ? '' : 's'}`,
-            displayOrder: 0,
-            quantity: chargeableDays,
-            unitAmountMinor: policy.dailyRateMinor,
-          },
-        },
+        discountedRentalSubtotalMinor: discount.discountedSubtotalMinor,
+        durationDiscountAmountMinor: discount.amountMinor,
+        durationDiscountBps: discount.basisPoints,
+        durationDiscountTier: discount.tier,
+        lines: { create: lines },
         policyVersionId: policy.id,
         pricingEngineVersion: PRICING_ENGINE_VERSION,
         rentalEnd: end,
         rentalStart: start,
         renterUserId: userId,
-        subtotalMinor: totalMinor,
-        totalMinor,
+        subtotalMinor: discount.discountedSubtotalMinor,
+        totalMinor: discount.discountedSubtotalMinor,
         turnaroundMinutes: policy.turnaroundMinutes,
         unlimitedMileage: policy.mileagePolicy === MileagePolicyType.UNLIMITED,
         vehicleId,

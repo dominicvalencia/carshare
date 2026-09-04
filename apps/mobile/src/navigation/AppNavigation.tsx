@@ -26,6 +26,10 @@ import { OwnerEarningsScreen } from '../features/earnings/OwnerEarningsScreen';
 import { NotificationCenter } from '../features/notifications/NotificationCenter';
 import { OwnerRentalsScreen } from '../features/rentals/OwnerRentalsScreen';
 import { ReviewsScreen } from '../features/reviews/ReviewsScreen';
+import {
+  HostProfileScreen,
+  PublicReviewsScreen,
+} from '../features/reviews/MarketplaceReviewsScreens';
 import { ClaimDetailScreen } from '../features/claims/ClaimsPanels';
 import { SupportCenter } from '../features/support/SupportCenter';
 import { OwnerDashboardScreen } from '../features/vehicles/OwnerDashboardScreen';
@@ -203,6 +207,9 @@ export function AppNavigation(properties: AppNavigationProperties) {
             Payout: 'payouts/:payoutId',
             Favorites: 'favorites',
             Reviews: 'reviews',
+            HostProfile: 'hosts/:hostReference',
+            VehicleDetails: 'vehicles/:vehicleId',
+            PublicReviews: 'reviews/public',
           },
         },
       }}
@@ -265,6 +272,24 @@ export function AppNavigation(properties: AppNavigationProperties) {
           )}
         </Stack.Screen>
         <Stack.Screen component={ReviewsScreen} name="Reviews" options={{ headerShown: false }} />
+        <Stack.Screen
+          component={HostProfileScreen}
+          name="HostProfile"
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          component={PublicReviewsScreen}
+          name="PublicReviews"
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen name="VehicleDetails" options={{ headerShown: false }}>
+          {({ navigation, route }) => (
+            <DiscoveryScreen
+              initialVehicleId={route.params.vehicleId}
+              onExit={() => navigation.goBack()}
+            />
+          )}
+        </Stack.Screen>
         <Stack.Screen name="Conversation" options={{ headerShown: false }}>
           {({ navigation, route }) => (
             <MessagesScreen

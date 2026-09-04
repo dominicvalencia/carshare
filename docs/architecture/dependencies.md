@@ -13,14 +13,14 @@
 
 ## Mobile
 
-| Dependency                  | Purpose                                              |
-| --------------------------- | ---------------------------------------------------- |
-| Expo / React Native / React | iOS and Android runtime and toolchain                |
-| React Navigation            | Mode-specific bottom tab and future stack navigation |
-| TanStack Query              | Server-state request lifecycle and caching           |
-| Zustand                     | Local application state for future feature modules   |
-| React Hook Form / Zod       | Typed forms and validation                           |
-| Safe Area Context / Screens | Native navigation layout and screen primitives       |
+| Dependency                  | Purpose                                        |
+| --------------------------- | ---------------------------------------------- |
+| Expo / React Native / React | iOS and Android runtime and toolchain          |
+| React Navigation            | Mode-specific tabs and nested stack navigation |
+| TanStack Query              | Server-state request lifecycle and caching     |
+| Zustand                     | Local application state                        |
+| React Hook Form / Zod       | Typed forms and validation                     |
+| Safe Area Context / Screens | Native navigation layout and screen primitives |
 
 ## Admin
 
@@ -41,7 +41,7 @@
 | Nest Terminus                       | Health endpoint metadata and future health indicators |
 | Prisma / PostgreSQL adapter         | Typed PostgreSQL access and migrations                |
 | ioredis                             | Redis connectivity                                    |
-| BullMQ                              | Retryable background jobs beginning in later phases   |
+| BullMQ                              | Retryable domain, lifecycle, and notification jobs    |
 | Pino / nestjs-pino                  | Structured application and request logging            |
 | Helmet                              | Secure HTTP response headers                          |
 | class-validator / class-transformer | Nest request DTO validation foundation                |

@@ -1,5 +1,10 @@
 # Phase 4 — Public discovery and pricing quotes
 
+> Historical phase guide. Phase 12 replaces the original ID-only paging contract with a criteria-bound,
+> deterministic opaque cursor (10 results by default) and adds immutable duration discounts and public
+> Host Profiles. See ADRs 0021–0024 and the
+> [current system baseline](../architecture/current-system-baseline.md).
+
 ## Delivered API
 
 ```text

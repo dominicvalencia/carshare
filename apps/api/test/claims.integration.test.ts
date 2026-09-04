@@ -306,6 +306,11 @@ describe.sequential('Phase 8 claims and earning financial safety', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .expect(404);
     await request(app.getHttpServer())
+      .get(`/api/v1/admin/claims/${claimId}`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.claim.severity).toBe('HIGH'));
+    await request(app.getHttpServer())
       .post(`/api/v1/claims/${claimId}/respond`)
       .set('Authorization', `Bearer ${renter.token}`)
       .send({ decision: 'DISPUTED', explanation: 'The pickup image already shows this mark.' })
@@ -495,6 +500,7 @@ describe.sequential('Phase 8 claims and earning financial safety', () => {
     const rentalEnd = new Date(Date.now() - 86_400_000);
     const quote = await database.client.pricingQuote.create({
       data: {
+        baseRentalAmountMinor: 500_000,
         chargeableDays: 3,
         currency: 'PHP',
         excessKilometerRateMinor: input.unlimitedMileage ? null : 1_000,
@@ -507,6 +513,7 @@ describe.sequential('Phase 8 claims and earning financial safety', () => {
         rentalStart,
         renterUserId: renter.userId,
         subtotalMinor: 500_000,
+        discountedRentalSubtotalMinor: 500_000,
         totalMinor: 500_000,
         turnaroundMinutes: 120,
         unlimitedMileage: input.unlimitedMileage ?? false,
@@ -531,6 +538,7 @@ describe.sequential('Phase 8 claims and earning financial safety', () => {
     });
     await database.client.bookingPricingSnapshot.create({
       data: {
+        baseRentalAmountMinor: 500_000,
         bookingId: booking.id,
         chargeableDays: 3,
         currency: 'PHP',
@@ -542,6 +550,7 @@ describe.sequential('Phase 8 claims and earning financial safety', () => {
         rentalEnd,
         rentalStart,
         subtotalMinor: 500_000,
+        discountedRentalSubtotalMinor: 500_000,
         totalMinor: 500_000,
         unlimitedMileage: input.unlimitedMileage ?? false,
         vehicleTimezone: 'Asia/Manila',

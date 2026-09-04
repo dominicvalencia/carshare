@@ -25,7 +25,7 @@ export function RenterOnboardingKycPage({
     return (
       <StateView
         title="Verification unavailable"
-        message={verification.error?.message}
+        message="Your saved verification progress could not be loaded. Check your connection and try again."
         actionLabel="Retry"
         onAction={() => void verification.refetch()}
       />
@@ -107,7 +107,12 @@ export function RenterOnboardingContactPage({
   if (verification.isPending) return <StateView loading title="Checking contact details…" />;
   if (!verification.data)
     return (
-      <StateView title="Contact verification unavailable" message={verification.error?.message} />
+      <StateView
+        title="Contact verification unavailable"
+        message="Your contact details could not be loaded. Check your connection and try again."
+        actionLabel="Retry"
+        onAction={() => void verification.refetch()}
+      />
     );
   const snapshot = verification.data;
   const latestOtp = inbox.data?.items.find(

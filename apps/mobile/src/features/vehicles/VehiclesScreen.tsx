@@ -53,6 +53,10 @@ interface Policy {
   readonly dailyRateMinor: number;
   readonly mileagePolicy: string;
   readonly turnaroundMinutes: number;
+  readonly shortDurationDiscountBps: number | null;
+  readonly weeklyDiscountBps: number | null;
+  readonly extendedTripDiscountBps: number | null;
+  readonly monthlyDiscountBps: number | null;
 }
 interface VehicleBlock {
   readonly id: string;
@@ -1166,12 +1170,36 @@ function PolicyStep({
   const [included, setIncluded] = useState('150');
   const [excess, setExcess] = useState('15');
   const [turnaround, setTurnaround] = useState(current?.turnaroundMinutes ?? 120);
+  const [shortDiscount, setShortDiscount] = useState(
+    current?.shortDurationDiscountBps == null ? '' : String(current.shortDurationDiscountBps / 100),
+  );
+  const [weeklyDiscount, setWeeklyDiscount] = useState(
+    current?.weeklyDiscountBps == null ? '' : String(current.weeklyDiscountBps / 100),
+  );
+  const [extendedDiscount, setExtendedDiscount] = useState(
+    current?.extendedTripDiscountBps == null ? '' : String(current.extendedTripDiscountBps / 100),
+  );
+  const [monthlyDiscount, setMonthlyDiscount] = useState(
+    current?.monthlyDiscountBps == null ? '' : String(current.monthlyDiscountBps / 100),
+  );
   const electric = vehicle.powertrain === 'BATTERY_ELECTRIC';
   const save = useMutation({
     mutationFn: async () => {
       await apiClient.request(`/owner/vehicles/${id}/policy-versions`, {
         body: JSON.stringify({
           dailyRateMinor: Math.round(Number(dailyRate) * 100),
+          ...(shortDiscount.trim()
+            ? { shortDurationDiscountBps: Math.round(Number(shortDiscount) * 100) }
+            : {}),
+          ...(weeklyDiscount.trim()
+            ? { weeklyDiscountBps: Math.round(Number(weeklyDiscount) * 100) }
+            : {}),
+          ...(extendedDiscount.trim()
+            ? { extendedTripDiscountBps: Math.round(Number(extendedDiscount) * 100) }
+            : {}),
+          ...(monthlyDiscount.trim()
+            ? { monthlyDiscountBps: Math.round(Number(monthlyDiscount) * 100) }
+            : {}),
           minimumRentalDays: 1,
           maximumRentalDays: 30,
           mileagePolicy: limited ? 'LIMITED' : 'UNLIMITED',
@@ -1204,6 +1232,42 @@ function PolicyStep({
         onChange={setDailyRate}
         keyboard="numeric"
       />
+      <Text style={styles.label}>Long-booking discounts (optional)</Text>
+      <Text style={styles.body}>
+        Enter a percentage from 0 to 40. Longer enabled tiers cannot be lower than shorter tiers.
+        The best eligible tier is applied once to the rental subtotal.
+      </Text>
+      <Field
+        label="3+ days (%)"
+        value={shortDiscount}
+        onChange={setShortDiscount}
+        keyboard="decimal-pad"
+      />
+      <Field
+        label="7+ days (%)"
+        value={weeklyDiscount}
+        onChange={setWeeklyDiscount}
+        keyboard="decimal-pad"
+      />
+      <Field
+        label="14+ days (%)"
+        value={extendedDiscount}
+        onChange={setExtendedDiscount}
+        keyboard="decimal-pad"
+      />
+      <Field
+        label="30+ days (%)"
+        value={monthlyDiscount}
+        onChange={setMonthlyDiscount}
+        keyboard="decimal-pad"
+      />
+      {Number(dailyRate) > 0 && weeklyDiscount.trim() && (
+        <Text style={styles.body}>
+          Example: 7 days is{' '}
+          {money(Math.round(Number(dailyRate) * 100 * 7 * (1 - Number(weeklyDiscount) / 100)))}{' '}
+          after the weekly discount.
+        </Text>
+      )}
       <Text style={styles.label}>Mileage</Text>
       <View style={styles.wrap}>
         <Choice label="150 km/day" selected={limited} onPress={() => setLimited(true)} />

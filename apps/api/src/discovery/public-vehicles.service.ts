@@ -1,5 +1,10 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { Prisma, ReviewType } from '@carrental/database';
+import {
+  Prisma,
+  ReviewModerationStatus,
+  ReviewPublicationStatus,
+  ReviewType,
+} from '@carrental/database';
 import { DiscoveryErrorCode } from '@carrental/api-contracts';
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
@@ -9,6 +14,7 @@ import { AvailabilityService } from './availability.service';
 import type { SearchVehiclesDto } from './discovery.dto';
 import { VehicleSearchSort } from './discovery.dto';
 import { RentalDurationService } from './duration.service';
+import { durationDiscount } from './duration-discounts';
 import {
   PublicVehicleEligibilityService,
   type PublicVehicleRecord,
@@ -18,6 +24,15 @@ import { PublicProjectionService } from './public-projection.service';
 interface SpatialCandidate {
   readonly id: string;
   readonly distanceKm: number;
+}
+
+interface SearchCursor {
+  readonly approvedAt: number;
+  readonly criteria: string;
+  readonly distanceKm: number;
+  readonly id: string;
+  readonly priceMinor: number;
+  readonly sort: VehicleSearchSort;
 }
 
 @Injectable()
@@ -84,10 +99,10 @@ export class PublicVehiclesService {
     }
     vehicles.sort((left, right) => this.compare(left, right, distance, input.sort));
     if (input.cursor) {
-      const cursor = this.decodeCursor(input.cursor, input.sort);
-      const index = vehicles.findIndex(({ id }) => id === cursor.id);
-      if (index < 0) this.invalidCursor();
-      vehicles = vehicles.slice(index + 1);
+      const cursor = this.decodeCursor(input.cursor, input);
+      vehicles = vehicles.filter(
+        (vehicle) => this.compareToCursor(vehicle, cursor, distance, input.sort) > 0,
+      );
     }
     const hasNextPage = vehicles.length > input.limit;
     const page = vehicles.slice(0, input.limit);
@@ -118,17 +133,28 @@ export class PublicVehiclesService {
         availabilities?.get(vehicle.id),
         ratings.get(vehicle.id),
       );
-      return chargeableDays
-        ? {
-            ...card,
-            estimatedRentalTotal: {
-              amountMinor: vehicle.policyVersions[0]!.dailyRateMinor * chargeableDays,
-              authoritative: false,
-              chargeableDays,
-              currency: vehicle.policyVersions[0]!.currency,
-            },
-          }
-        : card;
+      if (chargeableDays) {
+        const policy = vehicle.policyVersions[0]!;
+        const discount = durationDiscount(
+          policy.dailyRateMinor * chargeableDays,
+          chargeableDays,
+          policy,
+        );
+        return {
+          ...card,
+          estimatedRentalTotal: {
+            amountMinor: discount.discountedSubtotalMinor,
+            authoritative: false,
+            baseRentalAmountMinor: policy.dailyRateMinor * chargeableDays,
+            chargeableDays,
+            currency: policy.currency,
+            durationDiscountAmountMinor: discount.amountMinor,
+            durationDiscountBps: discount.basisPoints,
+            durationDiscountTier: discount.tier,
+          },
+        };
+      }
+      return card;
     });
     this.analytics.record({
       correlationId,
@@ -147,11 +173,7 @@ export class PublicVehiclesService {
       pageInfo: {
         hasNextPage,
         nextCursor:
-          hasNextPage && page.length
-            ? Buffer.from(JSON.stringify({ id: page.at(-1)!.id, sort: input.sort })).toString(
-                'base64url',
-              )
-            : null,
+          hasNextPage && page.length ? this.encodeCursor(page.at(-1)!, distance, input) : null,
       },
       search: { candidateLimit: 500, locationPrivacy: 'CITY_PROVINCE_AND_ROUNDED_DISTANCE' },
     };
@@ -190,6 +212,94 @@ export class PublicVehiclesService {
       vehicle: rating(ReviewType.VEHICLE),
       owner: rating(ReviewType.OWNER),
     });
+  }
+
+  async host(publicReference: string) {
+    const owner = await this.database.client.ownerProfile.findUnique({
+      select: {
+        id: true,
+        publicReference: true,
+        user: {
+          select: {
+            createdAt: true,
+            profile: {
+              select: {
+                avatarFile: { select: { classification: true, id: true, status: true } },
+                displayName: true,
+                firstName: true,
+              },
+            },
+          },
+        },
+        vehicles: { select: { id: true } },
+        verifiedAt: true,
+      },
+      where: { publicReference },
+    });
+    if (!owner)
+      throw new ApplicationException('HOST_NOT_FOUND', 'Host not found.', HttpStatus.NOT_FOUND);
+    const vehicles = await this.eligibility.findEligible(owner.vehicles.map(({ id }) => id));
+    const [rating, completedRentalCount, reviews] = await Promise.all([
+      this.database.client.ratingProjection.findUnique({
+        where: {
+          subjectType_subjectId: { subjectId: owner.id, subjectType: ReviewType.OWNER },
+        },
+      }),
+      this.database.client.booking.count({
+        where: { ownerProfileId: owner.id, status: 'COMPLETED' },
+      }),
+      this.database.client.review.findMany({
+        select: { categoryRatings: true },
+        where: {
+          moderationStatus: ReviewModerationStatus.PUBLISHED,
+          ownerProfileId: owner.id,
+          publicationStatus: ReviewPublicationStatus.PUBLISHED,
+        },
+      }),
+    ]);
+    const avatar = owner.user.profile?.avatarFile;
+    const categoryValues = new Map<string, number[]>();
+    for (const review of reviews) {
+      const values = review.categoryRatings as Record<string, unknown>;
+      for (const [name, value] of Object.entries(values)) {
+        if (typeof value === 'number')
+          categoryValues.set(name, [...(categoryValues.get(name) ?? []), value]);
+      }
+    }
+    return {
+      avatar:
+        avatar?.classification === 'PUBLIC' && avatar.status === 'READY'
+          ? this.projection.publicFile(avatar.id)
+          : null,
+      availableVehicles: vehicles.map((vehicle) => {
+        const policy = vehicle.policyVersions[0]!;
+        const cover = vehicle.photos.find(({ isCover }) => isCover)!;
+        return {
+          coverPhoto: this.projection.publicFile(cover.fileAsset.id),
+          currency: policy.currency,
+          dailyRateMinor: policy.dailyRateMinor,
+          make: vehicle.make,
+          model: vehicle.model,
+          vehicleId: vehicle.id,
+          year: vehicle.modelYear,
+        };
+      }),
+      categoryAverages: Object.fromEntries(
+        [...categoryValues].map(([name, values]) => [
+          name,
+          Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 100) / 100,
+        ]),
+      ),
+      completedRentalCount,
+      displayName:
+        owner.user.profile?.displayName ?? owner.user.profile?.firstName ?? 'Verified host',
+      memberSince: owner.user.createdAt,
+      publicReference: owner.publicReference,
+      rating: rating
+        ? { averageRating: rating.averageRating.toString(), reviewCount: rating.reviewCount }
+        : { averageRating: null, reviewCount: 0 },
+      verifiedAt: owner.verifiedAt,
+    };
   }
 
   async availabilityFor(id: string, start: string, end: string) {
@@ -303,18 +413,82 @@ export class PublicVehiclesService {
     }
   }
 
-  private decodeCursor(value: string, sort: VehicleSearchSort): { id: string } {
+  private encodeCursor(
+    vehicle: PublicVehicleRecord,
+    distance: ReadonlyMap<string, number>,
+    input: SearchVehiclesDto,
+  ): string {
+    return Buffer.from(
+      JSON.stringify({
+        approvedAt: vehicle.approvedAt?.getTime() ?? 0,
+        criteria: this.cursorCriteria(input),
+        distanceKm: distance.get(vehicle.id)!,
+        id: vehicle.id,
+        priceMinor: vehicle.policyVersions[0]!.dailyRateMinor,
+        sort: input.sort,
+      } satisfies SearchCursor),
+    ).toString('base64url');
+  }
+
+  private decodeCursor(value: string, input: SearchVehiclesDto): SearchCursor {
     try {
-      const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as {
-        id?: unknown;
-        sort?: unknown;
-      };
-      if (typeof parsed.id !== 'string' || parsed.sort !== sort) this.invalidCursor();
-      return { id: parsed.id };
+      const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as SearchCursor;
+      if (
+        typeof parsed.id !== 'string' ||
+        typeof parsed.distanceKm !== 'number' ||
+        !Number.isFinite(parsed.distanceKm) ||
+        typeof parsed.priceMinor !== 'number' ||
+        !Number.isSafeInteger(parsed.priceMinor) ||
+        typeof parsed.approvedAt !== 'number' ||
+        !Number.isSafeInteger(parsed.approvedAt) ||
+        parsed.sort !== input.sort ||
+        parsed.criteria !== this.cursorCriteria(input)
+      )
+        this.invalidCursor();
+      return parsed;
     } catch (error) {
       if (error instanceof ApplicationException) throw error;
       this.invalidCursor();
     }
+  }
+
+  private compareToCursor(
+    vehicle: PublicVehicleRecord,
+    cursor: SearchCursor,
+    distance: ReadonlyMap<string, number>,
+    sort: VehicleSearchSort,
+  ): number {
+    const byId = vehicle.id.localeCompare(cursor.id);
+    const byDistance = distance.get(vehicle.id)! - cursor.distanceKm;
+    const byPrice = vehicle.policyVersions[0]!.dailyRateMinor - cursor.priceMinor;
+    const byNewest = cursor.approvedAt - (vehicle.approvedAt?.getTime() ?? 0);
+    if (sort === VehicleSearchSort.PRICE_LOW_TO_HIGH) return byPrice || byDistance || byId;
+    if (sort === VehicleSearchSort.PRICE_HIGH_TO_LOW) return -byPrice || byDistance || byId;
+    if (sort === VehicleSearchSort.NEWEST) return byNewest || byDistance || byId;
+    if (sort === VehicleSearchSort.DISTANCE) return byDistance || byId;
+    return byDistance || byPrice || byNewest || byId;
+  }
+
+  private cursorCriteria(input: SearchVehiclesDto): string {
+    return JSON.stringify({
+      categoryId: input.categoryId ?? null,
+      end: input.end ?? null,
+      featureIds: [...(input.featureIds ?? [])].sort(),
+      fuelType: input.fuelType ?? null,
+      latitude: input.latitude,
+      longitude: input.longitude,
+      make: input.make?.toLowerCase() ?? null,
+      maxPrice: input.maxPrice ?? null,
+      minPrice: input.minPrice ?? null,
+      model: input.model?.toLowerCase() ?? null,
+      powertrain: input.powertrain ?? null,
+      radius: input.radius,
+      seats: input.seats ?? null,
+      sort: input.sort,
+      start: input.start ?? null,
+      transmission: input.transmission ?? null,
+      unlimitedMileage: input.unlimitedMileage ?? null,
+    });
   }
 
   private invalidCursor(): never {

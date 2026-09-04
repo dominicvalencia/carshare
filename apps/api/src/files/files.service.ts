@@ -79,7 +79,10 @@ export class FilesService {
       request,
       'RENTER_DOCUMENT_ACCESS_GRANTED',
     );
-    return this.createGrant(id);
+    return this.createGrant(id, {
+      mimeType: asset.mimeType,
+      originalName: asset.originalName,
+    });
   }
 
   /** Only call after a service has proved that the asset belongs to a public projection. */
@@ -92,7 +95,10 @@ export class FilesService {
     return this.createGrant(id);
   }
 
-  private createGrant(id: string) {
+  private createGrant(
+    id: string,
+    metadata?: { readonly mimeType: string; readonly originalName: string },
+  ) {
     const expiresAt = Date.now() + 5 * 60 * 1000;
     const payload = Buffer.from(`${id}:${expiresAt}`).toString('base64url');
     const signature = this.crypto.hashToken(`file-access:${payload}`);
@@ -100,6 +106,7 @@ export class FilesService {
       contentPath: `/api/v1/file-access/${id}?grant=${payload}.${signature}`,
       expiresAt: new Date(expiresAt),
       grant: `${payload}.${signature}`,
+      ...metadata,
     };
   }
 

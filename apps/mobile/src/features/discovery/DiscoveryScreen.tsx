@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import type { NavigationProp } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Location from 'expo-location';
 import {
   FlatList,
@@ -44,6 +44,13 @@ import {
 import type { BookingView } from '../bookings/MyBookingsScreen';
 import { invalidateRenterVerification } from '../../query/verification-invalidation';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
+import {
+  chargeableDays,
+  durationDiscountMessage,
+  percentageLabel,
+  positiveDurationDiscounts,
+  type PublicDurationDiscount,
+} from './duration-discount-presentation';
 
 interface Grant {
   readonly contentPath: string;
@@ -92,7 +99,11 @@ interface VehicleDetail {
   readonly powertrain?: string | null;
   readonly category?: { name: string } | null;
   readonly location: { city: string; province: string };
-  readonly pricing: { currency: string; dailyRateMinor: number };
+  readonly pricing: {
+    currency: string;
+    dailyRateMinor: number;
+    durationDiscounts?: readonly PublicDurationDiscount[];
+  };
   readonly mileagePolicy: {
     type: string;
     includedKilometersPerChargeableDay?: number;
@@ -101,7 +112,13 @@ interface VehicleDetail {
   readonly features: readonly { id: string; name: string }[];
   readonly photos?: readonly (Grant & { id: string })[];
   readonly rating?: Rating;
-  readonly owner: { displayName: string; verified: boolean; rating?: Rating; memberSince?: string };
+  readonly owner: {
+    displayName: string;
+    verified: boolean;
+    publicReference: string;
+    rating?: Rating;
+    memberSince?: string;
+  };
   readonly returnPolicy?: {
     fuel?: string | null;
     ev?: string | null;
@@ -116,6 +133,9 @@ interface Quote {
   readonly chargeableDays: number;
   readonly currency: string;
   readonly totalMinor: number;
+  readonly baseRentalAmountMinor: number;
+  readonly durationDiscountAmountMinor: number;
+  readonly discountedRentalSubtotalMinor: number;
   readonly includedMileageKm: number | null;
   readonly expiresAt: string;
   readonly lines: readonly { code: string; description: string; amountMinor: number }[];
@@ -140,17 +160,19 @@ function futureDate(days: number, hour = 9) {
 export function DiscoveryScreen({
   home = false,
   initialMode = 'form',
+  initialVehicleId,
   onExit,
 }: {
   readonly home?: boolean;
   readonly initialMode?: 'form' | 'favorites';
+  readonly initialVehicleId?: string | undefined;
   readonly onExit?: (() => void) | undefined;
 }) {
   const navigation = useNavigation<NavigationProp<RenterTabParamList>>();
   const client = useQueryClient();
-  const [mode, setMode] = useState<ViewMode>(initialMode);
+  const [mode, setMode] = useState<ViewMode>(initialVehicleId ? 'detail' : initialMode);
   const detailOrigin = useRef<ViewMode>(initialMode === 'favorites' ? 'favorites' : 'results');
-  const [vehicleId, setVehicleId] = useState<string | null>(null);
+  const [vehicleId, setVehicleId] = useState<string | null>(initialVehicleId ?? null);
   const [place, setPlace] = useState<SearchLocation>(locations[0]!);
   const [pickup, setPickup] = useState(futureDate(1));
   const [returnAt, setReturnAt] = useState(futureDate(2));
@@ -174,6 +196,7 @@ export function DiscoveryScreen({
       sort: 'RECOMMENDED',
       start: pickup.toISOString(),
       end: returnAt.toISOString(),
+      limit: '10',
     });
     if (make.trim()) query.set('make', make.trim());
     if (categoryId) query.set('categoryId', categoryId);
@@ -196,11 +219,24 @@ export function DiscoveryScreen({
     seats,
     transmission,
   ]);
-  const search = useQuery({
+  const search = useInfiniteQuery({
     enabled: mode === 'results' || home,
     queryKey: ['public-search', queryString],
-    queryFn: () => apiClient.request<SearchResponse>(`/vehicles/search?${queryString}`),
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) =>
+      apiClient.request<SearchResponse>(
+        `/vehicles/search?${queryString}${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ''}`,
+      ),
+    getNextPageParam: (lastPage) => lastPage.pageInfo.nextCursor ?? undefined,
   });
+  const searchItems = useMemo(
+    () => search.data?.pages.flatMap((page) => page.items) ?? [],
+    [search.data?.pages],
+  );
+  const nextPageError = search.isFetchNextPageError ? search.error : null;
+  const fetchNextSearchPage = search.fetchNextPage;
+  const resultListRef = useRef<FlatList<VehicleCardView>>(null);
+  const resultScrollOffset = useRef(0);
   const detail = useQuery({
     enabled: Boolean(vehicleId) && (mode === 'detail' || mode === 'quote'),
     queryKey: ['public-vehicle', vehicleId],
@@ -324,7 +360,7 @@ export function DiscoveryScreen({
         returnAt={returnAt}
         setPickup={setPickup}
         setReturnAt={setReturnAt}
-        onBack={() => setMode(detailOrigin.current)}
+        onBack={() => (initialVehicleId && onExit ? onExit() : setMode(detailOrigin.current))}
         onFavorite={() =>
           detail.data &&
           favorite.mutate({ id: detail.data.vehicleId, active: detail.data.favorite })
@@ -341,7 +377,7 @@ export function DiscoveryScreen({
         scroll={false}
         leading={<BackControl label="Edit search" onPress={() => setMode('form')} />}
         eyebrow="Available cars"
-        title={`${search.data?.items.length ?? 0} cars near ${place.label}`}
+        title={`${searchItems.length} cars loaded near ${place.label}`}
         action={
           <IconButton
             icon="options-outline"
@@ -362,7 +398,7 @@ export function DiscoveryScreen({
             title="Finding cars…"
             message="Checking availability for your dates."
           />
-        ) : search.isError ? (
+        ) : search.isError && !search.data ? (
           <StateView
             icon="cloud-offline-outline"
             title="Search unavailable"
@@ -372,9 +408,25 @@ export function DiscoveryScreen({
           />
         ) : (
           <FlatList
-            data={search.data?.items ?? []}
+            ref={resultListRef}
+            data={searchItems}
             keyExtractor={(item) => item.vehicleId}
             contentContainerStyle={styles.resultList}
+            onContentSizeChange={() => {
+              if (resultScrollOffset.current > 0)
+                resultListRef.current?.scrollToOffset({
+                  animated: false,
+                  offset: resultScrollOffset.current,
+                });
+            }}
+            onEndReached={() => {
+              if (search.hasNextPage && !search.isFetchingNextPage) void search.fetchNextPage();
+            }}
+            onEndReachedThreshold={0.25}
+            onScroll={(event) => {
+              resultScrollOffset.current = event.nativeEvent.contentOffset.y;
+            }}
+            scrollEventThrottle={100}
             renderItem={({ item }) => (
               <VehicleCard
                 vehicle={item}
@@ -390,6 +442,21 @@ export function DiscoveryScreen({
                 actionLabel="Change search"
                 onAction={() => setMode('form')}
               />
+            }
+            ListFooterComponent={
+              search.isFetchingNextPage ? (
+                <StateView loading title="Loading more cars…" />
+              ) : nextPageError ? (
+                <StateView
+                  icon="cloud-offline-outline"
+                  title="Couldn’t load more cars"
+                  message={nextPageError.message}
+                  actionLabel="Retry"
+                  onAction={() => void fetchNextSearchPage()}
+                />
+              ) : searchItems.length > 0 && !search.hasNextPage ? (
+                <Text style={styles.endOfResults}>You’ve reached the end of these results.</Text>
+              ) : null
             }
           />
         )}
@@ -417,7 +484,6 @@ export function DiscoveryScreen({
             }}
             onApply={() => {
               setFiltersOpen(false);
-              void search.refetch();
             }}
           />
         )}
@@ -513,7 +579,7 @@ export function DiscoveryScreen({
               onAction={() => void search.refetch()}
             />
           )}
-          {search.data?.items.slice(0, 4).map((vehicle) => (
+          {searchItems.slice(0, 4).map((vehicle) => (
             <VehicleCard
               key={vehicle.vehicleId}
               vehicle={vehicle}
@@ -523,7 +589,7 @@ export function DiscoveryScreen({
               }
             />
           ))}
-          {search.data?.items.length === 0 && (
+          {searchItems.length === 0 && (
             <StateView
               icon="car-outline"
               title="No cars nearby yet"
@@ -649,6 +715,7 @@ function VehicleView(properties: {
   readonly continueBooking: ReturnType<typeof useMutation<PaymentSetupResult, Error, string>>;
   readonly mode: ViewMode;
 }) {
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const { vehicle } = properties;
   const { width: viewportWidth } = useWindowDimensions();
   const scrollRef = useRef<ScrollView>(null);
@@ -681,6 +748,9 @@ function VehicleView(properties: {
         />
       </Screen>
     );
+  const durationDiscounts = positiveDurationDiscounts(vehicle.pricing.durationDiscounts);
+  const selectedChargeableDays = chargeableDays(properties.pickup, properties.returnAt);
+  const discountMessage = durationDiscountMessage(selectedChargeableDays, durationDiscounts);
   return (
     <Screen
       scrollRef={scrollRef}
@@ -763,6 +833,33 @@ function VehicleView(properties: {
         </Text>
         <Text style={styles.perDay}> per day</Text>
       </View>
+      {durationDiscounts.length > 0 && (
+        <Card style={styles.discountCard}>
+          <View style={styles.discountHeading}>
+            <Icon color={colors.primary} name="sparkles-outline" size={20} />
+            <View style={styles.flex}>
+              <Text style={styles.cardTitle}>Save more on longer trips</Text>
+              <Text style={styles.note}>
+                Discount is applied automatically when your rental dates qualify.
+              </Text>
+            </View>
+          </View>
+          <View style={styles.discountTiers}>
+            {durationDiscounts.map((tier) => (
+              <View key={tier.minimumDays} style={styles.discountTier}>
+                <Text style={styles.discountDays}>{tier.minimumDays}+ days</Text>
+                <Text style={styles.discountValue}>Save {percentageLabel(tier.discountBps)}</Text>
+              </View>
+            ))}
+          </View>
+          {discountMessage && (
+            <View style={styles.discountMessage}>
+              <Icon color={colors.primaryDark} name="calendar-outline" size={16} />
+              <Text style={styles.discountMessageText}>{discountMessage}</Text>
+            </View>
+          )}
+        </Card>
+      )}
       <Card style={styles.tripCard}>
         <SectionHeader title="Your trip" />
         <View style={styles.dateGrid}>
@@ -879,24 +976,43 @@ function VehicleView(properties: {
         )}
       </Card>
       <SectionHeader title="Your host" />
-      <Card style={styles.ownerCard}>
-        <View style={styles.ownerAvatar}>
-          <Icon color={colors.primary} name="person" />
-        </View>
-        <View style={styles.flex}>
-          <View style={styles.row}>
-            <Text style={styles.cardTitle}>{vehicle.owner.displayName}</Text>
-            {vehicle.owner.verified && (
-              <Icon color={colors.primary} name="checkmark-circle" size={18} />
-            )}
+      <Pressable
+        accessibilityRole="button"
+        onPress={() =>
+          navigation.navigate('HostProfile', { hostReference: vehicle.owner.publicReference })
+        }
+      >
+        <Card style={styles.ownerCard}>
+          <View style={styles.ownerAvatar}>
+            <Icon color={colors.primary} name="person" />
           </View>
-          <Text style={styles.body}>
-            {vehicle.owner.rating?.averageRating
-              ? `★ ${vehicle.owner.rating.averageRating} · ${vehicle.owner.rating.reviewCount} reviews`
-              : 'Verified owner · New host'}
-          </Text>
-        </View>
-      </Card>
+          <View style={styles.flex}>
+            <View style={styles.row}>
+              <Text style={styles.cardTitle}>{vehicle.owner.displayName}</Text>
+              {vehicle.owner.verified && (
+                <Icon color={colors.primary} name="checkmark-circle" size={18} />
+              )}
+            </View>
+            <Text style={styles.body}>
+              {vehicle.owner.rating?.averageRating
+                ? `★ ${vehicle.owner.rating.averageRating} · ${vehicle.owner.rating.reviewCount} reviews`
+                : 'Verified owner · New host'}
+            </Text>
+          </View>
+        </Card>
+      </Pressable>
+      {vehicle.rating?.reviewCount ? (
+        <Button
+          label={`Read all ${vehicle.rating.reviewCount} vehicle reviews`}
+          onPress={() =>
+            navigation.navigate('PublicReviews', {
+              path: `/vehicles/${vehicle.vehicleId}/reviews`,
+              title: `${vehicle.year} ${vehicle.make} ${vehicle.model}`,
+            })
+          }
+          variant="secondary"
+        />
+      ) : null}
       {vehicle.description && (
         <>
           <SectionHeader title="About this car" />
@@ -960,6 +1076,12 @@ function QuoteCard({
           <Text style={styles.lineMoney}>{money(line.amountMinor, quote.currency)}</Text>
         </View>
       ))}
+      {quote.durationDiscountAmountMinor > 0 && (
+        <Text style={styles.savings}>
+          You save {money(quote.durationDiscountAmountMinor, quote.currency)} on this{' '}
+          {quote.chargeableDays}-day booking.
+        </Text>
+      )}
       <View style={styles.totalLine}>
         <Text style={styles.totalLabel}>Total</Text>
         <Text style={styles.total}>{money(quote.totalMinor, quote.currency)}</Text>
@@ -1329,6 +1451,28 @@ const styles = StyleSheet.create({
   description: { color: colors.subtleText, fontSize: 15, lineHeight: 24 },
   detailMeta: { gap: spacing.xs },
   detailPrice: { color: colors.ink, fontSize: 28, fontWeight: '900' },
+  discountCard: { gap: spacing.sm },
+  discountDays: { color: colors.ink, fontSize: 14, fontWeight: '700' },
+  discountHeading: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
+  discountMessage: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.sm,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    padding: spacing.sm,
+  },
+  discountMessageText: { color: colors.primaryDark, flex: 1, fontSize: 13, fontWeight: '700' },
+  discountTier: {
+    alignItems: 'center',
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.xs,
+  },
+  discountTiers: { gap: spacing.xs },
+  discountValue: { color: colors.primary, fontSize: 14, fontWeight: '800' },
   detailRow: {
     alignItems: 'center',
     borderBottomColor: colors.border,
@@ -1339,6 +1483,12 @@ const styles = StyleSheet.create({
   },
   divider: { backgroundColor: colors.border, height: StyleSheet.hairlineWidth },
   error: { color: colors.danger, lineHeight: 20 },
+  endOfResults: {
+    color: colors.subtleText,
+    fontSize: 13,
+    paddingVertical: spacing.lg,
+    textAlign: 'center',
+  },
   estimate: {
     backgroundColor: colors.primarySoft,
     borderRadius: radius.sm,
@@ -1347,6 +1497,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: spacing.sm,
     padding: spacing.xs,
+  },
+  savings: {
+    color: colors.primary,
+    fontWeight: '800',
+    marginTop: spacing.sm,
   },
   favorite: { position: 'absolute', right: spacing.sm, top: spacing.sm },
   favoriteCard: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },

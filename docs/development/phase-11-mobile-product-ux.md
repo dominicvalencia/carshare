@@ -76,7 +76,10 @@ errors. Critical status information includes text and is never color-only.
 ## Known development limitations
 
 - Curated locations and device coordinates are not full address search or geocoding.
-- Booking projections do not yet include vehicle photo grants, so booking cards use the project demo
-  image fallback.
+- Booking and owner fleet projections now include authorized short-lived vehicle photo grants. The
+  project demo image remains only a fallback when a grant is missing, expired, or cannot load.
 - Existing owner operations panels preserve Phase 7–9 controls and have received safe-area and copy
   improvements; a future phase can further split their long operational forms without changing APIs.
+- Phase 12 adds public Host Profile/review routes and cursor-infinite search while preserving this
+  mode-specific navigation architecture. See the
+  [current system baseline](../architecture/current-system-baseline.md).

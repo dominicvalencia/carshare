@@ -29,6 +29,7 @@ export const publicVehicleSelect = {
   ownerProfile: {
     select: {
       id: true,
+      publicReference: true,
       status: true,
       userId: true,
       user: {

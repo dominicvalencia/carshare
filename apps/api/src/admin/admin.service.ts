@@ -20,6 +20,7 @@ export class AdminService {
     return this.database.client.user.findMany({
       orderBy: { createdAt: 'desc' },
       select: {
+        _count: { select: { ownedVehicles: true, ownerBookings: true, renterBookings: true } },
         createdAt: true,
         email: true,
         id: true,
@@ -28,6 +29,11 @@ export class AdminService {
         profile: true,
         roles: { select: { role: { select: { code: true } } } },
         status: true,
+        verifications: {
+          orderBy: { updatedAt: 'desc' },
+          select: { status: true, type: true },
+          take: 1,
+        },
       },
       take: 100,
       ...(value
@@ -44,16 +50,116 @@ export class AdminService {
   }
 
   user(id: string) {
-    return this.database.client.user.findUniqueOrThrow({
-      where: { id },
-      include: {
-        ownerProfile: true,
-        profile: true,
-        roles: { include: { role: true } },
-        sessions: true,
-      },
-      omit: { passwordHash: true },
-    });
+    return this.database.client.user
+      .findUniqueOrThrow({
+        where: { id },
+        select: {
+          _count: { select: { authoredReviews: true, subjectReviews: true } },
+          createdAt: true,
+          email: true,
+          emailVerifiedAt: true,
+          id: true,
+          lastLoginAt: true,
+          loginLockedUntil: true,
+          mobileNumber: true,
+          mobileVerifiedAt: true,
+          ownerBookings: {
+            orderBy: { createdAt: 'desc' },
+            select: {
+              actualPickupAt: true,
+              actualReturnAt: true,
+              createdAt: true,
+              ownerEarning: {
+                select: { currency: true, netEarningAmountMinor: true, status: true },
+              },
+              postReturnClaims: { select: { id: true, status: true } },
+              pricingSnapshot: { select: { currency: true, totalMinor: true } },
+              publicReference: true,
+              rentalEnd: true,
+              rentalStart: true,
+              renter: {
+                select: {
+                  email: true,
+                  profile: { select: { displayName: true, firstName: true, lastName: true } },
+                },
+              },
+              status: true,
+              vehicle: { select: { id: true, make: true, model: true, modelYear: true } },
+            },
+            take: 100,
+          },
+          ownerProfile: {
+            select: {
+              _count: { select: { reviews: true } },
+              createdAt: true,
+              id: true,
+              legalName: true,
+              payoutEligibility: { select: { status: true } },
+              publicReference: true,
+              status: true,
+              submittedAt: true,
+              verifiedAt: true,
+            },
+          },
+          ownedVehicles: {
+            orderBy: { createdAt: 'desc' },
+            select: {
+              category: { select: { name: true } },
+              createdAt: true,
+              id: true,
+              make: true,
+              model: true,
+              modelYear: true,
+              operationalStatus: true,
+              status: true,
+            },
+            take: 100,
+          },
+          profile: {
+            select: { displayName: true, firstName: true, lastName: true, middleName: true },
+          },
+          renterBookings: {
+            orderBy: { createdAt: 'desc' },
+            select: {
+              actualPickupAt: true,
+              actualReturnAt: true,
+              createdAt: true,
+              owner: {
+                select: {
+                  email: true,
+                  profile: { select: { displayName: true, firstName: true, lastName: true } },
+                },
+              },
+              postReturnClaims: { select: { id: true, status: true } },
+              pricingSnapshot: { select: { currency: true, totalMinor: true } },
+              publicReference: true,
+              rentalEnd: true,
+              rentalStart: true,
+              status: true,
+              vehicle: { select: { id: true, make: true, model: true, modelYear: true } },
+            },
+            take: 100,
+          },
+          roles: { select: { role: { select: { code: true } } } },
+          status: true,
+          verifications: {
+            orderBy: { updatedAt: 'desc' },
+            select: { id: true, reviewedAt: true, status: true, submittedAt: true, type: true },
+          },
+        },
+      })
+      .then((user) => ({
+        ...user,
+        ownerBookings: user.ownerBookings.map((booking) => ({
+          ...booking,
+          ownerEarning: booking.ownerEarning
+            ? {
+                ...booking.ownerEarning,
+                netEarningAmountMinor: booking.ownerEarning.netEarningAmountMinor.toString(),
+              }
+            : null,
+        })),
+      }));
   }
 
   async changeUserStatus(

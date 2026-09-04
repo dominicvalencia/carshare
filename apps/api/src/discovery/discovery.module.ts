@@ -3,6 +3,7 @@ import {
   AdminVehicleVisibilityController,
   FavoritesController,
   PricingQuotesController,
+  PublicHostsController,
   PublicVehiclesController,
 } from './discovery.controller';
 import { DiscoveryAnalyticsService } from './analytics.service';
@@ -19,6 +20,7 @@ import { FilesModule } from '../files/files.module';
   imports: [FilesModule],
   controllers: [
     PublicVehiclesController,
+    PublicHostsController,
     PricingQuotesController,
     FavoritesController,
     AdminVehicleVisibilityController,

@@ -332,6 +332,57 @@ export async function seedDevelopmentDemo(client: PrismaClient): Promise<void> {
       verifiedAt: new Date(),
     },
   });
+  const pendingOwnerUser = await client.user.upsert({
+    where: { normalizedEmail: 'owner-review@demo.carrental.ph' },
+    create: {
+      id: stableId('10', 4),
+      email: 'owner-review@demo.carrental.ph',
+      normalizedEmail: 'owner-review@demo.carrental.ph',
+      emailVerifiedAt: new Date(),
+      mobileNumber: '+639171234569',
+      mobileVerifiedAt: new Date(),
+      passwordHash,
+      profile: {
+        create: { displayName: 'Jamie Lim', firstName: 'Jamie', lastName: 'Lim' },
+      },
+    },
+    update: {
+      emailVerifiedAt: new Date(),
+      mobileNumber: '+639171234569',
+      mobileVerifiedAt: new Date(),
+      passwordHash,
+    },
+  });
+  await client.userRole.upsert({
+    where: { userId_roleId: { userId: pendingOwnerUser.id, roleId: ownerRole.id } },
+    create: { userId: pendingOwnerUser.id, roleId: ownerRole.id },
+    update: {},
+  });
+  const pendingOwner = await client.ownerProfile.upsert({
+    where: { userId: pendingOwnerUser.id },
+    create: {
+      id: stableId('11', 3),
+      userId: pendingOwnerUser.id,
+      status: OwnerProfileStatus.PENDING_VERIFICATION,
+      legalName: 'Jamie Lim',
+      contactNumber: '+639171234569',
+      addressLine1: '88 Development Avenue',
+      barangay: 'Poblacion',
+      city: 'Makati City',
+      province: 'Metro Manila',
+      postalCode: '1210',
+      submittedAt: new Date('2026-08-31T04:00:00.000Z'),
+    },
+    update: {
+      rejectedAt: null,
+      rejectionReason: null,
+      status: OwnerProfileStatus.PENDING_VERIFICATION,
+      submittedAt: new Date('2026-08-31T04:00:00.000Z'),
+      suspendedAt: null,
+      suspensionReason: null,
+      verifiedAt: null,
+    },
+  });
   await ensureApprovedRenter(client, renter.id, 1, 'Mika', 'Santos');
   await ensureApprovedRenter(client, ownerUser.id, 2, 'Paolo', 'Reyes');
   await ensureApprovedRenter(client, dualRoleUser.id, 3, 'Alex', 'Cruz');
@@ -342,6 +393,52 @@ export async function seedDevelopmentDemo(client: PrismaClient): Promise<void> {
   const objectRoot = isAbsolute(configuredRoot)
     ? configuredRoot
     : resolve(import.meta.dirname, '../../../apps/api', configuredRoot);
+  const ownerEvidenceFileId = stableId('77', 1);
+  await writeDemoAsset(
+    client,
+    objectRoot,
+    image,
+    checksum,
+    pendingOwnerUser.id,
+    ownerEvidenceFileId,
+    FileClassification.SENSITIVE,
+    'demo-owner-identity.png',
+  );
+  const ownerVerification = await client.verification.upsert({
+    where: { id: stableId('78', 1) },
+    create: {
+      id: stableId('78', 1),
+      userId: pendingOwnerUser.id,
+      ownerProfileId: pendingOwner.id,
+      type: VerificationType.OWNER,
+      status: VerificationStatus.PENDING,
+      submittedAt: new Date('2026-08-31T04:00:00.000Z'),
+    },
+    update: {
+      ownerProfileId: pendingOwner.id,
+      rejectionReason: null,
+      reviewedAt: null,
+      reviewedByUserId: null,
+      status: VerificationStatus.PENDING,
+      submittedAt: new Date('2026-08-31T04:00:00.000Z'),
+    },
+  });
+  await client.verificationDocument.upsert({
+    where: {
+      verificationId_fileAssetId: {
+        verificationId: ownerVerification.id,
+        fileAssetId: ownerEvidenceFileId,
+      },
+    },
+    create: {
+      id: stableId('79', 1),
+      verificationId: ownerVerification.id,
+      fileAssetId: ownerEvidenceFileId,
+      documentType: 'OWNER_IDENTITY',
+      status: VerificationStatus.SUBMITTED,
+    },
+    update: { replacedAt: null, status: VerificationStatus.SUBMITTED },
+  });
   const requiredDocuments = await client.vehicleDocumentDefinition.findMany({
     where: { active: true, jurisdiction: 'PH', required: true },
     orderBy: { sortOrder: 'asc' },
@@ -417,6 +514,10 @@ export async function seedDevelopmentDemo(client: PrismaClient): Promise<void> {
           vehicleId,
           version: 1,
           dailyRateMinor: data.daily,
+          shortDurationDiscountBps: 500,
+          weeklyDiscountBps: 1_000,
+          extendedTripDiscountBps: 1_500,
+          monthlyDiscountBps: 2_000,
           minimumRentalDays: 1,
           maximumRentalDays: 30,
           mileagePolicy:

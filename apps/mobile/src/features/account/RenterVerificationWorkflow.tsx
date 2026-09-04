@@ -1,4 +1,13 @@
-import { useMemo, useState } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
 import {
@@ -55,6 +64,25 @@ const relationships = [
   ['OTHER', 'Other'],
 ] as const;
 
+type RenterDraft = ReturnType<typeof draftFromSnapshot>;
+interface RenterDraftContextValue {
+  readonly form: RenterDraft;
+  readonly hydrated: boolean;
+  readonly setForm: Dispatch<SetStateAction<RenterDraft>>;
+  readonly setHydrated: Dispatch<SetStateAction<boolean>>;
+}
+const RenterDraftContext = createContext<RenterDraftContextValue | null>(null);
+
+export function RenterOnboardingDraftProvider({ children }: { readonly children: ReactNode }) {
+  const [form, setForm] = useState(() => draftFromSnapshot());
+  const [hydrated, setHydrated] = useState(false);
+  return (
+    <RenterDraftContext.Provider value={{ form, hydrated, setForm, setHydrated }}>
+      {children}
+    </RenterDraftContext.Provider>
+  );
+}
+
 interface AreaOption {
   readonly code: string;
   readonly name: string;
@@ -89,7 +117,7 @@ export function RenterVerificationWorkflow({
   const [editingApproved, setEditingApproved] = useState(false);
   const [barangaySearch, setBarangaySearch] = useState('');
   const [capturedSelfie, setCapturedSelfie] = useState<ImagePicker.ImagePickerAsset | null>(null);
-  const [form, setForm] = useState({
+  const initialForm = () => ({
     addressLine1: profile?.addressLine1 ?? '',
     addressScopeCode: profile?.addressScopeCode ?? '',
     barangay: profile?.barangay ?? '',
@@ -114,6 +142,15 @@ export function RenterVerificationWorkflow({
     region: profile?.region ?? '',
     regionCode: profile?.regionCode ?? '',
   });
+  const [localForm, setLocalForm] = useState(initialForm);
+  const sharedDraft = useContext(RenterDraftContext);
+  const form = onboardingNavigation && sharedDraft ? sharedDraft.form : localForm;
+  const setForm = onboardingNavigation && sharedDraft ? sharedDraft.setForm : setLocalForm;
+  useEffect(() => {
+    if (!onboardingNavigation || !sharedDraft || sharedDraft.hydrated) return;
+    sharedDraft.setForm(draftFromSnapshot(snapshot));
+    sharedDraft.setHydrated(true);
+  }, [onboardingNavigation, sharedDraft, snapshot]);
   const regions = useQuery({
     queryKey: ['geography', 'regions'],
     queryFn: () => apiClient.request<AreaResponse>('/geography/regions'),
@@ -143,12 +180,23 @@ export function RenterVerificationWorkflow({
   });
   const save = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      apiClient.request('/renter-verification/profile', {
-        body: JSON.stringify(body),
-        method: 'POST',
-      }),
-    onSuccess: () => {
+      apiClient.request<NonNullable<RenterVerificationSnapshot['profile']>>(
+        '/renter-verification/profile',
+        {
+          body: JSON.stringify(body),
+          method: 'POST',
+        },
+      ),
+    onSuccess: (updatedProfile) => {
       setFormError('');
+      client.setQueryData<RenterVerificationSnapshot>(['renter-verification'], (current) =>
+        current
+          ? {
+              ...current,
+              profile: { ...(current.profile ?? updatedProfile), ...updatedProfile },
+            }
+          : current,
+      );
       void invalidateRenterVerification(client);
     },
   });
@@ -195,6 +243,10 @@ export function RenterVerificationWorkflow({
     normalizeMobile(form.emergencyContactMobile) &&
     normalizeMobile(form.emergencyContactMobile) === normalizeMobile(snapshot.mobileNumber ?? ''),
   );
+  useEffect(() => {
+    const error = save.error ?? upload.error ?? submit.error;
+    if (error) console.error('Renter verification workflow request failed', error);
+  }, [save.error, submit.error, upload.error]);
 
   const saveStage = (body: Record<string, unknown>, nextStep: number) => {
     setFormError('');
@@ -206,7 +258,6 @@ export function RenterVerificationWorkflow({
   const back = (nextStep: number) =>
     onboardingNavigation ? onboardingNavigation.onBack() : setInternalStep(nextStep);
   const advancePersonal = () => {
-    if (onboardingNavigation) return onboardingNavigation.onNext();
     const error = personalError(form);
     if (error) return setFormError(error);
     saveStage(
@@ -221,7 +272,6 @@ export function RenterVerificationWorkflow({
     );
   };
   const advanceAddress = () => {
-    if (onboardingNavigation) return onboardingNavigation.onNext();
     const error = addressError(form);
     if (error) return setFormError(error);
     saveStage(
@@ -239,7 +289,6 @@ export function RenterVerificationWorkflow({
     );
   };
   const advanceDriver = () => {
-    if (onboardingNavigation) return onboardingNavigation.onNext();
     const error = driverError(form, Boolean(profile?.driverLicenseLastFour));
     if (error) return setFormError(error);
     saveStage(
@@ -547,7 +596,6 @@ export function RenterVerificationWorkflow({
                 busy={save.isPending}
                 onBack={() => back(2)}
                 onNext={() => {
-                  if (onboardingNavigation) return onboardingNavigation.onNext();
                   const error = emergencyError(form, snapshot.mobileNumber);
                   if (error) return setFormError(error);
                   saveStage(
@@ -611,33 +659,67 @@ export function RenterVerificationWorkflow({
               title="Review & submit"
               helper="Nothing is submitted automatically. Confirm the information below before sending it to authorized verification staff."
             >
-              <ReviewRow
-                label="Legal identity"
-                value={`${form.legalFirstName} ${form.middleName} ${form.legalLastName}`
-                  .replaceAll(/\s+/g, ' ')
-                  .trim()}
-              />
-              <ReviewRow label="Date of birth" value={form.dateOfBirth} />
-              <ReviewRow
-                label="Residential address"
-                value={`${form.addressLine1}, ${form.barangay}, ${form.cityMunicipality}${form.province ? `, ${form.province}` : ''} ${form.postalCode}`}
-              />
-              <ReviewRow
-                label="Driver’s license"
-                value={`${profile?.driverLicenseLastFour ? `Ending ${profile.driverLicenseLastFour}` : 'Number supplied'} · expires ${form.driverLicenseExpiry}`}
-              />
-              <ReviewRow
-                label="Emergency contact"
-                value={
-                  form.emergencyContactName
-                    ? `${form.emergencyContactName} · ${relationshipLabel(form.emergencyContactRelation)} · ${form.emergencyContactMobile}`
-                    : 'Not provided'
-                }
-              />
-              <ReviewRow
-                label="Documents"
-                value={`${documents.size} submitted requirement(s), including ${documents.has('SELFIE') ? 'a newly captured selfie' : 'no selfie yet'}.`}
-              />
+              <ReviewGroup title="Personal information">
+                <ReviewRow label="First name" value={form.legalFirstName} />
+                <ReviewRow label="Middle name" value={form.middleName || 'Not provided'} />
+                <ReviewRow label="Last name" value={form.legalLastName} />
+                <ReviewRow label="Display name" value={profile?.displayName ?? 'Not set'} />
+                <ReviewRow label="Date of birth" value={form.dateOfBirth} />
+              </ReviewGroup>
+              <ReviewGroup title="Address">
+                <ReviewRow label="Street / address line" value={form.addressLine1} />
+                <ReviewRow label="Barangay" value={form.barangay} />
+                <ReviewRow label="City / municipality" value={form.cityMunicipality} />
+                <ReviewRow label="Province" value={form.province || 'Not applicable'} />
+                <ReviewRow label="Region" value={form.region} />
+                <ReviewRow label="Postal code" value={form.postalCode} />
+              </ReviewGroup>
+              <ReviewGroup title="Contact">
+                <ReviewRow label="Email" value={snapshot.email ?? 'Not provided'} />
+                <ReviewRow label="Mobile" value={snapshot.mobileNumber ?? 'Not provided'} />
+              </ReviewGroup>
+              <ReviewGroup title="Driver information">
+                <ReviewRow
+                  label="License number"
+                  value={
+                    profile?.driverLicenseLastFour
+                      ? `•••• ${profile.driverLicenseLastFour}`
+                      : form.driverLicenseNumber
+                        ? `•••• ${form.driverLicenseNumber.replaceAll(/[^a-zA-Z0-9]/g, '').slice(-4)}`
+                        : 'Not provided'
+                  }
+                />
+                <ReviewRow label="Expiration" value={form.driverLicenseExpiry} />
+                <ReviewRow label="Class" value={form.driverLicenseClass} />
+                <ReviewRow label="Restrictions" value={form.driverLicenseRestrictions || 'None'} />
+              </ReviewGroup>
+              <ReviewGroup title="Emergency contact">
+                <ReviewRow label="Name" value={form.emergencyContactName || 'Not provided'} />
+                <ReviewRow
+                  label="Relationship"
+                  value={
+                    form.emergencyContactName
+                      ? relationshipLabel(form.emergencyContactRelation)
+                      : 'Not provided'
+                  }
+                />
+                <ReviewRow label="Mobile" value={form.emergencyContactMobile || 'Not provided'} />
+              </ReviewGroup>
+              <ReviewGroup title="Document completion">
+                {snapshot.definitions.map((definition) => (
+                  <ReviewRow
+                    key={definition.code}
+                    label={definition.name}
+                    value={
+                      documents.has(definition.code)
+                        ? 'Completed'
+                        : definition.required
+                          ? 'Required'
+                          : 'Optional'
+                    }
+                  />
+                ))}
+              </ReviewGroup>
               <Text style={styles.note}>
                 A camera selfie is evidence for manual review. It is not certified liveness
                 verification.
@@ -652,9 +734,7 @@ export function RenterVerificationWorkflow({
                       : 'Submit verification'
                 }
                 onBack={() => back(5)}
-                onNext={() =>
-                  onboardingNavigation ? onboardingNavigation.onNext() : submit.mutate()
-                }
+                onNext={() => submit.mutate()}
               />
             </SectionCard>
           )}
@@ -662,7 +742,8 @@ export function RenterVerificationWorkflow({
       )}
       {(save.isError || upload.isError || submit.isError) && (
         <Text accessibilityRole="alert" style={styles.error}>
-          {(save.error ?? upload.error ?? submit.error)?.message}
+          {(save.error ?? upload.error ?? submit.error)?.message ??
+            'We couldn’t save your verification details. Please try again.'}
         </Text>
       )}
       {snapshot.verifications.map((verification) =>
@@ -674,6 +755,35 @@ export function RenterVerificationWorkflow({
       )}
     </>
   );
+}
+
+function draftFromSnapshot(snapshot?: RenterVerificationSnapshot) {
+  const profile = snapshot?.profile;
+  return {
+    addressLine1: profile?.addressLine1 ?? '',
+    addressScopeCode: profile?.addressScopeCode ?? '',
+    barangay: profile?.barangay ?? '',
+    barangayCode: profile?.barangayCode ?? '',
+    cityMunicipality: profile?.cityMunicipality ?? '',
+    cityMunicipalityCode: profile?.cityMunicipalityCode ?? '',
+    dateOfBirth: profile?.dateOfBirth?.slice(0, 10) ?? '',
+    driverLicenseClass: profile?.driverLicenseClass ?? '',
+    driverLicenseExpiry: profile?.driverLicenseExpiry?.slice(0, 10) ?? '',
+    driverLicenseNumber: '',
+    driverLicenseRestrictions: profile?.driverLicenseRestrictions ?? '',
+    emergencyContactMobile: profile?.emergencyContactMobile ?? '',
+    emergencyContactName: profile?.emergencyContactName ?? '',
+    emergencyContactRelation: profile?.emergencyContactRelation ?? '',
+    emergencyContactRelationOther: profile?.emergencyContactRelationOther ?? '',
+    legalFirstName: profile?.firstName ?? '',
+    legalLastName: profile?.lastName ?? '',
+    middleName: profile?.middleName ?? '',
+    postalCode: profile?.postalCode ?? '',
+    province: profile?.province ?? '',
+    provinceCode: profile?.provinceCode ?? '',
+    region: profile?.region ?? '',
+    regionCode: profile?.regionCode ?? '',
+  };
 }
 
 function SectionCard({
@@ -1094,6 +1204,21 @@ function ReviewRow({ label, value }: { readonly label: string; readonly value: s
   );
 }
 
+function ReviewGroup({
+  children,
+  title,
+}: {
+  readonly children: ReactNode;
+  readonly title: string;
+}) {
+  return (
+    <View style={styles.reviewGroup}>
+      <Text style={styles.reviewGroupTitle}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
 function tomorrow() {
   const date = new Date();
   date.setDate(date.getDate() + 1);
@@ -1178,6 +1303,18 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     gap: spacing.xxs,
     paddingVertical: spacing.sm,
+  },
+  reviewGroup: {
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    paddingHorizontal: spacing.md,
+  },
+  reviewGroupTitle: {
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: '800',
+    paddingTop: spacing.md,
   },
   rowBetween: {
     alignItems: 'center',

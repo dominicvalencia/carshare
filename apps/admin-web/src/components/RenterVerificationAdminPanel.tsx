@@ -1,7 +1,24 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import Link from 'next/link';
 import { useState } from 'react';
+import {
+  AdminActionBar,
+  AdminDefinitionList,
+  AdminDetailHeader,
+  AdminErrorDialog,
+  AdminEvidenceCard,
+  AdminSection,
+  AdminSummaryCard,
+  AdminSummaryGrid,
+  AdminTechnicalDetails,
+  AdminTimeline,
+  DataTable,
+  EmptyState,
+  StatusBadge,
+} from './AdminPrimitives';
+import { adminLabel, formatDate } from './admin-presentation';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
 interface Envelope<T> {
@@ -28,8 +45,18 @@ interface VerificationDetail {
   readonly id: string;
   readonly status: string;
   readonly submittedAt: string | null;
+  readonly reviewedAt: string | null;
+  readonly reviewedBy: {
+    readonly email: string | null;
+    readonly profile: { readonly displayName: string | null } | null;
+  } | null;
   readonly addressAssessment: string | null;
   readonly addressReviewNotes: string | null;
+  readonly addressAssessedAt: string | null;
+  readonly addressAssessedBy: {
+    readonly email: string | null;
+    readonly profile: { readonly displayName: string | null } | null;
+  } | null;
   readonly user: {
     readonly createdAt: string;
     readonly email: string | null;
@@ -80,11 +107,21 @@ interface VerificationDetail {
   };
 }
 
-export function RenterVerificationAdminPanel({ accessToken }: { readonly accessToken: string }) {
+export function RenterVerificationAdminPanel({
+  accessToken,
+  initialSelectedId,
+  onUnauthorized,
+}: {
+  readonly accessToken: string;
+  readonly initialSelectedId?: string;
+  readonly onUnauthorized: () => void;
+}) {
   const client = useQueryClient();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialSelectedId ?? null);
   const [addressAssessment, setAddressAssessment] = useState<string>();
   const [addressNotes, setAddressNotes] = useState<string>();
+  const [detailTab, setDetailTab] = useState<'overview' | 'documents' | 'audit'>('overview');
+  const [decisionError, setDecisionError] = useState<string>();
   const api = async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
     const response = await fetch(`${API_URL}${path}`, {
       ...init,
@@ -95,6 +132,10 @@ export function RenterVerificationAdminPanel({ accessToken }: { readonly accessT
       },
     });
     const envelope = (await response.json()) as Envelope<T>;
+    if (response.status === 401) {
+      onUnauthorized();
+      throw new Error('Your administrative session expired. Sign in again.');
+    }
     if (!response.ok || !envelope.success)
       throw new Error(envelope.error?.message ?? 'Request failed.');
     return envelope.data as T;
@@ -122,16 +163,30 @@ export function RenterVerificationAdminPanel({ accessToken }: { readonly accessT
         method: 'POST',
         ...(body || reason ? { body: JSON.stringify(body ?? { reason }) } : {}),
       }),
-    onSuccess: () => {
+    onSuccess: (_result, variables) => {
+      if (variables.operation === 'review') {
+        client.setQueryData<VerificationDetail>(
+          ['admin-renter-verification', selected],
+          (current) =>
+            current
+              ? { ...current, reviewedAt: new Date().toISOString(), status: 'UNDER_REVIEW' }
+              : current,
+        );
+      }
       void client.invalidateQueries({ queryKey: ['admin-renter-verifications'] });
       void client.invalidateQueries({ queryKey: ['admin-renter-verification', selected] });
     },
   });
-  const openDocument = async (fileAssetId: string) => {
-    const grant = await api<{ contentPath: string }>(`/files/${fileAssetId}/access-grants`, {
-      method: 'POST',
-    });
-    window.open(`${new URL(API_URL).origin}${grant.contentPath}`, '_blank', 'noopener,noreferrer');
+  const grantDocument = async (fileAssetId: string) => {
+    const grant = await api<{ contentPath: string; expiresAt: string; mimeType: string }>(
+      `/files/${fileAssetId}/access-grants`,
+      { method: 'POST' },
+    );
+    return {
+      expiresAt: grant.expiresAt,
+      mimeType: grant.mimeType,
+      url: `${new URL(API_URL).origin}${grant.contentPath}`,
+    };
   };
   const renter = detail.data?.user;
   const profile = renter?.profile;
@@ -139,235 +194,526 @@ export function RenterVerificationAdminPanel({ accessToken }: { readonly accessT
   const effectiveAddressNotes = addressNotes ?? detail.data?.addressReviewNotes ?? '';
   return (
     <section className="admin-card vehicle-review-card">
-      <span className="eyebrow">RENTER KYC</span>
-      <h2>Renter verification queue</h2>
-      <p>Only authorized verification staff can open sensitive renter evidence.</p>
-      {queue.isLoading && <p>Loading verification queue…</p>}
-      {queue.isError && <p className="error-text">{queue.error.message}</p>}
-      {queue.data?.length === 0 && <p>No renter verification cases currently need review.</p>}
-      {queue.data?.map((item) => (
-        <button
-          className="review-row review-button"
-          key={item.id}
-          onClick={() => {
-            setAddressAssessment(undefined);
-            setAddressNotes(undefined);
-            setSelected(item.id);
-          }}
-        >
-          <span>
-            <strong>
-              {item.user.profile?.displayName ??
-                [item.user.profile?.firstName, item.user.profile?.lastName]
-                  .filter(Boolean)
-                  .join(' ') ??
-                item.user.email}
-            </strong>
-            <span>
-              {item.status} · {item.user.email} · {item.user.mobileNumber}
-            </span>
-          </span>
-          <span>Review →</span>
-        </button>
-      ))}
+      {!selected && (
+        <>
+          <span className="eyebrow">RENTER KYC</span>
+          <h2>Renter verification queue</h2>
+          <p>Only authorized verification staff can open sensitive renter evidence.</p>
+          {queue.isLoading && <p>Loading verification queue…</p>}
+          {queue.isError && <p className="error-text">{queue.error.message}</p>}
+          {queue.data?.length === 0 && (
+            <EmptyState
+              title="No renter cases awaiting review"
+              description="All submitted renter verification cases have been reviewed."
+            />
+          )}
+          {queue.data && queue.data.length > 0 && (
+            <DataTable label="Renter verification queue">
+              <thead>
+                <tr>
+                  <th>Renter</th>
+                  <th>Contact</th>
+                  <th>Submitted</th>
+                  <th>Waiting time</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue.data.map((item) => {
+                  const submitted = item.submittedAt ? new Date(item.submittedAt) : null;
+                  const waitingHours = submitted
+                    ? Math.max(
+                        0,
+                        Math.floor((queue.dataUpdatedAt - submitted.getTime()) / 3_600_000),
+                      )
+                    : null;
+                  return (
+                    <tr key={item.id}>
+                      <td>
+                        <strong>
+                          {item.user.profile?.displayName ||
+                            [item.user.profile?.firstName, item.user.profile?.lastName]
+                              .filter(Boolean)
+                              .join(' ') ||
+                            item.user.email ||
+                            'Unnamed renter'}
+                        </strong>
+                      </td>
+                      <td>
+                        {item.user.email ?? 'No email'}
+                        <small>{item.user.mobileNumber ?? 'No mobile'}</small>
+                      </td>
+                      <td>{submitted ? submitted.toLocaleString() : 'Not submitted'}</td>
+                      <td>{waitingHours === null ? '—' : `${waitingHours}h`}</td>
+                      <td>
+                        <StatusBadge value={item.status} />
+                      </td>
+                      <td>
+                        <Link
+                          href={`/admin/verification/renters/${item.id}`}
+                          onClick={() => {
+                            setAddressAssessment(undefined);
+                            setAddressNotes(undefined);
+                            setSelected(item.id);
+                          }}
+                        >
+                          Review
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </DataTable>
+          )}
+        </>
+      )}
       {selected && detail.isLoading && <p>Loading secure case…</p>}
       {selected && detail.isError && (
         <p className="error-text">Case is unavailable or access is not permitted.</p>
       )}
       {selected && detail.data && renter && (
-        <div className="vehicle-detail">
-          <div className="detail-heading">
-            <div>
-              <span className="eyebrow">SENSITIVE REVIEW WORKSPACE</span>
-              <h3>
-                {profile?.firstName} {profile?.middleName} {profile?.lastName}
-              </h3>
-              <p>
-                {detail.data.status} · submitted{' '}
-                {detail.data.submittedAt
-                  ? new Date(detail.data.submittedAt).toLocaleString()
-                  : 'not yet'}
-              </p>
-            </div>
-            <button className="quiet" onClick={() => setSelected(null)}>
-              Close
-            </button>
-          </div>
-          <h4>Contact and account</h4>
-          <p>
-            Email: {renter.email} · {renter.emailVerifiedAt ? 'verified' : 'not verified'}
-            <br />
-            Mobile: {renter.mobileNumber} · {renter.mobileVerifiedAt ? 'verified' : 'not verified'}
-            <br />
-            Member since {new Date(renter.createdAt).toLocaleDateString()}
-          </p>
-          <h4>Identity and address review</h4>
-          <p>
-            Date of birth:{' '}
-            {profile?.dateOfBirth ? new Date(profile.dateOfBirth).toLocaleDateString() : 'missing'}
-          </p>
-          <div className="address-review-grid">
-            <div className="address-review-panel">
-              <span className="eyebrow">RENTER ENTERED ADDRESS</span>
-              <strong>{profile?.addressLine1 ?? 'Missing address line'}</strong>
-              <span>{profile?.barangay ?? 'Missing barangay'}</span>
-              <span>{profile?.cityMunicipality ?? 'Missing city / municipality'}</span>
-              <span>
-                {profile?.province ?? 'No province'} · {profile?.region ?? 'Missing region'}
-              </span>
-              <span>Postal code {profile?.postalCode ?? 'missing'}</span>
-            </div>
-            <div className="address-review-panel sensitive-panel">
-              <span className="eyebrow">DOCUMENT ADDRESS</span>
-              <p>Open the sensitive proof of address or identity document and compare manually.</p>
-              {renter.verifications.flatMap((verification) =>
-                verification.documents
-                  .filter((document) =>
-                    [
-                      'PROOF_OF_ADDRESS',
-                      'ADDITIONAL_GOVERNMENT_ID',
-                      'DRIVER_LICENSE_FRONT',
-                    ].includes(document.definition?.code ?? ''),
-                  )
-                  .map((document) => (
-                    <button
-                      className="file-button sensitive"
-                      key={`address-${document.id}`}
-                      onClick={() => void openDocument(document.fileAsset.id)}
-                    >
-                      Open {document.definition?.name ?? document.fileAsset.originalName}
-                      <small>5-minute audited access grant</small>
-                    </button>
-                  )),
-              )}
-            </div>
-          </div>
-          <div className="address-assessment-form">
-            <label>
-              Reviewer assessment
-              <select
-                onChange={(event) => setAddressAssessment(event.target.value)}
-                value={effectiveAddressAssessment}
-              >
-                <option value="">Select assessment</option>
-                <option value="MATCH">Match</option>
-                <option value="POSSIBLE_MATCH">Possible match / needs review</option>
-                <option value="MISMATCH">Mismatch</option>
-                <option value="NOT_APPLICABLE">Not applicable</option>
-              </select>
-            </label>
-            <label>
-              Reviewer notes
-              <textarea
-                onChange={(event) => setAddressNotes(event.target.value)}
-                placeholder="Record abbreviations, old/new geographic names, or reasons for concern."
-                value={effectiveAddressNotes}
-              />
-            </label>
-            <button
-              disabled={!effectiveAddressAssessment}
-              onClick={() =>
-                action.mutate({
-                  operation: 'address-assessment',
-                  body: {
-                    assessment: effectiveAddressAssessment,
-                    ...(effectiveAddressNotes ? { notes: effectiveAddressNotes } : {}),
-                  },
-                })
+        <div className="detail-page">
+          <AdminDetailHeader
+            backHref="/admin/verification/renters"
+            backLabel="Verification queue"
+            eyebrow="Sensitive review workspace"
+            title={
+              [profile?.firstName, profile?.middleName, profile?.lastName]
+                .filter(Boolean)
+                .join(' ') ||
+              renter.email ||
+              'Unnamed renter'
+            }
+            status={detail.data.status}
+            description={`${renter.email ?? 'No email'} · ${renter.mobileNumber ?? 'No mobile'} · Submitted ${formatDate(detail.data.submittedAt)} · Member since ${new Date(renter.createdAt).toLocaleDateString()}`}
+          />
+
+          <AdminSummaryGrid>
+            <AdminSummaryCard label="Identity" value={adminLabel(detail.data.status)} />
+            <AdminSummaryCard
+              label="Contact"
+              value={
+                renter.emailVerifiedAt && renter.mobileVerifiedAt ? 'Verified' : 'Needs review'
               }
+              detail={`${renter.emailVerifiedAt ? 'Email verified' : 'Email unverified'} · ${renter.mobileVerifiedAt ? 'Mobile verified' : 'Mobile unverified'}`}
+            />
+            <AdminSummaryCard
+              label="Address assessment"
+              value={adminLabel(detail.data.addressAssessment ?? 'PENDING_REVIEW')}
+              detail={
+                detail.data.addressAssessedAt
+                  ? `Updated ${formatDate(detail.data.addressAssessedAt)}`
+                  : 'Manual comparison required'
+              }
+            />
+            <AdminSummaryCard
+              label="Driver's license"
+              value={
+                profile?.driverLicenseLastFour
+                  ? `Ending ${profile.driverLicenseLastFour}`
+                  : 'Missing'
+              }
+              detail={
+                profile?.driverLicenseExpiry
+                  ? `Expires ${new Date(profile.driverLicenseExpiry).toLocaleDateString()}`
+                  : undefined
+              }
+            />
+            <AdminSummaryCard
+              label="Documents"
+              value={String(renter.verifications.flatMap((item) => item.documents).length)}
+              detail="Protected evidence files"
+            />
+          </AdminSummaryGrid>
+
+          <div className="detail-tabs" role="tablist" aria-label="Verification workspace sections">
+            {(['overview', 'documents', 'audit'] as const).map((tab) => (
+              <button
+                aria-selected={detailTab === tab}
+                className={detailTab === tab ? 'active' : ''}
+                key={tab}
+                onClick={() => setDetailTab(tab)}
+                role="tab"
+              >
+                {tab === 'audit' ? 'Security & audit' : adminLabel(tab)}
+              </button>
+            ))}
+          </div>
+
+          {detailTab === 'overview' && (
+            <>
+              <AdminSection
+                title="Account overview"
+                description="Identity and contact information supplied by the renter."
+              >
+                <AdminDefinitionList
+                  items={[
+                    { label: 'Email', value: renter.email ?? 'Not provided' },
+                    {
+                      label: 'Email verification',
+                      value: renter.emailVerifiedAt ? 'Verified' : 'Not verified',
+                    },
+                    { label: 'Mobile', value: renter.mobileNumber ?? 'Not provided' },
+                    {
+                      label: 'Mobile verification',
+                      value: renter.mobileVerifiedAt ? 'Verified' : 'Not verified',
+                    },
+                    {
+                      label: 'Member since',
+                      value: new Date(renter.createdAt).toLocaleDateString(),
+                    },
+                    {
+                      label: 'Date of birth',
+                      value: profile?.dateOfBirth
+                        ? new Date(profile.dateOfBirth).toLocaleDateString()
+                        : 'Not provided',
+                    },
+                  ]}
+                />
+              </AdminSection>
+
+              <AdminSection
+                title="Identity & address"
+                description="Structured legal identity and renter-entered residential address. Protected evidence is available only in the Documents tab."
+              >
+                <div className="identity-address-grid">
+                  <div className="address-review-panel">
+                    <h4>Personal and legal identity</h4>
+                    <AdminDefinitionList
+                      items={[
+                        { label: 'First name', value: profile?.firstName ?? 'Not provided' },
+                        { label: 'Middle name', value: profile?.middleName ?? 'Not provided' },
+                        { label: 'Last name', value: profile?.lastName ?? 'Not provided' },
+                        {
+                          label: 'Date of birth',
+                          value: profile?.dateOfBirth
+                            ? new Date(profile.dateOfBirth).toLocaleDateString()
+                            : 'Not provided',
+                        },
+                      ]}
+                    />
+                  </div>
+                  <div className="address-review-panel profile-address-panel">
+                    <h4>Renter-entered address</h4>
+                    <AdminDefinitionList
+                      items={[
+                        { label: 'House / street', value: profile?.addressLine1 ?? 'Not provided' },
+                        { label: 'Barangay', value: profile?.barangay ?? 'Not provided' },
+                        {
+                          label: 'City / municipality',
+                          value: profile?.cityMunicipality ?? 'Not provided',
+                        },
+                        { label: 'Province', value: profile?.province ?? 'Not provided' },
+                        { label: 'Region', value: profile?.region ?? 'Not provided' },
+                        { label: 'Postal code', value: profile?.postalCode ?? 'Not provided' },
+                      ]}
+                    />
+                  </div>
+                </div>
+                <div className="address-assessment-form">
+                  <fieldset>
+                    <legend>Address verification assessment</legend>
+                    <p>
+                      Compare the renter’s submitted address with the verified documentation before
+                      making a decision. Evidence is available in the Documents tab.
+                    </p>
+                    {(
+                      [
+                        ['MATCH', '✓', 'Match', 'The important address details agree.'],
+                        [
+                          'POSSIBLE_MATCH',
+                          '~',
+                          'Minor discrepancy',
+                          'There is a small explainable difference.',
+                        ],
+                        ['MISMATCH', '!', 'Mismatch', 'Material address details do not agree.'],
+                        [
+                          'NOT_APPLICABLE',
+                          '?',
+                          'Unable to verify',
+                          'The available evidence is insufficient to compare.',
+                        ],
+                      ] as const
+                    ).map(([value, icon, label, description]) => (
+                      <label
+                        className={`assessment-option assessment-${value.toLowerCase().replaceAll('_', '-')} ${effectiveAddressAssessment === value ? 'is-selected' : ''}`}
+                        key={value}
+                      >
+                        <input
+                          checked={effectiveAddressAssessment === value}
+                          name="address-assessment"
+                          onChange={() => setAddressAssessment(value)}
+                          type="radio"
+                          value={value}
+                        />
+                        <span className="assessment-icon" aria-hidden>
+                          {icon}
+                        </span>
+                        <span>
+                          <strong>{label}</strong>
+                          <small>{description}</small>
+                        </span>
+                      </label>
+                    ))}
+                  </fieldset>
+                  <label className="reviewer-notes">
+                    <span>Reviewer notes *</span>
+                    <textarea
+                      onChange={(event) => setAddressNotes(event.target.value)}
+                      placeholder="Record relevant differences or reasons for concern."
+                      value={effectiveAddressNotes}
+                    />
+                    <small>
+                      Required before approving the renter. Explain the checks completed and record
+                      only information relevant to the verification decision.
+                    </small>
+                  </label>
+                  <button
+                    disabled={
+                      !effectiveAddressAssessment ||
+                      action.isPending ||
+                      (['POSSIBLE_MATCH', 'MISMATCH'].includes(effectiveAddressAssessment) &&
+                        effectiveAddressNotes.trim().length === 0)
+                    }
+                    onClick={() =>
+                      action.mutate({
+                        operation: 'address-assessment',
+                        body: {
+                          assessment: effectiveAddressAssessment,
+                          ...(effectiveAddressNotes ? { notes: effectiveAddressNotes } : {}),
+                        },
+                      })
+                    }
+                  >
+                    {action.isPending && action.variables?.operation === 'address-assessment'
+                      ? 'Saving assessment…'
+                      : 'Save address assessment'}
+                  </button>
+                  {!effectiveAddressNotes.trim() && (
+                    <p className="field-help error-text">
+                      Reviewer notes must be saved before this case can be approved.
+                    </p>
+                  )}
+                  {['POSSIBLE_MATCH', 'MISMATCH'].includes(effectiveAddressAssessment) &&
+                    !effectiveAddressNotes.trim() && (
+                      <p className="field-help error-text">
+                        Reviewer notes are required for this assessment.
+                      </p>
+                    )}
+                  {action.isSuccess && action.variables?.operation === 'address-assessment' && (
+                    <p className="success-text" role="status">
+                      Address assessment saved.
+                    </p>
+                  )}
+                  {detail.data.addressAssessedAt && (
+                    <div className="assessment-saved-state" role="status">
+                      <strong>Saved</strong>
+                      <span>
+                        {detail.data.addressAssessedBy?.profile?.displayName ??
+                          detail.data.addressAssessedBy?.email ??
+                          'Administrator'}{' '}
+                        · {formatDate(detail.data.addressAssessedAt)}
+                      </span>
+                      <StatusBadge value={detail.data.addressAssessment} />
+                      {detail.data.addressReviewNotes && <p>{detail.data.addressReviewNotes}</p>}
+                    </div>
+                  )}
+                  <p>
+                    Text formatting and renamed geographic areas never trigger automatic rejection;
+                    the reviewer decision remains authoritative.
+                  </p>
+                </div>
+              </AdminSection>
+
+              <AdminSection title="Driver information">
+                <AdminDefinitionList
+                  items={[
+                    {
+                      label: 'License number',
+                      value: profile?.driverLicenseLastFour
+                        ? `Ending ${profile.driverLicenseLastFour}`
+                        : 'Not provided',
+                    },
+                    {
+                      label: 'Expiration',
+                      value: profile?.driverLicenseExpiry
+                        ? new Date(profile.driverLicenseExpiry).toLocaleDateString()
+                        : 'Not provided',
+                    },
+                    { label: 'Class', value: profile?.driverLicenseClass ?? 'Not provided' },
+                    {
+                      label: 'Restrictions',
+                      value: profile?.driverLicenseRestrictions ?? 'None recorded',
+                    },
+                    {
+                      label: 'Verification status',
+                      value: <StatusBadge value={detail.data.status} />,
+                    },
+                  ]}
+                />
+              </AdminSection>
+            </>
+          )}
+
+          {detailTab === 'documents' && (
+            <AdminSection
+              title="Protected evidence"
+              description="Every open action creates the existing five-minute audited access grant."
             >
-              Save address assessment
-            </button>
-            <p>
-              Text differences, abbreviations, punctuation, and renamed PSGC areas do not trigger
-              automatic rejection. The reviewer decision remains authoritative.
-            </p>
-          </div>
-          <h4>Driver information</h4>
-          <p>
-            License ending {profile?.driverLicenseLastFour ?? 'missing'} · expires{' '}
-            {profile?.driverLicenseExpiry
-              ? new Date(profile.driverLicenseExpiry).toLocaleDateString()
-              : 'missing'}
-            <br />
-            Class: {profile?.driverLicenseClass ?? 'missing'} · restrictions:{' '}
-            {profile?.driverLicenseRestrictions ?? 'none recorded'}
-          </p>
-          <h4>Document checklist</h4>
-          <div className="file-grid">
-            {renter.verifications.flatMap((verification) =>
-              verification.documents.map((document) => (
-                <button
-                  className="file-button sensitive"
-                  key={document.id}
-                  onClick={() => void openDocument(document.fileAsset.id)}
-                >
-                  {document.definition?.name ?? document.fileAsset.originalName}
-                  <small>
-                    {verification.type} · {document.status} · 5-minute audited grant
-                  </small>
-                </button>
-              )),
-            )}
-          </div>
-          <h4>Previous decisions</h4>
-          <ol className="history">
-            {renter.verifications.map((verification) => (
-              <li key={verification.id}>
-                <strong>
-                  {verification.type} · {verification.status}
-                </strong>
-                <span>
-                  {verification.reviewedAt
-                    ? new Date(verification.reviewedAt).toLocaleString()
-                    : 'Not reviewed'}
-                  {verification.rejectionReason ? ` · ${verification.rejectionReason}` : ''}
-                </span>
-              </li>
-            ))}
-          </ol>
-          <h4>Recent security history</h4>
-          <ol className="history">
-            {renter.securityEvents.map((event) => (
-              <li key={event.id}>
-                <strong>{event.type}</strong>
-                <span>{new Date(event.occurredAt).toLocaleString()}</span>
-              </li>
-            ))}
-          </ol>
-          <div className="actions">
+              <div className="admin-evidence-grid">
+                {renter.verifications.flatMap((verification) =>
+                  verification.documents.map((document) => (
+                    <AdminEvidenceCard
+                      key={document.id}
+                      displayMode={
+                        ['SELFIE', 'LIVENESS', 'SELFIE_LIVENESS'].some((value) =>
+                          (document.definition?.code ?? '').includes(value),
+                        )
+                          ? 'photo'
+                          : 'document'
+                      }
+                      label={document.definition?.name ?? 'Identity evidence'}
+                      status={document.status}
+                      note={`${adminLabel(verification.type)} · temporary access`}
+                      requestAccess={() => grantDocument(document.fileAsset.id)}
+                    />
+                  )),
+                )}
+              </div>
+              {renter.verifications.flatMap((verification) => verification.documents).length ===
+                0 && (
+                <EmptyState
+                  title="No evidence uploaded"
+                  description="This verification currently has no protected evidence files."
+                />
+              )}
+            </AdminSection>
+          )}
+
+          {detailTab === 'audit' && (
+            <>
+              <AdminSection
+                title="Verification decisions"
+                description="Previous review outcomes remain authoritative and auditable."
+              >
+                <AdminTimeline
+                  events={renter.verifications.map((verification) => ({
+                    id: verification.id,
+                    title: `${adminLabel(verification.type)} ${adminLabel(verification.status).toLowerCase()}`,
+                    occurredAt: verification.reviewedAt,
+                    detail:
+                      verification.rejectionReason ??
+                      (verification.reviewedAt ? 'Review recorded' : 'Awaiting review'),
+                  }))}
+                />
+              </AdminSection>
+              <AdminTechnicalDetails
+                summary={`View security history (${renter.securityEvents.length})`}
+              >
+                <DataTable label="Recent renter security history">
+                  <thead>
+                    <tr>
+                      <th>Event</th>
+                      <th>Date/time</th>
+                      <th>Result</th>
+                      <th>Metadata</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {renter.securityEvents.map((event) => (
+                      <tr key={event.id}>
+                        <td>{adminLabel(event.type)}</td>
+                        <td>{formatDate(event.occurredAt)}</td>
+                        <td>Recorded</td>
+                        <td>
+                          <small>{event.id}</small>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              </AdminTechnicalDetails>
+            </>
+          )}
+
+          <AdminActionBar
+            title={
+              detail.data.status === 'SUBMITTED'
+                ? 'Begin case review'
+                : 'Final verification decision'
+            }
+            description={
+              detail.data.status === 'SUBMITTED'
+                ? 'Marks this case as being actively reviewed. This does not approve the renter.'
+                : detail.data.status === 'UNDER_REVIEW'
+                  ? `Review started ${formatDate(detail.data.reviewedAt)} by ${detail.data.reviewedBy?.profile?.displayName ?? detail.data.reviewedBy?.email ?? 'an administrator'}.`
+                  : 'Actions use the existing authorized verification commands and audit trail.'
+            }
+          >
             {detail.data.status === 'SUBMITTED' && (
-              <button onClick={() => action.mutate({ operation: 'review' })}>Start review</button>
+              <button onClick={() => action.mutate({ operation: 'review' })}>
+                Start verification review
+              </button>
             )}
-            {['SUBMITTED', 'UNDER_REVIEW'].includes(detail.data.status) && (
-              <>
-                <button
-                  disabled={!detail.data.addressAssessment}
-                  onClick={() => action.mutate({ operation: 'approval' })}
-                >
-                  Approve
-                </button>
-                <button
-                  className="warning"
-                  onClick={() => {
-                    const reason = window.prompt(
-                      'What information must the renter replace or correct?',
-                    );
-                    if (reason) action.mutate({ operation: 'more-information', reason });
-                  }}
-                >
-                  Request more information
-                </button>
-                <button
-                  className="danger"
-                  onClick={() => {
-                    const reason = window.prompt('Rejection reason');
-                    if (reason) action.mutate({ operation: 'rejection', reason });
-                  }}
-                >
-                  Reject
-                </button>
-              </>
+            {detail.data.status === 'UNDER_REVIEW' && (
+              <div className="verification-decision-actions">
+                <div>
+                  <button
+                    disabled={action.isPending}
+                    onClick={() => {
+                      if (!detail.data.addressAssessment) {
+                        setDecisionError(
+                          'Complete and save the address verification assessment before approving this renter.',
+                        );
+                        return;
+                      }
+                      if (!detail.data.addressReviewNotes?.trim()) {
+                        setDecisionError(
+                          'Add and save reviewer notes documenting the checks completed before approving this renter.',
+                        );
+                        return;
+                      }
+                      action.mutate({ operation: 'approval' });
+                    }}
+                  >
+                    Approve renter
+                  </button>
+                  <small>
+                    All required identity and driving checks have passed. A saved assessment and
+                    reviewer notes are required.
+                  </small>
+                </div>
+                <div>
+                  <button
+                    className="warning"
+                    onClick={() => {
+                      const reason = window.prompt(
+                        'What information must the renter replace or correct?',
+                      );
+                      if (reason) action.mutate({ operation: 'more-information', reason });
+                    }}
+                  >
+                    Request more information
+                  </button>
+                  <small>
+                    Ask the renter to correct or provide additional verification information.
+                  </small>
+                </div>
+                <div>
+                  <button
+                    className="danger"
+                    onClick={() => {
+                      const reason = window.prompt('Rejection reason');
+                      if (reason) action.mutate({ operation: 'rejection', reason });
+                    }}
+                  >
+                    Reject verification
+                  </button>
+                  <small>Reject this verification request with a documented reason.</small>
+                </div>
+              </div>
             )}
             {detail.data.status === 'APPROVED' && (
               <button
@@ -380,8 +726,23 @@ export function RenterVerificationAdminPanel({ accessToken }: { readonly accessT
                 Suspend
               </button>
             )}
-          </div>
-          {action.isError && <p className="error-text">{action.error.message}</p>}
+          </AdminActionBar>
+          {(decisionError || action.isError) && (
+            <AdminErrorDialog
+              message={
+                decisionError ?? action.error?.message ?? 'The request could not be completed.'
+              }
+              onClose={() => {
+                setDecisionError(undefined);
+                action.reset();
+              }}
+              title={
+                action.variables?.operation === 'address-assessment'
+                  ? 'Assessment could not be saved'
+                  : 'Verification action could not be completed'
+              }
+            />
+          )}
         </div>
       )}
     </section>

@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-08-20
+- Amendment: Phase 12 criteria-bound cursor pagination and duration discounts are specified by
+  [ADR-0021](0021-marketplace-search-cursors.md) and [ADR-0022](0022-duration-discount-pricing.md).
 
 ## Context
 
@@ -42,6 +44,10 @@ The recommended order is transparent and does not claim personalization. Reliabi
 Only explicit authenticated renter quote requests are persisted; search estimates are not. Quotes and lines are append-only, reference the exact immutable policy version, use PHP integer minor units, expire after `QUOTE_TTL_MINUTES` (15 by default), and do not reserve a vehicle.
 
 Phase 4 activates only `RENTAL_BASE`. It excludes taxes, service fees, discounts, promotions, commission, deposits, and payments. A policy change produces a new quote; the old quote remains reproducible and reports `CONFIGURATION_CHANGED`.
+
+That sentence records the Phase 4 scope. Phase 12 now permits the explicit `DURATION_DISCOUNT` signed
+line and immutable base/savings/discounted-subtotal snapshot described in ADR-0022; deposits remain
+disabled.
 
 ### Caching and analytics
 

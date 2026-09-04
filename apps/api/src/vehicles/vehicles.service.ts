@@ -5,6 +5,7 @@ import {
   FileClassification,
   MileagePolicyType,
   Prisma,
+  ReviewType,
   VehicleLifecycleStatus,
   VehicleOperationalStatus,
   VehiclePhotoPerspective,
@@ -33,6 +34,7 @@ import type {
   SetVehicleLocationDto,
   UpdateVehicleDto,
 } from './vehicles.dto';
+import { validateDurationDiscounts } from '../discovery/duration-discounts';
 
 const MATERIAL_EDITABLE: readonly VehicleLifecycleStatus[] = [
   VehicleLifecycleStatus.DRAFT,
@@ -517,6 +519,10 @@ export class VehiclesService {
         createdByUserId: userId,
         currency: 'PHP',
         dailyRateMinor: input.dailyRateMinor,
+        shortDurationDiscountBps: input.shortDurationDiscountBps ?? null,
+        weeklyDiscountBps: input.weeklyDiscountBps ?? null,
+        extendedTripDiscountBps: input.extendedTripDiscountBps ?? null,
+        monthlyDiscountBps: input.monthlyDiscountBps ?? null,
         evCalculationPolicyRef: input.evReturnPolicy ? 'PH_EV_DEFICIENCY_MVP_V1' : null,
         evRequiredPercentage: input.evRequiredPercentage ?? null,
         evReturnPolicy: input.evReturnPolicy ?? null,
@@ -743,7 +749,7 @@ export class VehiclesService {
   }
 
   async adminDetail(id: string) {
-    const [vehicle, auditLogs] = await Promise.all([
+    const [vehicle, auditLogs, rating] = await Promise.all([
       this.database.client.vehicle.findUniqueOrThrow({
         include: {
           ...ownerVehicleInclude,
@@ -755,8 +761,18 @@ export class VehiclesService {
         orderBy: { occurredAt: 'asc' },
         where: { targetId: id, targetType: 'VEHICLE' },
       }),
+      this.database.client.ratingProjection.findUnique({
+        where: { subjectType_subjectId: { subjectId: id, subjectType: ReviewType.VEHICLE } },
+      }),
     ]);
-    return { ...vehicle, ...this.serializedLocation(vehicle), auditLogs };
+    return {
+      ...vehicle,
+      ...this.serializedLocation(vehicle),
+      auditLogs,
+      publishedRating: rating
+        ? { averageRating: rating.averageRating.toString(), reviewCount: rating.reviewCount }
+        : { averageRating: null, reviewCount: 0 },
+    };
   }
 
   private serializedLocation(vehicle: {
@@ -963,6 +979,13 @@ export class VehiclesService {
     powertrain: VehiclePowertrain | null,
     input: CreateVehiclePolicyVersionDto,
   ) {
+    const discountError = validateDurationDiscounts(input);
+    if (discountError)
+      throw new ApplicationException(
+        VehicleErrorCode.INVALID_PRICING,
+        discountError,
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
     if (input.currency && input.currency.toUpperCase() !== 'PHP') {
       throw new ApplicationException(
         VehicleErrorCode.INVALID_PRICING,

@@ -10,6 +10,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  IsBase64,
 } from 'class-validator';
 
 export class CreateReviewDto {
@@ -23,4 +24,14 @@ export class ModerateReviewDto {
   @IsEnum(ReviewModerationStatus)
   status!: ReviewModerationStatus;
   @ApiProperty() @IsString() @MinLength(3) @MaxLength(1000) reason!: string;
+}
+
+export class ReviewListQueryDto {
+  @ApiPropertyOptional() @IsOptional() @IsBase64() cursor?: string;
+  @ApiPropertyOptional({ default: 10, maximum: 25, minimum: 1 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(25)
+  limit = 10;
 }

@@ -1,5 +1,9 @@
 # Phase 1 acceptance checklist
 
+> Historical Phase 1 acceptance criteria. Statements about absent business features and unregistered
+> queues describe that phase only; they are not the current repository capability set. See the
+> [current system baseline](../architecture/current-system-baseline.md).
+
 - [ ] `pnpm install --frozen-lockfile` succeeds from a clean checkout.
 - [ ] `pnpm format:check` succeeds.
 - [ ] `pnpm lint` succeeds with no warnings.

@@ -1,4 +1,4 @@
-# ADR 0011: Platform-controlled late returns and booking extensions
+# ADR 0020: Platform-controlled late returns and booking extensions
 
 - Status: Accepted for Phase 12 pilot architecture
 - Date: 2026-08-29
@@ -47,5 +47,5 @@ coordinate operationally but cannot mutate the schedule or impose an arbitrary f
 - Renters receive predictable marketplace rules disclosed before booking.
 - Owners cannot manufacture penalties.
 - Financial evidence, payment state, and ledger state remain distinct and auditable.
-- Extension delivery requires a dedicated Phase 12 follow-up migration and workflow; it must not be
+- Extension delivery requires a separately approved future-phase migration and workflow; it must not be
   simulated with direct booking-date edits.

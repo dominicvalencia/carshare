@@ -25,8 +25,10 @@ pnpm db:seed
 ```
 
 The current Phase 12 schema is managed by committed migrations. The seed synchronizes the bundled PSGC
-reference before creating idempotent local configuration and pilot data. For a complete clean-machine
-walkthrough, see [New Mac development setup](new-mac-setup.md).
+reference and vehicle make/model/category data before creating idempotent local configuration and pilot
+data. The current baseline contains 35 migration directories; confirm the live database rather than
+assuming the count with `pnpm db:migrate:deploy`. For a complete clean-machine walkthrough, see
+[New Mac development setup](new-mac-setup.md).
 
 ## Start applications
 
@@ -51,3 +53,7 @@ pnpm dev:infra:down
 
 Named volumes preserve local database and Redis data. Removing volumes is intentionally not included
 in standard scripts because it is destructive.
+
+For current domain behavior, migrations, tests, and provider limitations, see the
+[current system baseline](../architecture/current-system-baseline.md) and
+[accepted Phase 12 baseline](phase-12-accepted-baseline.md).

@@ -77,13 +77,13 @@ export class SearchVehiclesDto {
   @IsEnum(VehicleSearchSort)
   sort: VehicleSearchSort = VehicleSearchSort.RECOMMENDED;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(1000) cursor?: string;
-  @ApiPropertyOptional({ default: 20, maximum: 50 })
+  @ApiPropertyOptional({ default: 10, maximum: 50 })
   @Type(() => Number)
   @IsOptional()
   @IsInt()
   @Min(1)
   @Max(50)
-  limit = 20;
+  limit = 10;
 }
 
 export class AvailabilityQueryDto {

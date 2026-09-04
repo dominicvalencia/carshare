@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { AccessTokenGuard } from '../authorization/access-token.guard';
@@ -6,7 +6,7 @@ import { CurrentPrincipal, RequirePermissions } from '../authorization/authoriza
 import { PolicyGuard } from '../authorization/policy.guard';
 import type { RequestPrincipal } from '../security/security-context';
 import { requestMetadata } from '../auth/auth.controller';
-import { CreateReviewDto, ModerateReviewDto } from './reviews.dto';
+import { CreateReviewDto, ModerateReviewDto, ReviewListQueryDto } from './reviews.dto';
 import { ReviewsService } from './reviews.service';
 
 @ApiBearerAuth()
@@ -43,14 +43,23 @@ export class MyReviewsController {
 @Controller()
 export class PublicReviewsController {
   constructor(private readonly reviews: ReviewsService) {}
-  @Get('vehicles/:id/reviews') vehicle(@Param('id') id: string) {
-    return this.reviews.vehicle(id);
+  @Get('vehicles/:id/reviews') vehicle(
+    @Param('id') id: string,
+    @Query() query: ReviewListQueryDto,
+  ) {
+    return this.reviews.vehicle(id, query);
   }
-  @Get('owners/:id/reviews') owner(@Param('id') id: string) {
-    return this.reviews.owner(id);
+  @Get('owners/:id/reviews') owner(@Param('id') id: string, @Query() query: ReviewListQueryDto) {
+    return this.reviews.owner(id, query);
   }
-  @Get('users/:id/reviews') user(@Param('id') id: string) {
-    return this.reviews.user(id);
+  @Get('hosts/:reference/reviews') host(
+    @Param('reference') reference: string,
+    @Query() query: ReviewListQueryDto,
+  ) {
+    return this.reviews.host(reference, query);
+  }
+  @Get('users/:id/reviews') user(@Param('id') id: string, @Query() query: ReviewListQueryDto) {
+    return this.reviews.user(id, query);
   }
 }
 @ApiBearerAuth()

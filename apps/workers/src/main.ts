@@ -19,6 +19,7 @@ import {
   reconcilePushReceipts,
   workerPushProvider,
 } from './notification-delivery';
+import { publishDueReviews } from './review-publication';
 
 loadEnvironment({ path: resolve(__dirname, '../../../.env'), quiet: true });
 
@@ -75,6 +76,11 @@ async function bootstrap(): Promise<void> {
     'rental-operations-sweep',
     { every: environment.RENTAL_OPERATIONS_SWEEP_SECONDS * 1000 },
     { data: {}, name: 'advance-rental-operations' },
+  );
+  await lifecycleQueue.upsertJobScheduler(
+    'review-publication-sweep',
+    { every: 60_000 },
+    { data: {}, name: 'publish-due-reviews' },
   );
 
   const worker = new Worker(
@@ -134,6 +140,10 @@ async function bootstrap(): Promise<void> {
       if (job.name === 'reconcile-payments') {
         const reconciled = await reconcilePayments(database, paymentProvider, environment);
         if (reconciled) logger.info({ reconciled }, 'Payment reconciliation sweep completed');
+      }
+      if (job.name === 'publish-due-reviews') {
+        const published = await publishDueReviews(database);
+        if (published) logger.info({ published }, 'Due double-blind reviews published');
       }
       if (job.name === 'reconcile-payouts') {
         const alerts = await alertLongRunningPayouts(database, environment);

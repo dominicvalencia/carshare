@@ -58,6 +58,17 @@ export class PublicVehiclesController {
   }
 }
 
+@ApiTags('Public host profiles')
+@Controller('hosts')
+export class PublicHostsController {
+  constructor(private readonly vehicles: PublicVehiclesService) {}
+
+  @Get(':publicReference')
+  profile(@Param('publicReference') publicReference: string) {
+    return this.vehicles.host(publicReference);
+  }
+}
+
 @ApiBearerAuth()
 @ApiTags('Pricing quotes')
 @Controller()

@@ -39,4 +39,7 @@ export type RootStackParamList = {
   Booking: { bookingId: string };
   Claim: { claimId: string };
   Payout: { payoutId: string };
+  HostProfile: { hostReference: string };
+  VehicleDetails: { vehicleId: string };
+  PublicReviews: { path: string; title: string };
 };

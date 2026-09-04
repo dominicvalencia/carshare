@@ -168,8 +168,13 @@ export class BookingsService {
               },
               pricingSnapshot: {
                 create: {
+                  baseRentalAmountMinor: quote.baseRentalAmountMinor,
                   chargeableDays: quote.chargeableDays,
                   currency: quote.currency,
+                  discountedRentalSubtotalMinor: quote.discountedRentalSubtotalMinor,
+                  durationDiscountAmountMinor: quote.durationDiscountAmountMinor,
+                  durationDiscountBps: quote.durationDiscountBps,
+                  durationDiscountTier: quote.durationDiscountTier,
                   excessKilometerRateMinor: quote.excessKilometerRateMinor,
                   includedMileageKm: quote.includedMileageKm,
                   lines: {

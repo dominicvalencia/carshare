@@ -52,12 +52,35 @@ describe('Phase 12 renter acceptance stabilization', () => {
     expect(app).toContain('<Button label="Skip onboarding" onPress={onSkip} variant="ghost" />');
     const workflow = source('features/account/RenterVerificationWorkflow.tsx');
     expect(workflow).not.toContain('registerSwipeNext');
-    expect(
-      workflow.match(/if \(onboardingNavigation\) return onboardingNavigation\.onNext\(\);/g),
-    ).toHaveLength(4);
-    expect(workflow).toContain(
-      'onboardingNavigation ? onboardingNavigation.onNext() : submit.mutate()',
+    expect(workflow).not.toContain(
+      'if (onboardingNavigation) return onboardingNavigation.onNext();',
     );
+    expect(workflow).toContain('RenterOnboardingDraftProvider');
+    expect(workflow).toContain('client.setQueryData<RenterVerificationSnapshot>');
+    expect(workflow).toContain('onNext={() => submit.mutate()}');
+    expect(workflow).toContain('(save.error ?? upload.error ?? submit.error)?.message');
+  });
+
+  it('hydrates one shared draft and reviews the latest saved onboarding values', () => {
+    const workflow = source('features/account/RenterVerificationWorkflow.tsx');
+    const app = source('../App.tsx');
+    expect(app).toContain('<RenterOnboardingDraftProvider>');
+    expect(workflow).toContain('sharedDraft.setForm(draftFromSnapshot(snapshot))');
+    expect(workflow).toContain(
+      'profile: { ...(current.profile ?? updatedProfile), ...updatedProfile }',
+    );
+    expect(workflow).toContain('save.mutate(body, {');
+    expect(workflow).toContain('onboardingNavigation.onNext()');
+    for (const section of [
+      'Personal information',
+      'Address',
+      'Contact',
+      'Driver information',
+      'Emergency contact',
+      'Document completion',
+    ])
+      expect(workflow).toContain(`title="${section}"`);
+    expect(workflow).toContain('••••');
   });
 
   it('keeps Home discovery-focused after onboarding is skipped', () => {
