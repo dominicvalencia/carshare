@@ -6,6 +6,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { internalDestination } from '../../navigation/deep-links';
 import type { RootStackParamList } from '../../navigation/routes';
+import type { MobileMode } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { relativeTime } from '../../ui/format';
 import { Button, Card, Icon, NestedScreen, StateView } from '../../ui/primitives';
@@ -19,17 +20,23 @@ interface NotificationItem {
   readonly createdAt: string;
   readonly category?: string;
 }
-export function NotificationCenter() {
+export function NotificationCenter({ mode }: { readonly mode: MobileMode }) {
   const client = useQueryClient();
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [openError, setOpenError] = useState('');
   const notifications = useQuery({
-    queryKey: ['notifications'],
-    queryFn: () => apiClient.request<{ items: NotificationItem[] }>('/notifications?limit=50'),
+    queryKey: ['notifications', mode],
+    queryFn: () =>
+      apiClient.request<{ items: NotificationItem[] }>(
+        `/notifications?limit=50&audience=${mode.toUpperCase()}`,
+      ),
     refetchInterval: 15_000,
   });
   const readAll = useMutation({
-    mutationFn: () => apiClient.request('/notifications/read-all', { method: 'POST' }),
+    mutationFn: () =>
+      apiClient.request(`/notifications/read-all?audience=${mode.toUpperCase()}`, {
+        method: 'POST',
+      }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['notifications'] });
       void client.invalidateQueries({ queryKey: ['notification-summary'] });

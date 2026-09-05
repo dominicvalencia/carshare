@@ -30,11 +30,17 @@ export class NotificationsController {
   @Get() list(@CurrentPrincipal() p: RequestPrincipal, @Query() q: NotificationQueryDto) {
     return this.notifications.list(p.userId, q);
   }
-  @Get('summary') summary(@CurrentPrincipal() p: RequestPrincipal) {
-    return this.notifications.summary(p.userId);
+  @Get('summary') summary(
+    @CurrentPrincipal() p: RequestPrincipal,
+    @Query() q: NotificationQueryDto,
+  ) {
+    return this.notifications.summary(p.userId, q.audience);
   }
-  @Post('read-all') readAll(@CurrentPrincipal() p: RequestPrincipal) {
-    return this.notifications.readAll(p.userId);
+  @Post('read-all') readAll(
+    @CurrentPrincipal() p: RequestPrincipal,
+    @Query() q: NotificationQueryDto,
+  ) {
+    return this.notifications.readAll(p.userId, q.audience);
   }
   @Post(':id/read') read(@CurrentPrincipal() p: RequestPrincipal, @Param('id') id: string) {
     return this.notifications.read(p.userId, id);

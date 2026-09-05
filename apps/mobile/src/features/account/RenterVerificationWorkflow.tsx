@@ -15,7 +15,6 @@ import {
   FlatList,
   Image,
   Keyboard,
-  Linking,
   Modal,
   Pressable,
   StyleSheet,
@@ -26,6 +25,7 @@ import {
 import { apiClient } from '../../auth/api-client';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateOnlyField } from '../../ui/DateOnlyField';
+import { ensureCameraPermission } from '../../ui/camera-permission';
 import { Button, Card, Field, Icon, Screen, StateView, StatusBadge } from '../../ui/primitives';
 import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
 import type { RenterVerificationSnapshot } from './AccountScreen';
@@ -865,7 +865,7 @@ function ReferenceSelect({
                 onSearch?.(value);
               }}
               placeholder="Type to search"
-              placeholderTextColor={colors.subtleText}
+              placeholderTextColor={colors.placeholder}
               style={styles.searchInput}
               value={query}
             />
@@ -985,18 +985,7 @@ function DocumentCaptureRow({
 }) {
   const [captured, setCaptured] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const capture = async () => {
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert(
-        'Camera access required',
-        'Verification requires a new photo of this document. Gallery and file uploads are not available. Enable Camera in Settings to continue.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Open settings', onPress: () => void Linking.openSettings() },
-        ],
-      );
-      return;
-    }
+    if (!(await ensureCameraPermission())) return;
     const result = await ImagePicker.launchCameraAsync({
       allowsEditing: false,
       cameraType: ImagePicker.CameraType.back,
@@ -1105,18 +1094,7 @@ function SelfieStage({
   readonly onContinue: () => void;
 }) {
   const capture = async () => {
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert(
-        'Camera access required',
-        'Selfie verification requires a new camera capture. Gallery upload is not available.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Open settings', onPress: () => void Linking.openSettings() },
-        ],
-      );
-      return;
-    }
+    if (!(await ensureCameraPermission())) return;
     const result = await ImagePicker.launchCameraAsync({
       allowsEditing: true,
       cameraType: ImagePicker.CameraType.front,

@@ -49,4 +49,10 @@ describe('activity badges and role-aware booking routing', () => {
     expect(appSource).toContain('Restoring your workspace…');
     expect(appSource).toContain('activeRoleStorage.set');
   });
+
+  it('uses a safe marketplace fallback when a deep link has no back history', () => {
+    expect(navigationSource).toContain('navigation.canGoBack()');
+    expect(navigationSource).toContain("navigation.navigate('Marketplace')");
+    expect(navigationSource).not.toContain('onClose={() => navigation.goBack()}');
+  });
 });

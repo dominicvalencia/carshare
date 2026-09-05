@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   NotificationCategory,
+  NotificationAudience,
   NotificationChannel,
   PushProviderCode,
   SessionPlatform,
@@ -28,6 +29,10 @@ export class NotificationQueryDto {
   @Min(1)
   @Max(100)
   limit = 30;
+  @ApiPropertyOptional({ enum: NotificationAudience })
+  @IsOptional()
+  @IsEnum(NotificationAudience)
+  audience?: NotificationAudience;
 }
 export class NotificationPreferenceDto {
   @ApiProperty({ enum: NotificationCategory })

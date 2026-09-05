@@ -72,7 +72,7 @@ export function Screen({
   return (
     <SafeAreaView edges={safeTop ? ['top'] : []} style={styles.safeArea}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'android' ? 'height' : undefined}
         style={styles.flex}
       >
         {leading ? (
@@ -154,10 +154,14 @@ export function NestedScreen({
   readonly onBack?: (() => void) | undefined;
 }) {
   const navigation = useNavigation<NavigationProp<ParamListBase>>();
+  const safeBack = () => {
+    if (navigation.canGoBack()) navigation.goBack();
+    else navigation.navigate('Marketplace');
+  };
   return (
     <Screen
       {...properties}
-      leading={<BackControl label={backLabel} onPress={onBack ?? navigation.goBack} />}
+      leading={<BackControl label={backLabel} onPress={onBack ?? safeBack} />}
     />
   );
 }
@@ -262,7 +266,7 @@ export function Field({
         multiline={multiline}
         onChangeText={onChangeText}
         placeholder={placeholder}
-        placeholderTextColor="#8A9791"
+        placeholderTextColor={colors.placeholder}
         returnKeyType={returnKeyType ?? (multiline ? 'default' : 'next')}
         secureTextEntry={secureTextEntry}
         style={[styles.input, multiline && styles.multiline, Boolean(error) && styles.inputError]}

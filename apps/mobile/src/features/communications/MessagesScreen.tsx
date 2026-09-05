@@ -26,6 +26,7 @@ import {
 } from '../../ui/primitives';
 import { conversationHeading } from './conversation-heading';
 import type { RootStackParamList } from '../../navigation/routes';
+import type { MobileMode } from '../../navigation/routes';
 
 interface Person {
   readonly userId: string;
@@ -64,9 +65,11 @@ interface Message {
 
 export function MessagesScreen({
   initialConversationId,
+  mode,
   onClose,
 }: {
   readonly initialConversationId?: string | undefined;
+  readonly mode: MobileMode;
   readonly onClose?: (() => void) | undefined;
 }) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
@@ -76,37 +79,51 @@ export function MessagesScreen({
   const [body, setBody] = useState('');
   const list = useRef<FlatList<Message>>(null);
   const conversations = useQuery({
-    queryKey: ['conversations'],
-    queryFn: () => apiClient.request<{ items: Conversation[] }>('/conversations?limit=50'),
+    queryKey: ['conversations', mode],
+    queryFn: () =>
+      apiClient.request<{ items: Conversation[] }>(
+        `/conversations?limit=50&audience=${mode.toUpperCase()}`,
+      ),
     refetchInterval: 10_000,
   });
   const notificationSummary = useQuery({
-    queryKey: ['notification-summary'],
-    queryFn: () => apiClient.request<{ unreadCount: number }>('/notifications/summary'),
+    queryKey: ['notification-summary', mode],
+    queryFn: () =>
+      apiClient.request<{ unreadCount: number }>(
+        `/notifications/summary?audience=${mode.toUpperCase()}`,
+      ),
     refetchInterval: 15_000,
   });
   const conversation = useQuery({
     enabled: Boolean(selected),
-    queryKey: ['conversation', selected],
-    queryFn: () => apiClient.request<ConversationDetail>(`/conversations/${selected}`),
+    queryKey: ['conversation', selected, mode],
+    queryFn: () =>
+      apiClient.request<ConversationDetail>(
+        `/conversations/${selected}?audience=${mode.toUpperCase()}`,
+      ),
     refetchInterval: 10_000,
   });
   const messages = useQuery({
     enabled: Boolean(selected),
-    queryKey: ['messages', selected],
+    queryKey: ['messages', selected, mode],
     queryFn: () =>
-      apiClient.request<{ items: Message[] }>(`/conversations/${selected}/messages?limit=100`),
+      apiClient.request<{ items: Message[] }>(
+        `/conversations/${selected}/messages?limit=100&audience=${mode.toUpperCase()}`,
+      ),
     refetchInterval: 5_000,
   });
   const send = useMutation({
     mutationFn: () =>
-      apiClient.request<Message>(`/conversations/${selected}/messages`, {
-        method: 'POST',
-        headers: {
-          'Idempotency-Key': `mobile-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      apiClient.request<Message>(
+        `/conversations/${selected}/messages?audience=${mode.toUpperCase()}`,
+        {
+          method: 'POST',
+          headers: {
+            'Idempotency-Key': `mobile-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          },
+          body: JSON.stringify({ body }),
         },
-        body: JSON.stringify({ body }),
-      }),
+      ),
     onSuccess: () => {
       setBody('');
       void client.invalidateQueries({ queryKey: ['messages', selected] });
@@ -120,13 +137,13 @@ export function MessagesScreen({
   useEffect(() => {
     if (latestId && latestSenderId !== currentUserId && selected) {
       void apiClient
-        .request(`/conversations/${selected}/read`, {
+        .request(`/conversations/${selected}/read?audience=${mode.toUpperCase()}`, {
           method: 'POST',
           body: JSON.stringify({ messageId: latestId }),
         })
         .then(() => client.invalidateQueries({ queryKey: ['conversations'] }));
     }
-  }, [client, currentUserId, latestId, latestSenderId, selected]);
+  }, [client, currentUserId, latestId, latestSenderId, mode, selected]);
   if (selected) {
     const context = conversation.data?.booking;
     return (
@@ -212,7 +229,7 @@ export function MessagesScreen({
                 multiline
                 onChangeText={setBody}
                 placeholder="Message about this booking"
-                placeholderTextColor="#83908A"
+                placeholderTextColor={colors.placeholder}
                 style={styles.input}
                 value={body}
               />

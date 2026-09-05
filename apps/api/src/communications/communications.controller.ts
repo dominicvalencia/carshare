@@ -9,6 +9,7 @@ import { requestMetadata } from '../auth/auth.controller';
 import { CommunicationsService } from './communications.service';
 import {
   CursorQueryDto,
+  ConversationAudienceDto,
   MarkConversationReadDto,
   ModerateMessageDto,
   ReportContentDto,
@@ -24,15 +25,25 @@ export class CommunicationsController {
   @Get() list(@CurrentPrincipal() principal: RequestPrincipal, @Query() query: CursorQueryDto) {
     return this.communications.list(principal.userId, query);
   }
-  @Get(':id') detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
-    return this.communications.detail(principal.userId, id);
+  @Get(':id/context') context(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+  ) {
+    return this.communications.context(principal.userId, id);
+  }
+  @Get(':id') detail(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Query() query: ConversationAudienceDto,
+  ) {
+    return this.communications.detail(principal.userId, id, query.audience);
   }
   @Get(':id/messages') messages(
     @CurrentPrincipal() principal: RequestPrincipal,
     @Param('id') id: string,
     @Query() query: CursorQueryDto,
   ) {
-    return this.communications.messages(principal.userId, id, query);
+    return this.communications.messages(principal.userId, id, query, query.audience);
   }
   @Post(':id/messages')
   @ApiHeader({ name: 'Idempotency-Key', required: true })
@@ -42,6 +53,7 @@ export class CommunicationsController {
     @Body() input: SendMessageDto,
     @Headers('idempotency-key') key: string | undefined,
     @Req() request: Request,
+    @Query() query: ConversationAudienceDto,
   ) {
     return this.communications.send(
       principal.userId,
@@ -50,14 +62,16 @@ export class CommunicationsController {
       input.replyToMessageId,
       key ?? '',
       requestMetadata(request),
+      query.audience,
     );
   }
   @Post(':id/read') markRead(
     @CurrentPrincipal() principal: RequestPrincipal,
     @Param('id') id: string,
     @Body() input: MarkConversationReadDto,
+    @Query() query: ConversationAudienceDto,
   ) {
-    return this.communications.markRead(principal.userId, id, input.messageId);
+    return this.communications.markRead(principal.userId, id, input.messageId, query.audience);
   }
 }
 

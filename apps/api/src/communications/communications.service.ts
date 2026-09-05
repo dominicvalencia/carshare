@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { ApiEnvironment } from '@carrental/config';
 import {
   BookingStatus,
+  ConversationParticipantContext,
   ConversationStatus,
   MessageModerationStatus,
   ModerationTargetType,
@@ -42,9 +43,19 @@ export class CommunicationsService {
     this.ratePerMinute = configuration.getOrThrow('MESSAGE_RATE_LIMIT_PER_MINUTE', { infer: true });
   }
 
-  async list(userId: string, query: { cursor?: string; limit: number }) {
+  async list(
+    userId: string,
+    query: { cursor?: string; limit: number; audience?: 'RENTER' | 'OWNER' },
+  ) {
+    const contexts = query.audience
+      ? [ConversationParticipantContext[query.audience], ConversationParticipantContext.SUPPORT]
+      : undefined;
     const rows = await this.database.client.conversation.findMany({
-      where: { participants: { some: { userId, leftAt: null } } },
+      where: {
+        participants: {
+          some: { userId, leftAt: null, ...(contexts ? { context: { in: contexts } } : {}) },
+        },
+      },
       orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
       take: query.limit + 1,
       ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
@@ -90,8 +101,22 @@ export class CommunicationsService {
     };
   }
 
-  async detail(userId: string, conversationId: string) {
-    const conversation = await this.requireParticipant(userId, conversationId);
+  async context(userId: string, conversationId: string) {
+    const participant = await this.database.client.conversationParticipant.findUnique({
+      where: { conversationId_userId: { conversationId, userId } },
+      select: { context: true, leftAt: true },
+    });
+    if (!participant || participant.leftAt)
+      throw new ApplicationException(
+        'CONVERSATION_NOT_FOUND',
+        'Conversation not found.',
+        HttpStatus.NOT_FOUND,
+      );
+    return { context: participant.context };
+  }
+
+  async detail(userId: string, conversationId: string, audience?: 'RENTER' | 'OWNER') {
+    const conversation = await this.requireParticipant(userId, conversationId, audience);
     return {
       ...conversation,
       canSend: await this.canWrite(conversation.bookingId, conversation.status),
@@ -102,8 +127,9 @@ export class CommunicationsService {
     userId: string,
     conversationId: string,
     query: { cursor?: string; limit: number },
+    audience?: 'RENTER' | 'OWNER',
   ) {
-    await this.requireParticipant(userId, conversationId);
+    await this.requireParticipant(userId, conversationId, audience);
     const rows = await this.database.client.message.findMany({
       where: { conversationId },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -125,6 +151,7 @@ export class CommunicationsService {
     replyToMessageId: string | undefined,
     idempotencyKey: string,
     request: RequestMetadata,
+    audience?: 'RENTER' | 'OWNER',
   ) {
     if (idempotencyKey.length < 8 || idempotencyKey.length > 200)
       throw new ApplicationException(
@@ -139,7 +166,7 @@ export class CommunicationsService {
         `Message must contain 1 to ${this.maxLength} characters.`,
         HttpStatus.BAD_REQUEST,
       );
-    const conversation = await this.requireParticipant(userId, conversationId);
+    const conversation = await this.requireParticipant(userId, conversationId, audience);
     if (!(await this.canWrite(conversation.bookingId, conversation.status)))
       throw new ApplicationException(
         'CONVERSATION_READ_ONLY',
@@ -226,8 +253,13 @@ export class CommunicationsService {
     }
   }
 
-  async markRead(userId: string, conversationId: string, messageId: string) {
-    await this.requireParticipant(userId, conversationId);
+  async markRead(
+    userId: string,
+    conversationId: string,
+    messageId: string,
+    audience?: 'RENTER' | 'OWNER',
+  ) {
+    await this.requireParticipant(userId, conversationId, audience);
     const message = await this.database.client.message.findUnique({
       where: { id: messageId },
       select: { conversationId: true, createdAt: true },
@@ -338,9 +370,21 @@ export class CommunicationsService {
     return message;
   }
 
-  private async requireParticipant(userId: string, conversationId: string) {
+  private async requireParticipant(
+    userId: string,
+    conversationId: string,
+    audience?: 'RENTER' | 'OWNER',
+  ) {
+    const contexts = audience
+      ? [ConversationParticipantContext[audience], ConversationParticipantContext.SUPPORT]
+      : undefined;
     const conversation = await this.database.client.conversation.findFirst({
-      where: { id: conversationId, participants: { some: { userId, leftAt: null } } },
+      where: {
+        id: conversationId,
+        participants: {
+          some: { userId, leftAt: null, ...(contexts ? { context: { in: contexts } } : {}) },
+        },
+      },
       include: {
         booking: {
           select: {

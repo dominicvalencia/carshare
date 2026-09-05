@@ -24,7 +24,8 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
 
   it('is keyboard-aware on Android and requests the rear camera for vehicle evidence', () => {
     expect(source).toContain('KeyboardAvoidingView');
-    expect(source).toContain("Platform.OS === 'ios' ? 'padding' : 'height'");
+    expect(source).toContain("Platform.OS === 'android' ? 'height' : undefined");
+    expect(source).toContain("automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}");
     expect(
       source.match(/cameraType: ImagePicker\.CameraType\.back/g)?.length,
     ).toBeGreaterThanOrEqual(2);

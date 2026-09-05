@@ -184,6 +184,7 @@ function CredentialScreen({
                   ? 'Verification token'
                   : 'Email or mobile'
             }
+            placeholderTextColor={colors.placeholder}
             style={styles.input}
             value={value}
           />
@@ -201,6 +202,7 @@ function CredentialScreen({
               accessibilityLabel={mode === 'reset' ? 'New password' : 'Password'}
               onChangeText={onChange}
               placeholder={mode === 'reset' ? 'New password' : 'Password'}
+              placeholderTextColor={colors.placeholder}
               secureTextEntry
               style={styles.input}
               value={value}
@@ -224,6 +226,7 @@ function CredentialScreen({
               autoComplete="new-password"
               onChangeText={onChange}
               placeholder="Confirm password"
+              placeholderTextColor={colors.placeholder}
               secureTextEntry
               style={styles.input}
               textContentType="newPassword"

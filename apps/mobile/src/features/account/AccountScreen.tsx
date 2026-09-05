@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { NavigationProp } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
-import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { useAuth } from '../../auth/AuthProvider';
 import type { OwnerStatus } from '../../auth/auth.types';
@@ -139,8 +139,9 @@ export function AccountScreen({
     retry: false,
   });
   const notificationSummary = useQuery({
-    queryKey: ['notification-summary'],
-    queryFn: () => apiClient.request<{ unreadCount: number }>('/notifications/summary'),
+    queryKey: ['notification-summary', 'renter'],
+    queryFn: () =>
+      apiClient.request<{ unreadCount: number }>('/notifications/summary?audience=RENTER'),
   });
   const name =
     me.data?.profile?.displayName ??
@@ -387,8 +388,15 @@ export function OwnerOnboardingScreen() {
   const auth = useAuth();
   const client = useQueryClient();
   const [step, setStep] = useState(0);
-  const [document, setDocument] = useState<{ id: string; name: string } | null>(null);
+  const [document, setDocument] = useState<{
+    id: string;
+    name: string;
+    mimeType: string;
+    uri: string;
+  } | null>(null);
   const [uploadError, setUploadError] = useState('');
+  const [formError, setFormError] = useState('');
+  const hydratedOwnerId = useRef<string | null>(null);
   const [form, setForm] = useState({
     legalName: '',
     contactNumber: '+63',
@@ -403,6 +411,19 @@ export function OwnerOnboardingScreen() {
     queryFn: () => apiClient.request<OwnerProfile>('/owners/me'),
     retry: false,
   });
+  useEffect(() => {
+    if (!owner.data || hydratedOwnerId.current === owner.data.id) return;
+    hydratedOwnerId.current = owner.data.id;
+    setForm({
+      legalName: owner.data.legalName ?? '',
+      contactNumber: owner.data.contactNumber ?? '+63',
+      addressLine1: owner.data.addressLine1 ?? '',
+      barangay: owner.data.barangay ?? '',
+      city: owner.data.city ?? '',
+      province: owner.data.province ?? '',
+      postalCode: owner.data.postalCode ?? '',
+    });
+  }, [owner.data]);
   const start = useMutation({
     mutationFn: () => apiClient.request<OwnerProfile>('/owners/onboarding', { method: 'POST' }),
     onSuccess: async (data) => {
@@ -412,9 +433,39 @@ export function OwnerOnboardingScreen() {
   });
   const save = useMutation({
     mutationFn: () =>
-      apiClient.request('/owners/me', { method: 'PATCH', body: JSON.stringify(form) }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ['owner'] }),
+      apiClient.request<OwnerProfile>('/owners/me', {
+        method: 'PATCH',
+        body: JSON.stringify(form),
+      }),
+    onSuccess: (data) => client.setQueryData(['owner'], data),
   });
+  const continueToNextStep = async () => {
+    setFormError('');
+    if (step === 0 && (!form.legalName.trim() || !form.contactNumber.trim())) {
+      setFormError('Enter the legal name and Philippine mobile number used for verification.');
+      return;
+    }
+    if (
+      step === 1 &&
+      (!form.addressLine1.trim() ||
+        !form.city.trim() ||
+        !form.province.trim() ||
+        !form.postalCode.trim())
+    ) {
+      setFormError('Complete the required street address, city, province, and postal code.');
+      return;
+    }
+    if (step === 2 && !document) {
+      setFormError('Attach one owner identity document before continuing.');
+      return;
+    }
+    try {
+      if (step < 2) await save.mutateAsync();
+      setStep((current) => Math.min(current + 1, 3));
+    } catch {
+      // The shared mutation error is rendered below; remain on this step for correction.
+    }
+  };
   const submit = useMutation({
     mutationFn: async () => {
       await save.mutateAsync();
@@ -439,7 +490,12 @@ export function OwnerOnboardingScreen() {
         name: asset.name,
         mimeType: asset.mimeType ?? 'application/octet-stream',
       });
-      setDocument({ id: uploaded.id, name: asset.name });
+      setDocument({
+        id: uploaded.id,
+        name: asset.name,
+        mimeType: asset.mimeType ?? 'application/octet-stream',
+        uri: asset.uri,
+      });
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : 'Document upload failed.');
     }
@@ -453,7 +509,7 @@ export function OwnerOnboardingScreen() {
   if (!owner.data)
     return (
       <NestedScreen
-        eyebrow="Host on Car Rental"
+        eyebrow="Host on CarShare"
         title="Share your car with confidence"
         subtitle="Create an owner profile now. Vehicle publication and booking operations unlock after verification."
       >
@@ -497,11 +553,23 @@ export function OwnerOnboardingScreen() {
       title={steps[step]}
       subtitle="Your verification details are private and reviewed only by authorized staff."
     >
-      <View style={styles.chips}>
-        {steps.map((label, index) => (
-          <Chip key={label} label={`${index + 1}`} selected={index === step} />
-        ))}
-      </View>
+      <Card style={styles.ownerProgressCard}>
+        <View style={styles.rowBetween}>
+          <Text style={styles.progressText}>
+            Step {step + 1} of {steps.length}
+          </Text>
+          <Text style={styles.cardTitle}>{steps[step]}</Text>
+        </View>
+        <View style={styles.ownerProgressDots}>
+          {steps.map((label, index) => (
+            <View
+              accessibilityLabel={`${label}${index === step ? ', current step' : ''}`}
+              key={label}
+              style={[styles.ownerProgressDot, index <= step && styles.ownerProgressDotActive]}
+            />
+          ))}
+        </View>
+      </Card>
       {owner.data.rejectionReason && (
         <Card style={styles.warningCard}>
           <Text style={styles.cardTitle}>Changes requested</Text>
@@ -509,7 +577,11 @@ export function OwnerOnboardingScreen() {
         </Card>
       )}
       {step === 0 && (
-        <>
+        <OwnerOnboardingSection
+          helper="Use the legal name and contact number that authorized staff should verify."
+          icon="person-outline"
+          title="Owner identity"
+        >
           <Field
             label="Legal name"
             value={form.legalName}
@@ -521,10 +593,14 @@ export function OwnerOnboardingScreen() {
             onChangeText={(contactNumber) => setForm({ ...form, contactNumber })}
             keyboardType="phone-pad"
           />
-        </>
+        </OwnerOnboardingSection>
       )}
       {step === 1 && (
-        <>
+        <OwnerOnboardingSection
+          helper="Enter the current Philippine address associated with your owner profile."
+          icon="location-outline"
+          title="Residential address"
+        >
           <Field
             label="Address"
             value={form.addressLine1}
@@ -551,15 +627,30 @@ export function OwnerOnboardingScreen() {
             onChangeText={(postalCode) => setForm({ ...form, postalCode })}
             keyboardType="number-pad"
           />
-        </>
+        </OwnerOnboardingSection>
       )}
       {step === 2 && (
-        <Card>
-          <Icon color={colors.primary} name="document-attach-outline" size={30} />
-          <Text style={styles.cardTitle}>Identity document</Text>
+        <OwnerOnboardingSection
+          helper="Attach one current government-issued identity document so authorized staff can compare it with your owner details."
+          icon="document-attach-outline"
+          title="Owner identity document"
+        >
           <Text style={styles.body}>
-            Choose a clear image or PDF. The file is uploaded as sensitive evidence.
+            The current pilot accepts one clear image or PDF selected from your device. Camera-only
+            capture is not required. The backend does not maintain a narrower approved-document
+            catalogue, so CarShare does not claim unsupported ID alternatives.
           </Text>
+          <Text style={styles.note}>
+            Show the complete document, keep all text readable, and avoid glare or cropped edges. It
+            is uploaded as sensitive evidence and visible only to authorized reviewers.
+          </Text>
+          {document?.mimeType.startsWith('image/') && (
+            <Image
+              accessibilityLabel="Owner identity document preview"
+              source={{ uri: document.uri }}
+              style={styles.ownerDocumentPreview}
+            />
+          )}
           <Button
             label={document ? 'Replace document' : 'Choose document'}
             onPress={() => void chooseDocument()}
@@ -567,31 +658,39 @@ export function OwnerOnboardingScreen() {
           />
           {document && <Text style={styles.success}>✓ {document.name}</Text>}
           {uploadError && <Text style={styles.error}>{uploadError}</Text>}
-        </Card>
+        </OwnerOnboardingSection>
       )}
       {step === 3 && (
-        <Card>
-          <Text style={styles.cardTitle}>Review your information</Text>
-          <Text style={styles.body}>
-            {form.legalName}
-            {'\n'}
-            {form.contactNumber}
-            {'\n'}
-            {form.addressLine1}, {form.barangay}
-            {'\n'}
-            {form.city}, {form.province} {form.postalCode}
-          </Text>
-          <Text style={styles.body}>Document: {document?.name ?? 'Not selected'}</Text>
+        <OwnerOnboardingSection
+          helper="Confirm the saved information before sending it for authorized review."
+          icon="checkmark-circle-outline"
+          title="Review your owner profile"
+        >
+          <OwnerReviewRow label="Legal name" value={form.legalName} />
+          <OwnerReviewRow label="Mobile number" value={form.contactNumber} />
+          <OwnerReviewRow
+            label="Address"
+            value={`${form.addressLine1}, ${form.barangay ? `${form.barangay}, ` : ''}${form.city}, ${form.province} ${form.postalCode}`}
+          />
+          <OwnerReviewRow
+            label="Owner identity document"
+            value={document?.name ?? 'Not selected'}
+          />
           <Text style={styles.note}>
             Submitting confirms these details are accurate. You can create vehicle drafts after
             onboarding begins, but publication requires approval.
           </Text>
-        </Card>
+        </OwnerOnboardingSection>
       )}
+      {formError && <Text style={styles.error}>{formError}</Text>}
       <View style={styles.actions}>
         {step > 0 && <Button label="Back" onPress={() => setStep(step - 1)} variant="secondary" />}
         {step < 3 ? (
-          <Button label="Continue" onPress={() => setStep(step + 1)} />
+          <Button
+            disabled={save.isPending}
+            label={save.isPending ? 'Saving…' : 'Save and continue'}
+            onPress={() => void continueToNextStep()}
+          />
         ) : (
           <Button
             disabled={!document || submit.isPending}
@@ -604,6 +703,42 @@ export function OwnerOnboardingScreen() {
         <Text style={styles.error}>{(save.error ?? submit.error)?.message}</Text>
       )}
     </NestedScreen>
+  );
+}
+
+function OwnerOnboardingSection({
+  children,
+  helper,
+  icon,
+  title,
+}: {
+  readonly children: React.ReactNode;
+  readonly helper: string;
+  readonly icon: IconName;
+  readonly title: string;
+}) {
+  return (
+    <Card style={styles.ownerSectionCard}>
+      <View style={styles.ownerSectionHeader}>
+        <View style={styles.ownerSectionIcon}>
+          <Icon color={colors.primary} name={icon} size={24} />
+        </View>
+        <View style={styles.flex}>
+          <Text style={styles.cardTitle}>{title}</Text>
+          <Text style={styles.body}>{helper}</Text>
+        </View>
+      </View>
+      {children}
+    </Card>
+  );
+}
+
+function OwnerReviewRow({ label, value }: { readonly label: string; readonly value: string }) {
+  return (
+    <View style={styles.ownerReviewRow}>
+      <Text style={styles.menuDetail}>{label}</Text>
+      <Text style={styles.body}>{value || 'Not provided'}</Text>
+    </View>
   );
 }
 
@@ -1535,6 +1670,38 @@ const styles = StyleSheet.create({
     width: 48,
   },
   note: { color: colors.subtleText, fontSize: 12, lineHeight: 18, marginTop: spacing.xs },
+  ownerDocumentPreview: {
+    aspectRatio: 1.58,
+    backgroundColor: colors.muted,
+    borderRadius: radius.md,
+    marginTop: spacing.sm,
+    width: '100%',
+  },
+  ownerProgressCard: { gap: spacing.sm },
+  ownerProgressDot: {
+    backgroundColor: colors.border,
+    borderRadius: radius.pill,
+    flex: 1,
+    height: 6,
+  },
+  ownerProgressDotActive: { backgroundColor: colors.primary },
+  ownerProgressDots: { flexDirection: 'row', gap: spacing.xxs },
+  ownerReviewRow: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: spacing.sm,
+  },
+  ownerSectionCard: { gap: spacing.md },
+  ownerSectionHeader: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  ownerSectionIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.md,
+    height: 46,
+    justifyContent: 'center',
+    width: 46,
+  },
+  progressText: { color: colors.primary, fontSize: 12, fontWeight: '800' },
   documentRow: {
     alignItems: 'center',
     borderBottomColor: colors.border,

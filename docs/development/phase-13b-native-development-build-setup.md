@@ -1,5 +1,46 @@
 # Phase 13B native development-build setup
 
+## Current physical-device acceptance status
+
+**iOS: PHYSICAL ACCEPTANCE PASS.** On September 5, 2026, the Personal Team-signed CarShare
+development client was installed and launched on the paired iPhone 11 named “Dom’s iPhone” running
+iOS 26.5. The generated project uses display name `CarShare`, bundle identifier `ph.carshare.mobile`,
+custom scheme `carrental`, and deployment target iOS 15.1. Product-owner testing confirmed connection
+to the LAN Metro server, successful API data loading, and the complete locally testable physical
+acceptance matrix documented in `native-development-build-acceptance.md`.
+
+The same physical session subsequently passed force-close session restoration, persistent logout,
+account/cache isolation, renter/owner mode restoration, Face ID cancel/retry and five-minute lock,
+all required camera directions, location denial/recovery, network recovery, form/upload lifecycle
+transitions, and in-app notification navigation. Eight corrective items found during that session are
+implemented in source and await physical-device regression: camera-denial recovery, native date UX,
+owner keyboard behavior, root deep-link Back behavior, role-scoped notifications, placeholder
+visibility, owner-draft continuity, and return-photo parity. The final physical regression confirmed
+all eight corrections and the follow-up navigation, messaging, onboarding, document, and picker work.
+
+A later physical pass confirmed successful deep-link opening and renter/owner notification
+separation. It did not accept the deep-link parent-stack transition, role-scoped Messages, owner
+onboarding presentation/document clarity, or booking picker consistency. Those areas now have
+follow-up source corrections and automated coverage. A subsequent physical iPhone regression accepted
+all of them, including natural Back/swipe behavior, role-scoped Messages, guided Owner onboarding,
+clear Owner identity-document handling, and the spinner-based Booking date/time presentation. The
+supplied recording and screenshot remain evidence of the corrected prior behavior.
+
+**Personal Team notification limitation:** remote APNs Push Notifications cannot be provisioned with
+the current Apple Personal Team. Phase 13B local iOS prebuilds therefore remove the `aps-environment`
+entitlement in a finalized local config plugin after `expo-notifications` performs its normal native
+configuration. The installed and autolinked `expo-notifications` runtime, in-app notification center, and
+notification data/query logic remain intact. Remote APNs delivery is excluded from this local iOS
+acceptance build and will be tested later with appropriate Apple Developer Program provisioning. Set
+`IOS_REMOTE_PUSH_ENABLED=true` only when building with a team and profile that support APNs; remote push
+must not be reported as physically accepted until that separate acceptance is complete.
+
+**Android: not started**, in accordance with the iOS-first gate. Android biometrics, SecureStore
+lifecycle, camera direction/permissions, location, native date inputs, network recovery, and application
+lifecycle remain untested in a development client. Universal/app links and real APNs/FCM delivery are
+also outside this pass; local notification UI and in-app notifications are distinct from production
+remote push.
+
 ## Prepared repository state
 
 The mobile app remains on Expo SDK 54 / React Native 0.81.5 and uses Continuous Native Generation;
@@ -8,7 +49,13 @@ SDK-compatible `expo-dev-client` and `expo-font`, has an `expo-font` plugin, exp
 permission copy, and development-only EAS profiles. No production profile, credentials, EAS project,
 push credential, store build, or provider was created.
 
-Identifiers remain `ph.com.carrental.mobile` on both platforms. The custom URL scheme is
+The permanent identifiers are `ph.carshare.mobile` on both platforms and the installed display name is
+`CarShare`. The official application icon source is `apps/mobile/assets/carshare-app-icon.png`; Expo
+derives the required native launcher sizes from that high-resolution square source. The complete
+car-and-wordmark artwork is also the Android standard/fallback icon. The approved transparent
+`apps/mobile/assets/carshare-android-adaptive-foreground.png` car symbol is the Android adaptive
+foreground over the authoritative `primaryDark` theme color `#0C4E39`, keeping the symbol clear of
+launcher masks without distorting it. The custom URL scheme is
 `carrental://`; React Navigation and notification taps already recognize it. Universal Links and
 Android App Links are intentionally deferred until an approved HTTPS domain and association files
 exist. SecureStore, LocalAuthentication, Notifications, Location, Image Picker, Document Picker, and
@@ -51,12 +98,13 @@ uncommitted unless a future native customization requires a deliberate policy ch
 1. Install Xcode 16.1 or newer for SDK 54, accept its license, and install command-line tools and an
    iOS platform runtime.
 2. Connect and trust the iPhone, enable Developer Mode, and select it when `ios:native` prompts.
-3. In Xcode signing, select the authorized Apple Team for `ph.com.carrental.mobile`. A free Personal
+3. In Xcode signing, select the authorized Apple Team for `ph.carshare.mobile`. A free Personal
    Team may support local device development with short-lived provisioning; reliable team distribution
    or EAS internal distribution requires Apple Developer Program access and registered device UDIDs.
 4. Do not create distribution certificates. Development signing/provisioning is sufficient.
-5. Face ID usage text is configured. Camera, selected-photo, location, and notification permissions
-   are configured by Expo plugins. No associated-domain entitlement is added until a domain exists.
+5. Face ID usage text is configured. Camera, selected-photo, location, and local-notification support
+   remain configured by Expo plugins. The Phase 13B Personal Team build omits the APNs entitlement as
+   documented above. No associated-domain entitlement is added until a domain exists.
 
 ### Android physical device
 
@@ -107,8 +155,8 @@ and stale-cache recovery.
 
 - Provide access to an Apple Developer team (or confirm local-only Personal Team testing), connect and
   trust the iPhone, and enable Developer Mode.
-- Confirm that `ph.com.carrental.mobile` is the intended development identifier before registering it
-  with Apple or EAS. Changing it later creates a different installed app/keychain namespace.
+- `ph.carshare.mobile` is the approved permanent identifier. Register and sign this identifier with the
+  selected Apple team; changing it later would create a different installed app/keychain namespace.
 - Connect an Android device and enable/authorize USB or wireless debugging.
 - Log in to Expo/EAS and run project registration only if cloud development builds are desired; review
   the generated project ID before it is committed.

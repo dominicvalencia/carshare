@@ -21,6 +21,17 @@ export class CursorQueryDto {
   @Min(1)
   @Max(100)
   limit = 30;
+  @ApiPropertyOptional({ enum: ['RENTER', 'OWNER'] })
+  @IsOptional()
+  @IsIn(['RENTER', 'OWNER'])
+  audience?: 'RENTER' | 'OWNER';
+}
+
+export class ConversationAudienceDto {
+  @ApiPropertyOptional({ enum: ['RENTER', 'OWNER'] })
+  @IsOptional()
+  @IsIn(['RENTER', 'OWNER'])
+  audience?: 'RENTER' | 'OWNER';
 }
 
 export class SendMessageDto {

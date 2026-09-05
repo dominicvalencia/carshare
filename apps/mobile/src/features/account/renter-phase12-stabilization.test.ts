@@ -122,15 +122,14 @@ describe('Phase 12 renter acceptance stabilization', () => {
     );
   });
 
-  it('avoids the iOS inline-calendar crash for future-bounded dates', () => {
+  it('uses the bounded native iOS spinner without the crashing inline mode', () => {
     const field = source('ui/DateOnlyField.tsx');
-    expect(field).toContain('<BoundedCalendar');
     const iosPicker = field.slice(field.indexOf("{Platform.OS === 'ios'"));
-    expect(iosPicker).toContain('<BoundedCalendar');
+    expect(iosPicker).toContain('<DateTimePicker');
+    expect(iosPicker).toContain('display="spinner"');
     expect(iosPicker).not.toContain('display="inline"');
-    expect(field).toContain('accessibilityLabel="Next month"');
-    expect(field).toContain('accessibilityLabel="Choose year"');
-    expect(field).toContain('accessibilityLabel={`Select year ${year}`}');
+    expect(field).toContain('pickerMinimumDate');
+    expect(field).toContain('pickerMaximumDate');
   });
 
   it('uses the same DateOnlyField presentation for every active renter date-only field', () => {

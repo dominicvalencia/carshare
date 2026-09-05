@@ -9,6 +9,7 @@ import { dateTimeLabel, domainLabel } from '../../ui/format';
 import { invalidateBookingLifecycle } from '../../query/booking-invalidation';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
+import { ensureCameraPermission } from '../../ui/camera-permission';
 
 const perspectives = [
   'FRONT',
@@ -124,10 +125,14 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
   });
   useRefreshOnFocusAndForeground(() => void rental.refetch());
   const capture = useMutation({
-    mutationFn: async (perspective: string) => {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted)
-        throw new Error('Camera permission is required for return evidence.');
+    mutationFn: async ({
+      mode,
+      perspective,
+    }: {
+      mode: 'append' | 'replace';
+      perspective: string;
+    }) => {
+      if (!(await ensureCameraPermission())) return null;
       const result = await ImagePicker.launchCameraAsync({
         cameraType: ImagePicker.CameraType.back,
         mediaTypes: ['images'],
@@ -140,12 +145,14 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
         name: asset.fileName ?? `${perspective.toLowerCase()}.jpg`,
         uri: asset.uri,
       });
-      return { id: uploaded.id, perspective, uri: asset.uri };
+      return { id: uploaded.id, mode, perspective, uri: asset.uri };
     },
     onSuccess: (result) => {
       if (result)
         setFiles((current) =>
-          addCapturedFile(current, result.perspective, { id: result.id, uri: result.uri }),
+          result.mode === 'replace'
+            ? { ...current, [result.perspective]: [{ id: result.id, uri: result.uri }] }
+            : addCapturedFile(current, result.perspective, { id: result.id, uri: result.uri }),
         );
     },
   });
@@ -319,6 +326,7 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
             onChangeText={setOdometer}
             keyboardType="number-pad"
             placeholder="Odometer reading (km)"
+            placeholderTextColor={colors.placeholder}
           />
           {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' && (
             <TextInput
@@ -327,6 +335,7 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
               onChangeText={setFuel}
               keyboardType="decimal-pad"
               placeholder="Fuel percentage"
+              placeholderTextColor={colors.placeholder}
             />
           )}
           {['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID'].includes(detail.vehicle.powertrain ?? '') && (
@@ -336,29 +345,41 @@ export function RenterRentalPanel({ reference }: { readonly reference: string })
               onChangeText={setSoc}
               keyboardType="decimal-pad"
               placeholder="Battery SOC percentage"
+              placeholderTextColor={colors.placeholder}
             />
           )}
-          {[...perspectives, ...multiPerspectives.filter((value) => value === 'ADDITIONAL')].map(
-            (perspective) => (
+          {[...perspectives, 'ADDITIONAL' as const].map((perspective) => {
+            const captured = files[perspective] ?? [];
+            const latest = captured.at(-1);
+            const multiple = (multiPerspectives as readonly string[]).includes(perspective);
+            return (
               <View key={perspective}>
-                <SecondaryAction
-                  label={`${files[perspective]?.length ? `✓ ${files[perspective].length} ` : ''}${domainLabel(perspective)}${multiPerspectives.includes(perspective as never) ? ' (add photo)' : ''}`}
-                  onPress={() => capture.mutate(perspective)}
+                <SecureCameraPhotoSlot
+                  busy={capture.isPending && capture.variables?.perspective === perspective}
+                  guidance={inspectionPhotoGuidance(perspective)}
+                  name={domainLabel(perspective)}
+                  onCapture={() => capture.mutate({ mode: 'replace', perspective })}
+                  previewUri={latest?.uri}
+                  required={perspective !== 'ADDITIONAL'}
+                  uploaded={Boolean(latest)}
                 />
-                <CapturedPreviews files={files[perspective] ?? []} perspective={perspective} />
-                {files[perspective]?.length ? (
+                {multiple && latest && (
                   <SecondaryAction
-                    label="Remove last photo"
-                    onPress={() => setFiles((current) => removeCapturedFile(current, perspective))}
+                    label={`Add another ${domainLabel(perspective).toLowerCase()} photo`}
+                    onPress={() => capture.mutate({ mode: 'append', perspective })}
                   />
-                ) : null}
+                )}
+                {captured.length > 1 && (
+                  <CapturedPreviews files={captured.slice(0, -1)} perspective={perspective} />
+                )}
               </View>
-            ),
-          )}
+            );
+          })}
           <TextInput
             multiline
             onChangeText={setNotes}
             placeholder="Return condition notes (optional)"
+            placeholderTextColor={colors.placeholder}
             style={styles.input}
             value={notes}
           />
@@ -440,9 +461,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
       mode: 'append' | 'replace';
       perspective: string;
     }) => {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted)
-        throw new Error('Camera permission is required for inspection evidence.');
+      if (!(await ensureCameraPermission())) return null;
       const result = await ImagePicker.launchCameraAsync({
         cameraType: ImagePicker.CameraType.back,
         mediaTypes: ['images'],
@@ -657,6 +676,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
             onChangeText={setOdometer}
             keyboardType="number-pad"
             placeholder="Odometer reading (km)"
+            placeholderTextColor={colors.placeholder}
           />
           {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' && (
             <TextInput
@@ -665,6 +685,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
               onChangeText={setFuel}
               keyboardType="decimal-pad"
               placeholder="Fuel percentage"
+              placeholderTextColor={colors.placeholder}
             />
           )}
           {['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID'].includes(detail.vehicle.powertrain ?? '') && (
@@ -674,6 +695,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
               onChangeText={setSoc}
               keyboardType="decimal-pad"
               placeholder="Battery SOC percentage"
+              placeholderTextColor={colors.placeholder}
             />
           )}
           {[...perspectives, 'ADDITIONAL' as const].map((perspective) => {
@@ -716,6 +738,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
             multiline
             onChangeText={setNotes}
             placeholder="Pickup condition notes (optional)"
+            placeholderTextColor={colors.placeholder}
             style={styles.input}
             value={notes}
           />
@@ -743,6 +766,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
               keyboardType="number-pad"
               maxLength={6}
               placeholder="6-digit pickup code"
+              placeholderTextColor={colors.placeholder}
             />
             <Action
               label={action.isPending ? 'Verifying…' : 'Verify pickup code'}
@@ -840,6 +864,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
             value={claimDescription}
             onChangeText={setClaimDescription}
             placeholder="Describe the specific issue"
+            placeholderTextColor={colors.placeholder}
             multiline
           />
           <Action
@@ -866,6 +891,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
               keyboardType="decimal-pad"
               onChangeText={setCorrectionOdometer}
               placeholder="Correct pickup odometer (km)"
+              placeholderTextColor={colors.placeholder}
               style={styles.input}
               value={correctionOdometer}
             />
@@ -873,6 +899,7 @@ export function OwnerRentalPanel({ reference }: { readonly reference: string }) 
               multiline
               onChangeText={setCorrectionReason}
               placeholder="Explain the data-entry mistake"
+              placeholderTextColor={colors.placeholder}
               style={styles.input}
               value={correctionReason}
             />
@@ -1103,14 +1130,6 @@ function inspectionPhotoGuidance(perspective: string): string {
     ADDITIONAL: 'Capture any additional condition evidence that should be recorded.',
   };
   return guidance[perspective] ?? 'Capture a clear inspection evidence photo.';
-}
-
-function removeCapturedFile(current: Record<string, CapturedFile[]>, perspective: string) {
-  const next = { ...current };
-  const remaining = (next[perspective] ?? []).slice(0, -1);
-  if (remaining.length) next[perspective] = remaining;
-  else delete next[perspective];
-  return next;
 }
 
 function inspectionMedia(files: Record<string, CapturedFile[]>) {

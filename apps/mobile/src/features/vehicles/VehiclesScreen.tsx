@@ -18,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { apiClient } from '../../auth/api-client';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateTimeField } from '../../ui/DateTimeField';
+import { ensureCameraPermission } from '../../ui/camera-permission';
 import { domainLabel, money, vehicleStatusLabel } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import { SearchableReferenceSelector } from '../../ui/SearchableReferenceSelector';
@@ -456,11 +457,11 @@ function VehicleEditor({ id, onClose }: { readonly id: string; readonly onClose:
         </View>
       </View>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+        behavior={Platform.OS === 'android' ? 'height' : undefined}
         style={styles.flex}
       >
         <ScrollView
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
           contentContainerStyle={styles.editorBody}
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
@@ -740,6 +741,7 @@ function PhotosStep({
   );
   const upload = async (perspective: string, camera: boolean) => {
     setError('');
+    if (camera && !(await ensureCameraPermission())) return;
     const result = camera
       ? await ImagePicker.launchCameraAsync({
           cameraType: ImagePicker.CameraType.back,
@@ -881,6 +883,7 @@ function DocumentsStep({
   const [error, setError] = useState('');
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const upload = async (definition: Reference, camera: boolean) => {
+    if (camera && !(await ensureCameraPermission())) return;
     const cameraResult = camera
       ? await ImagePicker.launchCameraAsync({
           cameraType: ImagePicker.CameraType.back,
@@ -1527,6 +1530,7 @@ function Field({
         keyboardType={keyboard}
         onChangeText={onChange}
         placeholder={placeholder}
+        placeholderTextColor={colors.placeholder}
         style={styles.input}
         value={value}
       />

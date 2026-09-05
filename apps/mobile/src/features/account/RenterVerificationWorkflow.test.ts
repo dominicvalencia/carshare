@@ -18,7 +18,7 @@ const documentSource = source.slice(
 
 describe('renter selfie capture regression', () => {
   it('uses a new front-camera capture and exposes no gallery or file picker path', () => {
-    expect(selfieSource).toContain('requestCameraPermissionsAsync');
+    expect(selfieSource).toContain('ensureCameraPermission');
     expect(selfieSource).toContain('launchCameraAsync');
     expect(selfieSource).toContain('CameraType.front');
     expect(selfieSource).not.toContain('launchImageLibraryAsync');
@@ -26,9 +26,7 @@ describe('renter selfie capture regression', () => {
   });
 
   it('handles denied camera permission without falling back to gallery', () => {
-    expect(selfieSource).toContain('Camera access required');
-    expect(selfieSource).toContain('Linking.openSettings');
-    expect(selfieSource).toContain('Gallery upload is not available');
+    expect(selfieSource).toContain('ensureCameraPermission');
   });
 
   it('does not misrepresent a camera selfie as certified liveness', () => {
@@ -49,6 +47,6 @@ describe('renter document capture regression', () => {
   it('contains no gallery or file-picker fallback', () => {
     expect(source).not.toContain('expo-document-picker');
     expect(documentSource).not.toContain('launchImageLibraryAsync');
-    expect(documentSource).toContain('Gallery and file uploads are not available');
+    expect(documentSource).toContain('ensureCameraPermission');
   });
 });

@@ -174,6 +174,7 @@ export function PayoutPanels() {
               value={holder}
               onChangeText={setHolder}
               placeholder="Account holder name"
+              placeholderTextColor={colors.placeholder}
             />
             <TextInput
               accessibilityLabel="Account or wallet number"
@@ -181,6 +182,7 @@ export function PayoutPanels() {
               value={identifier}
               onChangeText={setIdentifier}
               placeholder="Account or wallet number"
+              placeholderTextColor={colors.placeholder}
               keyboardType="number-pad"
             />
             <Pressable

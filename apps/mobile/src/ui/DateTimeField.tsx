@@ -1,6 +1,6 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useState } from 'react';
-import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Keyboard, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, spacing } from '../theme/tokens';
 import { dateLabel, timeLabel } from './format';
 import { Button, Icon } from './primitives';
@@ -20,6 +20,7 @@ export function DateTimeField({
   const [androidMode, setAndroidMode] = useState<'date' | 'time'>('date');
   const [draft, setDraft] = useState(value);
   const show = () => {
+    Keyboard.dismiss();
     setDraft(value);
     setAndroidMode('date');
     setOpen(true);
@@ -75,24 +76,32 @@ export function DateTimeField({
           <View style={styles.modal}>
             <View style={styles.handle} />
             <Text style={styles.modalTitle}>{label}</Text>
+            <Text style={styles.pickerLabel}>Date</Text>
             <DateTimePicker
               {...(minimumDate ? { minimumDate } : {})}
-              display="inline"
+              display="spinner"
               mode="date"
-              onChange={(_, selected) =>
-                selected &&
-                setDraft(new Date(selected.setHours(draft.getHours(), draft.getMinutes(), 0, 0)))
-              }
+              onChange={(_, selected) => {
+                if (!selected) return;
+                const next = new Date(selected);
+                next.setHours(draft.getHours(), draft.getMinutes(), 0, 0);
+                setDraft(next);
+              }}
               value={draft}
+              themeVariant="light"
             />
+            <Text style={styles.pickerLabel}>Time</Text>
             <DateTimePicker
               display="spinner"
               mode="time"
-              onChange={(_, selected) =>
-                selected &&
-                setDraft(new Date(draft.setHours(selected.getHours(), selected.getMinutes(), 0, 0)))
-              }
+              onChange={(_, selected) => {
+                if (!selected) return;
+                const next = new Date(draft);
+                next.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+                setDraft(next);
+              }}
               value={draft}
+              themeVariant="light"
             />
             <Button
               label="Done"
@@ -135,6 +144,7 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
   },
   modalTitle: { color: colors.ink, fontSize: 24, fontWeight: '800' },
+  pickerLabel: { color: colors.ink, fontSize: 13, fontWeight: '700', marginTop: spacing.sm },
   time: { color: colors.subtleText, fontSize: 13, marginTop: 2 },
   value: {
     alignItems: 'center',

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { WorkerEnvironment } from '@carrental/config';
 import {
   NotificationCategory,
+  NotificationAudience,
   NotificationChannel,
   NotificationDeliveryStatus,
   PushTokenStatus,
@@ -21,6 +22,10 @@ interface EventPolicy {
   readonly category: NotificationCategory;
   readonly templateKey: string;
   readonly recipients: 'DIRECT' | 'OWNER' | 'RENTER' | 'BOTH';
+}
+interface NotificationRecipient {
+  readonly userId: string;
+  readonly audience: NotificationAudience;
 }
 
 export function workerPushProvider(environment: WorkerEnvironment): PushProvider | null {
@@ -51,15 +56,17 @@ export async function consumeDomainEvent(
     uuid(outboxId);
   if (!sourceId) return 0;
   let created = 0;
-  for (const userId of recipients) {
+  for (const recipient of recipients) {
+    const { audience, userId } = recipient;
     const stableKey = createHash('sha256')
-      .update(`${eventType}:${userId}:${sourceId}`)
+      .update(`${eventType}:${userId}:${audience}:${sourceId}`)
       .digest('hex');
     const reference = await bookingReference(database, uuid(payload.bookingId));
     const notification = await database.notification.upsert({
       where: { stableKey },
       create: {
         userId,
+        audience,
         category: policy.category,
         templateKey: policy.templateKey,
         sourceEventType: eventType,
@@ -375,9 +382,7 @@ async function resolveRecipients(
   database: PrismaClient,
   target: EventPolicy['recipients'],
   payload: Payload,
-): Promise<string[]> {
-  if (target === 'DIRECT')
-    return uuid(payload.recipientUserId) ? [String(payload.recipientUserId)] : [];
+): Promise<NotificationRecipient[]> {
   const bookingId = uuid(payload.bookingId);
   if (bookingId) {
     const booking = await database.booking.findUnique({
@@ -385,19 +390,43 @@ async function resolveRecipients(
       select: { renterUserId: true, ownerUserId: true },
     });
     if (!booking) return [];
+    if (target === 'DIRECT') {
+      const userId = uuid(payload.recipientUserId);
+      if (!userId) return [];
+      return [
+        {
+          userId,
+          audience:
+            userId === booking.ownerUserId
+              ? NotificationAudience.OWNER
+              : userId === booking.renterUserId
+                ? NotificationAudience.RENTER
+                : NotificationAudience.ACCOUNT,
+        },
+      ];
+    }
     return target === 'RENTER'
-      ? [booking.renterUserId]
+      ? [{ userId: booking.renterUserId, audience: NotificationAudience.RENTER }]
       : target === 'OWNER'
-        ? [booking.ownerUserId]
-        : [...new Set([booking.renterUserId, booking.ownerUserId])];
+        ? [{ userId: booking.ownerUserId, audience: NotificationAudience.OWNER }]
+        : [
+            { userId: booking.renterUserId, audience: NotificationAudience.RENTER },
+            { userId: booking.ownerUserId, audience: NotificationAudience.OWNER },
+          ];
   }
+  if (target === 'DIRECT')
+    return uuid(payload.recipientUserId)
+      ? [{ userId: String(payload.recipientUserId), audience: NotificationAudience.ACCOUNT }]
+      : [];
   const payoutId = uuid(payload.payoutId) ?? uuid(payload.aggregateId);
   if (target === 'OWNER' && payoutId) {
     const payout = await database.payout.findUnique({
       where: { id: payoutId },
       select: { ownerProfile: { select: { userId: true } } },
     });
-    return payout ? [payout.ownerProfile.userId] : [];
+    return payout
+      ? [{ userId: payout.ownerProfile.userId, audience: NotificationAudience.OWNER }]
+      : [];
   }
   return [];
 }

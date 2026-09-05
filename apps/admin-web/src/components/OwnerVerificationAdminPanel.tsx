@@ -284,7 +284,7 @@ export function OwnerVerificationAdminPanel({
                     key={document.id}
                     label={adminLabel(document.documentType)}
                     status={document.status}
-                    note="Owner verification evidence"
+                    note="Owner identity document"
                     requestAccess={() => requestAccess(document.fileAsset.id)}
                   />
                 )),

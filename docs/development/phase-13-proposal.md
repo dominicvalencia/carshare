@@ -7,6 +7,8 @@ Phase 13B native development-build preparation. Phase 13C, provider activation, 
 staging/production deployment, and all later work remain deferred. The authoritative execution records
 are [`phase-13a-dependency-security-audit.md`](phase-13a-dependency-security-audit.md) and
 [`phase-13b-native-development-build-setup.md`](phase-13b-native-development-build-setup.md).
+The iOS portion of Phase 13B passed physical acceptance on an iPhone 11 running iOS 26.5 on September
+5, 2026. Android physical development and acceptance have not started.
 
 ## Objective
 

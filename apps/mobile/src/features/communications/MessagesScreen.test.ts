@@ -27,7 +27,15 @@ describe('conversationHeading', () => {
 describe('messages and notifications entry separation', () => {
   it('puts the notification bell and its own unread summary in Messages', () => {
     expect(source).toContain('Open notifications');
-    expect(source).toContain("['notification-summary']");
+    expect(source).toContain("['notification-summary', mode]");
+    expect(source).toContain('audience=${mode.toUpperCase()}');
     expect(source).toContain("navigation.navigate('Notifications')");
+  });
+
+  it('scopes conversation data and unread activity to the active role', () => {
+    expect(source).toContain("['conversations', mode]");
+    expect(source).toContain("['conversation', selected, mode]");
+    expect(source).toContain("['messages', selected, mode]");
+    expect(source.match(/audience=\$\{mode\.toUpperCase\(\)\}/g)?.length).toBeGreaterThanOrEqual(4);
   });
 });

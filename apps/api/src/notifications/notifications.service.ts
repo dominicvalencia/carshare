@@ -1,5 +1,10 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { NotificationCategory, NotificationChannel, PushTokenStatus } from '@carrental/database';
+import {
+  NotificationAudience,
+  NotificationCategory,
+  NotificationChannel,
+  PushTokenStatus,
+} from '@carrental/database';
 import { renderNotification } from '@carrental/notifications';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { ApplicationException } from '../common/errors/application.exception';
@@ -8,9 +13,12 @@ import { ApplicationException } from '../common/errors/application.exception';
 export class NotificationsService {
   constructor(private readonly database: DatabaseService) {}
 
-  async list(userId: string, query: { cursor?: string; limit: number }) {
+  async list(
+    userId: string,
+    query: { cursor?: string; limit: number; audience?: NotificationAudience },
+  ) {
     const rows = await this.database.client.notification.findMany({
-      where: { userId },
+      where: { userId, ...audienceFilter(query.audience) },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: query.limit + 1,
       ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
@@ -22,10 +30,10 @@ export class NotificationsService {
     };
   }
 
-  async summary(userId: string) {
+  async summary(userId: string, audience?: NotificationAudience) {
     return {
       unreadCount: await this.database.client.notification.count({
-        where: { userId, readAt: null },
+        where: { userId, readAt: null, ...audienceFilter(audience) },
       }),
     };
   }
@@ -44,9 +52,9 @@ export class NotificationsService {
     return { id: notificationId, read: true };
   }
 
-  async readAll(userId: string) {
+  async readAll(userId: string, audience?: NotificationAudience) {
     const result = await this.database.client.notification.updateMany({
-      where: { userId, readAt: null },
+      where: { userId, readAt: null, ...audienceFilter(audience) },
       data: { readAt: new Date() },
     });
     return { updated: result.count };
@@ -186,4 +194,8 @@ export class NotificationsService {
     openedAt: notification.openedAt,
     createdAt: notification.createdAt,
   });
+}
+
+function audienceFilter(audience?: NotificationAudience) {
+  return audience ? { audience: { in: [NotificationAudience.ACCOUNT, audience] } } : {};
 }

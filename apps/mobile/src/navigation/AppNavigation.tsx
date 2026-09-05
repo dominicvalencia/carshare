@@ -1,9 +1,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { NavigationContainer } from '@react-navigation/native';
+import { getStateFromPath, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import type { ComponentProps } from 'react';
+import { useEffect, type ComponentProps } from 'react';
 import { Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiClient } from '../auth/api-client';
@@ -43,11 +43,21 @@ import type {
   RootStackParamList,
 } from './routes';
 import { combinedActivityUnread, ownerBookingSurface } from './activity-routing';
+import { withDeepLinkParent } from './deep-link-state';
 
 const RenterTabs = createBottomTabNavigator<RenterTabParamList>();
 const OwnerTabs = createBottomTabNavigator<OwnerTabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
 type IconName = ComponentProps<typeof Ionicons>['name'];
+
+function closeToMarketplace(navigation: {
+  canGoBack(): boolean;
+  goBack(): void;
+  navigate(name: 'Marketplace'): void;
+}) {
+  if (navigation.canGoBack()) navigation.goBack();
+  else navigation.navigate('Marketplace');
+}
 
 interface AppNavigationProperties {
   readonly mode: MobileMode;
@@ -74,16 +84,20 @@ const ownerIcons: Readonly<Record<keyof OwnerTabParamList, { active: IconName; i
     More: { active: 'menu', idle: 'menu-outline' },
   };
 
-function useBadges() {
+function useBadges(mode: MobileMode) {
+  const audience = mode.toUpperCase();
   const conversations = useQuery({
-    queryKey: ['conversations'],
+    queryKey: ['conversations', mode],
     queryFn: () =>
-      apiClient.request<{ items: { unreadCount: number }[] }>('/conversations?limit=50'),
+      apiClient.request<{ items: { unreadCount: number }[] }>(
+        `/conversations?limit=50&audience=${audience}`,
+      ),
     refetchInterval: 15_000,
   });
   const notifications = useQuery({
-    queryKey: ['notification-summary'],
-    queryFn: () => apiClient.request<{ unreadCount: number }>('/notifications/summary'),
+    queryKey: ['notification-summary', mode],
+    queryFn: () =>
+      apiClient.request<{ unreadCount: number }>(`/notifications/summary?audience=${audience}`),
     refetchInterval: 15_000,
   });
   return {
@@ -116,7 +130,7 @@ function RenterNavigation({
   onModeChange,
   ownerCapable,
 }: Pick<AppNavigationProperties, 'onModeChange' | 'ownerCapable'>) {
-  const badges = useBadges();
+  const badges = useBadges('renter');
   const insets = useSafeAreaInsets();
   return (
     <RenterTabs.Navigator
@@ -131,6 +145,7 @@ function RenterNavigation({
       >
         {({ route }) => (
           <MessagesScreen
+            mode="renter"
             key={route.params?.conversationId ?? 'conversation-list'}
             initialConversationId={route.params?.conversationId}
           />
@@ -147,7 +162,7 @@ function OwnerNavigation({
   onModeChange,
   ownerStatus,
 }: Pick<AppNavigationProperties, 'onModeChange' | 'ownerStatus'>) {
-  const badges = useBadges();
+  const badges = useBadges('owner');
   const insets = useSafeAreaInsets();
   return (
     <OwnerTabs.Navigator
@@ -178,6 +193,7 @@ function OwnerNavigation({
       >
         {({ route }) => (
           <MessagesScreen
+            mode="owner"
             key={route.params?.conversationId ?? 'conversation-list'}
             initialConversationId={route.params?.conversationId}
           />
@@ -212,6 +228,8 @@ export function AppNavigation(properties: AppNavigationProperties) {
             PublicReviews: 'reviews/public',
           },
         },
+        getStateFromPath: (path, options) =>
+          withDeepLinkParent(getStateFromPath(path, options), properties.mode),
       }}
     >
       <Stack.Navigator
@@ -261,14 +279,15 @@ export function AppNavigation(properties: AppNavigationProperties) {
           name="OwnerOnboarding"
           options={{ headerShown: false }}
         />
-        <Stack.Screen
-          component={NotificationCenter}
-          name="Notifications"
-          options={{ headerShown: false }}
-        />
+        <Stack.Screen name="Notifications" options={{ headerShown: false }}>
+          {() => <NotificationCenter mode={properties.mode} />}
+        </Stack.Screen>
         <Stack.Screen name="Favorites" options={{ headerShown: false }}>
           {({ navigation }) => (
-            <DiscoveryScreen initialMode="favorites" onExit={() => navigation.goBack()} />
+            <DiscoveryScreen
+              initialMode="favorites"
+              onExit={() => closeToMarketplace(navigation)}
+            />
           )}
         </Stack.Screen>
         <Stack.Screen component={ReviewsScreen} name="Reviews" options={{ headerShown: false }} />
@@ -286,15 +305,17 @@ export function AppNavigation(properties: AppNavigationProperties) {
           {({ navigation, route }) => (
             <DiscoveryScreen
               initialVehicleId={route.params.vehicleId}
-              onExit={() => navigation.goBack()}
+              onExit={() => closeToMarketplace(navigation)}
             />
           )}
         </Stack.Screen>
         <Stack.Screen name="Conversation" options={{ headerShown: false }}>
           {({ navigation, route }) => (
-            <MessagesScreen
-              initialConversationId={route.params.conversationId}
-              onClose={() => navigation.goBack()}
+            <ConversationDestination
+              conversationId={route.params.conversationId}
+              mode={properties.mode}
+              onClose={() => closeToMarketplace(navigation)}
+              onModeChange={properties.onModeChange}
             />
           )}
         </Stack.Screen>
@@ -303,12 +324,12 @@ export function AppNavigation(properties: AppNavigationProperties) {
             properties.mode === 'owner' ? (
               <OwnerBookingDestination
                 reference={route.params.bookingId}
-                onClose={() => navigation.goBack()}
+                onClose={() => closeToMarketplace(navigation)}
               />
             ) : (
               <MyBookingsScreen
                 initialBookingReference={route.params.bookingId}
-                onClose={() => navigation.goBack()}
+                onClose={() => closeToMarketplace(navigation)}
               />
             )
           }
@@ -318,7 +339,7 @@ export function AppNavigation(properties: AppNavigationProperties) {
             <ClaimDetailScreen
               claimId={route.params.claimId}
               ownerMode={properties.mode === 'owner'}
-              onBack={() => navigation.goBack()}
+              onBack={() => closeToMarketplace(navigation)}
             />
           )}
         </Stack.Screen>
@@ -342,6 +363,49 @@ export function AppNavigation(properties: AppNavigationProperties) {
       </Stack.Navigator>
     </NavigationContainer>
   );
+}
+
+function ConversationDestination({
+  conversationId,
+  mode,
+  onClose,
+  onModeChange,
+}: {
+  readonly conversationId: string;
+  readonly mode: MobileMode;
+  readonly onClose: () => void;
+  readonly onModeChange: (mode: MobileMode) => void;
+}) {
+  const context = useQuery({
+    queryKey: ['conversation-context', conversationId],
+    queryFn: () =>
+      apiClient.request<{ context: 'RENTER' | 'OWNER' | 'SUPPORT' }>(
+        `/conversations/${conversationId}/context`,
+      ),
+  });
+  const requiredMode = context.data?.context === 'OWNER' ? 'owner' : 'renter';
+  useEffect(() => {
+    if (context.data?.context !== 'SUPPORT' && requiredMode !== mode) onModeChange(requiredMode);
+  }, [context.data?.context, mode, onModeChange, requiredMode]);
+  if (context.isPending || (context.data?.context !== 'SUPPORT' && requiredMode !== mode))
+    return (
+      <Screen eyebrow="Messages" title="Opening conversation">
+        <StateView loading title="Restoring the correct conversation perspective…" />
+      </Screen>
+    );
+  if (context.isError)
+    return (
+      <Screen eyebrow="Messages" title="Conversation unavailable">
+        <StateView
+          icon="alert-circle-outline"
+          title="This conversation is unavailable"
+          message={context.error.message}
+          actionLabel="Back"
+          onAction={onClose}
+        />
+      </Screen>
+    );
+  return <MessagesScreen mode={mode} initialConversationId={conversationId} onClose={onClose} />;
 }
 
 function OwnerBookingDestination({

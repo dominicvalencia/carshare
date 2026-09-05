@@ -74,6 +74,7 @@ export function SearchableReferenceSelector({
             autoCapitalize="words"
             onChangeText={setSearch}
             placeholder={`Search ${label.toLocaleLowerCase()}`}
+            placeholderTextColor={colors.placeholder}
             style={styles.search}
             value={search}
           />

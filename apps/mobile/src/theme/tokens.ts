@@ -10,6 +10,7 @@ export const colors = {
   primaryDark: '#0C4E39',
   primarySoft: '#E0F2EA',
   subtleText: '#5B6B64',
+  placeholder: '#69766F',
   surface: '#FFFFFF',
   warning: '#936000',
   warningSoft: '#FFF4D6',

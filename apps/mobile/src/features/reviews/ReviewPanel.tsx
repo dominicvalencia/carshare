@@ -101,6 +101,7 @@ function ReviewForm({
         value={text}
         onChangeText={setText}
         placeholder="Optional written review"
+        placeholderTextColor={colors.placeholder}
         multiline
         style={styles.input}
       />

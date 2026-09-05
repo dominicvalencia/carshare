@@ -29,6 +29,7 @@ describe('inspection correction mobile synchronization', () => {
     expect(photoSlotSource).toContain('Captured and securely uploaded');
     expect(photoSlotSource).toContain("hasPreview ? 'Retake' : 'Open camera'");
     expect(source).toContain("mode: 'append' | 'replace'");
+    expect(source.match(/<SecureCameraPhotoSlot/g)?.length).toBeGreaterThanOrEqual(2);
     expect(source).toContain('/pickup/inspection/draft/media');
     expect(source).toContain('owner-pickup-inspection-draft');
     expect(source).toContain('CapturedPreviews');

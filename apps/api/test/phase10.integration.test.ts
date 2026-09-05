@@ -164,6 +164,27 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
       make: expect.any(String),
       model: expect.any(String),
     });
+    const ownerMode = await auth(
+      request(app.getHttpServer()).get('/api/v1/conversations?audience=OWNER'),
+      owner,
+    ).expect(200);
+    expect(ownerMode.body.data.items.map((item: { id: string }) => item.id)).toContain(
+      conversationId,
+    );
+    const ownerAsRenter = await auth(
+      request(app.getHttpServer()).get('/api/v1/conversations?audience=RENTER'),
+      owner,
+    ).expect(200);
+    expect(ownerAsRenter.body.data.items.map((item: { id: string }) => item.id)).not.toContain(
+      conversationId,
+    );
+    const renterAsOwner = await auth(
+      request(app.getHttpServer()).get('/api/v1/conversations?audience=OWNER'),
+      renter,
+    ).expect(200);
+    expect(renterAsOwner.body.data.items.map((item: { id: string }) => item.id)).not.toContain(
+      conversationId,
+    );
   });
 
   it('sends immutable messages idempotently and tracks read state', async () => {
@@ -192,6 +213,15 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
         data: { body: 'silently edited' },
       }),
     ).rejects.toThrow();
+    const ownerUnreadBeforeRead = await auth(
+      request(app.getHttpServer()).get('/api/v1/conversations?audience=OWNER'),
+      owner,
+    ).expect(200);
+    expect(
+      ownerUnreadBeforeRead.body.data.items.find(
+        (item: { id: string }) => item.id === conversationId,
+      ).unreadCount,
+    ).toBe(1);
     await auth(
       request(app.getHttpServer()).post(`/api/v1/conversations/${conversationId}/read`),
       owner,
@@ -205,6 +235,14 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
         })
       ).lastReadMessageId,
     ).toBe(first.body.data.id);
+    const ownerUnread = await auth(
+      request(app.getHttpServer()).get('/api/v1/conversations?audience=OWNER'),
+      owner,
+    ).expect(200);
+    expect(
+      ownerUnread.body.data.items.find((item: { id: string }) => item.id === conversationId)
+        .unreadCount,
+    ).toBe(0);
   });
 
   it('converges duplicate events to one in-app notification and reconciles fake push', async () => {
@@ -212,12 +250,18 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
       .send({ provider: 'FAKE', platform: 'IOS', token: `fake-valid-${unique}` })
       .expect(201);
     const sourceId = randomUUID();
-    const payload = { recipientUserId: owner.userId, messageId: sourceId, conversationId };
+    const payload = {
+      bookingId,
+      recipientUserId: owner.userId,
+      messageId: sourceId,
+      conversationId,
+    };
     await consumeDomainEvent(database.client, 'NEW_MESSAGE', payload, randomUUID());
     await consumeDomainEvent(database.client, 'NEW_MESSAGE', payload, randomUUID());
     const notification = await database.client.notification.findFirstOrThrow({
       where: { userId: owner.userId, sourceId },
     });
+    expect(notification.audience).toBe('OWNER');
     expect(
       await database.client.notification.count({ where: { userId: owner.userId, sourceId } }),
     ).toBe(1);
@@ -236,6 +280,13 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
       owner,
     ).expect(200);
     expect(inbox.body.data.unreadCount).toBeGreaterThan(0);
+    const renterModeInbox = await auth(
+      request(app.getHttpServer()).get('/api/v1/notifications?audience=RENTER'),
+      owner,
+    ).expect(200);
+    expect(renterModeInbox.body.data.items.map((item: { id: string }) => item.id)).not.toContain(
+      notification.id,
+    );
   });
 
   it('permanently disables provider-invalid tokens without exposing them in notification APIs', async () => {

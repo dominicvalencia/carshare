@@ -650,6 +650,12 @@ enum NotificationChannel {
   SMS
 }
 
+enum NotificationAudience {
+  ACCOUNT
+  RENTER
+  OWNER
+}
+
 enum NotificationDeliveryStatus {
   PENDING
   PROCESSING
@@ -2276,6 +2282,7 @@ model Notification {
   id              String               @id @default(uuid()) @db.Uuid
   userId          String               @map("user_id") @db.Uuid
   category        NotificationCategory
+  audience        NotificationAudience @default(ACCOUNT)
   templateKey     String               @map("template_key") @db.VarChar(100)
   sourceEventType String               @map("source_event_type") @db.VarChar(100)
   sourceType      String               @map("source_type") @db.VarChar(100)
@@ -2290,7 +2297,7 @@ model Notification {
   user       User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
   deliveries NotificationDelivery[]
 
-  @@index([userId, readAt, createdAt])
+  @@index([userId, audience, readAt, createdAt])
   @@index([sourceType, sourceId])
   @@map("notifications")
 }
