@@ -6,9 +6,13 @@ export type InternalDestination = {
     : { readonly name: K; readonly params: RootStackParamList[K] };
 }[keyof RootStackParamList];
 
-export function internalDestination(link: string | null): InternalDestination | null {
-  if (!link?.startsWith('carrental://')) return null;
-  const [path] = link.slice('carrental://'.length).split(/[?#]/, 1);
+export function internalDestination(
+  link: string | null,
+  scheme = 'carrental',
+): InternalDestination | null {
+  const prefix = `${scheme}://`;
+  if (!link?.startsWith(prefix)) return null;
+  const [path] = link.slice(prefix.length).split(/[?#]/, 1);
   const [resource, identifier] = path?.split('/').filter(Boolean) ?? [];
   if (resource === 'bookings' && identifier)
     return { name: 'Booking', params: { bookingId: identifier } };

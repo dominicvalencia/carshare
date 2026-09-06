@@ -28,7 +28,7 @@ export function PushRegistration() {
         invalidateBookingLifecycle(client);
         void invalidateRenterVerification(client);
         const link = response.notification.request.content.data?.deepLink;
-        if (typeof link === 'string' && link.startsWith('carrental://')) void Linking.openURL(link);
+        if (typeof link === 'string' && isAllowedPushDeepLink(link)) void Linking.openURL(link);
       },
     );
     const receivedSubscription = Notifications.addNotificationReceivedListener(() => {
@@ -53,15 +53,42 @@ async function register() {
     const projectId = Constants.easConfig?.projectId ?? process.env.EXPO_PUBLIC_PROJECT_ID;
     if (!projectId) return;
     const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+    const environment = Constants.expoConfig?.extra?.appEnvironment;
+    const appIdentifier = Constants.expoConfig?.extra?.appIdentifier;
+    if (typeof environment !== 'string' || typeof appIdentifier !== 'string') return;
     await apiClient.request('/push-tokens', {
       method: 'POST',
       body: JSON.stringify({
         provider: 'EXPO',
         platform: Platform.OS === 'ios' ? 'IOS' : 'ANDROID',
         token,
+        environment,
+        appIdentifier,
       }),
     });
   } catch {
     /* Push is additive; the in-app inbox remains authoritative. */
+  }
+}
+
+const ALLOWED_PUSH_TARGETS = new Set([
+  'bookings',
+  'messages',
+  'claims',
+  'support',
+  'notifications',
+  'vehicles',
+  'hosts',
+  'earnings',
+  'payouts',
+]);
+
+export function isAllowedPushDeepLink(value: string): boolean {
+  try {
+    const expectedScheme = Constants.expoConfig?.extra?.appScheme ?? 'carrental';
+    const parsed = new URL(value);
+    return parsed.protocol === `${expectedScheme}:` && ALLOWED_PUSH_TARGETS.has(parsed.hostname);
+  } catch {
+    return false;
   }
 }

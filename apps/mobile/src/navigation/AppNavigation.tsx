@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import Constants from 'expo-constants';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { getStateFromPath, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -210,7 +211,7 @@ export function AppNavigation(properties: AppNavigationProperties) {
   return (
     <NavigationContainer
       linking={{
-        prefixes: ['carrental://'],
+        prefixes: [`${Constants.expoConfig?.extra?.appScheme ?? 'carrental'}://`],
         config: {
           screens: {
             Marketplace: 'marketplace',

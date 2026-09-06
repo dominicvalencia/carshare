@@ -9,6 +9,18 @@ const REDACTED_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
   'res.headers.set-cookie',
+  'otp',
+  'code',
+  'message.content',
+  'driverLicenseNumber',
+  'address',
+  'bankAccount',
+  'walletAccount',
+  'cardNumber',
+  'kycPayload',
+  'selfie',
+  'signedUrl',
+  'providerPayload',
 ] as const;
 
 export interface LoggerConfiguration {

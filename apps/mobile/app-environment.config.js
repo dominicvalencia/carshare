@@ -45,6 +45,8 @@ function resolveMobileEnvironment(input) {
     extra: {
       serviceName: 'carshare-mobile',
       appEnvironment: environment,
+      appIdentifier: identity.identifier,
+      appScheme: identity.scheme,
       apiEnvironment,
       apiUrl,
       projectId: input.EXPO_PUBLIC_PROJECT_ID,

@@ -2322,7 +2322,9 @@ model DevicePushToken {
   sessionId  String?          @map("session_id") @db.Uuid
   provider   PushProviderCode
   platform   SessionPlatform
-  token      String           @unique @db.VarChar(512)
+  environment String          @default("local") @db.VarChar(20)
+  appIdentifier String        @default("ph.carshare.mobile") @map("app_identifier") @db.VarChar(160)
+  token      String           @db.VarChar(512)
   status     PushTokenStatus  @default(ACTIVE)
   lastSeenAt DateTime         @default(now()) @map("last_seen_at") @db.Timestamptz(3)
   disabledAt DateTime?        @map("disabled_at") @db.Timestamptz(3)
@@ -2335,6 +2337,7 @@ model DevicePushToken {
 
   @@index([userId, status, lastSeenAt])
   @@index([sessionId, status])
+  @@unique([environment, appIdentifier, token])
   @@map("device_push_tokens")
 }
 

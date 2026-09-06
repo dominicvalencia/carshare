@@ -53,4 +53,12 @@ export class RegisterPushTokenDto {
   @ApiProperty({ enum: PushProviderCode }) @IsEnum(PushProviderCode) provider!: PushProviderCode;
   @ApiProperty({ enum: SessionPlatform }) @IsEnum(SessionPlatform) platform!: SessionPlatform;
   @ApiProperty() @IsString() @MaxLength(512) token!: string;
+  @ApiProperty({ enum: ['local', 'test', 'staging', 'production'] })
+  @IsString()
+  @MaxLength(20)
+  environment!: string;
+  @ApiProperty()
+  @IsString()
+  @MaxLength(160)
+  appIdentifier!: string;
 }

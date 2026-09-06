@@ -98,6 +98,9 @@ const communicationsSchema = z.object({
     .transform((value) => value === 'true'),
   PUSH_PROVIDER: z.enum(['fake', 'expo', 'in_app']).default('fake'),
   EXPO_PUSH_ACCESS_TOKEN: z.string().min(1).optional(),
+  FIREBASE_PROJECT_ID: z.string().min(1).optional(),
+  FIREBASE_ANDROID_APP_ID: z.string().min(1).optional(),
+  FCM_CREDENTIALS_BASE64: z.string().min(1).optional(),
   NOTIFICATION_DELIVERY_INTERVAL_SECONDS: z.coerce.number().int().min(5).max(300).default(10),
   PUSH_RECEIPT_DELAY_SECONDS: z.coerce.number().int().min(5).max(3600).default(900),
   REVIEW_WINDOW_DAYS: z.coerce.number().int().min(1).max(14).default(14),
@@ -133,11 +136,36 @@ const apiEnvironmentSchema = commonSchema
       .enum(['true', 'false'])
       .default('false')
       .transform((value) => value === 'true'),
-    EMAIL_PROVIDER: z.enum(['disabled', 'external']).default('disabled'),
-    SMS_PROVIDER: z.enum(['disabled', 'external']).default('disabled'),
-    KYC_PROVIDER: z.enum(['manual', 'external']).default('manual'),
+    EMAIL_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    SMS_OTP_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    AUTOMATED_KYC_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    EMAIL_PROVIDER: z.enum(['disabled', 'development', 'postmark']).default('disabled'),
+    POSTMARK_SERVER_TOKEN: z.string().min(1).optional(),
+    POSTMARK_FROM_EMAIL: z.string().email().optional(),
+    POSTMARK_MESSAGE_STREAM: z.string().min(1).default('outbound'),
+    POSTMARK_WEBHOOK_SECRET: z.string().min(16).optional(),
+    SMS_PROVIDER: z.enum(['disabled', 'development', 'semaphore']).default('disabled'),
+    SEMAPHORE_API_KEY: z.string().min(1).optional(),
+    SEMAPHORE_SENDER_NAME: z.string().min(1).max(11).optional(),
+    SEMAPHORE_API_URL: z.url().default('https://api.semaphore.co/api/v4/messages'),
+    KYC_PROVIDER: z.enum(['manual', 'fake', 'sumsub']).default('manual'),
+    SUMSUB_APP_TOKEN: z.string().min(1).optional(),
+    SUMSUB_SECRET_KEY: z.string().min(1).optional(),
     GEOCODING_PROVIDER: z.enum(['disabled', 'external']).default('disabled'),
     OBSERVABILITY_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    SENTRY_ENABLED: z
       .enum(['true', 'false'])
       .default('false')
       .transform((value) => value === 'true'),
@@ -235,8 +263,43 @@ function validateAuthDeliveryEnvironment<T extends ApiEnvironment>(environment: 
     (hasPrivateHost(environment.API_PUBLIC_URL) || hasPrivateHost(environment.ADMIN_PUBLIC_URL))
   )
     throw new Error('Public API/Admin origins must not use local or private hosts.');
-  if (environment.OBSERVABILITY_ENABLED && !environment.SENTRY_DSN)
+  if ((environment.OBSERVABILITY_ENABLED || environment.SENTRY_ENABLED) && !environment.SENTRY_DSN)
     throw new Error('SENTRY_DSN is required when observability is enabled.');
+  if (environment.EMAIL_ENABLED) {
+    if (environment.EMAIL_PROVIDER === 'disabled')
+      throw new Error('EMAIL_PROVIDER must be configured when email is enabled.');
+    if (
+      environment.EMAIL_PROVIDER === 'postmark' &&
+      (!environment.POSTMARK_SERVER_TOKEN || !environment.POSTMARK_FROM_EMAIL)
+    )
+      throw new Error(
+        'POSTMARK_SERVER_TOKEN and POSTMARK_FROM_EMAIL are required for Postmark email.',
+      );
+  }
+  if (environment.SMS_OTP_ENABLED) {
+    if (environment.SMS_PROVIDER === 'disabled')
+      throw new Error('SMS_PROVIDER must be configured when SMS OTP is enabled.');
+    if (environment.SMS_PROVIDER === 'semaphore' && !environment.SEMAPHORE_API_KEY)
+      throw new Error('SEMAPHORE_API_KEY is required for Semaphore SMS.');
+  }
+  if (environment.AUTOMATED_KYC_ENABLED) {
+    if (environment.KYC_PROVIDER === 'manual')
+      throw new Error('KYC_PROVIDER must be configured when automated KYC is enabled.');
+    if (
+      environment.KYC_PROVIDER === 'sumsub' &&
+      (!environment.SUMSUB_APP_TOKEN || !environment.SUMSUB_SECRET_KEY)
+    )
+      throw new Error('SUMSUB_APP_TOKEN and SUMSUB_SECRET_KEY are required for Sumsub KYC.');
+  }
+  if (
+    environment.APP_ENV === 'production' &&
+    [environment.EMAIL_PROVIDER, environment.SMS_PROVIDER, environment.KYC_PROVIDER].some(
+      (provider) => provider === 'development' || provider === 'fake',
+    )
+  )
+    throw new Error(
+      'Development/fake communications or KYC providers are forbidden in production.',
+    );
   if (
     environment.OBJECT_STORAGE_PROVIDER === 's3' &&
     environment.OBJECT_STORAGE_ENVIRONMENT !== environment.APP_ENV

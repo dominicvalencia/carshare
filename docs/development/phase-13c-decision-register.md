@@ -13,5 +13,6 @@
 | Payments/payouts | Sandbox/test only                                   | Activation deferred     |
 | Recovery         | RPO 1h; RTO 4h                                      | Target, not validated   |
 
-Next gate: approve Phase 13C-2 staging provisioning, actual domains/origins, access principals, and
+Phase 13C-2 was reordered to complete the local provider integration foundation before staging.
+Next gate: finish local provider QA, then separately approve staging provisioning, actual domains/origins, access principals, and
 managed secret locations. No production activation is implied.

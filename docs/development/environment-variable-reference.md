@@ -10,8 +10,13 @@
 - `OBJECT_STORAGE_PROVIDER`: `local` or `s3`; S3 needs matching `OBJECT_STORAGE_ENVIRONMENT`.
 
 Integration flags `PAYMENTS_ENABLED`, `PAYOUTS_ENABLED`, `PUSH_ENABLED`,
-`AUTH_DELIVERY_ENABLED`, and `OBSERVABILITY_ENABLED` default false. Email, SMS, and geocoding
-default disabled; KYC defaults manual. Credentials are required only for enabled providers.
+`AUTH_DELIVERY_ENABLED`, `EMAIL_ENABLED`, `SMS_OTP_ENABLED`, `AUTOMATED_KYC_ENABLED`,
+`OBSERVABILITY_ENABLED`, and `SENTRY_ENABLED` default false. Email and SMS default disabled; KYC
+defaults manual. Enabled Postmark requires `POSTMARK_SERVER_TOKEN` and `POSTMARK_FROM_EMAIL`;
+enabled Semaphore requires `SEMAPHORE_API_KEY`; enabled Sumsub requires `SUMSUB_APP_TOKEN` and
+`SUMSUB_SECRET_KEY`; enabled Sentry requires `SENTRY_DSN`. Optional Firebase preparation uses
+`FIREBASE_PROJECT_ID`, `FIREBASE_ANDROID_APP_ID`, and a managed `FCM_CREDENTIALS_BASE64` secret.
+Credentials are required only for the enabled concrete provider.
 
 ## Public mobile and Admin values
 

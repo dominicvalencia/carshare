@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { internalDestination } from '../../navigation/deep-links';
+import Constants from 'expo-constants';
 import type { RootStackParamList } from '../../navigation/routes';
 import type { MobileMode } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
@@ -54,7 +55,10 @@ export function NotificationCenter({ mode }: { readonly mode: MobileMode }) {
         client.invalidateQueries({ queryKey: ['notification-summary'] }),
       ]);
       if (result.deepLink) {
-        const destination = internalDestination(result.deepLink);
+        const destination = internalDestination(
+          result.deepLink,
+          Constants.expoConfig?.extra?.appScheme ?? 'carrental',
+        );
         if (!destination) {
           setOpenError('This notification target is no longer available.');
           return;

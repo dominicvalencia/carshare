@@ -247,7 +247,13 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
 
   it('converges duplicate events to one in-app notification and reconciles fake push', async () => {
     await auth(request(app.getHttpServer()).post('/api/v1/push-tokens'), owner)
-      .send({ provider: 'FAKE', platform: 'IOS', token: `fake-valid-${unique}` })
+      .send({
+        provider: 'FAKE',
+        platform: 'IOS',
+        token: `fake-valid-${unique}`,
+        environment: 'test',
+        appIdentifier: 'ph.carshare.mobile.test',
+      })
       .expect(201);
     const sourceId = randomUUID();
     const payload = {
@@ -256,8 +262,8 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
       messageId: sourceId,
       conversationId,
     };
-    await consumeDomainEvent(database.client, 'NEW_MESSAGE', payload, randomUUID());
-    await consumeDomainEvent(database.client, 'NEW_MESSAGE', payload, randomUUID());
+    await consumeDomainEvent(database.client, 'NEW_MESSAGE', payload, randomUUID(), 'test');
+    await consumeDomainEvent(database.client, 'NEW_MESSAGE', payload, randomUUID(), 'test');
     const notification = await database.client.notification.findFirstOrThrow({
       where: { userId: owner.userId, sourceId },
     });
@@ -294,13 +300,20 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
       request(app.getHttpServer()).post('/api/v1/push-tokens'),
       renter,
     )
-      .send({ provider: 'FAKE', platform: 'ANDROID', token: `invalid-${unique}` })
+      .send({
+        provider: 'FAKE',
+        platform: 'ANDROID',
+        token: `invalid-${unique}`,
+        environment: 'test',
+        appIdentifier: 'ph.carshare.mobile.test',
+      })
       .expect(201);
     await consumeDomainEvent(
       database.client,
       'NEW_MESSAGE',
       { recipientUserId: renter.userId, messageId: randomUUID(), conversationId },
       randomUUID(),
+      'test',
     );
     await deliverPendingNotifications(database.client, new FakePushProvider());
     expect(

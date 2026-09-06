@@ -40,6 +40,7 @@ export async function consumeDomainEvent(
   eventType: string,
   rawPayload: unknown,
   outboxId: string,
+  applicationEnvironment = 'local',
 ): Promise<number> {
   const payload = isRecord(rawPayload) ? rawPayload : {};
   const policy = policyFor(eventType);
@@ -74,7 +75,7 @@ export async function consumeDomainEvent(
         sourceId,
         stableKey,
         variables: (reference ? { reference } : {}) as Prisma.InputJsonValue,
-        deepLink: deepLink(policy, eventType, payload, reference),
+        deepLink: deepLink(policy, eventType, payload, reference, applicationEnvironment),
       },
       update: {},
     });
@@ -86,7 +87,12 @@ export async function consumeDomainEvent(
     );
     if (pushEnabled) {
       const tokens = await database.devicePushToken.findMany({
-        where: { userId, status: PushTokenStatus.ACTIVE },
+        where: {
+          userId,
+          environment: applicationEnvironment,
+          status: PushTokenStatus.ACTIVE,
+          OR: [{ sessionId: null }, { session: { revokedAt: null } }],
+        },
         select: { id: true },
       });
       for (const token of tokens) {
@@ -461,20 +467,29 @@ function deepLink(
   eventType: string,
   payload: Payload,
   bookingPublicReference: string | null,
+  applicationEnvironment: string,
 ): string | null {
+  const scheme =
+    applicationEnvironment === 'staging'
+      ? 'carshare-staging'
+      : applicationEnvironment === 'test'
+        ? 'carshare-test'
+        : applicationEnvironment === 'production'
+          ? 'carshare'
+          : 'carrental';
   const claimId = uuid(payload.claimId);
   if (policy.category === NotificationCategory.CLAIMS && claimId)
-    return `carrental://claims/${claimId}`;
+    return `${scheme}://claims/${claimId}`;
   const id = uuid(payload.conversationId) ?? uuid(payload.bookingId) ?? uuid(payload.ticketId);
   const payoutId =
     uuid(payload.payoutId) ?? (eventType.startsWith('PAYOUT_') ? uuid(payload.aggregateId) : null);
-  if (payoutId) return `carrental://payouts/${payoutId}`;
-  if (!id) return eventType.startsWith('EARNING_') ? 'carrental://earnings' : null;
+  if (payoutId) return `${scheme}://payouts/${payoutId}`;
+  if (!id) return eventType.startsWith('EARNING_') ? `${scheme}://earnings` : null;
   return policy.category === NotificationCategory.MESSAGES
-    ? `carrental://messages/${id}`
+    ? `${scheme}://messages/${id}`
     : policy.category === NotificationCategory.SUPPORT
-      ? `carrental://support/${id}`
-      : `carrental://bookings/${bookingPublicReference ?? id}`;
+      ? `${scheme}://support/${id}`
+      : `${scheme}://bookings/${bookingPublicReference ?? id}`;
 }
 function sourceType(eventType: string) {
   return eventType.startsWith('PAYOUT_')

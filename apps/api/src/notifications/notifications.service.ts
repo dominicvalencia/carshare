@@ -8,10 +8,15 @@ import {
 import { renderNotification } from '@carrental/notifications';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { ApplicationException } from '../common/errors/application.exception';
+import { ConfigService } from '@nestjs/config';
+import type { ApiEnvironment } from '@carrental/config';
 
 @Injectable()
 export class NotificationsService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly configuration: ConfigService<ApiEnvironment, true>,
+  ) {}
 
   async list(
     userId: string,
@@ -120,6 +125,8 @@ export class NotificationsService {
       provider: 'EXPO' | 'FAKE';
       platform: 'IOS' | 'ANDROID' | 'WEB' | 'UNKNOWN';
       token: string;
+      environment: string;
+      appIdentifier: string;
     },
   ) {
     const token = input.token.trim();
@@ -129,8 +136,21 @@ export class NotificationsService {
         'Push token is invalid.',
         HttpStatus.BAD_REQUEST,
       );
+    const environment = this.configuration.getOrThrow('APP_ENV', { infer: true });
+    if (
+      input.environment !== environment ||
+      !allowedAppIdentifiers(environment).includes(input.appIdentifier)
+    )
+      throw new ApplicationException(
+        'PUSH_TOKEN_ENVIRONMENT_MISMATCH',
+        'Push token application identity does not match this environment.',
+        HttpStatus.BAD_REQUEST,
+      );
     return this.database.client.$transaction(async (transaction) => {
-      const existing = await transaction.devicePushToken.findUnique({ where: { token } });
+      const identity = { environment, appIdentifier: input.appIdentifier, token };
+      const existing = await transaction.devicePushToken.findUnique({
+        where: { environment_appIdentifier_token: identity },
+      });
       if (existing && existing.userId !== userId)
         throw new ApplicationException(
           'PUSH_TOKEN_CONFLICT',
@@ -138,12 +158,24 @@ export class NotificationsService {
           HttpStatus.CONFLICT,
         );
       await transaction.devicePushToken.updateMany({
-        where: { sessionId, status: PushTokenStatus.ACTIVE, token: { not: token } },
+        where: {
+          sessionId,
+          environment,
+          appIdentifier: input.appIdentifier,
+          status: PushTokenStatus.ACTIVE,
+          token: { not: token },
+        },
         data: { status: PushTokenStatus.DISABLED, disabledAt: new Date() },
       });
       const saved = await transaction.devicePushToken.upsert({
-        where: { token },
-        create: { userId, sessionId, provider: input.provider, platform: input.platform, token },
+        where: { environment_appIdentifier_token: identity },
+        create: {
+          userId,
+          sessionId,
+          provider: input.provider,
+          platform: input.platform,
+          ...identity,
+        },
         update: {
           userId,
           sessionId,
@@ -194,6 +226,12 @@ export class NotificationsService {
     openedAt: notification.openedAt,
     createdAt: notification.createdAt,
   });
+}
+
+function allowedAppIdentifiers(environment: string): readonly string[] {
+  if (environment === 'staging') return ['ph.carshare.mobile.staging'];
+  if (environment === 'test') return ['ph.carshare.mobile.test'];
+  return ['ph.carshare.mobile'];
 }
 
 function audienceFilter(audience?: NotificationAudience) {

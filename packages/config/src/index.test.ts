@@ -140,4 +140,23 @@ describe('environment configuration', () => {
       }),
     ).toThrow('DATABASE_ENVIRONMENT must match');
   });
+
+  it('requires concrete provider configuration only when enabled', () => {
+    const base = {
+      DATABASE_URL: 'postgresql://u:p@localhost/db',
+      REDIS_URL: 'redis://localhost',
+      JWT_ACCESS_SECRET: 'test-access-secret-at-least-thirty-two-characters',
+      TOKEN_HASH_SECRET: 'test-token-secret-at-least-thirty-two-characters',
+    };
+    expect(() =>
+      parseApiEnvironment({ ...base, EMAIL_ENABLED: 'true', EMAIL_PROVIDER: 'postmark' }),
+    ).toThrow('POSTMARK_SERVER_TOKEN');
+    expect(() =>
+      parseApiEnvironment({ ...base, SMS_OTP_ENABLED: 'true', SMS_PROVIDER: 'semaphore' }),
+    ).toThrow('SEMAPHORE_API_KEY');
+    expect(() =>
+      parseApiEnvironment({ ...base, AUTOMATED_KYC_ENABLED: 'true', KYC_PROVIDER: 'sumsub' }),
+    ).toThrow('SUMSUB_APP_TOKEN');
+    expect(() => parseApiEnvironment({ ...base, SENTRY_ENABLED: 'true' })).toThrow('SENTRY_DSN');
+  });
 });

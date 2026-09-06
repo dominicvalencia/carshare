@@ -215,7 +215,8 @@ async function bootstrap(): Promise<void> {
   );
   const domainWorker = new Worker(
     DOMAIN_EVENTS_QUEUE,
-    async (job) => consumeDomainEvent(database, job.name, job.data, String(job.id ?? '')),
+    async (job) =>
+      consumeDomainEvent(database, job.name, job.data, String(job.id ?? ''), environment.APP_ENV),
     { connection, concurrency: 8 },
   );
   domainWorker.on('failed', (job, error) =>
