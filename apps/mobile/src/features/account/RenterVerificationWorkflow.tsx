@@ -17,6 +17,7 @@ import {
   Keyboard,
   Modal,
   Pressable,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -28,6 +29,7 @@ import { DateOnlyField } from '../../ui/DateOnlyField';
 import { ensureCameraPermission } from '../../ui/camera-permission';
 import { Button, Card, Field, Icon, Screen, StateView, StatusBadge } from '../../ui/primitives';
 import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
+import { NativeCameraCapture } from '../../ui/NativeCameraCapture';
 import type { RenterVerificationSnapshot } from './AccountScreen';
 import {
   addressError,
@@ -1093,8 +1095,26 @@ function SelfieStage({
   readonly onCapture: (asset: ImagePicker.ImagePickerAsset | null) => void;
   readonly onContinue: () => void;
 }) {
+  const [nativeCameraVisible, setNativeCameraVisible] = useState(false);
+  const acceptAsset = (asset: ImagePicker.ImagePickerAsset) => {
+    onCapture(asset);
+    if (definition) {
+      upload.mutate({
+        definition,
+        asset: {
+          mimeType: asset.mimeType ?? 'image/jpeg',
+          name: asset.fileName ?? `selfie-${Date.now()}.jpg`,
+          uri: asset.uri,
+        },
+      });
+    }
+  };
   const capture = async () => {
     if (!(await ensureCameraPermission())) return;
+    if (Platform.OS === 'android') {
+      setNativeCameraVisible(true);
+      return;
+    }
     const result = await ImagePicker.launchCameraAsync({
       allowsEditing: true,
       cameraType: ImagePicker.CameraType.front,
@@ -1102,55 +1122,61 @@ function SelfieStage({
       quality: 0.85,
     });
     const asset = result.canceled ? undefined : result.assets[0];
-    if (asset) {
-      onCapture(asset);
-      if (definition) {
-        upload.mutate({
-          definition,
-          asset: {
-            mimeType: asset.mimeType ?? 'image/jpeg',
-            name: asset.fileName ?? `selfie-${Date.now()}.jpg`,
-            uri: asset.uri,
-          },
-        });
-      }
-    }
+    if (asset) acceptAsset(asset);
   };
   return (
-    <SectionCard
-      icon="camera-outline"
-      title="Selfie verification"
-      helper="Use the front camera in good lighting. Center your face, remove sunglasses, and capture a new photo."
-    >
-      <Card style={styles.guidanceCard}>
-        <Text style={styles.cardTitle}>Camera-only evidence</Text>
-        <Text style={styles.note}>
-          No gallery or file-picker action is available for the selfie. A submitted selfie is
-          manually reviewed and does not prove certified liveness.
-        </Text>
-      </Card>
-      {captured ? (
-        <>
-          <Image
-            accessibilityLabel="Captured selfie preview"
-            source={{ uri: captured.uri }}
-            style={styles.selfiePreview}
+    <>
+      <NativeCameraCapture
+        facing="front"
+        onCancel={() => setNativeCameraVisible(false)}
+        onCapture={(picture) => {
+          setNativeCameraVisible(false);
+          acceptAsset({
+            fileName: `selfie-${Date.now()}.${picture.format}`,
+            height: picture.height,
+            mimeType: `image/${picture.format === 'jpg' ? 'jpeg' : 'png'}`,
+            type: 'image',
+            uri: picture.uri,
+            width: picture.width,
+          });
+        }}
+        visible={nativeCameraVisible}
+      />
+      <SectionCard
+        icon="camera-outline"
+        title="Selfie verification"
+        helper="Use the front camera in good lighting. Center your face, remove sunglasses, and capture a new photo."
+      >
+        <Card style={styles.guidanceCard}>
+          <Text style={styles.cardTitle}>Camera-only evidence</Text>
+          <Text style={styles.note}>
+            No gallery or file-picker action is available for the selfie. A submitted selfie is
+            manually reviewed and does not prove certified liveness.
+          </Text>
+        </Card>
+        {captured ? (
+          <>
+            <Image
+              accessibilityLabel="Captured selfie preview"
+              source={{ uri: captured.uri }}
+              style={styles.selfiePreview}
+            />
+            <View style={styles.buttonRow}>
+              <Button label="Retake" onPress={() => void capture()} variant="secondary" />
+              {upload.isPending && <Text style={styles.note}>Uploading securely…</Text>}
+            </View>
+          </>
+        ) : (
+          <Button
+            icon="camera-outline"
+            label={document ? 'Retake selfie' : 'Open camera'}
+            onPress={() => void capture()}
           />
-          <View style={styles.buttonRow}>
-            <Button label="Retake" onPress={() => void capture()} variant="secondary" />
-            {upload.isPending && <Text style={styles.note}>Uploading securely…</Text>}
-          </View>
-        </>
-      ) : (
-        <Button
-          icon="camera-outline"
-          label={document ? 'Retake selfie' : 'Open camera'}
-          onPress={() => void capture()}
-        />
-      )}
-      {document && <Text style={styles.success}>✓ Selfie submitted for manual review</Text>}
-      <NavigationButtons busy={upload.isPending} onBack={onBack} onNext={onContinue} />
-    </SectionCard>
+        )}
+        {document && <Text style={styles.success}>✓ Selfie submitted for manual review</Text>}
+        <NavigationButtons busy={upload.isPending} onBack={onBack} onNext={onContinue} />
+      </SectionCard>
+    </>
   );
 }
 

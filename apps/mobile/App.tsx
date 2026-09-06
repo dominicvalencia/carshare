@@ -1,7 +1,15 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Animated, PanResponder, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import {
+  Animated,
+  PanResponder,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from './src/auth/AuthProvider';
 import { apiClient } from './src/auth/api-client';
@@ -170,7 +178,10 @@ function RenterOnboarding({ onSkip }: { readonly onSkip: () => void }) {
   const renderPage = (page: number) => {
     if (page === 0)
       return (
-        <View style={styles.onboardingWelcome}>
+        <ScrollView
+          contentContainerStyle={styles.onboardingWelcome}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={styles.onboardingHero}>
             <View style={styles.onboardingIcon}>
               <Icon color={colors.primary} name="car-sport-outline" size={52} />
@@ -187,7 +198,7 @@ function RenterOnboarding({ onSkip }: { readonly onSkip: () => void }) {
           <View style={styles.onboardingActions}>
             <Button label="Next" onPress={() => settle(1)} />
           </View>
-        </View>
+        </ScrollView>
       );
     if (page === 2)
       return <RenterOnboardingContactPage onBack={() => settle(1)} onNext={() => settle(3)} />;
@@ -205,7 +216,7 @@ function RenterOnboarding({ onSkip }: { readonly onSkip: () => void }) {
     <RenterOnboardingDraftProvider>
       <SafeAreaView
         accessibilityHint="Swipe left for next or right for previous"
-        edges={['top']}
+        edges={['top', 'bottom']}
         style={styles.onboardingShell}
         {...pager.panHandlers}
       >
@@ -302,7 +313,7 @@ const styles = StyleSheet.create({
   onboardingTrack: { flex: 1, flexDirection: 'row' },
   onboardingTitle: { color: colors.ink, fontSize: 34, fontWeight: '900', textAlign: 'center' },
   onboardingViewport: { flex: 1, overflow: 'hidden' },
-  onboardingWelcome: { flex: 1, padding: 24 },
+  onboardingWelcome: { flexGrow: 1, padding: 24 },
   pageDot: { backgroundColor: colors.border, borderRadius: 4, height: 8, width: 8 },
   pageDotActive: { backgroundColor: colors.primary, width: 24 },
   pageDots: { flex: 1, flexDirection: 'row', gap: 8, justifyContent: 'center' },

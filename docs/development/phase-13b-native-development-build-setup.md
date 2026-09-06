@@ -2,6 +2,10 @@
 
 ## Current physical-device acceptance status
 
+**FINAL STATUS: COMPLETE / PHYSICALLY ACCEPTED.** The product owner confirmed all remaining Phase 13B
+manual tests PASS on September 6, 2026. Phase 12 remains complete, accepted, and frozen; Phase 13A is
+complete; and Phase 13C has not started.
+
 **iOS: PHYSICAL ACCEPTANCE PASS.** On September 5, 2026, the Personal Team-signed CarShare
 development client was installed and launched on the paired iPhone 11 named “Dom’s iPhone” running
 iOS 26.5. The generated project uses display name `CarShare`, bundle identifier `ph.carshare.mobile`,
@@ -35,11 +39,47 @@ acceptance build and will be tested later with appropriate Apple Developer Progr
 `IOS_REMOTE_PUSH_ENABLED=true` only when building with a team and profile that support APNs; remote push
 must not be reported as physically accepted until that separate acceptance is complete.
 
-**Android: not started**, in accordance with the iOS-first gate. Android biometrics, SecureStore
-lifecycle, camera direction/permissions, location, native date inputs, network recovery, and application
-lifecycle remain untested in a development client. Universal/app links and real APNs/FCM delivery are
-also outside this pass; local notification UI and in-app notifications are distinct from production
-remote push.
+**Android: PHYSICAL ACCEPTANCE PASS.** On September 5–6, 2026, a local CarShare development client was
+built with the generated debug key and installed on a physical Samsung SM-A266B running Android
+16/API 36. The product owner confirmed the complete locally testable Phase 13B matrix PASS, including
+the launcher icon, independent native launch, Metro bundle, development API connectivity, auth and
+session behavior, biometrics, camera direction and recovery, location, date/time controls,
+keyboard/forms, safe areas/tab layout, role-scoped notifications/messages, deep links and Back
+stacks, marketplace and booking/rental flows, inspections, and network/lifecycle recovery.
+
+Physical testing found that forms could not reliably scroll with the keyboard open, the eight-page
+renter onboarding shell did not protect its bottom action from the three-button system navigation
+inset, and Samsung's external camera application ignored Image Picker's front-camera intent hint for
+the selfie. Physical regression has now accepted the onboarding inset and explicit front-facing
+Android selfie camera. Physical regression also confirms the keyboard remains open during form
+drag/scroll. The resized viewport initially lacked enough content tail to move the final field and
+action fully above the keyboard. Shared form scroll containers now retain
+`keyboardDismissMode="none"` and dynamically add the reported Android keyboard height to their normal
+bottom content padding while the keyboard is visible; the padding returns to normal on keyboard hide.
+Focused physical Android regression confirms the complete scroll range now passes.
+
+A later Home-screen regression exposed a duplicated bottom inset: shared tab scenes and the bottom
+navigator both consumed the Android navigation-bar inset. Shared `Screen` scenes now leave bottom-inset
+ownership to React Navigation, while standalone authentication and onboarding shells continue to
+protect their own bottom edge. Physical regression confirms removal of the extra band above renter/
+owner tab bars.
+
+The shared keyboard work temporarily caused iOS fields to overscroll out of view because shared
+screens combined `KeyboardAvoidingView` padding with native automatic `ScrollView` keyboard insets.
+The source correction restores the accepted single iOS automatic-inset path and explicitly keeps the
+dynamic keyboard-height padding Android-only. Physical iPhone retest confirmed the overscroll fix but
+showed native focus positioning left too little clearance above the keyboard. Shared iOS screens now
+add a platform-only 24-point content/indicator inset as a small focus-safe margin; final physical
+iPhone regression confirmed that tuning.
+
+`expo-camera` is intentionally isolated to `NativeCameraCapture.android.tsx`; the generic/iOS module
+does not import or resolve `ExpoCamera`, and the accepted iOS selfie/document flows continue to use
+`expo-image-picker`. This removes the stale iOS development client's native-module lookup without
+changing camera direction or requiring an iOS rebuild for this source correction; physical iPhone
+retest confirmed that recovery. A future native
+prebuild naturally autolinks the declared SDK-compatible dependency.
+The responsive Owner Booking Requests status/price row also passed final physical regression.
+Universal/app links and real APNs/FCM delivery remain outside this pass.
 
 ## Prepared repository state
 
@@ -58,7 +98,7 @@ foreground over the authoritative `primaryDark` theme color `#0C4E39`, keeping t
 launcher masks without distorting it. The custom URL scheme is
 `carrental://`; React Navigation and notification taps already recognize it. Universal Links and
 Android App Links are intentionally deferred until an approved HTTPS domain and association files
-exist. SecureStore, LocalAuthentication, Notifications, Location, Image Picker, Document Picker, and
+exist. SecureStore, LocalAuthentication, Notifications, Location, Image Picker, Expo Camera, Document Picker, and
 the native date picker are already declared dependencies. Document Picker needs no broad storage
 permission. Image Picker supplies camera/photo usage descriptions; audio capture is disabled.
 

@@ -2,16 +2,66 @@
 
 ## Status and boundary
 
-Phase 13B preparation began September 4, 2026 after Phase 12 acceptance. On September 5, 2026, the
-product owner completed the physical regression matrix using a Personal Team-signed CarShare
-development client on an iPhone 11 running iOS 26.5. **Phase 13B iOS native development-build
-acceptance is PASS** for the locally signed build and the cases recorded below. See
+Phase 13B preparation began September 4, 2026 after Phase 12 acceptance. On September 6, 2026, the
+product owner completed the remaining physical regression matrix. **Phase 13B native
+development-build acceptance is PASS on both iOS and Android** for the local builds and cases
+recorded below. Phase 12 remains complete, accepted, and frozen; Phase 13A is complete; Phase 13B is
+complete and physically accepted; and Phase 13C has not started. See
 [`phase-13b-native-development-build-setup.md`](phase-13b-native-development-build-setup.md) for build,
-environment, signing, device, and user-owned prerequisite instructions. Phase 13C and later remain
-deferred.
+environment, signing, device, and user-owned prerequisite instructions.
 
 Remote APNs delivery is excluded from this Personal Team build and is not part of its acceptance. The
 in-app notification center and locally generated notification-navigation cases remain testable.
+
+## Final accepted native-development baseline
+
+Physical acceptance covers local iOS and Android development clients; installation and launch;
+Metro and LAN API connectivity; authentication, session/logout persistence, account/cache isolation,
+and renter/owner restoration; native biometrics and app lock; camera and location permissions with
+Settings recovery; front-camera selfie and rear-camera KYC, vehicle, pickup, and return evidence;
+native date/time controls; keyboard/forms; renter and owner onboarding; Android safe-area, system
+inset, bottom-tab, and adaptive-icon behavior; role-scoped notifications and conversations; tested
+custom-scheme deep links and correct Back stacks; marketplace search with incremental cursor loading;
+Vehicle Detail, Host Profile, reviews, and duration discounts; quote/booking and responsive Owner
+Booking Requests; pickup/handover, return/receipt, and inspection evidence; and tested network-loss,
+recovery, background, and foreground lifecycle behavior.
+
+This PASS is limited to the named development builds and devices. It does not certify production or
+store distribution/signing, TestFlight or Play rollout, production APNs/FCM delivery, production
+payment/payout/KYC/media/geocoding providers, monitoring, staging/production deployment,
+backup/recovery operations, security deposits, booking extensions, Universal Links/Android App
+Links, legal/privacy/insurance/tax/compliance approval, or compatibility beyond the tested devices.
+
+## Recorded Android physical evidence
+
+On September 5, 2026, foundational smoke testing passed on a physical Samsung SM-A266B running Android
+16/API 36 with the local CarShare Expo Development Client (`ph.carshare.mobile`). The launcher icon,
+native launch independent of Expo Go, Metro/JavaScript loading, local development API connectivity,
+login, Android biometric authentication, and camera availability are physically confirmed PASS.
+
+**Android Phase 13B physical acceptance is PASS.** Final product-owner regression confirms the
+renter-onboarding bottom inset, explicit front-facing selfie camera, rear-camera evidence flows,
+keyboard persistence during drag/scroll, full keyboard-open scroll range, removal of the duplicated
+inset above the shared renter/owner tab bar, native date/time and permission behavior, role-scoped
+notifications/messages, deep links and Back stacks, marketplace/vehicle/Host flows, booking through
+return operations, network/lifecycle recovery, adaptive icon, and responsive Owner Booking Requests.
+
+A temporary iOS regression then exposed duplicate shared-screen keyboard compensation: both
+`KeyboardAvoidingView` padding and native automatic `ScrollView` keyboard insets were active. The
+shared screen now keeps only the previously accepted native automatic inset path on iOS, while the
+Android-only dynamic tail remains isolated. Physical iPhone retest confirmed the overscroll was
+removed but found the native minimum clearance too tight. Shared iOS screens now provide a small
+24-point base content/indicator inset so native focus scrolling leaves a comfortable keyboard gap
+without restoring duplicate avoidance. Final physical regression confirmed this tuning.
+
+A narrow Android owner Booking Requests card issue found during physical acceptance was corrected
+with the standard card inset and a wrapping status/price row; final physical regression passed.
+
+Adding the Android selfie camera initially caused the previously installed iOS client to report
+`Cannot find native module ExpoCamera` because a platform-neutral module imported the new native
+dependency. The implementation is now platform-isolated: Android imports `expo-camera`, while iOS
+retains its accepted `expo-image-picker` path and does not resolve `ExpoCamera`. Physical iPhone
+regression confirmed recovery without an iOS rebuild.
 
 ## Recorded iOS physical evidence
 
@@ -57,8 +107,8 @@ placeholders, owner-onboarding draft discrepancies, and return-photo UX inconsis
 - hydrate owner-onboarding fields from the server and save before every forward transition; and
 - reuse the pickup secure-photo-slot interaction for return evidence.
 
-These corrections require a new physical-device regression run. They are **not yet physically
-accepted**, and iOS Phase 13B remains in progress. Remote APNs remains excluded.
+These corrections were subsequently accepted in physical-device regression. Remote APNs remains
+excluded.
 
 The subsequent September 5 physical regression confirmed that deep-link destinations open and that
 dual-role notification separation works. Evidence from the remaining navigation recording showed
@@ -99,18 +149,23 @@ Legend:
 - [x] Native validation — login, logout persistence, and accepted session restoration paths.
 - [x] Native validation — session restoration after cold restart and background termination.
 - [x] Native validation — renter/owner account and mode switching without query/cache leakage.
-- [ ] Native validation — SecureStore persistence, logout cleanup, account isolation, and reinstall
-      behavior appropriate to iOS Keychain and Android storage semantics.
+- [x] Native validation — tested SecureStore persistence, logout cleanup, and account isolation paths.
+- Deferred — reinstall-specific Keychain/Android-storage semantics outside the tested device paths.
+- [x] Android foundational smoke — login and API connectivity on Samsung SM-A266B.
+- [x] Android stabilization regression — keyboard persistence and dynamically extended keyboard-open
+      scroll range physically confirmed, including last-field/action reach.
+- [x] iOS stabilization regression — overscroll removal and 24-point shared focus clearance.
 - P12 accepted — server reloads current session/account/roles; mobile refresh tokens use SecureStore.
 
 ## Biometrics and app lifecycle lock
 
 - [x] Native validation — Face ID normal unlock on the accepted iPhone 11 build.
 - [x] Native validation — cancelled/failed prompt remains locked; explicit retry succeeds.
-- [ ] Native validation — logout/account switching cannot inherit another account's lock.
+- [x] Native validation — logout/account switching does not inherit another account's lock.
 - [x] Native validation — five-minute background inactivity locks and foreground unlocks correctly.
 - P12 accepted — biometric matching belongs to the OS; there is no custom PIN fallback or biometric
   template stored by the app.
+- [x] Android foundational smoke — OS biometric authentication is available and succeeds.
 
 ## Camera and evidence
 
@@ -121,6 +176,10 @@ Legend:
 - P12 accepted — renter KYC is camera-only and evidence remains object-authorized/immutable.
 - Provider validation — malware scanning, durable object storage, retention/deletion, backups, and
   production media variants.
+- [x] Android foundational smoke — camera opens on the physical Samsung device.
+- [x] Android stabilization regression — selfie uses the explicit front camera.
+- [x] Android stabilization regression — documents, vehicle, pickup, and return evidence use the rear
+      camera.
 
 ## Push, badges, and notification navigation
 

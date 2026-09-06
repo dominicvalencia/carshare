@@ -22,7 +22,14 @@ import { ensureCameraPermission } from '../../ui/camera-permission';
 import { domainLabel, money, vehicleStatusLabel } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import { SearchableReferenceSelector } from '../../ui/SearchableReferenceSelector';
-import { BackControl, Button, StateView, StatusBadge } from '../../ui/primitives';
+import {
+  BackControl,
+  Button,
+  formKeyboardDismissMode,
+  StateView,
+  StatusBadge,
+  useKeyboardAwareBottomPadding,
+} from '../../ui/primitives';
 
 interface Reference {
   readonly id: string;
@@ -356,6 +363,7 @@ function DetailSection({
 }
 
 function VehicleEditor({ id, onClose }: { readonly id: string; readonly onClose: () => void }) {
+  const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding(spacing.xl);
   const client = useQueryClient();
   const vehicle = useQuery({
     queryKey: ['vehicle', id],
@@ -456,14 +464,11 @@ function VehicleEditor({ id, onClose }: { readonly id: string; readonly onClose:
           <View style={[styles.progressFill, { width: `${((step + 1) / steps.length) * 100}%` }]} />
         </View>
       </View>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'android' ? 'height' : undefined}
-        style={styles.flex}
-      >
+      <KeyboardAvoidingView style={styles.flex}>
         <ScrollView
           automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-          contentContainerStyle={styles.editorBody}
-          keyboardDismissMode="on-drag"
+          contentContainerStyle={[styles.editorBody, { paddingBottom: keyboardAwareBottomPadding }]}
+          keyboardDismissMode={formKeyboardDismissMode}
           keyboardShouldPersistTaps="handled"
         >
           {step === 0 && <DetailsStep vehicle={value} onSaved={refresh} onContinue={advance} />}

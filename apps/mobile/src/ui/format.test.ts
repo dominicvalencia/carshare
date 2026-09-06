@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { dateLabel, relativeTime } from './format';
+import { dateLabel, money, relativeTime } from './format';
 
 const now = new Date('2026-08-25T08:00:00.000Z').getTime();
 const descriptor = Object.getOwnPropertyDescriptor(Intl, 'RelativeTimeFormat');
@@ -25,5 +25,16 @@ describe('relativeTime', () => {
   it('does not require Intl.RelativeTimeFormat at runtime', () => {
     Object.defineProperty(Intl, 'RelativeTimeFormat', { configurable: true, value: undefined });
     expect(relativeTime(new Date(now - 5 * 60_000), now)).toBe('5 min ago');
+  });
+});
+
+describe('money', () => {
+  it.each([
+    [90_000, '₱900'],
+    [250_000, '₱2,500'],
+    [1_250_000, '₱12,500'],
+    [12_500_000, '₱125,000'],
+  ])('preserves the complete Peso label for %i minor units', (minor, expected) => {
+    expect(money(minor)).toBe(expected);
   });
 });

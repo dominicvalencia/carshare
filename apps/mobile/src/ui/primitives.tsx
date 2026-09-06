@@ -1,9 +1,17 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import type { NavigationProp, ParamListBase } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
-import { useEffect, useRef, type ComponentProps, type ReactNode, type RefObject } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -18,6 +26,28 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, radius, shadows, spacing, typography } from '../theme/tokens';
+
+export const formKeyboardDismissMode = Platform.OS === 'android' ? 'none' : 'on-drag';
+const screenBottomPadding = 120;
+const iosFocusInsets = Platform.OS === 'ios' ? { bottom: spacing.xl } : undefined;
+
+export function useKeyboardAwareBottomPadding(basePadding = 0) {
+  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const shown = Keyboard.addListener('keyboardDidShow', ({ endCoordinates }) => {
+      setAndroidKeyboardHeight(Math.max(0, endCoordinates.height));
+    });
+    const hidden = Keyboard.addListener('keyboardDidHide', () => setAndroidKeyboardHeight(0));
+    return () => {
+      shown.remove();
+      hidden.remove();
+    };
+  }, []);
+
+  return basePadding + (Platform.OS === 'android' ? androidKeyboardHeight : 0);
+}
 
 export type IconName = ComponentProps<typeof Ionicons>['name'];
 
@@ -44,6 +74,7 @@ export function Screen({
   scrollRef,
   safeTop = true,
 }: ScreenProperties) {
+  const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding(screenBottomPadding);
   const header = (
     <>
       {leading && <View style={styles.leading}>{leading}</View>}
@@ -71,10 +102,7 @@ export function Screen({
   );
   return (
     <SafeAreaView edges={safeTop ? ['top'] : []} style={styles.safeArea}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'android' ? 'height' : undefined}
-        style={styles.flex}
-      >
+      <KeyboardAvoidingView style={styles.flex}>
         {leading ? (
           <>
             <View style={styles.stickyNestedHeader}>{header}</View>
@@ -82,9 +110,15 @@ export function Screen({
               <ScrollView
                 ref={scrollRef}
                 automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-                contentContainerStyle={styles.nestedScreenContent}
-                keyboardDismissMode="on-drag"
+                contentInset={iosFocusInsets}
+                contentContainerStyle={[
+                  styles.nestedScreenContent,
+                  { paddingBottom: keyboardAwareBottomPadding },
+                ]}
+                keyboardDismissMode={formKeyboardDismissMode}
                 keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+                scrollIndicatorInsets={iosFocusInsets}
                 showsVerticalScrollIndicator={false}
               >
                 {children}
@@ -97,9 +131,15 @@ export function Screen({
           <ScrollView
             ref={scrollRef}
             automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-            contentContainerStyle={styles.screenContent}
-            keyboardDismissMode="on-drag"
+            contentInset={iosFocusInsets}
+            contentContainerStyle={[
+              styles.screenContent,
+              { paddingBottom: keyboardAwareBottomPadding },
+            ]}
+            keyboardDismissMode={formKeyboardDismissMode}
             keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+            scrollIndicatorInsets={iosFocusInsets}
             showsVerticalScrollIndicator={false}
           >
             {content}
@@ -553,7 +593,7 @@ const styles = StyleSheet.create({
   nestedScreenContent: {
     flexGrow: 1,
     gap: spacing.md,
-    paddingBottom: 120,
+    paddingBottom: screenBottomPadding,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
@@ -581,7 +621,7 @@ const styles = StyleSheet.create({
   screenContent: {
     flexGrow: 1,
     gap: spacing.md,
-    paddingBottom: 120,
+    paddingBottom: screenBottomPadding,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
   },

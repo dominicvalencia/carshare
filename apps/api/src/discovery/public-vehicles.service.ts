@@ -74,6 +74,8 @@ export class PublicVehiclesService {
       WHERE v."status" = 'APPROVED'::"VehicleLifecycleStatus"
         AND v."operational_status" = 'AVAILABLE'::"VehicleOperationalStatus"
         ${principal ? Prisma.sql`AND v."owner_user_id" <> ${principal.userId}::uuid` : Prisma.empty}
+        ${input.make ? Prisma.sql`AND lower(v."make") = lower(${input.make})` : Prisma.empty}
+        ${input.model ? Prisma.sql`AND lower(v."model") LIKE ${`%${input.model.toLowerCase()}%`}` : Prisma.empty}
         AND l."point" IS NOT NULL
         AND ST_DWithin(
           l."point",

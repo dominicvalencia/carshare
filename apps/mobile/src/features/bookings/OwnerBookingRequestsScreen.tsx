@@ -155,10 +155,12 @@ export function OwnerBookingRequestsScreen({
                 {dateTimeLabel(booking.rentalStart)} → {dateTimeLabel(booking.rentalEnd)}
               </Text>
               <View style={styles.metaRow}>
-                <StatusBadge
-                  label={bookingStatusLabel(booking.status, 'owner')}
-                  tone={booking.status === 'AWAITING_OWNER' ? 'warning' : 'success'}
-                />
+                <View style={styles.statusSlot}>
+                  <StatusBadge
+                    label={bookingStatusLabel(booking.status, 'owner')}
+                    tone={booking.status === 'AWAITING_OWNER' ? 'warning' : 'success'}
+                  />
+                </View>
                 <Text style={styles.price}>
                   {money(booking.pricing.totalMinor, booking.pricing.currency)}
                 </Text>
@@ -219,10 +221,12 @@ function OwnerRequestDetail({
     >
       <VehicleImage contentPath={booking.vehicle.coverPhoto?.contentPath} style={styles.hero} />
       <View style={styles.metaRow}>
-        <StatusBadge
-          label={bookingStatusLabel(booking.status, 'owner')}
-          tone={booking.status === 'AWAITING_OWNER' ? 'warning' : 'success'}
-        />
+        <View style={styles.statusSlot}>
+          <StatusBadge
+            label={bookingStatusLabel(booking.status, 'owner')}
+            tone={booking.status === 'AWAITING_OWNER' ? 'warning' : 'success'}
+          />
+        </View>
         <Text style={styles.price}>
           {money(booking.pricing.totalMinor, booking.pricing.currency)}
         </Text>
@@ -432,13 +436,22 @@ const styles = StyleSheet.create({
   metaRow: {
     alignItems: 'center',
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
     justifyContent: 'space-between',
     marginTop: spacing.sm,
   },
   notice: { backgroundColor: colors.warningSoft },
   note: { color: colors.subtleText, fontSize: 12, lineHeight: 18, marginTop: spacing.sm },
-  price: { color: colors.ink, fontSize: 16, fontWeight: '900' },
-  requestCard: { flexDirection: 'row', gap: spacing.sm, padding: spacing.sm },
+  price: {
+    color: colors.ink,
+    flexShrink: 0,
+    fontSize: 16,
+    fontWeight: '900',
+    marginLeft: 'auto',
+  },
+  requestCard: { flexDirection: 'row', gap: spacing.sm },
+  statusSlot: { flexShrink: 1 },
   thumbnail: { borderRadius: radius.md, height: 128, width: 108 },
   timelineDot: {
     backgroundColor: colors.primary,

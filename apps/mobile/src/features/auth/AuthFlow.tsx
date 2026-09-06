@@ -6,6 +6,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -16,6 +17,7 @@ import { z } from 'zod';
 import { apiClient } from '../../auth/api-client';
 import { useAuth } from '../../auth/AuthProvider';
 import { colors, spacing } from '../../theme/tokens';
+import { formKeyboardDismissMode, useKeyboardAwareBottomPadding } from '../../ui/primitives';
 
 type Screen = 'welcome' | 'login' | 'register' | 'forgot' | 'reset' | 'email' | 'otp';
 const credentialsSchema = z.object({
@@ -27,17 +29,29 @@ type Credentials = z.infer<typeof credentialsSchema>;
 
 export function AuthFlow() {
   const [screen, setScreen] = useState<Screen>('welcome');
+  const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding();
   return (
     <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.safeArea}
       >
-        {screen === 'welcome' ? (
-          <Welcome onSelect={setScreen} />
-        ) : (
-          <CredentialScreen mode={screen} onBack={() => setScreen('welcome')} />
-        )}
+        <ScrollView
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: keyboardAwareBottomPadding },
+          ]}
+          keyboardDismissMode={formKeyboardDismissMode}
+          keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
+          showsVerticalScrollIndicator={false}
+        >
+          {screen === 'welcome' ? (
+            <Welcome onSelect={setScreen} />
+          ) : (
+            <CredentialScreen mode={screen} onBack={() => setScreen('welcome')} />
+          )}
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -320,6 +334,7 @@ const styles = StyleSheet.create({
   secondary: { backgroundColor: colors.surface, borderColor: colors.primary, borderWidth: 1 },
   secondaryText: { color: colors.primary },
   safeArea: { backgroundColor: colors.background, flex: 1 },
+  scrollContent: { flexGrow: 1 },
   title: {
     color: colors.ink,
     fontSize: 32,
