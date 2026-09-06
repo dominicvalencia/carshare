@@ -3,7 +3,7 @@
 ## Status
 
 Approved on September 4, 2026 only for the incremental Phase 13A dependency/security remediation and
-Phase 13B native development-build preparation. Phase 13C, provider activation, observability,
+Phase 13B native development-build preparation and Phase 13C-1 environment foundation. Provider activation, observability,
 staging/production deployment, and all later work remain deferred. The authoritative execution records
 are [`phase-13a-dependency-security-audit.md`](phase-13a-dependency-security-audit.md) and
 [`phase-13b-native-development-build-setup.md`](phase-13b-native-development-build-setup.md).
@@ -11,7 +11,7 @@ Phase 12 remains complete, accepted, and frozen, and Phase 13A is complete. Phas
 physically accepted: iOS passed on an iPhone 11 running iOS 26.5 and Android passed on a Samsung
 SM-A266B running Android 16/API 36. Final regression includes the native-development capabilities and
 stabilization recorded in the Phase 13B documents. This is a development-build baseline, not
-production readiness. Phase 13C has not started and still requires explicit approval and the entry
+production readiness. Phase 13C-1 is approved; infrastructure provisioning still requires explicit approval and the entry
 decisions below.
 
 ## Objective

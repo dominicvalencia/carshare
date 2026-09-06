@@ -17,7 +17,7 @@ import {
   StatusBadge,
 } from './AdminPrimitives';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
+import { API_URL } from './admin-environment';
 type CorrectionStatus = 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED' | 'LEGACY_RECORDED';
 interface Person {
   readonly id: string;

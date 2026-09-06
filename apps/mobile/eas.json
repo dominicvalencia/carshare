@@ -7,7 +7,8 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "node": "24.20.0"
+      "node": "24.20.0",
+      "env": { "EXPO_PUBLIC_APP_ENV": "local", "EXPO_PUBLIC_API_ENV": "local" }
     },
     "development-simulator": {
       "developmentClient": true,
@@ -15,7 +16,20 @@
       "node": "24.20.0",
       "ios": {
         "simulator": true
-      }
+      },
+      "env": { "EXPO_PUBLIC_APP_ENV": "local", "EXPO_PUBLIC_API_ENV": "local" }
+    },
+    "staging": {
+      "distribution": "internal",
+      "channel": "staging",
+      "node": "24.20.0",
+      "env": { "EXPO_PUBLIC_APP_ENV": "staging", "EXPO_PUBLIC_API_ENV": "staging" }
+    },
+    "production": {
+      "channel": "production",
+      "node": "24.20.0",
+      "env": { "EXPO_PUBLIC_APP_ENV": "production", "EXPO_PUBLIC_API_ENV": "production" }
     }
-  }
+  },
+  "submit": { "production": {} }
 }

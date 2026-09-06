@@ -23,12 +23,19 @@ describe('environment configuration', () => {
     expect(() =>
       parseWorkerEnvironment({
         APP_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:password@localhost:5432/database',
+        PAYMENTS_ENABLED: 'true',
+        DATABASE_ENVIRONMENT: 'production',
+        REDIS_ENVIRONMENT: 'production',
+        DATABASE_URL: 'postgresql://user:password@db.example.com:5432/database',
         PAYMENT_PROVIDER: 'fake',
+        MAYA_ENVIRONMENT: 'production',
         PAYOUT_MINIMUM_AMOUNT_MINOR: '10000',
         PAYOUT_PROVIDER: 'xendit',
+        XENDIT_ENVIRONMENT: 'production',
+        PAYOUT_DATA_ENCRYPTION_KEY_BASE64: Buffer.from('a'.repeat(32)).toString('base64'),
+        PAYOUT_IDENTIFIER_HASH_SECRET: 'production-identifier-hash-secret-unique-value',
         PUSH_PROVIDER: 'in_app',
-        REDIS_URL: 'redis://localhost:6379',
+        REDIS_URL: 'rediss://redis.example.com:6379',
         XENDIT_SECRET_KEY: 'xnd_development_test_secret',
         XENDIT_WEBHOOK_TOKEN: 'test-callback-token',
       }),
@@ -39,14 +46,21 @@ describe('environment configuration', () => {
     expect(() =>
       parseWorkerEnvironment({
         APP_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:password@localhost:5432/database',
+        PAYOUTS_ENABLED: 'true',
+        DATABASE_ENVIRONMENT: 'production',
+        REDIS_ENVIRONMENT: 'production',
+        DATABASE_URL: 'postgresql://user:password@db.example.com:5432/database',
         MAYA_AUTH_CAPTURE_ENABLED: 'true',
         MAYA_PUBLIC_KEY: 'maya-public',
         MAYA_SECRET_KEY: 'maya-secret',
+        MAYA_ENVIRONMENT: 'production',
         PAYMENT_PROVIDER: 'maya',
         PAYOUT_MINIMUM_AMOUNT_MINOR: '10000',
         PAYOUT_PROVIDER: 'fake',
-        REDIS_URL: 'redis://localhost:6379',
+        XENDIT_ENVIRONMENT: 'production',
+        REDIS_URL: 'rediss://redis.example.com:6379',
+        PAYOUT_DATA_ENCRYPTION_KEY_BASE64: Buffer.from('b'.repeat(32)).toString('base64'),
+        PAYOUT_IDENTIFIER_HASH_SECRET: 'production-identifier-hash-secret-unique-value',
       }),
     ).toThrow('PAYOUT_PROVIDER must be xendit');
   });
@@ -55,21 +69,75 @@ describe('environment configuration', () => {
     expect(() =>
       parseApiEnvironment({
         APP_ENV: 'production',
+        AUTH_DELIVERY_ENABLED: 'true',
+        DATABASE_ENVIRONMENT: 'production',
+        REDIS_ENVIRONMENT: 'production',
+        ADMIN_PUBLIC_URL: 'https://admin.example.com',
+        API_PUBLIC_URL: 'https://api.example.com',
         AUTH_DELIVERY_PROVIDER: 'development',
-        DATABASE_URL: 'postgresql://user:password@localhost:5432/database',
+        DATABASE_URL: 'postgresql://user:password@db.example.com:5432/database',
         JWT_ACCESS_SECRET: 'test-access-secret-at-least-thirty-two-characters',
         MAYA_AUTH_CAPTURE_ENABLED: 'true',
         MAYA_PUBLIC_KEY: 'maya-public',
         MAYA_SECRET_KEY: 'maya-secret',
+        MAYA_ENVIRONMENT: 'production',
         PAYMENT_PROVIDER: 'maya',
         PAYOUT_MINIMUM_AMOUNT_MINOR: '10000',
         PAYOUT_PROVIDER: 'xendit',
+        XENDIT_ENVIRONMENT: 'production',
         PUSH_PROVIDER: 'in_app',
-        REDIS_URL: 'redis://localhost:6379',
+        REDIS_URL: 'rediss://redis.example.com:6379',
         TOKEN_HASH_SECRET: 'test-token-secret-at-least-thirty-two-characters',
         XENDIT_SECRET_KEY: 'xnd-production-secret',
         XENDIT_WEBHOOK_TOKEN: 'production-callback-token',
+        PAYOUT_DATA_ENCRYPTION_KEY_BASE64: Buffer.from('c'.repeat(32)).toString('base64'),
+        PAYOUT_IDENTIFIER_HASH_SECRET: 'production-identifier-hash-secret-unique-value',
       }),
     ).toThrow('AUTH_DELIVERY_PROVIDER must not be development in production');
+  });
+
+  it('permits disabled production integrations without provider credentials', () => {
+    expect(
+      parseWorkerEnvironment({
+        APP_ENV: 'production',
+        DATABASE_ENVIRONMENT: 'production',
+        REDIS_ENVIRONMENT: 'production',
+        DATABASE_URL: 'postgresql://user:password@db.example.com:5432/database',
+        REDIS_URL: 'rediss://redis.example.com:6379',
+        PAYOUT_MINIMUM_AMOUNT_MINOR: '10000',
+        PAYMENT_PROVIDER: 'maya',
+        PAYOUT_PROVIDER: 'xendit',
+        PUSH_PROVIDER: 'in_app',
+        MAYA_ENVIRONMENT: 'production',
+        XENDIT_ENVIRONMENT: 'production',
+        PAYOUT_DATA_ENCRYPTION_KEY_BASE64: Buffer.from('d'.repeat(32)).toString('base64'),
+        PAYOUT_IDENTIFIER_HASH_SECRET: 'production-identifier-hash-secret-unique-value',
+      }).PAYMENTS_ENABLED,
+    ).toBe(false);
+  });
+
+  it('rejects production fake adapters even when integrations are disabled', () => {
+    expect(() =>
+      parseWorkerEnvironment({
+        APP_ENV: 'production',
+        DATABASE_ENVIRONMENT: 'production',
+        REDIS_ENVIRONMENT: 'production',
+        DATABASE_URL: 'postgresql://u:p@db.example.com/db',
+        REDIS_URL: 'rediss://redis.example.com',
+        PAYOUT_MINIMUM_AMOUNT_MINOR: '10000',
+      }),
+    ).toThrow('PAYMENT_PROVIDER must be maya');
+  });
+
+  it('rejects cross-environment infrastructure markers', () => {
+    expect(() =>
+      parseWorkerEnvironment({
+        APP_ENV: 'staging',
+        DATABASE_ENVIRONMENT: 'production',
+        REDIS_ENVIRONMENT: 'staging',
+        DATABASE_URL: 'postgresql://u:p@db.example.com/db',
+        REDIS_URL: 'rediss://redis.example.com',
+      }),
+    ).toThrow('DATABASE_ENVIRONMENT must match');
   });
 });

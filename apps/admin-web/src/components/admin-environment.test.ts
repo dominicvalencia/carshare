@@ -1,0 +1,23 @@
+import { describe, expect, it } from 'vitest';
+import { resolveAdminEnvironment } from './admin-environment';
+
+describe('Admin environment', () => {
+  it('defaults to the local API', () =>
+    expect(resolveAdminEnvironment({}).apiUrl).toBe('http://localhost:3000/api/v1'));
+  it('accepts an isolated staging origin', () =>
+    expect(
+      resolveAdminEnvironment({
+        NEXT_PUBLIC_APP_ENV: 'staging',
+        NEXT_PUBLIC_API_ENV: 'staging',
+        NEXT_PUBLIC_API_URL: 'https://admin-api.staging.example.com/api/v1',
+      }).label,
+    ).toBe('Staging'));
+  it('rejects a production-to-staging mismatch', () =>
+    expect(() =>
+      resolveAdminEnvironment({
+        NEXT_PUBLIC_APP_ENV: 'production',
+        NEXT_PUBLIC_API_ENV: 'staging',
+        NEXT_PUBLIC_API_URL: 'https://api.example.com',
+      }),
+    ).toThrow('must match'));
+});

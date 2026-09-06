@@ -32,7 +32,7 @@ import { OwnerVerificationAdminPanel } from './OwnerVerificationAdminPanel';
 import { InspectionCorrectionsAdminPanel } from './InspectionCorrectionsAdminPanel';
 import { useAdminSession } from './AdminSession';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
+import { API_URL, adminEnvironment } from './admin-environment';
 interface Envelope<T> {
   readonly success: boolean;
   readonly data?: T;
@@ -722,7 +722,7 @@ export function AdminConsole({
           <h1>{heading.title}</h1>
           <p>{heading.description}</p>
         </div>
-        <span className="environment">Live local operations</span>
+        <span className="environment">{adminEnvironment.label} operations</span>
       </header>
       {activeModule === 'dashboard' && (
         <section className="dashboard-grid" aria-label="Actionable operation counts">

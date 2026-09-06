@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 import { AdminSessionProvider, useAdminSession } from './AdminSession';
+import { adminEnvironment } from './admin-environment';
 
 const navigation = [
   { href: '/admin/dashboard', icon: '▦', label: 'Dashboard' },
@@ -70,7 +71,9 @@ function AuthenticatedShell({ children }: { readonly children: ReactNode }) {
         </nav>
         <div className="sidebar-footer">
           <span>Secure admin workspace</span>
-          <small>Phase 12 baseline</small>
+          <small>
+            {adminEnvironment.label} · {adminEnvironment.releaseVersion}
+          </small>
         </div>
       </aside>
       <div className="admin-workspace">

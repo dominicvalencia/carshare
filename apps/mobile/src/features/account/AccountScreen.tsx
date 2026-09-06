@@ -3,6 +3,7 @@ import type { NavigationProp } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
+import Constants from 'expo-constants';
 import { Image, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { useAuth } from '../../auth/AuthProvider';
@@ -131,6 +132,7 @@ export function AccountScreen({
   readonly ownerCapable: boolean;
 }) {
   const auth = useAuth();
+  const appEnvironment = Constants.expoConfig?.extra?.appEnvironment as string | undefined;
   const navigation = useNavigation<Navigator>();
   const me = useQuery({ queryKey: ['me'], queryFn: () => apiClient.request<Me>('/me') });
   const owner = useQuery({
@@ -245,6 +247,9 @@ export function AccountScreen({
         />
       </MenuSection>
       <MenuSection title="Support & settings">
+        {appEnvironment === 'staging' && (
+          <MenuRow icon="flask-outline" label="Environment" detail="Staging" />
+        )}
         <MenuRow
           icon="help-circle-outline"
           label="Help & support"

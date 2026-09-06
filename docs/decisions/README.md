@@ -25,6 +25,8 @@
 - [ADR-0023: double-blind review publication and public reputation](0023-double-blind-review-publication.md)
 - [ADR-0024: opaque public Host Profile and privacy boundary](0024-public-host-profile-privacy.md)
 - [ADR-0025: biometric-only local app lock](0025-biometric-only-local-app-lock.md)
+- [ADR-0026: environment separation and application identities](0026-environment-separation-and-application-identities.md)
+- [ADR-0027: secret management and provider activation](0027-secret-management-and-provider-activation.md)
 
 ADRs 0001–0020 remain historical/current decisions as amended by later ADRs. In particular, ADR-0010's
 Phase 4 cursor/pricing scope is extended by ADRs 0021–0022, and ADR-0016's immediate-publication review
