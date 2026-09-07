@@ -51,3 +51,4 @@ export function resolveAdminEnvironment(input: Readonly<Record<string, string | 
 
 export const adminEnvironment = resolveAdminEnvironment(process.env);
 export const API_URL = adminEnvironment.apiUrl;
+export type ReturnTypeOfResolveAdminEnvironment = ReturnType<typeof resolveAdminEnvironment>;
