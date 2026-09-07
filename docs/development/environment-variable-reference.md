@@ -14,7 +14,8 @@ Integration flags `PAYMENTS_ENABLED`, `PAYOUTS_ENABLED`, `PUSH_ENABLED`,
 `OBSERVABILITY_ENABLED`, and `SENTRY_ENABLED` default false. Email and SMS default disabled; KYC
 defaults manual. Enabled Postmark requires `POSTMARK_SERVER_TOKEN` and `POSTMARK_FROM_EMAIL`;
 enabled Semaphore requires `SEMAPHORE_API_KEY`; enabled Sumsub requires `SUMSUB_APP_TOKEN` and
-`SUMSUB_SECRET_KEY`; enabled Sentry requires `SENTRY_DSN`. Optional Firebase preparation uses
+`SUMSUB_SECRET_KEY`; enabled API Sentry requires `SENTRY_API_DSN`, while enabled workers require
+`SENTRY_WORKERS_DSN`. Optional Firebase preparation uses
 `FIREBASE_PROJECT_ID`, `FIREBASE_ANDROID_APP_ID`, and a managed `FCM_CREDENTIALS_BASE64` secret.
 Credentials are required only for the enabled concrete provider.
 
@@ -23,8 +24,9 @@ Credentials are required only for the enabled concrete provider.
 Mobile may bundle `EXPO_PUBLIC_APP_ENV`, `EXPO_PUBLIC_API_ENV`, `EXPO_PUBLIC_API_URL`,
 `EXPO_PUBLIC_RELEASE_VERSION`, `EXPO_PUBLIC_PROJECT_ID`, `EXPO_PUBLIC_SENTRY_DSN`,
 `EXPO_PUBLIC_MAPS_TOKEN`, and `EXPO_PUBLIC_PAYMENT_KEY`. Admin may bundle the corresponding
-`NEXT_PUBLIC_APP_ENV`, `NEXT_PUBLIC_API_ENV`, `NEXT_PUBLIC_API_URL`, and
-`NEXT_PUBLIC_RELEASE_VERSION` values. Never put signing material, provider secrets, DB credentials,
+`NEXT_PUBLIC_APP_ENV`, `NEXT_PUBLIC_API_ENV`, `NEXT_PUBLIC_API_URL`,
+`NEXT_PUBLIC_RELEASE_VERSION`, `NEXT_PUBLIC_SENTRY_ENABLED`, and `NEXT_PUBLIC_SENTRY_DSN` values.
+Mobile enablement is resolved from `SENTRY_ENABLED` at Expo config time. Never put signing material, provider secrets, DB credentials,
 APNs/FCM credentials, or access tokens in public variables.
 
 `.env.example` documents local use. Real staging/production values belong in managed secrets and

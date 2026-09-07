@@ -1,6 +1,6 @@
 # Phase 13C-2 local provider integration foundation
 
-Status: implemented locally. This is **LOCAL LOGIC VERIFIED**, not public provider delivery or production certification.
+Status: implemented and checkpointed. Sentry real-SDK integration is tracked separately in Phase 13C-2A and remains pending manual event certification.
 
 Phase 13C-1 environment separation remains complete. Phase 13C-2 deliberately implements provider boundaries before any DigitalOcean or public staging work. Local/test stays deterministic and paid providers are opt-in.
 

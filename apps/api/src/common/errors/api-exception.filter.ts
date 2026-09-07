@@ -15,6 +15,7 @@ import {
   type ApiErrorResponse,
 } from '@carrental/api-contracts';
 import { ApplicationException } from './application.exception';
+import { apiTelemetry } from '../../instrument';
 
 interface HttpErrorBody {
   readonly message?: string | readonly string[];
@@ -37,6 +38,16 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
     if (status >= 500) {
       this.logger.error({ err: exception, correlationId, path: request.path }, error.message);
+      apiTelemetry.captureException(exception, {
+        name: 'api.request.failed',
+        environment: process.env.APP_ENV ?? 'local',
+        release: process.env.RELEASE_VERSION ?? 'development',
+        ...(correlationId ? { correlationId } : {}),
+        context: {
+          errorCode: error.code,
+          route: typeof request.route?.path === 'string' ? request.route.path : request.path,
+        },
+      });
     } else {
       this.logger.warn({ correlationId, errorCode: error.code, path: request.path }, error.message);
     }

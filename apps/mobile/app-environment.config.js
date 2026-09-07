@@ -39,6 +39,13 @@ function resolveMobileEnvironment(input) {
   )
     throw new Error('Staging and production mobile builds require a public HTTPS API origin.');
   const identity = identities[environment];
+  const sentryEnabled = input.SENTRY_ENABLED === 'true';
+  const sentryDsn = input.EXPO_PUBLIC_SENTRY_DSN;
+  if (sentryEnabled && !sentryDsn)
+    throw new Error('EXPO_PUBLIC_SENTRY_DSN is required when mobile Sentry is enabled.');
+  const sentryTestEventEnabled = input.EXPO_PUBLIC_SENTRY_TEST_EVENT_ENABLED === 'true';
+  if (sentryTestEventEnabled && !['local', 'test'].includes(environment))
+    throw new Error('Mobile Sentry certification events are restricted to local/test.');
   return {
     environment,
     ...identity,
@@ -51,7 +58,9 @@ function resolveMobileEnvironment(input) {
       apiUrl,
       projectId: input.EXPO_PUBLIC_PROJECT_ID,
       releaseVersion: input.EXPO_PUBLIC_RELEASE_VERSION ?? 'development',
-      sentryDsn: input.EXPO_PUBLIC_SENTRY_DSN,
+      sentryDsn,
+      sentryEnabled,
+      sentryTestEventEnabled,
       mapsToken: input.EXPO_PUBLIC_MAPS_TOKEN,
       paymentPublicKey: input.EXPO_PUBLIC_PAYMENT_KEY,
     },

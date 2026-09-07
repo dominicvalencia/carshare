@@ -20,6 +20,7 @@ import {
   workerPushProvider,
 } from './notification-delivery';
 import { publishDueReviews } from './review-publication';
+import { initializeWorkerSentry } from './sentry';
 
 loadEnvironment({ path: resolve(__dirname, '../../../.env'), quiet: true });
 
@@ -28,6 +29,7 @@ const DOMAIN_EVENTS_QUEUE = 'domain-events';
 
 async function bootstrap(): Promise<void> {
   const environment = parseWorkerEnvironment(process.env);
+  const telemetry = initializeWorkerSentry(environment);
   const logger = createLogger({
     environment: environment.APP_ENV,
     level: environment.LOG_LEVEL,
@@ -210,21 +212,41 @@ async function bootstrap(): Promise<void> {
     },
     { connection, concurrency: 2 },
   );
-  worker.on('failed', (job, error) =>
-    logger.error({ err: error, jobId: job?.id, jobName: job?.name }, 'Worker job failed'),
-  );
+  worker.on('failed', (job, error) => {
+    logger.error({ err: error, jobId: job?.id, jobName: job?.name }, 'Worker job failed');
+    telemetry.captureException(error, {
+      name: 'worker.job.failed',
+      environment: environment.APP_ENV,
+      release: environment.RELEASE_VERSION,
+      context: {
+        jobId: String(job?.id ?? ''),
+        jobType: job?.name ?? '',
+        queueName: LIFECYCLE_QUEUE,
+      },
+    });
+  });
   const domainWorker = new Worker(
     DOMAIN_EVENTS_QUEUE,
     async (job) =>
       consumeDomainEvent(database, job.name, job.data, String(job.id ?? ''), environment.APP_ENV),
     { connection, concurrency: 8 },
   );
-  domainWorker.on('failed', (job, error) =>
+  domainWorker.on('failed', (job, error) => {
     logger.error(
       { err: error, jobId: job?.id, jobName: job?.name },
       'Domain event consumer failed',
-    ),
-  );
+    );
+    telemetry.captureException(error, {
+      name: 'worker.domain-event.failed',
+      environment: environment.APP_ENV,
+      release: environment.RELEASE_VERSION,
+      context: {
+        jobId: String(job?.id ?? ''),
+        jobType: job?.name ?? '',
+        queueName: DOMAIN_EVENTS_QUEUE,
+      },
+    });
+  });
   await domainWorker.waitUntilReady();
   await worker.waitUntilReady();
   logger.info(

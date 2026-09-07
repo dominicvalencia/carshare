@@ -13,6 +13,7 @@ overrides:
 allowBuilds:
   '@prisma/engines': true
   '@scarf/scarf': false
+  '@sentry/cli': false
   argon2: true
   esbuild: true
   msgpackr-extract: true

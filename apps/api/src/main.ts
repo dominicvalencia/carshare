@@ -1,3 +1,4 @@
+import './instrument';
 import 'reflect-metadata';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -10,6 +11,7 @@ import { API_PREFIX } from '@carrental/api-contracts';
 import { createLogger } from '@carrental/logger';
 import type { ApiEnvironment } from '@carrental/config';
 import { AppModule } from './app.module';
+import { apiTelemetry } from './instrument';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true, rawBody: true });
@@ -49,6 +51,12 @@ async function bootstrap(): Promise<void> {
 }
 
 void bootstrap().catch((error: unknown) => {
+  apiTelemetry.captureException(error, {
+    name: 'api.bootstrap.failed',
+    environment: process.env.APP_ENV ?? 'local',
+    release: process.env.RELEASE_VERSION ?? 'development',
+    context: { route: 'bootstrap' },
+  });
   const logger = createLogger({
     environment: process.env.APP_ENV ?? 'local',
     level: process.env.LOG_LEVEL ?? 'error',

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
+import { SentryModule } from '@sentry/nestjs/setup';
 import { EnvironmentModule } from './config/environment.module';
 import { LoggingModule } from './common/logging/logging.module';
 import { RequestContextModule } from './common/request-context/request-context.module';
@@ -34,6 +35,7 @@ import { GeographyModule } from './geography/geography.module';
 
 @Module({
   imports: [
+    SentryModule.forRoot(),
     EnvironmentModule,
     LoggingModule,
     RequestContextModule,

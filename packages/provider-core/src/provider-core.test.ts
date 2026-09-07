@@ -9,6 +9,8 @@ import {
   retryDelayMs,
   simulateProvider,
   scrubTelemetryContext,
+  scrubSentryEvent,
+  sentryTransport,
   telemetryProvider,
   verifyHmacWebhook,
 } from './index';
@@ -105,6 +107,7 @@ describe('privacy and KYC authority', () => {
       enabled: true,
       environment: 'test',
       release: 'sha-123',
+      service: 'workers',
       transport: {
         captureException: () => undefined,
         captureMessage: (_message, context) => events.push(context),
@@ -112,6 +115,68 @@ describe('privacy and KYC authority', () => {
     });
     provider.capture({ name: 'job.failed', environment: 'wrong', release: 'wrong', context: {} });
     expect(events).toEqual([expect.objectContaining({ environment: 'test', release: 'sha-123' })]);
+  });
+
+  it('removes identity, credentials, KYC, address, payment and signed URL data', () => {
+    const event = scrubSentryEvent({
+      user: { email: 'driver@example.com' },
+      request: {
+        method: 'POST',
+        url: 'https://api.example.com/kyc?token=secret',
+        headers: { authorization: 'Bearer secret' },
+        data: { address: 'private' },
+      },
+      tags: { service: 'api', accessToken: 'secret' },
+      extra: {
+        correlationId: 'correlation-1',
+        kycPayload: 'secret',
+        cardNumber: '4111111111111111',
+        signedUrl: 'https://storage.example.com/file?signature=secret',
+      },
+      breadcrumbs: [{ category: 'request', message: 'private message', data: { password: 'x' } }],
+      message: 'Failure for driver@example.com using Bearer private',
+    });
+    expect(event.user).toBeUndefined();
+    expect(event.request).toEqual({ method: 'POST', url: 'https://api.example.com/kyc' });
+    expect(event.tags).toEqual({ service: 'api' });
+    expect(event.extra).toEqual({ correlationId: 'correlation-1' });
+    expect(event.breadcrumbs).toEqual([{ category: 'request' }]);
+    expect(event.message).not.toContain('driver@example.com');
+    expect(JSON.stringify(event)).not.toContain('4111111111111111');
+  });
+
+  it('sets only immutable service/environment/release and allowlisted scope context', () => {
+    const captured: unknown[] = [];
+    const tags: Record<string, string> = {};
+    const transport = sentryTransport({
+      captureException: () => undefined,
+      captureMessage: (message) => captured.push(message),
+      withScope: (callback) =>
+        callback({
+          setContext: (_name, context) => captured.push(context),
+          setTag: (key, value) => {
+            tags[key] = value;
+          },
+        }),
+    });
+    transport.captureMessage('safe', {
+      name: 'safe',
+      environment: 'staging',
+      release: 'sha-1',
+      correlationId: 'corr-1',
+      context: { service: 'api', token: 'no', route: '/bookings' },
+    });
+    expect(tags).toEqual({
+      correlationId: 'corr-1',
+      environment: 'staging',
+      release: 'sha-1',
+      service: 'api',
+    });
+    expect(captured).toContainEqual({
+      correlationId: 'corr-1',
+      route: '/bookings',
+      service: 'api',
+    });
   });
 
   it('always requires manual review for automation signals', async () => {

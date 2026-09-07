@@ -20,4 +20,23 @@ describe('Admin environment', () => {
         NEXT_PUBLIC_API_URL: 'https://api.example.com',
       }),
     ).toThrow('must match'));
+  it('validates Sentry enablement and local-only certification', () => {
+    expect(() => resolveAdminEnvironment({ NEXT_PUBLIC_SENTRY_ENABLED: 'true' })).toThrow(
+      'NEXT_PUBLIC_SENTRY_DSN',
+    );
+    expect(
+      resolveAdminEnvironment({
+        NEXT_PUBLIC_SENTRY_ENABLED: 'true',
+        NEXT_PUBLIC_SENTRY_DSN: 'https://public@example.ingest.sentry.io/1',
+      }).sentryEnabled,
+    ).toBe(true);
+    expect(() =>
+      resolveAdminEnvironment({
+        NEXT_PUBLIC_APP_ENV: 'staging',
+        NEXT_PUBLIC_API_ENV: 'staging',
+        NEXT_PUBLIC_API_URL: 'https://api.staging.example.com',
+        NEXT_PUBLIC_SENTRY_TEST_EVENT_ENABLED: 'true',
+      }),
+    ).toThrow('local/test');
+  });
 });

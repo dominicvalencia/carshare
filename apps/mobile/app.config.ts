@@ -8,7 +8,7 @@ const { resolveMobileEnvironment } = require('./app-environment.config.js') as {
     name: string;
     identifier: string;
     scheme: string;
-    extra: Record<string, string | undefined>;
+    extra: Record<string, boolean | string | undefined>;
   };
 };
 
@@ -38,6 +38,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       package: mobile.identifier,
     },
     plugins: [
+      ['@sentry/react-native/expo', { disableAutoUpload: true }],
       'expo-font',
       '@react-native-community/datetimepicker',
       [

@@ -10,6 +10,10 @@ const commonSchema = z.object({
   LOG_LEVEL: logLevelSchema.default('info'),
   RELEASE_VERSION: z.string().min(1).default('development'),
   SERVICE_NAME: z.string().min(1).default('carshare'),
+  SENTRY_TEST_EVENT_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   DATABASE_ENVIRONMENT: applicationEnvironmentSchema.optional(),
   REDIS_ENVIRONMENT: applicationEnvironmentSchema.optional(),
 });
@@ -169,7 +173,7 @@ const apiEnvironmentSchema = commonSchema
       .enum(['true', 'false'])
       .default('false')
       .transform((value) => value === 'true'),
-    SENTRY_DSN: z.string().url().optional(),
+    SENTRY_API_DSN: z.string().url().optional(),
     OBJECT_STORAGE_PROVIDER: z.enum(['local', 's3']).default('local'),
     OBJECT_STORAGE_ENVIRONMENT: applicationEnvironmentSchema.optional(),
     OBJECT_STORAGE_ROOT: z.string().min(1).default('.data/objects'),
@@ -198,6 +202,11 @@ const workerEnvironmentSchema = commonSchema
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.url(),
     OWNER_RESPONSE_TTL_MINUTES: z.coerce.number().int().min(5).max(240).default(60),
+    SENTRY_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    SENTRY_WORKERS_DSN: z.string().url().optional(),
   })
   .and(paymentSchema)
   .and(payoutSchema)
@@ -211,10 +220,12 @@ type EnvironmentInput = Readonly<Record<string, string | undefined>>;
 
 export function parseApiEnvironment(environment: EnvironmentInput): ApiEnvironment {
   assertProductionPayoutInputs(environment);
-  return validateAuthDeliveryEnvironment(
-    validateCommunicationsEnvironment(
-      validateInfrastructureEnvironment(
-        validateFinancialEnvironment(apiEnvironmentSchema.parse(environment)),
+  return validateTelemetryTestEnvironment(
+    validateAuthDeliveryEnvironment(
+      validateCommunicationsEnvironment(
+        validateInfrastructureEnvironment(
+          validateFinancialEnvironment(apiEnvironmentSchema.parse(environment)),
+        ),
       ),
     ),
   );
@@ -222,11 +233,29 @@ export function parseApiEnvironment(environment: EnvironmentInput): ApiEnvironme
 
 export function parseWorkerEnvironment(environment: EnvironmentInput): WorkerEnvironment {
   assertProductionPayoutInputs(environment);
-  return validateCommunicationsEnvironment(
-    validateInfrastructureEnvironment(
-      validateFinancialEnvironment(workerEnvironmentSchema.parse(environment)),
+  return validateTelemetryTestEnvironment(
+    validateWorkerTelemetryEnvironment(
+      validateCommunicationsEnvironment(
+        validateInfrastructureEnvironment(
+          validateFinancialEnvironment(workerEnvironmentSchema.parse(environment)),
+        ),
+      ),
     ),
   );
+}
+
+function validateTelemetryTestEnvironment<T extends z.infer<typeof commonSchema>>(
+  environment: T,
+): T {
+  if (environment.SENTRY_TEST_EVENT_ENABLED && !['local', 'test'].includes(environment.APP_ENV))
+    throw new Error('Sentry certification events are restricted to local/test.');
+  return environment;
+}
+
+function validateWorkerTelemetryEnvironment<T extends WorkerEnvironment>(environment: T): T {
+  if (environment.SENTRY_ENABLED && !environment.SENTRY_WORKERS_DSN)
+    throw new Error('SENTRY_WORKERS_DSN is required when worker Sentry is enabled.');
+  return environment;
 }
 
 function validateCommunicationsEnvironment<
@@ -263,8 +292,11 @@ function validateAuthDeliveryEnvironment<T extends ApiEnvironment>(environment: 
     (hasPrivateHost(environment.API_PUBLIC_URL) || hasPrivateHost(environment.ADMIN_PUBLIC_URL))
   )
     throw new Error('Public API/Admin origins must not use local or private hosts.');
-  if ((environment.OBSERVABILITY_ENABLED || environment.SENTRY_ENABLED) && !environment.SENTRY_DSN)
-    throw new Error('SENTRY_DSN is required when observability is enabled.');
+  if (
+    (environment.OBSERVABILITY_ENABLED || environment.SENTRY_ENABLED) &&
+    !environment.SENTRY_API_DSN
+  )
+    throw new Error('SENTRY_API_DSN is required when API observability is enabled.');
   if (environment.EMAIL_ENABLED) {
     if (environment.EMAIL_PROVIDER === 'disabled')
       throw new Error('EMAIL_PROVIDER must be configured when email is enabled.');

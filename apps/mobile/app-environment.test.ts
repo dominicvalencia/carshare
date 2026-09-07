@@ -5,7 +5,7 @@ const { resolveMobileEnvironment } = require('./app-environment.config.js') as {
     identifier: string;
     scheme: string;
     name: string;
-    extra: Record<string, string | undefined>;
+    extra: Record<string, boolean | string | undefined>;
   };
 };
 
@@ -62,5 +62,24 @@ describe('mobile environment', () => {
         EXPO_PUBLIC_API_URL: 'http://192.168.1.2:3000',
       }),
     ).toThrow('public HTTPS');
+  });
+  it('validates Sentry enablement and restricts certification events', () => {
+    expect(() => resolveMobileEnvironment({ SENTRY_ENABLED: 'true' })).toThrow(
+      'EXPO_PUBLIC_SENTRY_DSN',
+    );
+    expect(
+      resolveMobileEnvironment({
+        SENTRY_ENABLED: 'true',
+        EXPO_PUBLIC_SENTRY_DSN: 'https://public@example.ingest.sentry.io/1',
+      }).extra,
+    ).toMatchObject({ sentryEnabled: true });
+    expect(() =>
+      resolveMobileEnvironment({
+        EXPO_PUBLIC_APP_ENV: 'production',
+        EXPO_PUBLIC_API_ENV: 'production',
+        EXPO_PUBLIC_API_URL: 'https://api.example.com',
+        EXPO_PUBLIC_SENTRY_TEST_EVENT_ENABLED: 'true',
+      }),
+    ).toThrow('local/test');
   });
 });

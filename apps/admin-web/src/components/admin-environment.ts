@@ -22,12 +22,22 @@ export function resolveAdminEnvironment(input: Readonly<Record<string, string | 
     (!apiUrl.startsWith('https://') || privateHost)
   )
     throw new Error('Staging and production Admin builds require a public HTTPS API origin.');
+  const sentryEnabled = input.NEXT_PUBLIC_SENTRY_ENABLED === 'true';
+  const sentryDsn = input.NEXT_PUBLIC_SENTRY_DSN;
+  if (sentryEnabled && !sentryDsn)
+    throw new Error('NEXT_PUBLIC_SENTRY_DSN is required when Admin Sentry is enabled.');
+  const sentryTestEventEnabled = input.NEXT_PUBLIC_SENTRY_TEST_EVENT_ENABLED === 'true';
+  if (sentryTestEventEnabled && !['local', 'test'].includes(environment))
+    throw new Error('Admin Sentry certification events are restricted to local/test.');
   return {
     serviceName: 'carshare-admin',
     environment,
     apiEnvironment,
     apiUrl,
     releaseVersion: input.NEXT_PUBLIC_RELEASE_VERSION ?? 'development',
+    sentryDsn,
+    sentryEnabled,
+    sentryTestEventEnabled,
     label:
       environment === 'production'
         ? 'Production'

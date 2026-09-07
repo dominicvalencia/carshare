@@ -157,6 +157,35 @@ describe('environment configuration', () => {
     expect(() =>
       parseApiEnvironment({ ...base, AUTOMATED_KYC_ENABLED: 'true', KYC_PROVIDER: 'sumsub' }),
     ).toThrow('SUMSUB_APP_TOKEN');
-    expect(() => parseApiEnvironment({ ...base, SENTRY_ENABLED: 'true' })).toThrow('SENTRY_DSN');
+    expect(() => parseApiEnvironment({ ...base, SENTRY_ENABLED: 'true' })).toThrow(
+      'SENTRY_API_DSN',
+    );
+    expect(() =>
+      parseWorkerEnvironment({
+        DATABASE_URL: base.DATABASE_URL,
+        REDIS_URL: base.REDIS_URL,
+        SENTRY_ENABLED: 'true',
+      }),
+    ).toThrow('SENTRY_WORKERS_DSN');
+    expect(
+      parseWorkerEnvironment({
+        DATABASE_URL: base.DATABASE_URL,
+        REDIS_URL: base.REDIS_URL,
+        SENTRY_ENABLED: 'true',
+        SENTRY_WORKERS_DSN: 'https://public@example.ingest.sentry.io/1',
+      }).SENTRY_ENABLED,
+    ).toBe(true);
+  });
+  it('forbids certification events outside local/test', () => {
+    expect(() =>
+      parseWorkerEnvironment({
+        APP_ENV: 'staging',
+        DATABASE_ENVIRONMENT: 'staging',
+        DATABASE_URL: 'postgresql://u:p@db.example.com/db',
+        REDIS_ENVIRONMENT: 'staging',
+        REDIS_URL: 'rediss://redis.example.com',
+        SENTRY_TEST_EVENT_ENABLED: 'true',
+      }),
+    ).toThrow('local/test');
   });
 });
