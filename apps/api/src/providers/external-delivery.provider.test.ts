@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   PostmarkEmailProvider,
   PostmarkProviderError,
+  SemaphoreProviderError,
   SemaphoreSmsProvider,
   generateOtp,
   hashOtp,
@@ -150,7 +151,9 @@ describe('external delivery providers', () => {
   it('maps Semaphore acceptance and callbacks', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify([{ message_id: 42 }]), { status: 200 }));
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ message_id: 42, status: 'Queued' }]), { status: 200 }),
+      );
     const provider = new SemaphoreSmsProvider(
       config({
         SEMAPHORE_API_KEY: 'api-key',
@@ -162,10 +165,105 @@ describe('external delivery providers', () => {
         { to: '+639171234567', template: 'LOGIN_OTP', code: '123456' },
         'delivery-2',
       ),
-    ).resolves.toEqual({ provider: 'semaphore', providerMessageId: '42', status: 'ACCEPTED' });
+    ).resolves.toEqual({ provider: 'semaphore', providerMessageId: '42', status: 'DELAYED' });
+    const form = new URLSearchParams(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(form.get('number')).toBe('639171234567');
+    expect(form.get('sendername')).toBeNull();
+    expect(form.get('apikey')).toBe('api-key');
     expect(normalizeSemaphoreStatus('delivered')).toBe('DELIVERED');
+    expect(normalizeSemaphoreStatus('sent')).toBe('DELIVERED');
     expect(normalizeSemaphoreStatus('queued')).toBe('DELAYED');
+    expect(normalizeSemaphoreStatus('refunded')).toBe('FAILED');
     expect(normalizeSemaphoreStatus('undelivered')).toBe('FAILED');
+    fetchMock.mockRestore();
+  });
+
+  it('sends fixed certification content and includes only an explicitly configured sender', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ message_id: 'sms-1', status: 'Sent' }]), { status: 200 }),
+      );
+    const provider = new SemaphoreSmsProvider(
+      config({
+        SEMAPHORE_API_KEY: 'api-key',
+        SEMAPHORE_API_URL: 'https://api.semaphore.co/api/v4/messages',
+        SEMAPHORE_SENDER_NAME: 'ApprovedName',
+      }) as never,
+    );
+
+    await expect(provider.sendCertification('+639171234567', 'certification-1')).resolves.toEqual({
+      provider: 'semaphore',
+      providerMessageId: 'sms-1',
+      status: 'DELIVERED',
+    });
+    const form = new URLSearchParams(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(form.get('number')).toBe('639171234567');
+    expect(form.get('message')).toBe(
+      'CarShare Semaphore local certification. SMS delivery is configured correctly.',
+    );
+    expect(form.get('sendername')).toBe('ApprovedName');
+    fetchMock.mockRestore();
+  });
+
+  it.each([
+    [401, 'INVALID_API_KEY', 'Invalid API key abcdefghijklmnopqrstuvwxyz'],
+    [402, 'INSUFFICIENT_CREDITS', 'Insufficient credits'],
+    [422, 'INVALID_RECIPIENT', 'Invalid recipient +639171234567'],
+  ])('maps Semaphore HTTP %s rejection safely', async (status, code, message) => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code, message }), { status }));
+    const provider = new SemaphoreSmsProvider(config({ SEMAPHORE_API_KEY: 'api-key' }) as never);
+    const failure = await provider
+      .sendCertification('+639171234567', 'certification-1')
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SemaphoreProviderError);
+    expect(failure).toMatchObject({
+      message: 'SMS_PROVIDER_REJECTED',
+      diagnostics: { httpStatus: status, providerCode: code },
+    });
+    expect(failure.diagnostics.reason).not.toContain('+639171234567');
+    expect(failure.diagnostics.reason).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    fetchMock.mockRestore();
+  });
+
+  it.each([429, 500])('maps Semaphore HTTP %s to a retryable error', async (status) => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: 'Retry later' }), { status }));
+    const provider = new SemaphoreSmsProvider(config({ SEMAPHORE_API_KEY: 'api-key' }) as never);
+    await expect(
+      provider.sendCertification('+639171234567', 'certification-1'),
+    ).rejects.toMatchObject({ message: 'SMS_PROVIDER_RETRYABLE' });
+    fetchMock.mockRestore();
+  });
+
+  it('maps provider timeout without exposing the recipient', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'));
+    const provider = new SemaphoreSmsProvider(config({ SEMAPHORE_API_KEY: 'api-key' }) as never);
+    await expect(
+      provider.sendCertification('+639171234567', 'certification-1'),
+    ).rejects.toMatchObject({
+      message: 'SMS_PROVIDER_RETRYABLE',
+      diagnostics: { httpStatus: 0, providerCode: 'TIMEOUT' },
+    });
+    fetchMock.mockRestore();
+  });
+
+  it('rejects a malformed Semaphore success response', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const provider = new SemaphoreSmsProvider(config({ SEMAPHORE_API_KEY: 'api-key' }) as never);
+    await expect(
+      provider.sendCertification('+639171234567', 'certification-1'),
+    ).rejects.toMatchObject({
+      message: 'SMS_PROVIDER_REJECTED',
+      diagnostics: { providerCode: 'MALFORMED_RESPONSE' },
+    });
     fetchMock.mockRestore();
   });
 

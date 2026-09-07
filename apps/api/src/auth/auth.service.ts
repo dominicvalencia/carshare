@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import {
   AuthTokenType,
   OtpPurpose,
@@ -14,6 +13,7 @@ import {
 import { IdentityErrorCode } from '@carrental/api-contracts';
 import type { ApiEnvironment } from '@carrental/config';
 import { ApplicationException } from '../common/errors/application.exception';
+import { normalizePhilippineMobile } from '../common/phone/philippine-mobile';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { CryptoService } from '../security/crypto.service';
 import { RateLimitService } from '../security/rate-limit.service';
@@ -395,22 +395,28 @@ export class AuthService {
     }
     const code = this.crypto.randomOtp();
     const now = Date.now();
-    const challenge = await this.database.client.otpChallenge.create({
-      data: {
-        codeHash: this.crypto.hashToken(code),
-        destinationHash,
-        destinationLastFour: mobile.slice(-4),
-        expiresAt: new Date(
-          now + this.configuration.getOrThrow('OTP_TTL_MINUTES', { infer: true }) * 60_000,
-        ),
-        maxAttempts: this.configuration.getOrThrow('OTP_MAX_ATTEMPTS', { infer: true }),
-        purpose: input.purpose,
-        resendAvailableAt: new Date(
-          now +
-            this.configuration.getOrThrow('OTP_RESEND_COOLDOWN_SECONDS', { infer: true }) * 1000,
-        ),
-        userId: user.id,
-      },
+    const challenge = await this.database.client.$transaction(async (transaction) => {
+      await transaction.otpChallenge.updateMany({
+        data: { consumedAt: new Date(now) },
+        where: { consumedAt: null, destinationHash, purpose: input.purpose },
+      });
+      return transaction.otpChallenge.create({
+        data: {
+          codeHash: this.crypto.hashToken(code),
+          destinationHash,
+          destinationLastFour: mobile.slice(-4),
+          expiresAt: new Date(
+            now + this.configuration.getOrThrow('OTP_TTL_MINUTES', { infer: true }) * 60_000,
+          ),
+          maxAttempts: this.configuration.getOrThrow('OTP_MAX_ATTEMPTS', { infer: true }),
+          purpose: input.purpose,
+          resendAvailableAt: new Date(
+            now +
+              this.configuration.getOrThrow('OTP_RESEND_COOLDOWN_SECONDS', { infer: true }) * 1000,
+          ),
+          userId: user.id,
+        },
+      });
     });
     await this.smsProvider.send({
       code,
@@ -652,15 +658,15 @@ export class AuthService {
   }
 
   private normalizeMobile(value: string): string {
-    const phone = parsePhoneNumberFromString(value, 'PH');
-    if (!phone?.isValid()) {
+    try {
+      return normalizePhilippineMobile(value);
+    } catch {
       throw new ApplicationException(
         'VALIDATION_ERROR',
         'Enter a valid Philippine mobile number.',
         HttpStatus.BAD_REQUEST,
       );
     }
-    return phone.number;
   }
 
   private normalizeIdentifier(value: string): { kind: 'email' | 'mobile'; value: string } {

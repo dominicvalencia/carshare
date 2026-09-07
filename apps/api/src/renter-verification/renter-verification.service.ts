@@ -1,5 +1,4 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import {
   AddressMatchAssessment,
   FileAssetStatus,
@@ -9,6 +8,7 @@ import {
   type Prisma,
 } from '@carrental/database';
 import { ApplicationException } from '../common/errors/application.exception';
+import { normalizePhilippineMobile as normalizeCanonicalPhilippineMobile } from '../common/phone/philippine-mobile';
 import { AuditService } from '../audit/audit.service';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { CryptoService } from '../security/crypto.service';
@@ -691,10 +691,11 @@ function normalizePhilippineMobile(value: string | null | undefined, requiredVal
     if (requiredValue) throw validation('Emergency contact mobile number is required.');
     return null;
   }
-  const parsed = parsePhoneNumberFromString(raw, 'PH');
-  if (!parsed?.isValid() || parsed.country !== 'PH' || !/^\+639\d{9}$/.test(parsed.number))
+  try {
+    return normalizeCanonicalPhilippineMobile(raw);
+  } catch {
     throw validation('Enter a valid Philippine mobile number.');
-  return parsed.number;
+  }
 }
 
 function submissionRequirements(

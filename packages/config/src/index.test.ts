@@ -218,4 +218,33 @@ describe('environment configuration', () => {
       }),
     ).toThrow('restricted to local/test');
   });
+  it('requires complete local-only Semaphore certification configuration', () => {
+    const base = {
+      DATABASE_URL: 'postgresql://u:p@localhost/db',
+      REDIS_URL: 'redis://localhost',
+      JWT_ACCESS_SECRET: 'test-access-secret-at-least-thirty-two-characters',
+      TOKEN_HASH_SECRET: 'test-token-secret-at-least-thirty-two-characters',
+      SMS_OTP_ENABLED: 'true',
+      SMS_PROVIDER: 'semaphore',
+      SEMAPHORE_API_KEY: 'api-key',
+      SEMAPHORE_CERTIFICATION_ENABLED: 'true',
+      SEMAPHORE_CERTIFICATION_RECIPIENT: '09171234567',
+    };
+    expect(parseApiEnvironment(base).SEMAPHORE_CERTIFICATION_ENABLED).toBe(true);
+    expect(() =>
+      parseApiEnvironment({ ...base, SEMAPHORE_CERTIFICATION_RECIPIENT: undefined }),
+    ).toThrow('API key, and a recipient');
+    expect(() =>
+      parseApiEnvironment({
+        ...base,
+        APP_ENV: 'staging',
+        DATABASE_ENVIRONMENT: 'staging',
+        REDIS_ENVIRONMENT: 'staging',
+        DATABASE_URL: 'postgresql://u:p@db.example.com/db',
+        REDIS_URL: 'rediss://redis.example.com',
+        API_PUBLIC_URL: 'https://api.example.com',
+        ADMIN_PUBLIC_URL: 'https://admin.example.com',
+      }),
+    ).toThrow('restricted to local/test');
+  });
 });

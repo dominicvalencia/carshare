@@ -43,6 +43,10 @@ export interface LocalEmailCertificationProvider {
   sendCertification(to: string, idempotencyKey: string): Promise<DeliveryReceipt>;
 }
 
+export interface LocalSmsCertificationProvider {
+  sendCertification(to: string, idempotencyKey: string): Promise<DeliveryReceipt>;
+}
+
 export interface OtpSmsProvider {
   sendOtp(message: SmsMessage, idempotencyKey: string): Promise<DeliveryReceipt>;
 }

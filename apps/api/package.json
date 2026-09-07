@@ -5,6 +5,7 @@
   "scripts": {
     "build": "nest build",
     "certify:postmark": "tsx src/providers/postmark-certification.cli.ts",
+    "certify:semaphore": "tsx src/providers/semaphore-certification.cli.ts",
     "dev": "nest start --watch",
     "lint": "eslint . --max-warnings=0",
     "start": "node dist/main.js",

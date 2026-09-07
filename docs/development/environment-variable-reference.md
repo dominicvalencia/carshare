@@ -20,6 +20,12 @@ and `POSTMARK_CERTIFICATION_RECIPIENT`. Enabled Semaphore requires `SEMAPHORE_AP
 `FIREBASE_PROJECT_ID`, `FIREBASE_ANDROID_APP_ID`, and a managed `FCM_CREDENTIALS_BASE64` secret.
 Credentials are required only for the enabled concrete provider.
 
+The explicit local/test Semaphore transport certification additionally requires
+`SMS_OTP_ENABLED=true`, `SMS_PROVIDER=semaphore`, `SEMAPHORE_CERTIFICATION_ENABLED=true`, and
+`SEMAPHORE_CERTIFICATION_RECIPIENT`. `SEMAPHORE_SENDER_NAME` is optional only when the Semaphore
+account already has an active default Sender Name. Certification variables and provider enablement
+must normally remain disabled.
+
 ## Public mobile and Admin values
 
 Mobile may bundle `EXPO_PUBLIC_APP_ENV`, `EXPO_PUBLIC_API_ENV`, `EXPO_PUBLIC_API_URL`,

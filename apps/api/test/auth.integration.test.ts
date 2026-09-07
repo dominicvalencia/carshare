@@ -201,13 +201,31 @@ describe.sequential('Phase 2 identity integration', () => {
       where: { id: challengeId },
     });
     expect(challenge.codeHash).not.toContain(otp!.code);
-    await request(app.getHttpServer())
-      .post('/api/v1/auth/otp/verifications')
-      .send({ challengeId, code: '000000', platform: 'WEB' })
-      .expect(422);
+    await database.client.otpChallenge.update({
+      data: { resendAvailableAt: challenge.createdAt },
+      where: { id: challengeId },
+    });
+    const replacementRequest = await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/requests')
+      .send({ mobileNumber: mobile, platform: 'WEB', purpose: 'LOGIN' })
+      .expect(202);
+    const replacementChallengeId = replacementRequest.body.data.challengeId as string;
+    const replacementOtp = smsProvider.messages.at(-1)!;
+    expect(
+      (await database.client.otpChallenge.findUniqueOrThrow({ where: { id: challengeId } }))
+        .consumedAt,
+    ).not.toBeNull();
     await request(app.getHttpServer())
       .post('/api/v1/auth/otp/verifications')
       .send({ challengeId, code: otp!.code, platform: 'WEB' })
+      .expect(422);
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/verifications')
+      .send({ challengeId: replacementChallengeId, code: '000000', platform: 'WEB' })
+      .expect(422);
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/otp/verifications')
+      .send({ challengeId: replacementChallengeId, code: replacementOtp.code, platform: 'WEB' })
       .expect(200);
 
     const active = sessions.body.data.find(

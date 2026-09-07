@@ -166,6 +166,11 @@ const apiEnvironmentSchema = commonSchema
     SEMAPHORE_API_KEY: z.string().min(1).optional(),
     SEMAPHORE_SENDER_NAME: z.string().min(1).max(11).optional(),
     SEMAPHORE_API_URL: z.url().default('https://api.semaphore.co/api/v4/messages'),
+    SEMAPHORE_CERTIFICATION_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    SEMAPHORE_CERTIFICATION_RECIPIENT: z.string().min(1).optional(),
     KYC_PROVIDER: z.enum(['manual', 'fake', 'sumsub']).default('manual'),
     SUMSUB_APP_TOKEN: z.string().min(1).optional(),
     SUMSUB_SECRET_KEY: z.string().min(1).optional(),
@@ -332,6 +337,19 @@ function validateAuthDeliveryEnvironment<T extends ApiEnvironment>(environment: 
       throw new Error('SMS_PROVIDER must be configured when SMS OTP is enabled.');
     if (environment.SMS_PROVIDER === 'semaphore' && !environment.SEMAPHORE_API_KEY)
       throw new Error('SEMAPHORE_API_KEY is required for Semaphore SMS.');
+  }
+  if (environment.SEMAPHORE_CERTIFICATION_ENABLED) {
+    if (!['local', 'test'].includes(environment.APP_ENV))
+      throw new Error('Semaphore certification is restricted to local/test.');
+    if (
+      !environment.SMS_OTP_ENABLED ||
+      environment.SMS_PROVIDER !== 'semaphore' ||
+      !environment.SEMAPHORE_API_KEY ||
+      !environment.SEMAPHORE_CERTIFICATION_RECIPIENT
+    )
+      throw new Error(
+        'Semaphore certification requires enabled Semaphore SMS, an API key, and a recipient.',
+      );
   }
   if (environment.AUTOMATED_KYC_ENABLED) {
     if (environment.KYC_PROVIDER === 'manual')

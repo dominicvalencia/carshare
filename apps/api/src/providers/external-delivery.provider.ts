@@ -6,6 +6,7 @@ import type {
   DeliveryReceipt,
   EmailMessage,
   LocalEmailCertificationProvider,
+  LocalSmsCertificationProvider,
   OtpSmsProvider,
   SmsMessage,
   TransactionalEmailProvider,
@@ -152,7 +153,10 @@ function safePostmarkIdentifier(value: string | undefined): string | undefined {
 }
 
 @Injectable()
-export class SemaphoreSmsProvider extends SmsProvider implements OtpSmsProvider {
+export class SemaphoreSmsProvider
+  extends SmsProvider
+  implements OtpSmsProvider, LocalSmsCertificationProvider
+{
   constructor(private readonly configuration: ConfigService<ApiEnvironment, true>) {
     super();
   }
@@ -162,39 +166,154 @@ export class SemaphoreSmsProvider extends SmsProvider implements OtpSmsProvider 
   }
 
   async sendOtp(message: SmsMessage, idempotencyKey: string): Promise<DeliveryReceipt> {
+    return this.post(renderSms(message), message.to, idempotencyKey);
+  }
+
+  async sendCertification(to: string, idempotencyKey: string): Promise<DeliveryReceipt> {
+    return this.post(
+      'CarShare Semaphore local certification. SMS delivery is configured correctly.',
+      to,
+      idempotencyKey,
+    );
+  }
+
+  private async post(
+    message: string,
+    to: string,
+    idempotencyKey: string,
+  ): Promise<DeliveryReceipt> {
     const form = new URLSearchParams({
       apikey: this.configuration.getOrThrow('SEMAPHORE_API_KEY', { infer: true }),
-      number: message.to,
-      message: renderSms(message),
+      number: to.replace(/^\+/, ''),
+      message,
     });
     const sender = this.configuration.get('SEMAPHORE_SENDER_NAME', { infer: true });
     if (sender) form.set('sendername', sender);
-    const response = await fetch(
-      this.configuration.get('SEMAPHORE_API_URL', { infer: true }) ??
-        'https://api.semaphore.co/api/v4/messages',
-      {
-        method: 'POST',
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'X-CarShare-Idempotency-Key': idempotencyKey,
+    let response: Response;
+    try {
+      response = await fetch(
+        this.configuration.get('SEMAPHORE_API_URL', { infer: true }) ??
+          'https://api.semaphore.co/api/v4/messages',
+        {
+          method: 'POST',
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-CarShare-Idempotency-Key': idempotencyKey,
+          },
+          body: form,
         },
-        body: form,
-      },
-    );
-    const body = (await response.json().catch(() => [])) as { message_id?: string | number }[];
-    if (!response.ok)
-      throw new Error(
+      );
+    } catch (error) {
+      const timeout = error instanceof DOMException && error.name === 'TimeoutError';
+      throw new SemaphoreProviderError('SMS_PROVIDER_RETRYABLE', {
+        httpStatus: 0,
+        providerCode: timeout ? 'TIMEOUT' : 'NETWORK_ERROR',
+        reason: timeout ? 'Semaphore request timed out.' : 'Semaphore request failed.',
+      });
+    }
+    const body = (await response.json().catch(() => undefined)) as
+      SemaphoreResponseItem[] | SemaphoreErrorBody | undefined;
+    const item = Array.isArray(body) ? body[0] : undefined;
+    if (!response.ok) {
+      throw new SemaphoreProviderError(
         response.status >= 500 || response.status === 429
           ? 'SMS_PROVIDER_RETRYABLE'
           : 'SMS_PROVIDER_REJECTED',
+        semaphoreDiagnostics(response.status, body),
       );
+    }
+    if (!item?.message_id || typeof item.status !== 'string') {
+      throw new SemaphoreProviderError('SMS_PROVIDER_REJECTED', {
+        httpStatus: response.status,
+        providerCode: 'MALFORMED_RESPONSE',
+        reason: 'Semaphore returned an invalid acceptance response.',
+      });
+    }
+    const status = normalizeSemaphoreStatus(item.status);
+    if (status === 'FAILED' || status === 'UNKNOWN') {
+      const providerCode = safeSemaphoreCode(item.status);
+      const providerMessageId = safeSemaphoreIdentifier(item.message_id);
+      throw new SemaphoreProviderError('SMS_PROVIDER_REJECTED', {
+        httpStatus: response.status,
+        reason: 'Semaphore did not accept the SMS for delivery.',
+        ...(providerCode === undefined ? {} : { providerCode }),
+        ...(providerMessageId ? { providerMessageId } : {}),
+      });
+    }
     return {
       provider: 'semaphore',
-      providerMessageId: String(body[0]?.message_id ?? idempotencyKey),
-      status: 'ACCEPTED',
+      providerMessageId: String(item.message_id),
+      status,
     };
   }
+}
+
+interface SemaphoreResponseItem {
+  readonly message_id?: string | number;
+  readonly status?: string;
+}
+
+interface SemaphoreErrorBody {
+  readonly code?: string | number;
+  readonly error?: string;
+  readonly message?: string;
+  readonly status?: string | number;
+}
+
+export interface SemaphoreRejectionDiagnostics {
+  readonly httpStatus: number;
+  readonly providerCode?: string | number;
+  readonly reason: string;
+  readonly providerMessageId?: string;
+}
+
+export class SemaphoreProviderError extends Error {
+  constructor(
+    message: 'SMS_PROVIDER_REJECTED' | 'SMS_PROVIDER_RETRYABLE',
+    readonly diagnostics: SemaphoreRejectionDiagnostics,
+  ) {
+    super(message);
+    this.name = 'SemaphoreProviderError';
+  }
+}
+
+function semaphoreDiagnostics(
+  httpStatus: number,
+  body: SemaphoreResponseItem[] | SemaphoreErrorBody | undefined,
+): SemaphoreRejectionDiagnostics {
+  const responseItem = Array.isArray(body) ? body[0] : undefined;
+  const errorBody = !Array.isArray(body) ? body : undefined;
+  const providerCode = safeSemaphoreCode(
+    responseItem?.status ?? errorBody?.code ?? errorBody?.status,
+  );
+  const rawReason = errorBody?.message ?? errorBody?.error;
+  const providerMessageId = safeSemaphoreIdentifier(responseItem?.message_id);
+  return {
+    httpStatus,
+    reason: sanitizeSemaphoreReason(rawReason),
+    ...(providerCode === undefined ? {} : { providerCode }),
+    ...(providerMessageId ? { providerMessageId } : {}),
+  };
+}
+
+function sanitizeSemaphoreReason(reason: string | undefined): string {
+  if (!reason) return 'Semaphore rejected the request without a diagnostic message.';
+  return reason
+    .replace(/(?:\+?63|0)9\d{9}/gu, '[redacted-mobile]')
+    .replace(/\b[a-z0-9_-]{24,}\b/giu, '[redacted-credential]')
+    .replace(/[\r\n\t]+/gu, ' ')
+    .slice(0, 500);
+}
+
+function safeSemaphoreCode(value: string | number | undefined): string | number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return typeof value === 'string' && /^[a-z0-9 _-]{1,80}$/iu.test(value) ? value : undefined;
+}
+
+function safeSemaphoreIdentifier(value: string | number | undefined): string | undefined {
+  const candidate = value === undefined ? '' : String(value);
+  return /^[a-z0-9-]{1,100}$/iu.test(candidate) ? candidate : undefined;
 }
 
 export function normalizePostmarkEvent(type: string): DeliveryReceipt['status'] {
@@ -212,9 +331,9 @@ export function normalizePostmarkEvent(type: string): DeliveryReceipt['status'] 
 
 export function normalizeSemaphoreStatus(status: string): DeliveryReceipt['status'] {
   const normalized = status.toLowerCase();
-  if (normalized === 'delivered') return 'DELIVERED';
+  if (['delivered', 'sent'].includes(normalized)) return 'DELIVERED';
   if (['pending', 'queued'].includes(normalized)) return 'DELAYED';
-  if (['failed', 'undelivered'].includes(normalized)) return 'FAILED';
+  if (['failed', 'refunded', 'undelivered'].includes(normalized)) return 'FAILED';
   return 'UNKNOWN';
 }
 
