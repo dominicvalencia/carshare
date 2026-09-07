@@ -157,6 +157,11 @@ const apiEnvironmentSchema = commonSchema
     POSTMARK_FROM_EMAIL: z.string().email().optional(),
     POSTMARK_MESSAGE_STREAM: z.string().min(1).default('outbound'),
     POSTMARK_WEBHOOK_SECRET: z.string().min(16).optional(),
+    POSTMARK_CERTIFICATION_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    POSTMARK_CERTIFICATION_RECIPIENT: z.string().email().optional(),
     SMS_PROVIDER: z.enum(['disabled', 'development', 'semaphore']).default('disabled'),
     SEMAPHORE_API_KEY: z.string().min(1).optional(),
     SEMAPHORE_SENDER_NAME: z.string().min(1).max(11).optional(),
@@ -306,6 +311,20 @@ function validateAuthDeliveryEnvironment<T extends ApiEnvironment>(environment: 
     )
       throw new Error(
         'POSTMARK_SERVER_TOKEN and POSTMARK_FROM_EMAIL are required for Postmark email.',
+      );
+  }
+  if (environment.POSTMARK_CERTIFICATION_ENABLED) {
+    if (!['local', 'test'].includes(environment.APP_ENV))
+      throw new Error('Postmark certification is restricted to local/test.');
+    if (
+      !environment.EMAIL_ENABLED ||
+      environment.EMAIL_PROVIDER !== 'postmark' ||
+      !environment.POSTMARK_SERVER_TOKEN ||
+      !environment.POSTMARK_FROM_EMAIL ||
+      !environment.POSTMARK_CERTIFICATION_RECIPIENT
+    )
+      throw new Error(
+        'Postmark certification requires enabled Postmark email, credentials, sender, and recipient.',
       );
   }
   if (environment.SMS_OTP_ENABLED) {

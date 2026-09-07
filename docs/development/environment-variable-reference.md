@@ -13,7 +13,8 @@ Integration flags `PAYMENTS_ENABLED`, `PAYOUTS_ENABLED`, `PUSH_ENABLED`,
 `AUTH_DELIVERY_ENABLED`, `EMAIL_ENABLED`, `SMS_OTP_ENABLED`, `AUTOMATED_KYC_ENABLED`,
 `OBSERVABILITY_ENABLED`, and `SENTRY_ENABLED` default false. Email and SMS default disabled; KYC
 defaults manual. Enabled Postmark requires `POSTMARK_SERVER_TOKEN` and `POSTMARK_FROM_EMAIL`;
-enabled Semaphore requires `SEMAPHORE_API_KEY`; enabled Sumsub requires `SUMSUB_APP_TOKEN` and
+the explicit local/test certification additionally requires `POSTMARK_CERTIFICATION_ENABLED=true`
+and `POSTMARK_CERTIFICATION_RECIPIENT`. Enabled Semaphore requires `SEMAPHORE_API_KEY`; enabled Sumsub requires `SUMSUB_APP_TOKEN` and
 `SUMSUB_SECRET_KEY`; enabled API Sentry requires `SENTRY_API_DSN`, while enabled workers require
 `SENTRY_WORKERS_DSN`. Optional Firebase preparation uses
 `FIREBASE_PROJECT_ID`, `FIREBASE_ANDROID_APP_ID`, and a managed `FCM_CREDENTIALS_BASE64` secret.

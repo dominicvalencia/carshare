@@ -5,6 +5,7 @@ import type { ApiEnvironment } from '@carrental/config';
 import type {
   DeliveryReceipt,
   EmailMessage,
+  LocalEmailCertificationProvider,
   OtpSmsProvider,
   SmsMessage,
   TransactionalEmailProvider,
@@ -12,6 +13,23 @@ import type {
 import { EmailProvider, SmsProvider } from './delivery.provider';
 
 const REQUEST_TIMEOUT_MS = 10_000;
+
+export interface PostmarkRejectionDiagnostics {
+  readonly httpStatus: number;
+  readonly errorCode?: number;
+  readonly reason: string;
+  readonly providerRequestId?: string;
+}
+
+export class PostmarkProviderError extends Error {
+  constructor(
+    message: 'EMAIL_PROVIDER_REJECTED' | 'EMAIL_PROVIDER_RETRYABLE',
+    readonly diagnostics: PostmarkRejectionDiagnostics,
+  ) {
+    super(message);
+    this.name = 'PostmarkProviderError';
+  }
+}
 
 export class DisabledEmailProvider extends EmailProvider {
   async send(): Promise<void> {
@@ -26,7 +44,10 @@ export class DisabledSmsProvider extends SmsProvider {
 }
 
 @Injectable()
-export class PostmarkEmailProvider extends EmailProvider implements TransactionalEmailProvider {
+export class PostmarkEmailProvider
+  extends EmailProvider
+  implements TransactionalEmailProvider, LocalEmailCertificationProvider
+{
   constructor(private readonly configuration: ConfigService<ApiEnvironment, true>) {
     super();
   }
@@ -39,9 +60,43 @@ export class PostmarkEmailProvider extends EmailProvider implements Transactiona
   }
 
   async sendTransactional(message: EmailMessage, idempotencyKey: string): Promise<DeliveryReceipt> {
+    return this.post(
+      '/email/withTemplate',
+      {
+        From: this.configuration.getOrThrow('POSTMARK_FROM_EMAIL', { infer: true }),
+        To: message.to,
+        TemplateAlias: message.template.toLowerCase().replaceAll('_', '-'),
+        MessageStream:
+          this.configuration.get('POSTMARK_MESSAGE_STREAM', { infer: true }) ?? 'outbound',
+        TemplateModel: { ...message.variables, action_url: message.actionUrl },
+      },
+      idempotencyKey,
+    );
+  }
+
+  async sendCertification(to: string, idempotencyKey: string): Promise<DeliveryReceipt> {
+    return this.post(
+      '/email',
+      {
+        From: this.configuration.getOrThrow('POSTMARK_FROM_EMAIL', { infer: true }),
+        To: to,
+        Subject: 'CarShare Postmark local certification',
+        TextBody:
+          'CarShare transactional email delivery is configured correctly for local provider certification.',
+        MessageStream:
+          this.configuration.get('POSTMARK_MESSAGE_STREAM', { infer: true }) ?? 'outbound',
+      },
+      idempotencyKey,
+    );
+  }
+
+  private async post(
+    path: '/email' | '/email/withTemplate',
+    payload: Readonly<Record<string, unknown>>,
+    idempotencyKey: string,
+  ): Promise<DeliveryReceipt> {
     const token = this.configuration.getOrThrow('POSTMARK_SERVER_TOKEN', { infer: true });
-    const from = this.configuration.getOrThrow('POSTMARK_FROM_EMAIL', { infer: true });
-    const response = await fetch('https://api.postmarkapp.com/email/withTemplate', {
+    const response = await fetch(`https://api.postmarkapp.com${path}`, {
       method: 'POST',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: {
@@ -50,24 +105,27 @@ export class PostmarkEmailProvider extends EmailProvider implements Transactiona
         'X-Postmark-Server-Token': token,
         'X-CarShare-Idempotency-Key': idempotencyKey,
       },
-      body: JSON.stringify({
-        From: from,
-        To: message.to,
-        TemplateAlias: message.template.toLowerCase().replaceAll('_', '-'),
-        MessageStream:
-          this.configuration.get('POSTMARK_MESSAGE_STREAM', { infer: true }) ?? 'outbound',
-        TemplateModel: { ...message.variables, action_url: message.actionUrl },
-      }),
+      body: JSON.stringify(payload),
     });
     const body = (await response.json().catch(() => ({}))) as {
       MessageID?: string;
       ErrorCode?: number;
+      Message?: string;
     };
+    const providerRequestId = safePostmarkIdentifier(
+      response.headers.get('X-Postmark-Request-Id') ?? body.MessageID,
+    );
     if (!response.ok || body.ErrorCode)
-      throw new Error(
+      throw new PostmarkProviderError(
         response.status >= 500 || response.status === 429
           ? 'EMAIL_PROVIDER_RETRYABLE'
           : 'EMAIL_PROVIDER_REJECTED',
+        {
+          httpStatus: response.status,
+          reason: sanitizePostmarkReason(body.Message),
+          ...(Number.isInteger(body.ErrorCode) ? { errorCode: body.ErrorCode } : {}),
+          ...(providerRequestId ? { providerRequestId } : {}),
+        },
       );
     return {
       provider: 'postmark',
@@ -75,6 +133,22 @@ export class PostmarkEmailProvider extends EmailProvider implements Transactiona
       status: 'ACCEPTED',
     };
   }
+}
+
+function sanitizePostmarkReason(message: string | undefined): string {
+  if (!message) return 'Postmark rejected the request without a diagnostic message.';
+  return message
+    .replace(
+      /[\w.!#$%&'*+/=?^`{|}~-]+@[\w](?:[\w-]{0,61}[\w])?(?:\.[\w](?:[\w-]{0,61}[\w])?)+/gu,
+      '[redacted-email]',
+    )
+    .replace(/\b(?:bearer\s+)?[a-z0-9_-]{24,}\b/giu, '[redacted-credential]')
+    .replace(/[\r\n\t]+/gu, ' ')
+    .slice(0, 500);
+}
+
+function safePostmarkIdentifier(value: string | undefined): string | undefined {
+  return value && /^[a-z0-9-]{8,100}$/iu.test(value) ? value : undefined;
 }
 
 @Injectable()

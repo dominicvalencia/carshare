@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "nest build",
+    "certify:postmark": "tsx src/providers/postmark-certification.cli.ts",
     "dev": "nest start --watch",
     "lint": "eslint . --max-warnings=0",
     "start": "node dist/main.js",
@@ -56,6 +57,7 @@
     "@vitest/coverage-v8": "4.1.11",
     "dotenv": "17.2.4",
     "supertest": "7.2.2",
+    "tsx": "4.23.12",
     "vitest": "4.1.11"
   }
 }
