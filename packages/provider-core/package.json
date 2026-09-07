@@ -11,10 +11,12 @@
     },
     "./sentry": {
       "types": "./dist/sentry.d.ts",
+      "react-native": "./src/sentry.ts",
       "default": "./dist/sentry.js"
     },
     "./telemetry": {
       "types": "./dist/telemetry.d.ts",
+      "react-native": "./src/telemetry.ts",
       "default": "./dist/telemetry.js"
     }
   },

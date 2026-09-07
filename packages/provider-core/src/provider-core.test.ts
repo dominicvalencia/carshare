@@ -1,4 +1,6 @@
 import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   FakeKycAutomationProvider,
@@ -32,6 +34,24 @@ describe('provider operations', () => {
       kind: 'RETRYABLE',
     });
     await expect(simulateProvider('TIMEOUT', 'ok')).rejects.toMatchObject({ kind: 'RECONCILE' });
+  });
+});
+
+describe('package exports', () => {
+  it('gives React Native source-only telemetry entry points', () => {
+    const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
+      exports: Record<string, { default: string; 'react-native'?: string }>;
+    };
+
+    expect(manifest.exports['./sentry']).toMatchObject({
+      'react-native': './src/sentry.ts',
+      default: './dist/sentry.js',
+    });
+    expect(manifest.exports['./telemetry']).toMatchObject({
+      'react-native': './src/telemetry.ts',
+      default: './dist/telemetry.js',
+    });
+    expect(manifest.exports['.']?.['react-native']).toBeUndefined();
   });
 });
 
