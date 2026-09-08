@@ -20,6 +20,15 @@ and `POSTMARK_CERTIFICATION_RECIPIENT`. Enabled Semaphore requires `SEMAPHORE_AP
 `FIREBASE_PROJECT_ID`, `FIREBASE_ANDROID_APP_ID`, and a managed `FCM_CREDENTIALS_BASE64` secret.
 Credentials are required only for the enabled concrete provider.
 
+The explicit local/test Android push certification additionally requires `PUSH_ENABLED=true`,
+`PUSH_PROVIDER=expo`, `PUSH_CERTIFICATION_ENABLED=true`, and
+`PUSH_CERTIFICATION_EXPO_TOKEN`. Mobile native configuration uses the non-public build-time values
+`EXPO_ANDROID_GOOGLE_SERVICES_FILE` and `EXPO_ANDROID_FIREBASE_ENV`; the latter must match
+`EXPO_PUBLIC_APP_ENV`. Keep the Firebase client JSON under ignored `.data/`. The Expo project UUID
+remains environment-provided through `EXPO_PUBLIC_PROJECT_ID` and is exposed to EAS as
+`extra.eas.projectId`. Non-local profiles must explicitly bind it with `EXPO_PUBLIC_PROJECT_ENV`
+matching `EXPO_PUBLIC_APP_ENV`; no Firebase server credential belongs in an `EXPO_PUBLIC_*` value.
+
 The explicit local/test Semaphore transport certification additionally requires
 `SMS_OTP_ENABLED=true`, `SMS_PROVIDER=semaphore`, `SEMAPHORE_CERTIFICATION_ENABLED=true`, and
 `SEMAPHORE_CERTIFICATION_RECIPIENT`. `SEMAPHORE_SENDER_NAME` is optional only when the Semaphore

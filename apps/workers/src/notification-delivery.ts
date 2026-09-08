@@ -29,7 +29,7 @@ interface NotificationRecipient {
 }
 
 export function workerPushProvider(environment: WorkerEnvironment): PushProvider | null {
-  if (environment.PUSH_PROVIDER === 'in_app') return null;
+  if (!environment.PUSH_ENABLED || environment.PUSH_PROVIDER === 'in_app') return null;
   return environment.PUSH_PROVIDER === 'expo'
     ? new ExpoPushProvider(environment.EXPO_PUSH_ACCESS_TOKEN)
     : new FakePushProvider();

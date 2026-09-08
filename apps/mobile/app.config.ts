@@ -2,20 +2,32 @@ import { resolve } from 'node:path';
 import { config as loadEnvironment } from 'dotenv';
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 // Expo evaluates imported config plugins as CommonJS in both local and EAS builds.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { resolveMobileEnvironment } = require('./app-environment.config.js') as {
-  resolveMobileEnvironment: (input: NodeJS.ProcessEnv) => {
-    name: string;
-    identifier: string;
-    scheme: string;
-    extra: Record<string, boolean | string | undefined>;
+/* eslint-disable @typescript-eslint/no-require-imports */
+const { resolveGoogleServicesFile, resolveMobileEnvironment } =
+  require('./app-environment.config.js') as {
+    resolveGoogleServicesFile: (
+      configuredPath: string | undefined,
+      repositoryRoot: string,
+    ) => string | undefined;
+    resolveMobileEnvironment: (input: NodeJS.ProcessEnv) => {
+      name: string;
+      identifier: string;
+      scheme: string;
+      extra: Record<string, boolean | string | undefined>;
+      googleServicesFile?: string;
+      projectId?: string;
+    };
   };
-};
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 loadEnvironment({ path: resolve(__dirname, '../../.env'), quiet: true });
 
 export default ({ config }: ConfigContext): ExpoConfig => {
   const mobile = resolveMobileEnvironment(process.env);
+  const googleServicesFile = resolveGoogleServicesFile(
+    mobile.googleServicesFile,
+    resolve(__dirname, '../..'),
+  );
   return {
     ...config,
     name: mobile.name,
@@ -30,6 +42,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       supportsTablet: true,
     },
     android: {
+      ...(googleServicesFile ? { googleServicesFile } : {}),
       adaptiveIcon: {
         backgroundColor: '#0C4E39',
         foregroundImage: './assets/carshare-android-adaptive-foreground.png',
@@ -68,6 +81,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         },
       ],
     ],
-    extra: mobile.extra,
+    extra: {
+      ...mobile.extra,
+      ...(mobile.projectId ? { eas: { projectId: mobile.projectId } } : {}),
+    },
   };
 };

@@ -35,10 +35,14 @@ export function PushRegistration() {
       invalidateBookingLifecycle(client);
       void invalidateRenterVerification(client);
     });
+    const tokenSubscription = Notifications.addPushTokenListener(() => {
+      void register();
+    });
     if (Device.isDevice && (Platform.OS === 'ios' || Platform.OS === 'android')) void register();
     return () => {
       responseSubscription.remove();
       receivedSubscription.remove();
+      tokenSubscription.remove();
     };
   }, [auth.user, client]);
   return null;
@@ -46,9 +50,19 @@ export function PushRegistration() {
 
 async function register() {
   try {
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'CarShare notifications',
+        importance: Notifications.AndroidImportance.DEFAULT,
+      });
+    }
     const existing = await Notifications.getPermissionsAsync();
     const permission =
-      existing.status === 'granted' ? existing : await Notifications.requestPermissionsAsync();
+      existing.status === 'granted'
+        ? existing
+        : shouldRequestNotificationPermission(existing.status, existing.canAskAgain)
+          ? await Notifications.requestPermissionsAsync()
+          : existing;
     if (permission.status !== 'granted') return;
     const projectId = Constants.easConfig?.projectId ?? process.env.EXPO_PUBLIC_PROJECT_ID;
     if (!projectId) return;
@@ -69,6 +83,10 @@ async function register() {
   } catch {
     /* Push is additive; the in-app inbox remains authoritative. */
   }
+}
+
+export function shouldRequestNotificationPermission(status: string, canAskAgain: boolean): boolean {
+  return status !== 'granted' && canAskAgain;
 }
 
 const ALLOWED_PUSH_TARGETS = new Set([

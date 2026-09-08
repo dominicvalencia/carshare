@@ -1,8 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@carrental/database';
-import { consumeDomainEvent } from './notification-delivery';
+import { consumeDomainEvent, workerPushProvider } from './notification-delivery';
+import type { WorkerEnvironment } from '@carrental/config';
 
 describe('booking request notification delivery', () => {
+  it('fails closed when external push delivery is disabled', () => {
+    expect(
+      workerPushProvider({ PUSH_ENABLED: false, PUSH_PROVIDER: 'expo' } as WorkerEnvironment),
+    ).toBeNull();
+    expect(
+      workerPushProvider({ PUSH_ENABLED: true, PUSH_PROVIDER: 'expo' } as WorkerEnvironment)?.code,
+    ).toBe('expo');
+  });
   it('creates one idempotent owner notification with the public booking reference', async () => {
     const bookingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';

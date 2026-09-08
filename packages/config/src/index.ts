@@ -105,6 +105,11 @@ const communicationsSchema = z.object({
   FIREBASE_PROJECT_ID: z.string().min(1).optional(),
   FIREBASE_ANDROID_APP_ID: z.string().min(1).optional(),
   FCM_CREDENTIALS_BASE64: z.string().min(1).optional(),
+  PUSH_CERTIFICATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  PUSH_CERTIFICATION_EXPO_TOKEN: z.string().min(1).optional(),
   NOTIFICATION_DELIVERY_INTERVAL_SECONDS: z.coerce.number().int().min(5).max(300).default(10),
   PUSH_RECEIPT_DELAY_SECONDS: z.coerce.number().int().min(5).max(3600).default(900),
   REVIEW_WINDOW_DAYS: z.coerce.number().int().min(1).max(14).default(14),
@@ -273,6 +278,14 @@ function validateCommunicationsEnvironment<
 >(environment: T): T {
   if (environment.APP_ENV === 'production' && environment.PUSH_PROVIDER === 'fake') {
     throw new Error('PUSH_PROVIDER must not be fake in production.');
+  }
+  if (environment.PUSH_CERTIFICATION_ENABLED) {
+    if (!['local', 'test'].includes(environment.APP_ENV))
+      throw new Error('Push certification is restricted to local/test.');
+    if (!environment.PUSH_ENABLED || environment.PUSH_PROVIDER !== 'expo')
+      throw new Error('Push certification requires PUSH_ENABLED=true and PUSH_PROVIDER=expo.');
+    if (!environment.PUSH_CERTIFICATION_EXPO_TOKEN)
+      throw new Error('PUSH_CERTIFICATION_EXPO_TOKEN is required for push certification.');
   }
   return environment;
 }

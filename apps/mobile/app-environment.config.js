@@ -1,3 +1,6 @@
+const { existsSync } = require('node:fs');
+const { isAbsolute, resolve } = require('node:path');
+
 const identities = {
   local: { name: 'CarShare', identifier: 'ph.carshare.mobile', scheme: 'carrental' },
   test: { name: 'CarShare Test', identifier: 'ph.carshare.mobile.test', scheme: 'carshare-test' },
@@ -46,9 +49,22 @@ function resolveMobileEnvironment(input) {
   const sentryTestEventEnabled = input.EXPO_PUBLIC_SENTRY_TEST_EVENT_ENABLED === 'true';
   if (sentryTestEventEnabled && !['local', 'test'].includes(environment))
     throw new Error('Mobile Sentry certification events are restricted to local/test.');
+  const googleServicesFile = input.EXPO_ANDROID_GOOGLE_SERVICES_FILE;
+  const firebaseEnvironment = input.EXPO_ANDROID_FIREBASE_ENV;
+  if (googleServicesFile && firebaseEnvironment !== environment)
+    throw new Error('EXPO_ANDROID_FIREBASE_ENV must match EXPO_PUBLIC_APP_ENV.');
+  const projectId = input.EXPO_PUBLIC_PROJECT_ID;
+  const projectEnvironment =
+    input.EXPO_PUBLIC_PROJECT_ENV ?? (environment === 'local' ? 'local' : undefined);
+  if (googleServicesFile && !projectId)
+    throw new Error('EXPO_PUBLIC_PROJECT_ID is required with Android Firebase configuration.');
+  if (projectId && projectEnvironment !== environment)
+    throw new Error('EXPO_PUBLIC_PROJECT_ENV must match EXPO_PUBLIC_APP_ENV.');
   return {
     environment,
     ...identity,
+    googleServicesFile,
+    projectId,
     extra: {
       serviceName: 'carshare-mobile',
       appEnvironment: environment,
@@ -56,7 +72,7 @@ function resolveMobileEnvironment(input) {
       appScheme: identity.scheme,
       apiEnvironment,
       apiUrl,
-      projectId: input.EXPO_PUBLIC_PROJECT_ID,
+      projectId,
       releaseVersion: input.EXPO_PUBLIC_RELEASE_VERSION ?? 'development',
       sentryDsn,
       sentryEnabled,
@@ -67,4 +83,17 @@ function resolveMobileEnvironment(input) {
   };
 }
 
-module.exports = { resolveMobileEnvironment };
+function resolveGoogleServicesFile(configuredPath, repositoryRoot, fileExists = existsSync) {
+  if (!configuredPath) return undefined;
+  const resolvedPath = isAbsolute(configuredPath)
+    ? configuredPath
+    : resolve(repositoryRoot, configuredPath);
+  if (!fileExists(resolvedPath)) {
+    throw new Error(
+      `EXPO_ANDROID_GOOGLE_SERVICES_FILE does not exist at the resolved repository path: ${resolvedPath}`,
+    );
+  }
+  return resolvedPath;
+}
+
+module.exports = { resolveGoogleServicesFile, resolveMobileEnvironment };

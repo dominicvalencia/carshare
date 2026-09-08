@@ -188,6 +188,51 @@ describe('environment configuration', () => {
       }),
     ).toThrow('local/test');
   });
+
+  it('requires explicit safe inputs for local push certification', () => {
+    const base = {
+      DATABASE_URL: 'postgresql://u:p@localhost/db',
+      REDIS_URL: 'redis://localhost',
+      JWT_ACCESS_SECRET: 'test-access-secret-at-least-thirty-two-characters',
+      TOKEN_HASH_SECRET: 'test-token-secret-at-least-thirty-two-characters',
+    };
+    expect(() => parseApiEnvironment({ ...base, PUSH_CERTIFICATION_ENABLED: 'true' })).toThrow(
+      'PUSH_ENABLED',
+    );
+    expect(() =>
+      parseApiEnvironment({
+        ...base,
+        PUSH_ENABLED: 'true',
+        PUSH_PROVIDER: 'expo',
+        PUSH_CERTIFICATION_ENABLED: 'true',
+      }),
+    ).toThrow('PUSH_CERTIFICATION_EXPO_TOKEN');
+    expect(
+      parseApiEnvironment({
+        ...base,
+        PUSH_ENABLED: 'true',
+        PUSH_PROVIDER: 'expo',
+        PUSH_CERTIFICATION_ENABLED: 'true',
+        PUSH_CERTIFICATION_EXPO_TOKEN: 'ExponentPushToken[controlled-device]',
+      }).PUSH_CERTIFICATION_ENABLED,
+    ).toBe(true);
+    expect(() =>
+      parseApiEnvironment({
+        ...base,
+        APP_ENV: 'staging',
+        DATABASE_ENVIRONMENT: 'staging',
+        REDIS_ENVIRONMENT: 'staging',
+        API_PUBLIC_URL: 'https://api.staging.example.com',
+        ADMIN_PUBLIC_URL: 'https://admin.staging.example.com',
+        DATABASE_URL: 'postgresql://u:p@db.example.com/db',
+        REDIS_URL: 'rediss://redis.example.com',
+        PUSH_ENABLED: 'true',
+        PUSH_PROVIDER: 'expo',
+        PUSH_CERTIFICATION_ENABLED: 'true',
+        PUSH_CERTIFICATION_EXPO_TOKEN: 'ExponentPushToken[controlled-device]',
+      }),
+    ).toThrow('local/test');
+  });
   it('requires complete local-only Postmark certification configuration', () => {
     const base = {
       DATABASE_URL: 'postgresql://u:p@localhost/db',
