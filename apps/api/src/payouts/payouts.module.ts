@@ -25,7 +25,7 @@ import { PayoutsService } from './payouts.service';
     AdminPayoutEligibilityController,
     XenditPayoutWebhooksController,
   ],
-  exports: [PayoutsService, PAYOUT_PROVIDER],
+  exports: [PayoutEligibilityService, PayoutsService, PAYOUT_PROVIDER],
   providers: [
     payoutProviderFactory,
     PayoutProviderCapabilitiesService,

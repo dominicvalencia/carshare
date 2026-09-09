@@ -122,11 +122,41 @@ export class PayoutEligibilityService {
   }
 
   eligibleSelectionSql(ownerProfileId: string, maximumAmountMinor?: bigint) {
+    return this.eligibleEarningsSql(ownerProfileId, maximumAmountMinor);
+  }
+
+  eligibleAggregateSql() {
+    const eligible = this.eligibleEarningsSql();
+    return Prisma.sql`
+      SELECT e."currency",
+        COUNT(*)::integer AS "count",
+        SUM(e."net_earning_amount_minor" + e."additional_compensation_minor" + e."adjustment_amount_minor") AS "amountMinor"
+      FROM (${eligible}) eligible
+      JOIN "owner_earnings" e ON e."id" = eligible."id"
+      GROUP BY e."currency"
+      ORDER BY e."currency"
+    `;
+  }
+
+  private eligibleEarningsSql(ownerProfileId?: string, maximumAmountMinor?: bigint) {
     return Prisma.sql`
       SELECT e."id"
       FROM "owner_earnings" e
-      WHERE e."owner_profile_id" = ${ownerProfileId}::uuid
+      WHERE (${ownerProfileId ?? null}::uuid IS NULL OR e."owner_profile_id" = ${ownerProfileId ?? null}::uuid)
         AND e."status" = 'AVAILABLE'
+        AND (${ownerProfileId ?? null}::uuid IS NOT NULL OR EXISTS (
+          SELECT 1
+          FROM "owner_profiles" op
+          JOIN "users" u ON u."id" = op."user_id"
+          JOIN "user_roles" ur ON ur."user_id" = u."id"
+          JOIN "roles" r ON r."id" = ur."role_id" AND r."code" = 'OWNER'
+          JOIN "payout_eligibilities" pe ON pe."owner_profile_id" = op."id" AND pe."status" = 'ELIGIBLE'
+          JOIN "owner_payout_accounts" opa ON opa."owner_profile_id" = op."id"
+            AND opa."is_default" AND opa."status" = 'ACTIVE'
+          WHERE op."id" = e."owner_profile_id"
+            AND op."status" = 'VERIFIED'
+            AND u."status" = 'ACTIVE'
+        ))
         AND (${maximumAmountMinor ?? null}::bigint IS NULL OR
           e."net_earning_amount_minor" + e."additional_compensation_minor" + e."adjustment_amount_minor" <= ${maximumAmountMinor ?? null}::bigint)
         AND NOT EXISTS (SELECT 1 FROM "earning_holds" h WHERE h."owner_earning_id" = e."id" AND h."status" = 'ACTIVE')
