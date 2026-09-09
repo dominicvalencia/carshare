@@ -16,3 +16,11 @@
 Phase 13C-2 was reordered to complete the local provider integration foundation before staging.
 Next gate: finish local provider QA, then separately approve staging provisioning, actual domains/origins, access principals, and
 managed secret locations. No production activation is implied.
+
+## Proposed Phase 13C-3
+
+**Phase 13C-3 — Isolated Staging Infrastructure and Deployment Foundation** is documented as a
+proposal in `phase-13c3-staging-foundation-proposal.md`. It is not approved, and no infrastructure
+has been provisioned. Owner decisions remain required for the controlled domain and exact origins,
+topology/budget, access principals, secret locations, backup retention, implementation slices, and
+whether staging waits for Semaphore Sender Name approval or initially keeps SMS disabled.
