@@ -36,6 +36,7 @@ import { StaffCreatePanel } from './StaffCreatePanel';
 import { StaffDetailPanel } from './StaffDetailPanel';
 import { OwnerStaffActivityPanel } from './OwnerStaffActivityPanel';
 import { AdminAuditPanel } from './AdminAuditPanel';
+import { OwnerOverviewDashboard, type OwnerAnalyticsOverview } from './OwnerOverviewDashboard';
 
 import { API_URL, adminEnvironment } from './admin-environment';
 interface Envelope<T> {
@@ -445,9 +446,9 @@ const moduleTitles: Record<AdminModule, { eyebrow: string; title: string; descri
     description: 'Review identity, access level, and explicit permission grants.',
   },
   'owner-overview': {
-    eyebrow: 'OWNER OVERVIEW',
-    title: 'Business overview',
-    description: 'A factual executive view of current CarShare marketplace operations.',
+    eyebrow: 'CARSHARE OWNER',
+    title: 'Business performance overview',
+    description: 'Authoritative marketplace activity and financial performance at a glance.',
   },
   'owner-reports': {
     eyebrow: 'OWNER REPORTING',
@@ -491,7 +492,6 @@ export function AdminConsole({
   const [claimCategory, setClaimCategory] = useState('');
   const [claimSeverity, setClaimSeverity] = useState('');
   const [claimMinimumAgeHours, setClaimMinimumAgeHours] = useState('');
-  const [ownerPeriod, setOwnerPeriod] = useState<'TODAY' | 'WEEK' | 'MONTH' | 'CUSTOM'>('MONTH');
   const client = useQueryClient();
   const isActive = (...modules: AdminModule[]) => modules.includes(activeModule);
   const requiredPermission: Partial<Record<AdminModule, string>> = {
@@ -539,22 +539,17 @@ export function AdminConsole({
   const owners = useQuery({
     queryKey: ['admin-owners'],
     queryFn: () => api<Owner[]>('/admin/owners?status=PENDING_VERIFICATION'),
-    enabled:
-      ((activeModule === 'dashboard' || activeModule === 'owner-overview') && can('owners.read')) ||
-      isActive('owner-verification'),
+    enabled: (activeModule === 'dashboard' && can('owners.read')) || isActive('owner-verification'),
   });
   const users = useQuery({
     queryKey: ['admin-users', query],
     queryFn: () => api<User[]>(`/admin/users?query=${encodeURIComponent(query)}`),
-    enabled: isActive('users', 'owner-overview'),
+    enabled: isActive('users'),
   });
   const vehicles = useQuery({
     queryKey: ['admin-vehicles'],
     queryFn: () => api<VehicleSummary[]>('/admin/vehicles?status=PENDING_APPROVAL'),
-    enabled:
-      ((activeModule === 'dashboard' || activeModule === 'owner-overview') &&
-        can('vehicles.read')) ||
-      isActive('vehicles'),
+    enabled: (activeModule === 'dashboard' && can('vehicles.read')) || isActive('vehicles'),
   });
   const vehicle = useQuery({
     queryKey: ['admin-vehicle', selectedVehicleId],
@@ -569,10 +564,7 @@ export function AdminConsole({
   const bookings = useQuery({
     queryKey: ['admin-bookings'],
     queryFn: () => api<AdminBooking[]>('/admin/bookings'),
-    enabled:
-      ((activeModule === 'dashboard' || activeModule === 'owner-overview') &&
-        can('vehicles.read')) ||
-      isActive('bookings'),
+    enabled: (activeModule === 'dashboard' && can('vehicles.read')) || isActive('bookings'),
   });
   const financialDetail = useQuery({
     queryKey: ['admin-finance-booking', selectedFinanceReference],
@@ -587,10 +579,7 @@ export function AdminConsole({
   const rentalQueue = useQuery({
     queryKey: ['admin-rentals'],
     queryFn: () => api<OperationalRental[]>('/admin/rentals'),
-    enabled:
-      ((activeModule === 'dashboard' || activeModule === 'owner-overview') &&
-        can('rentals.read')) ||
-      isActive('rentals'),
+    enabled: (activeModule === 'dashboard' && can('rentals.read')) || isActive('rentals'),
   });
   const rentalDetail = useQuery({
     queryKey: ['admin-rental', selectedRentalReference],
@@ -608,9 +597,7 @@ export function AdminConsole({
       const queryString = parameters.toString();
       return api<ClaimQueue>(`/admin/claims${queryString ? `?${queryString}` : ''}`);
     },
-    enabled:
-      ((activeModule === 'dashboard' || activeModule === 'owner-overview') && can('claims.read')) ||
-      isActive('claims'),
+    enabled: (activeModule === 'dashboard' && can('claims.read')) || isActive('claims'),
   });
   const claimDetail = useQuery({
     queryKey: ['admin-claim', selectedClaimId],
@@ -620,10 +607,7 @@ export function AdminConsole({
   const payoutQueue = useQuery({
     queryKey: ['admin-payout-queue'],
     queryFn: () => api<PayoutQueueItem[]>('/admin/payouts/queue'),
-    enabled:
-      ((activeModule === 'dashboard' || activeModule === 'owner-overview') &&
-        can('payouts.read')) ||
-      isActive('payouts'),
+    enabled: (activeModule === 'dashboard' && can('payouts.read')) || isActive('payouts'),
   });
   const payouts = useQuery({
     queryKey: ['admin-payouts'],
@@ -801,21 +785,6 @@ export function AdminConsole({
       (userRoleFilter === 'ALL' || user.roles.some(({ role }) => role.code === userRoleFilter)) &&
       (userStatusFilter === 'ALL' || user.status === userStatusFilter),
   );
-  const ownerPeriodStart = (() => {
-    const now = new Date();
-    if (ownerPeriod === 'CUSTOM') return null;
-    if (ownerPeriod === 'TODAY') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    if (ownerPeriod === 'WEEK') return new Date(now.getTime() - 7 * 86_400_000);
-    return new Date(now.getFullYear(), now.getMonth(), 1);
-  })();
-  const newRenters = users.data?.filter(
-    (user) =>
-      user.roles.some(({ role }) => role.code === 'RENTER') &&
-      (!ownerPeriodStart || new Date(user.createdAt) >= ownerPeriodStart),
-  ).length;
-  const completedBookings = bookings.data?.filter(
-    (booking) => booking.status === 'COMPLETED',
-  ).length;
   if (
     (ownerOnlyModule && admin.role !== 'OWNER') ||
     missingStaffDetailPermission ||
@@ -887,90 +856,7 @@ export function AdminConsole({
         </section>
       )}
       {activeModule === 'owner-overview' && (
-        <>
-          <section className="owner-period-bar" aria-label="Owner reporting period">
-            <div>
-              <strong>Reporting period</strong>
-              <small>
-                Period-aware metrics use available dated records; queue totals remain live.
-              </small>
-            </div>
-            <div className="period-selector">
-              {(['TODAY', 'WEEK', 'MONTH', 'CUSTOM'] as const).map((period) => (
-                <button
-                  className={ownerPeriod === period ? 'selected' : 'quiet'}
-                  key={period}
-                  onClick={() => setOwnerPeriod(period)}
-                  type="button"
-                >
-                  {period === 'TODAY'
-                    ? 'Today'
-                    : period === 'WEEK'
-                      ? 'This Week'
-                      : period === 'MONTH'
-                        ? 'This Month'
-                        : 'Custom'}
-                </button>
-              ))}
-            </div>
-          </section>
-          {ownerPeriod === 'CUSTOM' && (
-            <p className="owner-data-note">
-              Custom date filtering will be enabled when the reporting API provides authoritative
-              date ranges.
-            </p>
-          )}
-          <section
-            className="dashboard-grid owner-metric-grid"
-            aria-label="Owner business overview"
-          >
-            <MetricCard
-              href="/admin/owner/bookings-rentals"
-              label="Booking records"
-              value={bookings.data?.length}
-            />
-            <MetricCard
-              href="/admin/owner/bookings-rentals"
-              label="Completed rentals"
-              value={completedBookings}
-            />
-            <MetricCard
-              href="/admin/owner/bookings-rentals"
-              label="Active rental operations"
-              value={rentalQueue.data?.length}
-            />
-            <MetricCard href="/admin/owner/users-vehicles" label="New renters" value={newRenters} />
-            <MetricCard
-              href="/admin/operations-console/verification/owners"
-              label="Pending owner verification"
-              value={owners.data?.length}
-            />
-            <MetricCard
-              href="/admin/operations-console/vehicles"
-              label="Pending vehicle listings"
-              value={vehicles.data?.length}
-            />
-            <MetricCard
-              href="/admin/operations-console/claims"
-              label="Claims needing review"
-              value={claimQueue.data?.items.length}
-            />
-            <MetricCard
-              href="/admin/owner/finance"
-              label="Pending payout owners"
-              value={payoutQueue.data?.length}
-            />
-          </section>
-          <section className="admin-card owner-foundation-panel">
-            <span className="eyebrow">FINANCIAL INTEGRITY</span>
-            <h2>Revenue reporting foundation</h2>
-            <p>
-              CarShare revenue, commission, and gross booking value are intentionally not displayed
-              until an authoritative aggregate reporting endpoint can calculate them from immutable
-              financial records.
-            </p>
-          </section>
-        </>
+        <OwnerOverviewDashboard requestOverview={(path) => api<OwnerAnalyticsOverview>(path)} />
       )}
       {activeModule === 'owner-reports' && (
         <section className="admin-card owner-foundation-panel">

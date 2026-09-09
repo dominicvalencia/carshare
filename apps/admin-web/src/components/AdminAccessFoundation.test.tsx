@@ -43,8 +43,15 @@ describe('Admin staff access foundation', () => {
     expect(shell).toContain('Operations Console');
     expect(shell).toContain('/admin/owner/overview');
     expect(shell).toContain('/admin/operations-console/dashboard');
-    expect(consoleSource).toContain('Revenue reporting foundation');
-    expect(consoleSource).toContain('intentionally not displayed');
+    expect(consoleSource).toContain('<OwnerOverviewDashboard');
+    expect(consoleSource).toContain("admin.role !== 'OWNER'");
+    const overview = readFileSync('src/components/OwnerOverviewDashboard.tsx', 'utf8');
+    expect(overview).toContain('/admin/owner/analytics/overview');
+    expect(overview).not.toContain('/admin/bookings');
+    expect(overview).not.toContain('new Date().getFullYear');
+    const styles = readFileSync('src/app/styles.css', 'utf8');
+    expect(styles).toContain('.owner-financial-grid');
+    expect(styles).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))');
     expect(consoleSource).toContain('<OwnerStaffActivityPanel />');
   });
 });
