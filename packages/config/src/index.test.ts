@@ -2,6 +2,33 @@ import { describe, expect, it } from 'vitest';
 import { parseApiEnvironment, parseWorkerEnvironment } from './index';
 
 describe('environment configuration', () => {
+  it('restricts Xendit certification to local test mode with normal money flows disabled', () => {
+    const base = {
+      DATABASE_URL: 'postgresql://u:p@localhost/db',
+      REDIS_URL: 'redis://localhost',
+      JWT_ACCESS_SECRET: 'test-access-secret-at-least-thirty-two-characters',
+      TOKEN_HASH_SECRET: 'test-token-secret-at-least-thirty-two-characters',
+      XENDIT_CERTIFICATION_ENABLED: 'true',
+      XENDIT_SECRET_KEY: 'xnd_development_secret',
+    };
+    expect(parseApiEnvironment(base).XENDIT_CERTIFICATION_ENABLED).toBe(true);
+    expect(() => parseApiEnvironment({ ...base, PAYMENTS_ENABLED: 'true' })).toThrow('disabled');
+    expect(() => parseApiEnvironment({ ...base, XENDIT_ENVIRONMENT: 'production' })).toThrow(
+      'test environment',
+    );
+    expect(() =>
+      parseApiEnvironment({
+        ...base,
+        APP_ENV: 'staging',
+        DATABASE_URL: 'postgresql://u:p@db.example.com/db',
+        DATABASE_ENVIRONMENT: 'staging',
+        REDIS_ENVIRONMENT: 'staging',
+        API_PUBLIC_URL: 'https://api.example.com',
+        ADMIN_PUBLIC_URL: 'https://admin.example.com',
+        REDIS_URL: 'rediss://redis.example.com',
+      }),
+    ).toThrow('local/test');
+  });
   it('parses and normalizes API configuration', () => {
     const environment = parseApiEnvironment({
       DATABASE_URL: 'postgresql://user:password@localhost:5432/database',

@@ -1,4 +1,4 @@
-export type PaymentProviderCode = 'MAYA' | 'FAKE';
+export type PaymentProviderCode = 'MAYA' | 'XENDIT' | 'FAKE';
 
 export interface PaymentProviderCapabilities {
   readonly authorizationHoldDurationSeconds: number | null;

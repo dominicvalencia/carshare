@@ -48,6 +48,10 @@ const paymentSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  XENDIT_CERTIFICATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 const payoutSchema = z.object({
@@ -239,7 +243,7 @@ type EnvironmentInput = Readonly<Record<string, string | undefined>>;
 
 export function parseApiEnvironment(environment: EnvironmentInput): ApiEnvironment {
   assertProductionPayoutInputs(environment);
-  return validateTelemetryTestEnvironment(
+  const parsed = validateTelemetryTestEnvironment(
     validateAuthDeliveryEnvironment(
       validateCommunicationsEnvironment(
         validateInfrastructureEnvironment(
@@ -248,6 +252,15 @@ export function parseApiEnvironment(environment: EnvironmentInput): ApiEnvironme
       ),
     ),
   );
+  if (parsed.XENDIT_CERTIFICATION_ENABLED) {
+    if (!['local', 'test'].includes(parsed.APP_ENV))
+      throw new Error('Xendit certification is restricted to local/test.');
+    if (parsed.XENDIT_ENVIRONMENT !== 'test' || !parsed.XENDIT_SECRET_KEY)
+      throw new Error('Xendit certification requires a test environment and secret key.');
+    if (parsed.PAYMENTS_ENABLED || parsed.PAYOUTS_ENABLED)
+      throw new Error('Xendit certification requires normal payments and payouts disabled.');
+  }
+  return parsed;
 }
 
 export function parseWorkerEnvironment(environment: EnvironmentInput): WorkerEnvironment {

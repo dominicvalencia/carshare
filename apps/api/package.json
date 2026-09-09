@@ -8,6 +8,7 @@
     "certify:semaphore": "tsx src/providers/semaphore-certification.cli.ts",
     "certify:push": "tsx src/providers/push-certification.cli.ts",
     "certify:maya": "tsx src/providers/maya-certification.cli.ts",
+    "certify:xendit": "tsx src/providers/xendit-certification.cli.ts",
     "dev": "nest start --watch",
     "lint": "eslint . --max-warnings=0",
     "start": "node dist/main.js",
