@@ -32,6 +32,7 @@ import { ReviewsModule } from './reviews/reviews.module';
 import { SupportModule } from './support/support.module';
 import { RenterVerificationModule } from './renter-verification/renter-verification.module';
 import { GeographyModule } from './geography/geography.module';
+import { OwnerAnalyticsModule } from './owner-analytics/owner-analytics.module';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { GeographyModule } from './geography/geography.module';
     SupportModule,
     RenterVerificationModule,
     GeographyModule,
+    OwnerAnalyticsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: ApiExceptionFilter },
