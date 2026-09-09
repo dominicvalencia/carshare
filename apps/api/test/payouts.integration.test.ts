@@ -11,6 +11,7 @@ import { type FakePayoutProvider } from '@carrental/payouts';
 import { AppModule } from '../src/app.module';
 import { TokenService } from '../src/auth/token.service';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
+import { attachAdminIdentity } from './admin-fixture';
 import { PAYOUT_PROVIDER } from '../src/payouts/payout-provider.factory';
 
 interface Actor {
@@ -386,6 +387,7 @@ describe.sequential('Phase 9 owner payout settlement', () => {
         },
       },
     });
+    await attachAdminIdentity(database.client, userId, email, `Phase 9 ${label}`, roles);
     return { token: await tokens.signAccessToken(userId, sessionId, roles), userId };
   }
 

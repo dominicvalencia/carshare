@@ -10,6 +10,7 @@ import { OwnerProfileStatus, Prisma, RoleCode } from '@carrental/database';
 import { AppModule } from '../src/app.module';
 import { TokenService } from '../src/auth/token.service';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
+import { attachAdminIdentity } from './admin-fixture';
 
 interface Actor {
   readonly token: string;
@@ -442,6 +443,13 @@ describe.sequential('Phase 8 claims and earning financial safety', () => {
         },
       },
     });
+    await attachAdminIdentity(
+      database.client,
+      userId,
+      `${label}-${unique}@example.test`,
+      `Phase 8 ${label}`,
+      roles,
+    );
     return { token: await tokens.signAccessToken(userId, sessionId, roles), userId };
   }
 

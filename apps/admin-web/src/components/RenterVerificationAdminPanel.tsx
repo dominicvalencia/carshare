@@ -19,6 +19,7 @@ import {
   StatusBadge,
 } from './AdminPrimitives';
 import { adminLabel, formatDate } from './admin-presentation';
+import { useAdminSession } from './AdminSession';
 
 import { API_URL } from './admin-environment';
 interface Envelope<T> {
@@ -49,6 +50,11 @@ interface VerificationDetail {
   readonly reviewedBy: {
     readonly email: string | null;
     readonly profile: { readonly displayName: string | null } | null;
+  } | null;
+  readonly reviewedByAdmin: {
+    readonly id: string;
+    readonly displayName: string;
+    readonly role: string;
   } | null;
   readonly addressAssessment: string | null;
   readonly addressReviewNotes: string | null;
@@ -116,6 +122,7 @@ export function RenterVerificationAdminPanel({
   readonly initialSelectedId?: string;
   readonly onUnauthorized: () => void;
 }) {
+  const { can } = useAdminSession();
   const client = useQueryClient();
   const [selected, setSelected] = useState<string | null>(initialSelectedId ?? null);
   const [addressAssessment, setAddressAssessment] = useState<string>();
@@ -638,95 +645,97 @@ export function RenterVerificationAdminPanel({
             </>
           )}
 
-          <AdminActionBar
-            title={
-              detail.data.status === 'SUBMITTED'
-                ? 'Begin case review'
-                : 'Final verification decision'
-            }
-            description={
-              detail.data.status === 'SUBMITTED'
-                ? 'Marks this case as being actively reviewed. This does not approve the renter.'
-                : detail.data.status === 'UNDER_REVIEW'
-                  ? `Review started ${formatDate(detail.data.reviewedAt)} by ${detail.data.reviewedBy?.profile?.displayName ?? detail.data.reviewedBy?.email ?? 'an administrator'}.`
-                  : 'Actions use the existing authorized verification commands and audit trail.'
-            }
-          >
-            {detail.data.status === 'SUBMITTED' && (
-              <button onClick={() => action.mutate({ operation: 'review' })}>
-                Start verification review
-              </button>
-            )}
-            {detail.data.status === 'UNDER_REVIEW' && (
-              <div className="verification-decision-actions">
-                <div>
-                  <button
-                    disabled={action.isPending}
-                    onClick={() => {
-                      if (!detail.data.addressAssessment) {
-                        setDecisionError(
-                          'Complete and save the address verification assessment before approving this renter.',
+          {can('renters.verifications.review') && (
+            <AdminActionBar
+              title={
+                detail.data.status === 'SUBMITTED'
+                  ? 'Begin case review'
+                  : 'Final verification decision'
+              }
+              description={
+                detail.data.status === 'SUBMITTED'
+                  ? 'Marks this case as being actively reviewed. This does not approve the renter.'
+                  : detail.data.status === 'UNDER_REVIEW'
+                    ? `Review started ${formatDate(detail.data.reviewedAt)} by ${detail.data.reviewedByAdmin?.displayName ?? detail.data.reviewedBy?.profile?.displayName ?? detail.data.reviewedBy?.email ?? 'an administrator'}.`
+                    : 'Actions use the existing authorized verification commands and audit trail.'
+              }
+            >
+              {detail.data.status === 'SUBMITTED' && (
+                <button onClick={() => action.mutate({ operation: 'review' })}>
+                  Start verification review
+                </button>
+              )}
+              {detail.data.status === 'UNDER_REVIEW' && (
+                <div className="verification-decision-actions">
+                  <div>
+                    <button
+                      disabled={action.isPending}
+                      onClick={() => {
+                        if (!detail.data.addressAssessment) {
+                          setDecisionError(
+                            'Complete and save the address verification assessment before approving this renter.',
+                          );
+                          return;
+                        }
+                        if (!detail.data.addressReviewNotes?.trim()) {
+                          setDecisionError(
+                            'Add and save reviewer notes documenting the checks completed before approving this renter.',
+                          );
+                          return;
+                        }
+                        action.mutate({ operation: 'approval' });
+                      }}
+                    >
+                      Approve renter
+                    </button>
+                    <small>
+                      All required identity and driving checks have passed. A saved assessment and
+                      reviewer notes are required.
+                    </small>
+                  </div>
+                  <div>
+                    <button
+                      className="warning"
+                      onClick={() => {
+                        const reason = window.prompt(
+                          'What information must the renter replace or correct?',
                         );
-                        return;
-                      }
-                      if (!detail.data.addressReviewNotes?.trim()) {
-                        setDecisionError(
-                          'Add and save reviewer notes documenting the checks completed before approving this renter.',
-                        );
-                        return;
-                      }
-                      action.mutate({ operation: 'approval' });
-                    }}
-                  >
-                    Approve renter
-                  </button>
-                  <small>
-                    All required identity and driving checks have passed. A saved assessment and
-                    reviewer notes are required.
-                  </small>
+                        if (reason) action.mutate({ operation: 'more-information', reason });
+                      }}
+                    >
+                      Request more information
+                    </button>
+                    <small>
+                      Ask the renter to correct or provide additional verification information.
+                    </small>
+                  </div>
+                  <div>
+                    <button
+                      className="danger"
+                      onClick={() => {
+                        const reason = window.prompt('Rejection reason');
+                        if (reason) action.mutate({ operation: 'rejection', reason });
+                      }}
+                    >
+                      Reject verification
+                    </button>
+                    <small>Reject this verification request with a documented reason.</small>
+                  </div>
                 </div>
-                <div>
-                  <button
-                    className="warning"
-                    onClick={() => {
-                      const reason = window.prompt(
-                        'What information must the renter replace or correct?',
-                      );
-                      if (reason) action.mutate({ operation: 'more-information', reason });
-                    }}
-                  >
-                    Request more information
-                  </button>
-                  <small>
-                    Ask the renter to correct or provide additional verification information.
-                  </small>
-                </div>
-                <div>
-                  <button
-                    className="danger"
-                    onClick={() => {
-                      const reason = window.prompt('Rejection reason');
-                      if (reason) action.mutate({ operation: 'rejection', reason });
-                    }}
-                  >
-                    Reject verification
-                  </button>
-                  <small>Reject this verification request with a documented reason.</small>
-                </div>
-              </div>
-            )}
-            {detail.data.status === 'APPROVED' && (
-              <button
-                className="danger"
-                onClick={() => {
-                  const reason = window.prompt('Suspension reason');
-                  if (reason) action.mutate({ operation: 'suspension', reason });
-                }}
-              >
-                Suspend
-              </button>
-            )}
-          </AdminActionBar>
+              )}
+              {detail.data.status === 'APPROVED' && (
+                <button
+                  className="danger"
+                  onClick={() => {
+                    const reason = window.prompt('Suspension reason');
+                    if (reason) action.mutate({ operation: 'suspension', reason });
+                  }}
+                >
+                  Suspend
+                </button>
+              )}
+            </AdminActionBar>
+          )}
           {(decisionError || action.isError) && (
             <AdminErrorDialog
               message={

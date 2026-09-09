@@ -1,4 +1,4 @@
-import type { RoleCode, UserStatus } from '@carrental/database';
+import type { AdminRole, AdminStatus, RoleCode, UserStatus } from '@carrental/database';
 
 export interface RequestPrincipal {
   readonly userId: string;
@@ -6,6 +6,9 @@ export interface RequestPrincipal {
   readonly roles: readonly RoleCode[];
   readonly permissions: readonly string[];
   readonly status: UserStatus;
+  readonly adminUserId?: string;
+  readonly adminRole?: AdminRole;
+  readonly adminStatus?: AdminStatus;
 }
 
 declare global {

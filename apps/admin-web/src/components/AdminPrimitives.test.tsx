@@ -23,6 +23,13 @@ describe('StatusBadge', () => {
     );
   });
 
+  it('supports domain-specific labels without changing semantic status tone', () => {
+    const markup = renderToStaticMarkup(<StatusBadge value="ACTIVE" label="Active" />);
+    expect(markup).toContain('Active');
+    expect(markup).not.toContain('Rental in progress');
+    expect(markup).toContain('status-tone-success');
+  });
+
   it('centralizes semantic status families and keeps unknown values neutral', () => {
     expect(statusTone('READY_FOR_PICKUP')).toBe('info');
     expect(statusTone('PENDING_REVIEW')).toBe('warning');

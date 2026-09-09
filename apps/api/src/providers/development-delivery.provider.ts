@@ -35,6 +35,15 @@ export class DevelopmentDeliveryInbox {
     const allowed = new Set(destinations);
     return this.items.filter(({ destination }) => allowed.has(destination)).slice(0, 20);
   }
+
+  latest(
+    destination: string,
+    template: DevelopmentDelivery['template'],
+  ): DevelopmentDelivery | undefined {
+    return this.items.find(
+      (delivery) => delivery.destination === destination && delivery.template === template,
+    );
+  }
 }
 
 @Injectable()

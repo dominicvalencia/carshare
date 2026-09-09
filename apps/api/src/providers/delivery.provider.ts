@@ -4,6 +4,7 @@ export interface EmailMessage {
   readonly template:
     | 'EMAIL_VERIFICATION'
     | 'PASSWORD_RESET'
+    | 'STAFF_INVITATION'
     | 'BOOKING_UPDATE'
     | 'SUPPORT_UPDATE'
     | 'REVIEW_REMINDER'

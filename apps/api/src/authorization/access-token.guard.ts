@@ -1,7 +1,8 @@
 import { CanActivate, ExecutionContext, HttpStatus, Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import { IdentityErrorCode } from '@carrental/api-contracts';
-import { UserStatus } from '@carrental/database';
+import { AdminStatus, UserStatus } from '@carrental/database';
+import { effectiveAdminPermissions } from '../admin/admin-permissions';
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { TokenService } from '../auth/token.service';
@@ -26,6 +27,9 @@ export class AccessTokenGuard implements CanActivate {
         include: {
           user: {
             include: {
+              adminIdentity: {
+                include: { permissions: { include: { permission: true } } },
+              },
               roles: {
                 include: {
                   role: { include: { permissions: { include: { permission: true } } } },
@@ -48,24 +52,51 @@ export class AccessTokenGuard implements CanActivate {
         );
       }
       this.assertActive(session.user.status);
-      request.principal = {
-        permissions: [
-          ...new Set(
-            session.user.roles.flatMap(({ role }) =>
-              role.permissions.map(({ permission }) => permission.code),
-            ),
+      const requiresAdministrativeIdentity = /(?:^|\/)admin(?:\/|$)/u.test(request.path);
+      if (requiresAdministrativeIdentity && !session.user.adminIdentity)
+        throw new ApplicationException(
+          IdentityErrorCode.PERMISSION_DENIED,
+          'Administrative access is required.',
+          HttpStatus.FORBIDDEN,
+        );
+      if (session.user.adminIdentity) this.assertAdminActive(session.user.adminIdentity.status);
+      const rolePermissions = [
+        ...new Set(
+          session.user.roles.flatMap(({ role }) =>
+            role.permissions.map(({ permission }) => permission.code),
           ),
-        ],
+        ),
+      ];
+      const admin = session.user.adminIdentity;
+      request.principal = {
+        permissions: admin
+          ? effectiveAdminPermissions(
+              admin.role,
+              admin.permissions.map(({ permission }) => permission.code),
+            )
+          : rolePermissions,
         roles: session.user.roles.map(({ role }) => role.code),
         sessionId: session.id,
         status: session.user.status,
         userId: session.userId,
+        ...(admin
+          ? { adminRole: admin.role, adminStatus: admin.status, adminUserId: admin.id }
+          : {}),
       };
       return true;
     } catch (error) {
       if (error instanceof ApplicationException) throw error;
       throw this.unauthorized();
     }
+  }
+
+  private assertAdminActive(status: AdminStatus): void {
+    if (status === AdminStatus.ACTIVE) return;
+    throw new ApplicationException(
+      IdentityErrorCode.PERMISSION_DENIED,
+      'Administrative access is unavailable.',
+      HttpStatus.FORBIDDEN,
+    );
   }
 
   private assertActive(status: UserStatus): void {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useRouter } from 'next/navigation';
 import {
   createContext,
   type FormEvent,
@@ -20,25 +21,48 @@ interface Envelope<T> {
 
 interface AdminSessionValue {
   readonly accessToken: string;
+  readonly admin: AdminIdentity;
+  readonly can: (permission: string) => boolean;
   readonly logout: () => void;
+}
+
+export interface AdminIdentity {
+  readonly id: string;
+  readonly displayName: string;
+  readonly email: string;
+  readonly role: 'OWNER' | 'SUPER_ADMIN' | 'STAFF';
+  readonly status: string;
+  readonly permissions: readonly string[];
+}
+
+interface AuthenticatedAdmin {
+  readonly accessToken: string;
+  readonly admin: AdminIdentity;
 }
 
 const AdminSessionContext = createContext<AdminSessionValue | null>(null);
 
 export function AdminSessionProvider({ children }: { readonly children: ReactNode }) {
-  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [authenticated, setAuthenticated] = useState<AuthenticatedAdmin | null>(null);
   const queryClient = useQueryClient();
   const value = useMemo(
     () => ({
-      accessToken: accessToken ?? '',
+      accessToken: authenticated?.accessToken ?? '',
+      admin: authenticated?.admin as AdminIdentity,
+      can: (permission: string) => authenticated?.admin.permissions.includes(permission) ?? false,
       logout: () => {
-        setAccessToken(null);
+        if (authenticated?.accessToken)
+          void fetch(`${API_URL}/admin/auth/logout`, {
+            headers: { Authorization: `Bearer ${authenticated.accessToken}` },
+            method: 'POST',
+          });
+        setAuthenticated(null);
         queryClient.clear();
       },
     }),
-    [accessToken, queryClient],
+    [authenticated, queryClient],
   );
-  if (!accessToken) return <AdminLogin onAuthenticated={setAccessToken} />;
+  if (!authenticated) return <AdminLogin onAuthenticated={setAuthenticated} />;
   return <AdminSessionContext.Provider value={value}>{children}</AdminSessionContext.Provider>;
 }
 
@@ -48,7 +72,12 @@ export function useAdminSession() {
   return session;
 }
 
-function AdminLogin({ onAuthenticated }: { readonly onAuthenticated: (token: string) => void }) {
+function AdminLogin({
+  onAuthenticated,
+}: {
+  readonly onAuthenticated: (value: AuthenticatedAdmin) => void;
+}) {
+  const router = useRouter();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const login = useMutation({
@@ -59,12 +88,15 @@ function AdminLogin({ onAuthenticated }: { readonly onAuthenticated: (token: str
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',
       });
-      const envelope = (await response.json()) as Envelope<{ accessToken: string }>;
+      const envelope = (await response.json()) as Envelope<AuthenticatedAdmin>;
       if (!response.ok || !envelope.data)
         throw new Error(envelope.error?.message ?? 'Login failed.');
-      return envelope.data.accessToken;
+      return envelope.data;
     },
-    onSuccess: onAuthenticated,
+    onSuccess: (session) => {
+      onAuthenticated(session);
+      router.push(session.admin.role === 'OWNER' ? '/admin/owner/overview' : '/admin/dashboard');
+    },
   });
   const submit = (event: FormEvent) => {
     event.preventDefault();

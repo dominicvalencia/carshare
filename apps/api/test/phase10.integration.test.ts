@@ -17,6 +17,7 @@ import { FakePushProvider } from '@carrental/notifications';
 import { AppModule } from '../src/app.module';
 import { TokenService } from '../src/auth/token.service';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
+import { attachAdminIdentity } from './admin-fixture';
 import {
   consumeDomainEvent,
   deliverPendingNotifications,
@@ -473,6 +474,13 @@ describe.sequential('Phase 10 communications, reputation, support and notificati
         },
       },
     });
+    await attachAdminIdentity(
+      database.client,
+      userId,
+      `${label}-${unique}@example.test`,
+      `Phase 10 ${label}`,
+      roles,
+    );
     return { userId, token: await tokens.signAccessToken(userId, sessionId, roles) };
   }
   function auth<T extends request.Test>(operation: T, actorValue: Actor): T {

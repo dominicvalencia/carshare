@@ -16,6 +16,7 @@ import {
 import { AppModule } from '../src/app.module';
 import { TokenService } from '../src/auth/token.service';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
+import { attachAdminIdentity } from './admin-fixture';
 
 interface Actor {
   readonly userId: string;
@@ -260,6 +261,13 @@ describe.sequential('Phase 12 inspection correction workflow', () => {
         },
       },
     });
+    await attachAdminIdentity(
+      database.client,
+      userId,
+      `${label}-${unique}@example.test`,
+      `Phase 12 ${label}`,
+      roles,
+    );
     return { userId, token: await tokens.signAccessToken(userId, sessionId, roles) };
   }
   function auth<T extends request.Test>(operation: T, value: Actor): T {

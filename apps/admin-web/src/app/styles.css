@@ -149,6 +149,24 @@ textarea:focus-visible {
   width: 20px;
 }
 
+.console-switch {
+  align-items: center;
+  border: 1px solid rgb(117 201 168 / 45%);
+  border-radius: 10px;
+  color: #dff4ea;
+  display: flex;
+  font-size: 0.82rem;
+  font-weight: 750;
+  gap: 10px;
+  margin: 14px 4px 0;
+  padding: 11px 12px;
+  text-decoration: none;
+}
+
+.console-switch:hover {
+  background: rgb(255 255 255 / 9%);
+}
+
 .sidebar-footer {
   border-top: 1px solid rgb(255 255 255 / 10%);
   display: grid;
@@ -292,6 +310,8 @@ button.compact {
 .admin-console[data-module='bookings'] .module-bookings,
 .admin-console[data-module='commissions'] .module-commissions,
 .admin-console[data-module='owner-verification'] .module-owner-verification,
+.admin-console[data-module='staff'] .module-staff,
+.admin-console[data-module='audit'] .module-audit,
 .admin-console[data-module='users'] .module-users {
   display: block;
 }
@@ -1324,6 +1344,175 @@ button.quiet {
   color: white;
   background: var(--brand);
   font-weight: 750;
+  text-decoration: none;
+}
+
+.staff-create-layout {
+  display: grid;
+  gap: 20px;
+}
+
+.staff-create-section h2,
+.owner-foundation-panel h2 {
+  font-size: 1.35rem;
+  margin: 7px 0 18px;
+}
+
+.staff-field-grid,
+.access-card-grid,
+.profile-card-grid,
+.permission-summary-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.staff-field-grid .admin-field {
+  margin: 0;
+}
+
+.access-card {
+  background: #f8faf9;
+  border: 1px solid var(--border);
+  color: var(--ink);
+  display: grid;
+  gap: 7px;
+  min-height: 110px;
+  padding: 18px;
+  text-align: left;
+}
+
+.access-card span,
+.owner-foundation-panel p,
+.owner-period-bar small,
+.owner-data-note {
+  color: var(--muted);
+}
+
+.access-card.selected {
+  background: #e8f5ef;
+  border-color: #55a989;
+  box-shadow: inset 0 0 0 1px #55a989;
+}
+
+.profile-card-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.profile-card-grid .access-card {
+  min-height: 145px;
+}
+
+.permission-count {
+  background: #e4f2ec;
+  border-radius: 999px;
+  color: var(--primary);
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 7px 11px;
+}
+
+.permission-summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 18px;
+}
+
+.permission-summary-card {
+  background: #f6f9f7;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  display: grid;
+  gap: 4px;
+  padding: 13px;
+}
+
+.permission-summary-card span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.permission-customizer {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 18px;
+  max-height: 520px;
+  overflow: auto;
+  padding-top: 10px;
+}
+
+.permission-customizer label {
+  align-items: flex-start;
+  border-bottom: 1px solid #edf1ef;
+  display: flex;
+  gap: 10px;
+  padding: 11px 8px;
+}
+
+.permission-customizer input {
+  margin-top: 3px;
+  width: auto;
+}
+
+.permission-customizer label span {
+  display: grid;
+  gap: 3px;
+}
+
+.permission-customizer small {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+
+.staff-create-actions {
+  align-items: center;
+  background: rgb(255 255 255 / 94%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  bottom: 18px;
+  display: flex;
+  gap: 10px;
+  padding: 14px;
+  position: sticky;
+  z-index: 10;
+}
+
+.owner-period-bar {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding: 16px 18px;
+}
+
+.owner-period-bar > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.period-selector {
+  display: flex;
+  gap: 6px;
+}
+
+.period-selector button.selected {
+  background: var(--primary);
+}
+
+.owner-data-note {
+  background: #fff8e8;
+  border: 1px solid #ead8ab;
+  border-radius: 10px;
+  margin: 0 0 18px;
+  padding: 12px 14px;
+}
+
+.owner-foundation-panel {
+  margin-top: 20px;
 }
 
 .is-detail-route > :not(.detail-page):not(.state-panel):not(.error-text) {
@@ -1732,6 +1921,17 @@ button.quiet {
 }
 
 @media (max-width: 900px) {
+  .profile-card-grid,
+  .permission-customizer {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .owner-period-bar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+
   .address-review-grid {
     grid-template-columns: 1fr;
   }
@@ -1766,6 +1966,19 @@ button.quiet {
 }
 
 @media (max-width: 767px) {
+  .staff-field-grid,
+  .access-card-grid,
+  .profile-card-grid,
+  .permission-customizer {
+    grid-template-columns: 1fr;
+  }
+
+  .period-selector {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
   .address-evidence-list,
   .address-assessment-form fieldset {
     grid-template-columns: 1fr;

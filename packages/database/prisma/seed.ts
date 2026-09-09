@@ -2,6 +2,8 @@ import { hash } from 'argon2';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../src/generated/prisma/client';
 import {
+  AdminRole,
+  AdminStatus,
   CommissionScope,
   FinancialAccountType,
   RoleCode,
@@ -68,6 +70,12 @@ const permissionDescriptions = {
   'moderation.manage': 'Resolve moderation reports and moderate reported content',
   'messages.moderate': 'Moderate reported booking messages',
   'reviews.moderate': 'Moderate reported marketplace reviews',
+  'staff.view': 'Read staff accounts',
+  'staff.create': 'Invite staff accounts',
+  'staff.edit': 'Edit staff identity and role',
+  'staff.suspend': 'Suspend and reactivate staff accounts',
+  'staff.disable': 'Disable staff accounts',
+  'staff.permissions.manage': 'Assign approved staff permissions',
 } as const;
 
 const rolePermissions: Readonly<Partial<Record<RoleCode, readonly string[]>>> = {
@@ -273,6 +281,11 @@ async function seed(): Promise<void> {
         select: { id: true },
       });
       permissions.set(code, permission);
+      await client.adminPermission.upsert({
+        create: { code, description },
+        update: { description },
+        where: { code },
+      });
     }
 
     for (const [roleCode, codes] of Object.entries(rolePermissions)) {
@@ -331,6 +344,29 @@ async function seed(): Promise<void> {
         create: { roleId: superAdmin.id, userId: user.id },
         update: {},
         where: { userId_roleId: { roleId: superAdmin.id, userId: user.id } },
+      });
+      const existingOwner = await client.adminUser.findFirst({
+        where: { role: AdminRole.OWNER },
+        select: { credentialUserId: true },
+      });
+      if (existingOwner && existingOwner.credentialUserId !== user.id) {
+        throw new Error(
+          'An OWNER admin identity already exists; bootstrap is intentionally single-owner.',
+        );
+      }
+      await client.adminUser.upsert({
+        create: {
+          activatedAt: new Date(),
+          credentialUserId: user.id,
+          displayName: 'Business Owner',
+          email: adminEmail,
+          normalizedEmail: adminEmail,
+          passwordChangedAt: new Date(),
+          role: AdminRole.OWNER,
+          status: AdminStatus.ACTIVE,
+        },
+        update: { status: AdminStatus.ACTIVE },
+        where: { credentialUserId: user.id },
       });
     }
 

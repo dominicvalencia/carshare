@@ -19,6 +19,18 @@ describe('admin information architecture', () => {
     expect(resolveAdminModule(['rentals', 'CR-2026-TEST'])).toBe('rentals');
     expect(resolveAdminModule(['verification', 'owners', 'owner-id'])).toBe('owner-verification');
     expect(resolveAdminModule(['users', '00000000-0000-0000-0000-000000000000'])).toBe('users');
+    expect(resolveAdminModule(['staff', 'new'])).toBe('staff-new');
+    expect(resolveAdminModule(['staff', 'staff-id'])).toBe('staff-detail');
+    expect(resolveAdminModule(['owner', 'overview'])).toBe('owner-overview');
+    expect(resolveAdminModule(['operations-console', 'rentals'])).toBe('rentals');
+    expect(resolveAdminModule(['operations-console', 'operations', 'inspection-corrections'])).toBe(
+      'inspection-corrections',
+    );
+    expect(resolveAdminModule(['operations-console', 'settings', 'commissions'])).toBe(
+      'commissions',
+    );
+    expect(resolveAdminDetailId(['staff', 'staff-id'], 'staff-detail')).toBe('staff-id');
+    expect(resolveAdminDetailId(['owner', 'finance'], 'payouts')).toBeUndefined();
     expect(resolveAdminModule(['unknown'])).toBe('dashboard');
     expect(
       resolveAdminDetailId(

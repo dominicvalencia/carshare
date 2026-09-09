@@ -24,3 +24,7 @@ proposal in `phase-13c3-staging-foundation-proposal.md`. It is not approved, and
 has been provisioned. Owner decisions remain required for the controlled domain and exact origins,
 topology/budget, access principals, secret locations, backup retention, implementation slices, and
 whether staging waits for Semaphore Sender Name approval or initially keeps SMS disabled.
+
+Staging is paused while **Phase 13C-2G — Admin Identity, Staff Accounts, RBAC, and Audit
+Foundation** completes automated and physical local acceptance. The Phase 13C-3 proposal remains
+unapproved and no provisioning is authorized by the 13C-2G implementation.

@@ -397,6 +397,9 @@ export class RenterVerificationService {
         reviewedBy: {
           select: { email: true, profile: { select: { displayName: true } } },
         },
+        reviewedByAdmin: {
+          select: { displayName: true, id: true, role: true },
+        },
         documents: {
           where: { replacedAt: null },
           include: {
@@ -582,6 +585,10 @@ export class RenterVerificationService {
       where: { id },
       select: { status: true, userId: true },
     });
+    const adminActor = await this.database.client.adminUser.findUniqueOrThrow({
+      where: { credentialUserId: actorUserId },
+      select: { id: true },
+    });
     if (!allowed.includes(root.status))
       throw new ApplicationException(
         'RENTER_VERIFICATION_INVALID_STATE',
@@ -600,6 +607,7 @@ export class RenterVerificationService {
             ? reason
             : null,
           reviewedAt: now,
+          reviewedByAdminId: adminActor.id,
           reviewedByUserId: actorUserId,
           status,
         },
@@ -621,6 +629,16 @@ export class RenterVerificationService {
       request,
       targetId: root.userId,
       targetType: 'RENTER_VERIFICATION',
+    });
+    await this.audit.recordAdmin({
+      action: `RENTER_VERIFICATION_${status}`,
+      actorUserId,
+      entityId: root.userId,
+      entityType: 'RENTER_VERIFICATION',
+      newState: { status },
+      previousState: { status: root.status },
+      reason,
+      request,
     });
     await this.events.record(`RENTER_VERIFICATION_${status}`, { ...request, userId: root.userId });
     return this.mine(root.userId);

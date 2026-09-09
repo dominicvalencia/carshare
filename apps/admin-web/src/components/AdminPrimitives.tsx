@@ -5,9 +5,15 @@ import Link from 'next/link';
 import { createPortal } from 'react-dom';
 import { adminLabel, formatDate } from './admin-presentation';
 
-export function StatusBadge({ value }: { readonly value?: string | null | undefined }) {
+export function StatusBadge({
+  value,
+  label: labelOverride,
+}: {
+  readonly value?: string | null | undefined;
+  readonly label?: string;
+}) {
   const normalized = typeof value === 'string' ? value.trim() : '';
-  const label = normalized ? adminLabel(normalized) : 'Not available';
+  const label = labelOverride ?? (normalized ? adminLabel(normalized) : 'Not available');
   const classValue = normalized
     ? normalized.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')
     : 'unknown';

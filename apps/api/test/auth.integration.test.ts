@@ -10,6 +10,7 @@ import { API_PREFIX } from '@carrental/api-contracts';
 import { RoleCode } from '@carrental/database';
 import { AppModule } from '../src/app.module';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
+import { attachAdminIdentity } from './admin-fixture';
 import {
   EmailProvider,
   type EmailMessage,
@@ -360,6 +361,9 @@ describe.sequential('Phase 2 identity integration', () => {
         roles: { create: { roleId: superAdmin.id } },
       },
     });
+    await attachAdminIdentity(database.client, admin.id, adminEmail, 'Identity Administrator', [
+      RoleCode.SUPER_ADMIN,
+    ]);
     const login = await request(app.getHttpServer())
       .post('/api/v1/admin/auth/login')
       .send({ identifier: adminEmail, password, platform: 'WEB' })

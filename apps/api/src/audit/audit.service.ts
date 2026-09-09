@@ -29,4 +29,37 @@ export class AuditService {
       },
     });
   }
+
+  async recordAdmin(input: {
+    readonly action: string;
+    readonly actorUserId: string;
+    readonly entityType: string;
+    readonly entityId: string;
+    readonly reason?: string;
+    readonly previousState?: Prisma.InputJsonValue;
+    readonly newState?: Prisma.InputJsonValue;
+    readonly request: RequestMetadata;
+  }): Promise<void> {
+    const actor = await this.database.client.adminUser.findUniqueOrThrow({
+      where: { credentialUserId: input.actorUserId },
+      select: { id: true, role: true },
+    });
+    await this.database.client.adminAuditLog.create({
+      data: {
+        action: input.action,
+        actorAdminId: actor.id,
+        actorRole: actor.role,
+        entityId: input.entityId,
+        entityType: input.entityType,
+        ...(input.reason ? { reason: input.reason } : {}),
+        ...(input.previousState ? { previousState: input.previousState } : {}),
+        ...(input.newState ? { newState: input.newState } : {}),
+        ...(input.request.correlationId
+          ? { requestCorrelationId: input.request.correlationId }
+          : {}),
+        ...(input.request.ipAddress ? { ipAddress: input.request.ipAddress } : {}),
+        ...(input.request.userAgent ? { userAgent: input.request.userAgent.slice(0, 500) } : {}),
+      },
+    });
+  }
 }

@@ -1,9 +1,10 @@
 import { CanActivate, ExecutionContext, HttpStatus, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
-import type { RoleCode } from '@carrental/database';
+import { AdminRole, RoleCode } from '@carrental/database';
 import { IdentityErrorCode } from '@carrental/api-contracts';
 import { ApplicationException } from '../common/errors/application.exception';
+import type { RequestPrincipal } from '../security/security-context';
 import { REQUIRED_PERMISSIONS, REQUIRED_ROLES } from './authorization.decorator';
 
 @Injectable()
@@ -21,7 +22,7 @@ export class PolicyGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    if (roles?.length && !roles.some((role) => principal.roles.includes(role))) {
+    if (roles?.length && !this.hasRequiredRole(roles, principal)) {
       throw new ApplicationException(
         IdentityErrorCode.ROLE_REQUIRED,
         'The required role is not assigned.',
@@ -36,5 +37,13 @@ export class PolicyGuard implements CanActivate {
       );
     }
     return true;
+  }
+
+  private hasRequiredRole(roles: readonly RoleCode[], principal: RequestPrincipal): boolean {
+    if (roles.some((role) => principal.roles.includes(role))) return true;
+    if (!principal.adminRole) return false;
+    if (principal.adminRole === AdminRole.OWNER || principal.adminRole === AdminRole.SUPER_ADMIN)
+      return roles.some((role) => role === RoleCode.ADMIN || role === RoleCode.SUPER_ADMIN);
+    return roles.includes(RoleCode.ADMIN);
   }
 }

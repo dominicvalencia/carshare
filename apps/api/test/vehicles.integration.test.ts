@@ -11,6 +11,7 @@ import { OwnerProfileStatus, RoleCode, VehicleLifecycleStatus } from '@carrental
 import { AppModule } from '../src/app.module';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
 import { CryptoService } from '../src/security/crypto.service';
+import { attachAdminIdentity } from './admin-fixture';
 
 describe.sequential('Phase 3 vehicle supply integration', () => {
   let app: INestApplication;
@@ -533,7 +534,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
 
   async function administrativeToken(roleCode: RoleCode, email: string): Promise<string> {
     const role = await database.client.role.findUniqueOrThrow({ where: { code: roleCode } });
-    await database.client.user.create({
+    const user = await database.client.user.create({
       data: {
         email,
         emailVerifiedAt: new Date(),
@@ -547,6 +548,13 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
         roles: { create: { roleId: role.id } },
       },
     });
+    await attachAdminIdentity(
+      database.client,
+      user.id,
+      email,
+      roleCode === RoleCode.SUPPORT ? 'Vehicle Support' : 'Vehicle Administrator',
+      [roleCode],
+    );
     const login = await request(app.getHttpServer())
       .post('/api/v1/admin/auth/login')
       .send({ identifier: email, password, platform: 'WEB' })

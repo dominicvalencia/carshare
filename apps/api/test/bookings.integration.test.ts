@@ -23,6 +23,7 @@ import { AppModule } from '../src/app.module';
 import { TokenService } from '../src/auth/token.service';
 import { BookingsService } from '../src/bookings/bookings.service';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
+import { attachAdminIdentity } from './admin-fixture';
 import { PAYMENT_PROVIDER } from '../src/payments/payment-provider.factory';
 import { PaymentsService } from '../src/payments/payments.service';
 
@@ -1737,6 +1738,13 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
         },
       },
     });
+    await attachAdminIdentity(
+      database.client,
+      userId,
+      `${label}-${unique}@example.test`,
+      `Test ${label}`,
+      roles,
+    );
     if (roles.includes(RoleCode.RENTER) && renterVerified) {
       await database.client.verification.createMany({
         data: [VerificationType.IDENTITY, VerificationType.DRIVER_LICENSE].map((type) => ({
