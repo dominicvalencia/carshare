@@ -44,6 +44,10 @@ const paymentSchema = z.object({
   MAYA_SUCCESS_URL: z.url().default('http://localhost:8081/payment/success'),
   MAYA_FAILURE_URL: z.url().default('http://localhost:8081/payment/failure'),
   MAYA_CANCEL_URL: z.url().default('http://localhost:8081/payment/cancel'),
+  MAYA_CERTIFICATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 const payoutSchema = z.object({
@@ -419,6 +423,20 @@ function assertProductionPayoutInputs(environment: EnvironmentInput): void {
 function validatePaymentEnvironment<
   T extends z.infer<typeof paymentSchema> & z.infer<typeof commonSchema>,
 >(environment: T): T {
+  if (environment.MAYA_CERTIFICATION_ENABLED) {
+    if (environment.APP_ENV !== 'local' && environment.APP_ENV !== 'test') {
+      throw new Error('Maya certification is restricted to local or test environments.');
+    }
+    if (environment.PAYMENT_PROVIDER !== 'maya' || environment.MAYA_ENVIRONMENT !== 'sandbox') {
+      throw new Error('Maya certification requires the Maya sandbox provider.');
+    }
+    if (environment.PAYMENTS_ENABLED) {
+      throw new Error('Application payments must remain disabled during Maya certification.');
+    }
+    if (!environment.MAYA_PUBLIC_KEY) {
+      throw new Error('MAYA_PUBLIC_KEY is required for Maya certification.');
+    }
+  }
   if (environment.APP_ENV === 'production' && environment.PAYMENT_PROVIDER !== 'maya') {
     throw new Error('PAYMENT_PROVIDER must be maya in production.');
   }

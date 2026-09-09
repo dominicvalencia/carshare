@@ -24,6 +24,10 @@ export interface MayaPaymentProviderOptions {
   readonly webhookAllowedIps: readonly string[];
 }
 
+export interface MayaCheckoutInput extends AuthorizePaymentInput {
+  readonly authorizationType?: 'NORMAL';
+}
+
 interface MayaResponse {
   checkoutId?: string;
   paymentId?: string;
@@ -33,6 +37,24 @@ interface MayaResponse {
   id?: string;
   updatedAt?: string;
   amount?: { value?: number; currency?: string };
+}
+
+export interface MayaProviderDiagnostics {
+  readonly errorCode?: string;
+  readonly httpStatus?: number;
+  readonly reason?: string;
+  readonly requestReference?: string;
+}
+
+export class MayaPaymentProviderError extends PaymentProviderError {
+  constructor(
+    message: string,
+    category: 'CONFIGURATION' | 'PROVIDER_UNAVAILABLE',
+    readonly diagnostics: MayaProviderDiagnostics,
+  ) {
+    super(message, category);
+    this.name = 'MayaPaymentProviderError';
+  }
 }
 
 const terminalFailures = new Set(['PAYMENT_FAILED', 'PAYMENT_EXPIRED', 'PAYMENT_CANCELLED']);
@@ -59,6 +81,16 @@ export class MayaPaymentProvider implements PaymentProvider {
 
   async authorize(input: AuthorizePaymentInput): Promise<ProviderOperationResult> {
     this.requireCapability(this.capabilities.supportsAuthorization, 'Maya authorization/capture');
+    return this.createCheckout({ ...input, authorizationType: 'NORMAL' });
+  }
+
+  async createCheckout(input: MayaCheckoutInput): Promise<ProviderOperationResult> {
+    if (input.currency !== 'PHP' || input.amountMinor <= 0n || input.amountMinor % 1n !== 0n) {
+      throw new PaymentProviderError(
+        'Maya Checkout requires a positive PHP amount.',
+        'CONFIGURATION',
+      );
+    }
     const body = {
       totalAmount: {
         value: Number(input.amountMinor) / 100,
@@ -81,9 +113,9 @@ export class MayaPaymentProvider implements PaymentProvider {
         cancel: this.options.cancelUrl,
       },
       requestReferenceNumber: input.requestReference,
-      authorizationType: 'NORMAL',
+      ...(input.authorizationType ? { authorizationType: input.authorizationType } : {}),
     };
-    const response = await this.request<MayaResponse>(
+    const { data: response, httpStatus } = await this.request<MayaResponse>(
       '/checkout/v1/checkouts',
       'POST',
       body,
@@ -92,10 +124,23 @@ export class MayaPaymentProvider implements PaymentProvider {
     );
     const externalPaymentId = response.paymentId ?? response.checkoutId;
     if (!externalPaymentId || !response.redirectUrl) {
-      return {
-        kind: 'UNKNOWN',
-        providerState: response.status ?? 'CHECKOUT_CREATED_WITHOUT_REFERENCE',
-      };
+      const diagnostics = safeMayaDiagnostics(httpStatus, response);
+      throw new MayaPaymentProviderError(
+        'Maya returned an incomplete Checkout response.',
+        'PROVIDER_UNAVAILABLE',
+        {
+          ...diagnostics,
+          reason:
+            diagnostics.reason ??
+            `Missing ${[
+              !externalPaymentId ? 'checkout identifier' : undefined,
+              !response.redirectUrl ? 'hosted checkout URL' : undefined,
+            ]
+              .filter(Boolean)
+              .join(' and ')}.`,
+          requestReference: input.requestReference,
+        },
+      );
     }
     return {
       customerActionUrl: response.redirectUrl,
@@ -132,7 +177,7 @@ export class MayaPaymentProvider implements PaymentProvider {
   }
 
   async retrievePayment(externalPaymentId: string): Promise<ProviderPaymentStatus> {
-    const response = await this.request<MayaResponse>(
+    const { data: response } = await this.request<MayaResponse>(
       `/payments/v1/payments/${encodeURIComponent(externalPaymentId)}`,
       'GET',
       undefined,
@@ -182,7 +227,7 @@ export class MayaPaymentProvider implements PaymentProvider {
     input: ReferencedPaymentInput,
     extra: Readonly<Record<string, unknown>> = {},
   ): Promise<ProviderOperationResult> {
-    const response = await this.request<MayaResponse>(
+    const { data: response } = await this.request<MayaResponse>(
       path,
       'POST',
       {
@@ -233,7 +278,7 @@ export class MayaPaymentProvider implements PaymentProvider {
     body: unknown,
     key: string,
     idempotencyKey?: string,
-  ): Promise<T> {
+  ): Promise<{ readonly data: T; readonly httpStatus: number }> {
     try {
       const response = await fetch(`${this.options.baseUrl}${path}`, {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -247,28 +292,36 @@ export class MayaPaymentProvider implements PaymentProvider {
         signal: AbortSignal.timeout(15_000),
       });
       const payload = (await response.json()) as T;
+      const diagnostics = safeMayaDiagnostics(response.status, payload);
       if (response.status >= 500) {
-        throw new PaymentProviderError(
+        throw new MayaPaymentProviderError(
           `Maya returned HTTP ${response.status}.`,
           'PROVIDER_UNAVAILABLE',
+          diagnostics,
         );
       }
       if (response.status === 401 || response.status === 403) {
-        throw new PaymentProviderError(
+        throw new MayaPaymentProviderError(
           'Maya rejected the merchant credentials or required capability.',
           'CONFIGURATION',
+          diagnostics,
         );
       }
       if ([408, 409, 425, 429].includes(response.status)) {
-        throw new PaymentProviderError(
+        throw new MayaPaymentProviderError(
           `Maya returned an indeterminate HTTP ${response.status}; reconcile before retrying.`,
           'PROVIDER_UNAVAILABLE',
+          diagnostics,
         );
       }
       if (!response.ok) {
-        return { ...(payload as object), status: 'PAYMENT_FAILED' } as T;
+        throw new MayaPaymentProviderError(
+          'Maya rejected the payment request.',
+          'CONFIGURATION',
+          diagnostics,
+        );
       }
-      return payload;
+      return { data: payload, httpStatus: response.status };
     } catch (error) {
       if (error instanceof PaymentProviderError) throw error;
       throw new PaymentProviderError(
@@ -289,4 +342,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function safeMayaDiagnostics(httpStatus: number, payload: unknown): MayaProviderDiagnostics {
+  if (!isRecord(payload)) return { httpStatus };
+  const errorCode = stringValue(payload.code) ?? stringValue(payload.errorCode);
+  const rawReason = stringValue(payload.message) ?? stringValue(payload.reason);
+  const reason = rawReason
+    ?.replace(/[\r\n\t]/g, ' ')
+    .replace(/\b(?:pk|sk)-[A-Za-z0-9_-]+\b/g, '[REDACTED]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[REDACTED]')
+    .replace(/\b\d{12,19}\b/g, '[REDACTED]')
+    .slice(0, 200);
+  return {
+    httpStatus,
+    ...(errorCode ? { errorCode: errorCode.slice(0, 80) } : {}),
+    ...(reason ? { reason } : {}),
+  };
 }

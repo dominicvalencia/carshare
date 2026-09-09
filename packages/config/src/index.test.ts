@@ -292,4 +292,35 @@ describe('environment configuration', () => {
       }),
     ).toThrow('restricted to local/test');
   });
+  it('requires an isolated local Maya sandbox certification configuration', () => {
+    const base = {
+      DATABASE_URL: 'postgresql://u:p@localhost/db',
+      REDIS_URL: 'redis://localhost',
+      JWT_ACCESS_SECRET: 'test-access-secret-at-least-thirty-two-characters',
+      TOKEN_HASH_SECRET: 'test-token-secret-at-least-thirty-two-characters',
+      PAYMENT_PROVIDER: 'maya',
+      MAYA_ENVIRONMENT: 'sandbox',
+      MAYA_PUBLIC_KEY: 'sandbox-public-key',
+      MAYA_CERTIFICATION_ENABLED: 'true',
+    };
+    expect(parseApiEnvironment(base).MAYA_CERTIFICATION_ENABLED).toBe(true);
+    expect(() => parseApiEnvironment({ ...base, MAYA_PUBLIC_KEY: undefined })).toThrow(
+      'MAYA_PUBLIC_KEY',
+    );
+    expect(() => parseApiEnvironment({ ...base, PAYMENTS_ENABLED: 'true' })).toThrow(
+      'must remain disabled',
+    );
+    expect(() =>
+      parseApiEnvironment({
+        ...base,
+        APP_ENV: 'staging',
+        API_PUBLIC_URL: 'https://api.staging.example.com',
+        ADMIN_PUBLIC_URL: 'https://admin.staging.example.com',
+        DATABASE_ENVIRONMENT: 'staging',
+        DATABASE_URL: 'postgresql://u:p@db.example.com/db',
+        REDIS_ENVIRONMENT: 'staging',
+        REDIS_URL: 'rediss://redis.example.com',
+      }),
+    ).toThrow('restricted to local or test');
+  });
 });
