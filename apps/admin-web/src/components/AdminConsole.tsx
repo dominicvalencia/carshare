@@ -37,7 +37,11 @@ import { StaffDetailPanel } from './StaffDetailPanel';
 import { OwnerStaffActivityPanel } from './OwnerStaffActivityPanel';
 import { AdminAuditPanel } from './AdminAuditPanel';
 import { OwnerOverviewDashboard, type OwnerAnalyticsOverview } from './OwnerOverviewDashboard';
-import { OwnerRevenueDashboard, type OwnerRevenueSummary } from './OwnerRevenueDashboard';
+import {
+  OwnerRevenueDashboard,
+  type OwnerRevenueSummary,
+  type OwnerRevenueTrends,
+} from './OwnerRevenueDashboard';
 
 import { API_URL, adminEnvironment } from './admin-environment';
 interface Envelope<T> {
@@ -870,7 +874,10 @@ export function AdminConsole({
         <OwnerOverviewDashboard requestOverview={(path) => api<OwnerAnalyticsOverview>(path)} />
       )}
       {activeModule === 'owner-revenue' && (
-        <OwnerRevenueDashboard requestRevenue={(path) => api<OwnerRevenueSummary>(path)} />
+        <OwnerRevenueDashboard
+          requestRevenue={(path) => api<OwnerRevenueSummary>(path)}
+          requestTrends={(path) => api<OwnerRevenueTrends>(path)}
+        />
       )}
       {activeModule === 'owner-reports' && (
         <section className="admin-card owner-foundation-panel">

@@ -1,7 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { OwnerRevenueDashboard, type OwnerRevenueSummary } from './OwnerRevenueDashboard';
+import {
+  OwnerRevenueDashboard,
+  type OwnerRevenueSummary,
+  type OwnerRevenueTrends,
+} from './OwnerRevenueDashboard';
 
 const money = (amountMinor: string, currency = 'PHP') => [{ amountMinor, currency }];
 const counted = (amountMinor: string, count: number, currency = 'PHP') => ({
@@ -78,25 +82,65 @@ const summary: OwnerRevenueSummary = {
   unavailable: ['trueNetPlatformRevenue', 'profit'],
 };
 
+const trendPoints = [
+  {
+    startInclusive: '2026-08-31T16:00:00.000Z',
+    endExclusive: '2026-09-01T16:00:00.000Z',
+    valueMinor: '1000',
+  },
+  {
+    startInclusive: '2026-09-01T16:00:00.000Z',
+    endExclusive: '2026-09-02T16:00:00.000Z',
+    valueMinor: '0',
+  },
+];
+const trends: OwnerRevenueTrends = {
+  definitionVersion: 'owner-revenue-trends-v1',
+  environment: 'local',
+  syntheticData: true,
+  timezone: 'Asia/Manila',
+  period: 'THIS_MONTH',
+  startInclusive: '2026-08-31T16:00:00.000Z',
+  endExclusive: '2026-09-30T16:00:00.000Z',
+  granularity: 'DAILY',
+  generatedAt: '2026-09-09T04:00:00.000Z',
+  currencies: [
+    {
+      currency: 'PHP',
+      series: {
+        rentalCollections: trendPoints,
+        grossBookingValue: trendPoints,
+        recognizedCommission: trendPoints,
+        ownerEarnings: trendPoints,
+        completedRefunds: trendPoints,
+        paidPayouts: trendPoints,
+      },
+    },
+  ],
+};
+
 beforeEach(() => window.sessionStorage.clear());
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
 
-function renderDashboard(requestRevenue = vi.fn().mockResolvedValue(summary)) {
+function renderDashboard(
+  requestRevenue = vi.fn().mockResolvedValue(summary),
+  requestTrends = vi.fn().mockResolvedValue(trends),
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <OwnerRevenueDashboard requestRevenue={requestRevenue} />
+      <OwnerRevenueDashboard requestRevenue={requestRevenue} requestTrends={requestTrends} />
     </QueryClientProvider>,
   );
-  return requestRevenue;
+  return { requestRevenue, requestTrends };
 }
 
 describe('OwnerRevenueDashboard', () => {
   it('loads owner-revenue-v1 for This Month and keeps financial concepts separated', async () => {
-    const request = renderDashboard();
+    const { requestRevenue: request } = renderDashboard();
     expect(await screen.findAllByText('₱13,400.00')).toHaveLength(2);
     expect(request).toHaveBeenCalledWith('/admin/owner/revenue?period=THIS_MONTH');
     expect(screen.getByText('MONEY COLLECTED')).not.toBeNull();
@@ -186,7 +230,7 @@ describe('OwnerRevenueDashboard', () => {
     ['This Week', 'THIS_WEEK'],
     ['This Month', 'THIS_MONTH'],
   ])('requests the authoritative %s period', async (label, period) => {
-    const request = renderDashboard();
+    const { requestRevenue: request } = renderDashboard();
     await screen.findByText('MONEY COLLECTED');
     fireEvent.click(screen.getByRole('button', { name: label }));
     await waitFor(() =>
@@ -195,7 +239,7 @@ describe('OwnerRevenueDashboard', () => {
   });
 
   it('applies and persists a valid custom range while rejecting invalid ranges', async () => {
-    const request = renderDashboard();
+    const { requestRevenue: request } = renderDashboard();
     await screen.findByText('MONEY COLLECTED');
     fireEvent.click(screen.getByRole('button', { name: 'Custom' }));
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-09-01' } });
@@ -246,10 +290,32 @@ describe('OwnerRevenueDashboard', () => {
     await waitFor(() => expect(failed).toHaveBeenCalledTimes(2));
   });
 
-  it('reserves authoritative trends without rendering a chart or client calculations', async () => {
-    renderDashboard();
-    expect(await screen.findByText('Revenue and earnings trends')).not.toBeNull();
-    expect(document.querySelector('canvas')).toBeNull();
-    expect(document.querySelector('svg')).toBeNull();
+  it('renders authoritative trends with metric controls, keyboard points, and accessible data', async () => {
+    const { requestTrends } = renderDashboard();
+    expect(await screen.findByText('Financial activity trends')).not.toBeNull();
+    expect(requestTrends).toHaveBeenCalledWith('/admin/owner/revenue/trends?period=THIS_MONTH');
+    const chart = screen.getByRole('img', { name: 'PHP financial activity trend chart' });
+    expect(chart).not.toBeNull();
+    expect(chart.getAttribute('viewBox')).toBe('0 0 900 240');
+    expect(document.querySelectorAll('.trend-grid-line')).toHaveLength(3);
+    expect(
+      screen.getByRole('button', { name: /Rental Collections/u }).getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect(
+      screen.getByRole('button', { name: /Gross Booking Value/u }).getAttribute('aria-pressed'),
+    ).toBe('false');
+    expect(document.querySelectorAll('circle[tabindex="0"]')).toHaveLength(4);
+    fireEvent.click(screen.getByText('View accessible trend data'));
+    expect(
+      screen.getByRole('table', { name: 'Authoritative PHP financial trend values' }),
+    ).not.toBeNull();
+    expect(screen.getAllByText('₱0.00').length).toBeGreaterThan(0);
+    for (const currentBalance of [
+      'Owner Payable Liability',
+      'Available for Payout',
+      'Active Payout Allocations',
+      'Processing Payouts',
+    ])
+      expect(screen.queryByRole('button', { name: new RegExp(currentBalance, 'u') })).toBeNull();
   });
 });

@@ -5,10 +5,16 @@ import { OwnerAnalyticsService } from './owner-analytics.service';
 import { OwnerOnlyGuard } from './owner-only.guard';
 import { OwnerRevenueService } from './owner-revenue.service';
 import { OwnerRevenueController } from './owner-revenue.controller';
+import { OwnerRevenueTrendsService } from './owner-revenue-trends.service';
 
 @Module({
   imports: [PayoutsModule],
   controllers: [OwnerAnalyticsController, OwnerRevenueController],
-  providers: [OwnerAnalyticsService, OwnerOnlyGuard, OwnerRevenueService],
+  providers: [
+    OwnerAnalyticsService,
+    OwnerOnlyGuard,
+    OwnerRevenueService,
+    OwnerRevenueTrendsService,
+  ],
 })
 export class OwnerAnalyticsModule {}

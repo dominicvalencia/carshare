@@ -7,7 +7,8 @@ import { OwnerRevenueController } from './owner-revenue.controller';
 describe('OwnerRevenueController', () => {
   it('publishes the OWNER-only revenue endpoint and delegates the validated query', async () => {
     const summary = vi.fn().mockResolvedValue({ definitionVersion: 'owner-revenue-v1' });
-    const controller = new OwnerRevenueController({ summary } as never);
+    const trends = vi.fn().mockResolvedValue({ definitionVersion: 'owner-revenue-trends-v1' });
+    const controller = new OwnerRevenueController({ summary } as never, { trends } as never);
     const query = { period: 'TODAY' as const };
 
     await expect(controller.summary(query)).resolves.toEqual({
@@ -19,5 +20,9 @@ describe('OwnerRevenueController', () => {
       AccessTokenGuard,
       OwnerOnlyGuard,
     ]);
+    await expect(controller.trends({ period: 'THIS_MONTH' })).resolves.toEqual({
+      definitionVersion: 'owner-revenue-trends-v1',
+    });
+    expect(trends).toHaveBeenCalledWith({ period: 'THIS_MONTH' });
   });
 });

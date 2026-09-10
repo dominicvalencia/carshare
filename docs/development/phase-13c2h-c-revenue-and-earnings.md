@@ -56,3 +56,24 @@ Physical Owner browser review accepted this refined hierarchy, compact presentat
 11. Check desktop, laptop, tablet, and narrow browser widths for overflow and readable stacked balances.
 12. Confirm SUPER_ADMIN and STAFF cannot open the Owner route and the Operations Console remains unchanged.
 13. Confirm no customer-sensitive information, security-deposit collection card, or fabricated trend chart appears.
+
+## C3 — authoritative financial trend series
+
+C3 introduces `owner-revenue-trends-v1` at `GET /api/v1/admin/owner/revenue/trends`. The API accepts the same `period`, `startDate`, and `endDate` query as the summary, selects granularity on the server, and returns ready-to-render `[startInclusive, endExclusive)` Manila buckets with decimal-string minor units and explicit zeroes. Each currency is an independent group; no FX conversion occurs.
+
+The six series are Rental Collections, Gross Booking Value, Recognized CarShare Commission, Total Owner Earnings, Completed Refunds, and Paid Payouts. Their attribution timestamps and accounting definitions are documented in [ADR 0030](../decisions/0030-owner-revenue-trend-series.md). Every series is reconciled against its directly equivalent `owner-revenue-v1` summary total before a response is returned.
+
+The Owner dashboard renders the server buckets without calculating financial totals or boundaries. It defaults to Rental Collections and CarShare Commission, permits precise metric selection, uses separate currency views, provides keyboard-focusable chart points, and includes an expandable semantic data table. Existing C2 summaries and the page-level synthetic/reconciliation warnings remain unchanged.
+
+Point-in-time Owner Payable Liability, Available for Payout, Active Payout Allocations, and Processing Payouts remain cards and are not charted. C3 adds no schema, migration, provider call, Reports implementation, or staging work.
+
+### C3 physical Owner QA
+
+1. Open **Revenue & earnings** as OWNER and confirm all accepted C2 summary sections remain unchanged.
+2. Confirm **Financial activity trends** loads with Rental Collections and CarShare Commission selected.
+3. Toggle GBV, Owner Earnings, Completed Refunds, and Paid Payouts and verify precise legend labels and values.
+4. Confirm Today is hourly; This Week and This Month are daily; short, medium, and long Custom ranges are daily, weekly, and monthly respectively.
+5. Inspect zero buckets, mouse tooltips, keyboard-focused points, currency handling, and the accessible data table.
+6. Check narrow layouts for readable labels and absence of horizontal page overflow.
+7. Confirm synthetic and reconciliation warnings remain safe and current-balance cards are not charted.
+8. Confirm SUPER_ADMIN, STAFF, and unauthenticated users remain denied.

@@ -949,6 +949,26 @@ button.quiet {
 }
 
 @media (max-width: 767px) {
+  .trend-heading-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .trend-controls {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .trend-controls button {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .financial-trend-chart {
+    min-height: 170px;
+  }
+
   .admin-header {
     height: 62px;
     padding: 0 14px;
@@ -1980,18 +2000,123 @@ button.quiet {
   padding: 5px 7px;
 }
 
-.owner-trends-placeholder {
+.owner-trends-panel {
+  display: grid;
+  gap: 18px;
   margin-top: 0;
 }
 
-.owner-trends-placeholder h2 {
+.owner-trends-panel h2 {
   margin: 6px 0;
 }
 
-.owner-trends-placeholder p,
+.owner-trends-panel p,
 .owner-overview-error p {
   color: var(--muted);
   margin: 0;
+}
+
+.trend-heading-row {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+}
+
+.trend-heading-row label {
+  color: var(--muted);
+  display: grid;
+  font-size: 0.78rem;
+  font-weight: 700;
+  gap: 5px;
+}
+
+.trend-heading-row select {
+  min-width: 110px;
+}
+
+.trend-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trend-controls button {
+  align-items: center;
+  display: inline-flex;
+  gap: 7px;
+}
+
+.trend-swatch {
+  border: 1px solid rgb(0 0 0 / 18%);
+  border-radius: 50%;
+  height: 10px;
+  width: 10px;
+}
+
+.trend-context {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.trend-chart-scroll {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.financial-trend-chart {
+  display: block;
+  height: auto;
+  max-height: 290px;
+  min-height: 190px;
+  width: 100%;
+}
+
+.trend-grid-line {
+  stroke: #dce7e2;
+  stroke-dasharray: 4 5;
+  stroke-width: 1;
+}
+
+.trend-axis {
+  stroke: #bacac3;
+  stroke-width: 1;
+}
+
+.trend-axis-label {
+  fill: var(--muted);
+  font-size: 12px;
+}
+
+.financial-trend-chart circle:focus {
+  outline: none;
+  stroke: #071f18;
+  stroke-width: 3;
+}
+
+.trend-data-details {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.trend-data-details summary {
+  color: var(--primary);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.trend-data-details .compact-table-wrap {
+  margin-top: 14px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.trend-error,
+.trend-zero-state {
+  background: #fff8f7;
+  border: 1px solid #e4b4ae;
+  border-radius: 12px;
+  padding: 16px;
 }
 
 .owner-overview-error {

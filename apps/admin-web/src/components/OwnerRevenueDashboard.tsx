@@ -92,6 +92,34 @@ export interface OwnerRevenueSummary {
   readonly unavailable: readonly string[];
 }
 
+type TrendMetric =
+  | 'rentalCollections'
+  | 'grossBookingValue'
+  | 'recognizedCommission'
+  | 'ownerEarnings'
+  | 'completedRefunds'
+  | 'paidPayouts';
+type TrendPoint = {
+  readonly startInclusive: string;
+  readonly endExclusive: string;
+  readonly valueMinor: string;
+};
+export interface OwnerRevenueTrends {
+  readonly definitionVersion: 'owner-revenue-trends-v1';
+  readonly environment: string;
+  readonly syntheticData: boolean;
+  readonly timezone: string;
+  readonly period: OwnerAnalyticsPeriod;
+  readonly startInclusive: string;
+  readonly endExclusive: string;
+  readonly granularity: 'HOURLY' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
+  readonly generatedAt: string;
+  readonly currencies: readonly {
+    readonly currency: string;
+    readonly series: Readonly<Record<TrendMetric, readonly TrendPoint[]>>;
+  }[];
+}
+
 interface PeriodSelection {
   readonly period: OwnerAnalyticsPeriod;
   readonly startDate?: string;
@@ -110,8 +138,10 @@ const statusLabels: Readonly<Record<EarningStatus, string>> = {
 
 export function OwnerRevenueDashboard({
   requestRevenue,
+  requestTrends,
 }: {
   readonly requestRevenue: (path: string) => Promise<OwnerRevenueSummary>;
+  readonly requestTrends: (path: string) => Promise<OwnerRevenueTrends>;
 }) {
   const [selection, setSelection] = useState<PeriodSelection>(loadSelection);
   const [customOpen, setCustomOpen] = useState(false);
@@ -127,6 +157,10 @@ export function OwnerRevenueDashboard({
   const revenue = useQuery({
     queryKey: ['owner-revenue', selection],
     queryFn: () => requestRevenue(buildPath(selection)),
+  });
+  const trends = useQuery({
+    queryKey: ['owner-revenue-trends', selection],
+    queryFn: () => requestTrends(buildTrendsPath(selection)),
   });
 
   const choosePreset = (period: Exclude<OwnerAnalyticsPeriod, 'CUSTOM'>) => {
@@ -232,12 +266,23 @@ export function OwnerRevenueDashboard({
           </button>
         </section>
       )}
-      {revenue.data && <RevenueContent summary={revenue.data} />}
+      {revenue.data && <RevenueContent summary={revenue.data} trends={trends} />}
     </div>
   );
 }
 
-function RevenueContent({ summary }: { readonly summary: OwnerRevenueSummary }) {
+function RevenueContent({
+  summary,
+  trends,
+}: {
+  readonly summary: OwnerRevenueSummary;
+  readonly trends: {
+    readonly data: OwnerRevenueTrends | undefined;
+    readonly isError: boolean;
+    readonly isLoading: boolean;
+    readonly refetch: () => unknown;
+  };
+}) {
   const { metadata, periodActivity, pointInTime, integrity } = summary;
   return (
     <>
@@ -411,16 +456,289 @@ function RevenueContent({ summary }: { readonly summary: OwnerRevenueSummary }) 
         </aside>
       )}
 
-      <section
-        className="admin-card owner-trends-placeholder"
-        aria-labelledby="revenue-trends-heading"
-      >
-        <span className="eyebrow">DETAILED TRENDS</span>
-        <h2 id="revenue-trends-heading">Revenue and earnings trends</h2>
-        <p>Authoritative trends will appear here after time-series reporting is enabled.</p>
-      </section>
+      <RevenueTrendsPanel trends={trends} />
     </>
   );
+}
+
+const trendMetricLabels: Readonly<Record<TrendMetric, string>> = {
+  rentalCollections: 'Rental Collections',
+  grossBookingValue: 'Gross Booking Value',
+  recognizedCommission: 'CarShare Commission',
+  ownerEarnings: 'Owner Earnings',
+  completedRefunds: 'Completed Refunds',
+  paidPayouts: 'Paid Payouts',
+};
+const trendMetrics = Object.keys(trendMetricLabels) as TrendMetric[];
+const trendColors: Readonly<Record<TrendMetric, string>> = {
+  rentalCollections: '#08785d',
+  grossBookingValue: '#345995',
+  recognizedCommission: '#d17b0f',
+  ownerEarnings: '#7b4ea3',
+  completedRefunds: '#b44747',
+  paidPayouts: '#24748f',
+};
+
+function RevenueTrendsPanel({
+  trends,
+}: {
+  readonly trends: {
+    readonly data: OwnerRevenueTrends | undefined;
+    readonly isError: boolean;
+    readonly isLoading: boolean;
+    readonly refetch: () => unknown;
+  };
+}) {
+  const [selected, setSelected] = useState<readonly TrendMetric[]>([
+    'rentalCollections',
+    'recognizedCommission',
+  ]);
+  const [currency, setCurrency] = useState<string>('');
+  const data = trends.data;
+  const available = data?.currencies ?? [];
+  const selectedCurrency = available.find((item) => item.currency === currency) ?? available[0];
+
+  return (
+    <section className="admin-card owner-trends-panel" aria-labelledby="revenue-trends-heading">
+      <span className="eyebrow">DETAILED TRENDS</span>
+      <div className="trend-heading-row">
+        <div>
+          <h2 id="revenue-trends-heading">Financial activity trends</h2>
+          <p>Authoritative period activity grouped by CarShare reporting.</p>
+        </div>
+        {available.length > 1 && (
+          <label>
+            Currency
+            <select
+              value={selectedCurrency?.currency ?? ''}
+              onChange={(event) => setCurrency(event.target.value)}
+            >
+              {available.map((item) => (
+                <option key={item.currency}>{item.currency}</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+      {trends.isLoading && <p aria-live="polite">Loading authoritative financial trends…</p>}
+      {trends.isError && (
+        <div className="trend-error" role="alert">
+          <p>Financial trends are temporarily unavailable. Summary totals remain authoritative.</p>
+          <button type="button" onClick={() => void trends.refetch()}>
+            Retry trends
+          </button>
+        </div>
+      )}
+      {data && !selectedCurrency && (
+        <p className="trend-zero-state">No financial activity is available for this period.</p>
+      )}
+      {selectedCurrency && (
+        <>
+          <div className="trend-controls" role="group" aria-label="Financial trend metrics">
+            {trendMetrics.map((metric) => {
+              const active = selected.includes(metric);
+              return (
+                <button
+                  aria-pressed={active}
+                  className={active ? 'selected' : 'quiet'}
+                  key={metric}
+                  onClick={() => {
+                    if (active && selected.length === 1) return;
+                    setSelected(
+                      active ? selected.filter((item) => item !== metric) : [...selected, metric],
+                    );
+                  }}
+                  type="button"
+                >
+                  <span className="trend-swatch" style={{ backgroundColor: trendColors[metric] }} />
+                  {trendMetricLabels[metric]}
+                </button>
+              );
+            })}
+          </div>
+          <p className="trend-context">
+            {selectedCurrency.currency} • {data!.granularity.toLowerCase()} buckets •{' '}
+            {data!.timezone}
+          </p>
+          <FinancialTrendChart
+            currency={selectedCurrency}
+            metrics={selected}
+            granularity={data!.granularity}
+          />
+          <AccessibleTrendTable currency={selectedCurrency} metrics={selected} />
+        </>
+      )}
+    </section>
+  );
+}
+
+function FinancialTrendChart({
+  currency,
+  metrics,
+  granularity,
+}: {
+  readonly currency: OwnerRevenueTrends['currencies'][number];
+  readonly metrics: readonly TrendMetric[];
+  readonly granularity: OwnerRevenueTrends['granularity'];
+}) {
+  const width = 900;
+  const height = 240;
+  const left = 72;
+  const top = 20;
+  const plotWidth = width - left - 24;
+  const plotHeight = height - top - 44;
+  const points = currency.series[metrics[0]!] ?? [];
+  const maximum = metrics.reduce(
+    (max, metric) =>
+      currency.series[metric].reduce(
+        (inner, point) => (BigInt(point.valueMinor) > inner ? BigInt(point.valueMinor) : inner),
+        max,
+      ),
+    0n,
+  );
+  const x = (index: number) =>
+    left + (points.length <= 1 ? 0 : (index / (points.length - 1)) * plotWidth);
+  const y = (value: bigint) =>
+    top +
+    plotHeight -
+    (maximum === 0n ? 0 : Number((value * 10_000n) / maximum) / 10_000) * plotHeight;
+  const labelEvery = Math.max(1, Math.ceil(points.length / 6));
+  const guides = [...new Set([maximum, maximum / 2n, 0n])];
+  return (
+    <div className="trend-chart-scroll">
+      <svg
+        aria-label={`${currency.currency} financial activity trend chart`}
+        className="financial-trend-chart"
+        role="img"
+        viewBox={`0 0 ${width} ${height}`}
+      >
+        <g aria-hidden="true">
+          {guides.map((value) => (
+            <g key={value.toString()}>
+              <line
+                className="trend-grid-line"
+                x1={left}
+                x2={left + plotWidth}
+                y1={y(value)}
+                y2={y(value)}
+              />
+              <text className="trend-axis-label" textAnchor="end" x={left - 10} y={y(value) + 4}>
+                {formatCompactMinor(value, currency.currency)}
+              </text>
+            </g>
+          ))}
+        </g>
+        <line className="trend-axis" x1={left} x2={left} y1={top} y2={top + plotHeight} />
+        {points.map((point, index) =>
+          index % labelEvery === 0 || index === points.length - 1 ? (
+            <text
+              className="trend-axis-label"
+              key={point.startInclusive}
+              textAnchor="middle"
+              x={x(index)}
+              y={height - 12}
+            >
+              {formatBucketLabel(point.startInclusive, granularity)}
+            </text>
+          ) : null,
+        )}
+        {metrics.map((metric) => {
+          const series = currency.series[metric];
+          const polyline = series
+            .map((point, index) => `${x(index)},${y(BigInt(point.valueMinor))}`)
+            .join(' ');
+          return (
+            <g key={metric}>
+              <polyline
+                fill="none"
+                points={polyline}
+                stroke={trendColors[metric]}
+                strokeWidth="3"
+              />
+              {series.map((point, index) => (
+                <circle
+                  aria-label={`${trendMetricLabels[metric]}, ${formatBucketLabel(point.startInclusive, granularity)}: ${formatMinorUnits(point.valueMinor, currency.currency)}`}
+                  cx={x(index)}
+                  cy={y(BigInt(point.valueMinor))}
+                  fill={trendColors[metric]}
+                  key={point.startInclusive}
+                  r="4"
+                  tabIndex={0}
+                >
+                  <title>{`${trendMetricLabels[metric]} • ${formatBucketLabel(point.startInclusive, granularity)} • ${formatMinorUnits(point.valueMinor, currency.currency)}`}</title>
+                </circle>
+              ))}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function AccessibleTrendTable({
+  currency,
+  metrics,
+}: {
+  readonly currency: OwnerRevenueTrends['currencies'][number];
+  readonly metrics: readonly TrendMetric[];
+}) {
+  const points = currency.series[metrics[0]!] ?? [];
+  return (
+    <details className="trend-data-details">
+      <summary>View accessible trend data</summary>
+      <div className="compact-table-wrap">
+        <table className="compact-financial-table">
+          <caption>Authoritative {currency.currency} financial trend values</caption>
+          <thead>
+            <tr>
+              <th scope="col">Bucket</th>
+              {metrics.map((metric) => (
+                <th key={metric} scope="col">
+                  {trendMetricLabels[metric]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {points.map((point, index) => (
+              <tr key={point.startInclusive}>
+                <th scope="row">{formatTrendRange(point)}</th>
+                {metrics.map((metric) => (
+                  <td key={metric}>
+                    {formatMinorUnits(
+                      currency.series[metric][index]!.valueMinor,
+                      currency.currency,
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+function formatBucketLabel(value: string, granularity: OwnerRevenueTrends['granularity']) {
+  return new Intl.DateTimeFormat(
+    'en-PH',
+    granularity === 'HOURLY'
+      ? { hour: 'numeric', timeZone: 'Asia/Manila' }
+      : { day: 'numeric', month: 'short', timeZone: 'Asia/Manila' },
+  ).format(new Date(value));
+}
+function formatTrendRange(point: TrendPoint) {
+  const formatter = new Intl.DateTimeFormat('en-PH', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Asia/Manila',
+  });
+  return `${formatter.format(new Date(point.startInclusive))} – ${formatter.format(new Date(point.endExclusive))}`;
+}
+function formatCompactMinor(value: bigint, currency: string) {
+  return formatMinorUnits(value.toString(), currency).replace(/\.00$/u, '');
 }
 
 function RevenueSection({
@@ -662,6 +980,10 @@ function buildPath(selection: PeriodSelection) {
     query.set('endDate', selection.endDate);
   }
   return `/admin/owner/revenue?${query.toString()}`;
+}
+
+function buildTrendsPath(selection: PeriodSelection) {
+  return buildPath(selection).replace('/admin/owner/revenue?', '/admin/owner/revenue/trends?');
 }
 
 function loadSelection(): PeriodSelection {
