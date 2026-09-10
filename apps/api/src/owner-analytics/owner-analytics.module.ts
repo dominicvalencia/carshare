@@ -6,12 +6,19 @@ import { OwnerOnlyGuard } from './owner-only.guard';
 import { OwnerRevenueService } from './owner-revenue.service';
 import { OwnerRevenueController } from './owner-revenue.controller';
 import { OwnerRevenueTrendsService } from './owner-revenue-trends.service';
+import { OwnerMarketplaceReportsController } from './owner-marketplace-reports.controller';
+import { OwnerMarketplaceReportsService } from './owner-marketplace-reports.service';
 
 @Module({
   imports: [PayoutsModule],
-  controllers: [OwnerAnalyticsController, OwnerRevenueController],
+  controllers: [
+    OwnerAnalyticsController,
+    OwnerMarketplaceReportsController,
+    OwnerRevenueController,
+  ],
   providers: [
     OwnerAnalyticsService,
+    OwnerMarketplaceReportsService,
     OwnerOnlyGuard,
     OwnerRevenueService,
     OwnerRevenueTrendsService,
