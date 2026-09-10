@@ -22,6 +22,9 @@ describe('admin information architecture', () => {
     expect(resolveAdminModule(['staff', 'new'])).toBe('staff-new');
     expect(resolveAdminModule(['staff', 'staff-id'])).toBe('staff-detail');
     expect(resolveAdminModule(['owner', 'overview'])).toBe('owner-overview');
+    expect(resolveAdminModule(['owner', 'finance'])).toBe('owner-revenue');
+    expect(resolveAdminModule(['owner', 'bookings-rentals'])).toBe('dashboard');
+    expect(resolveAdminModule(['owner', 'users-vehicles'])).toBe('dashboard');
     expect(resolveAdminModule(['operations-console', 'rentals'])).toBe('rentals');
     expect(resolveAdminModule(['operations-console', 'operations', 'inspection-corrections'])).toBe(
       'inspection-corrections',
@@ -30,7 +33,7 @@ describe('admin information architecture', () => {
       'commissions',
     );
     expect(resolveAdminDetailId(['staff', 'staff-id'], 'staff-detail')).toBe('staff-id');
-    expect(resolveAdminDetailId(['owner', 'finance'], 'payouts')).toBeUndefined();
+    expect(resolveAdminDetailId(['owner', 'finance'], 'owner-revenue')).toBeUndefined();
     expect(resolveAdminModule(['unknown'])).toBe('dashboard');
     expect(
       resolveAdminDetailId(

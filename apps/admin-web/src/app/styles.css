@@ -1659,6 +1659,277 @@ button.quiet {
   overflow-wrap: anywhere;
 }
 
+.owner-revenue-dashboard {
+  display: grid;
+  gap: 26px;
+}
+
+.revenue-period-context {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  gap: 8px 18px;
+  margin: -8px 0 0;
+}
+
+.revenue-period-context span:nth-child(2) {
+  background: #edf4f0;
+  border-radius: 999px;
+  color: var(--primary);
+  font-weight: 800;
+  padding: 5px 10px;
+  text-transform: uppercase;
+}
+
+.revenue-section {
+  display: grid;
+  gap: 12px;
+}
+
+.revenue-section-note {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: -8px 0 0;
+}
+
+.revenue-card-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.revenue-primary-grid,
+.revenue-status-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.owner-earnings-layout {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(360px, 1.4fr);
+}
+
+.revenue-earnings-grid,
+.revenue-balance-grid,
+.payout-current-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.payout-grid,
+.additional-charge-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.revenue-money-card,
+.payout-card {
+  min-height: 158px;
+}
+
+.secondary-financial-row {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.5fr) minmax(0, 1fr);
+}
+
+.secondary-financial-card {
+  background: #f8faf9;
+  box-shadow: none;
+  min-height: 132px;
+  padding: 16px 18px;
+}
+
+.secondary-financial-card .owner-kpi-value {
+  font-size: clamp(1.35rem, 2vw, 1.75rem);
+}
+
+.metric-helper {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: -3px 0 0;
+}
+
+.commission-card {
+  border-top: 4px solid #16795a;
+}
+
+.contract-value-card {
+  background: #f7faf8;
+  border-style: dashed;
+}
+
+.owner-total-card {
+  border-top: 4px solid #527d70;
+}
+
+.balance-heading {
+  align-items: end;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.balance-heading h3 {
+  font-size: 1.1rem;
+  margin: 5px 0 0;
+}
+
+.balance-heading > span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.balance-card {
+  border-width: 2px;
+  min-height: 210px;
+}
+
+.payable-card {
+  background: #f5f8f7;
+  border-color: #9db5ab;
+}
+
+.eligible-card {
+  background: #eff9f4;
+  border-color: #79b59f;
+}
+
+.balance-badge {
+  background: #dcefe7;
+  border-radius: 999px;
+  color: #176d53;
+  font-size: 0.65rem;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  padding: 5px 8px;
+}
+
+.payout-value {
+  display: grid;
+  gap: 3px;
+}
+
+.payout-value > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.compact-breakdown,
+.compact-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 10px 32px rgb(16 36 28 / 5%);
+  min-width: 0;
+  padding: 18px 20px;
+}
+
+.compact-breakdown h3 {
+  font-size: 1rem;
+  margin: 0 0 10px;
+}
+
+.compact-breakdown dl {
+  margin: 0;
+}
+
+.breakdown-row {
+  align-items: center;
+  border-top: 1px solid #e3ebe7;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(140px, 1fr) minmax(130px, auto);
+  padding: 11px 0;
+}
+
+.breakdown-row:first-child {
+  border-top: 0;
+}
+
+.breakdown-row dt {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 0.82rem;
+  font-weight: 750;
+  gap: 7px;
+}
+
+.breakdown-row dd {
+  display: grid;
+  font-size: 0.95rem;
+  font-weight: 800;
+  gap: 3px;
+  margin: 0;
+  text-align: right;
+}
+
+.breakdown-row dd span {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.breakdown-row dd small {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.compact-table-wrap {
+  padding: 6px 20px;
+}
+
+.compact-financial-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.compact-financial-table th,
+.compact-financial-table td {
+  border-bottom: 1px solid #e3ebe7;
+  padding: 13px 10px;
+  text-align: left;
+}
+
+.compact-financial-table thead th {
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.compact-financial-table tbody th {
+  font-size: 0.83rem;
+}
+
+.compact-financial-table tbody td {
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.compact-financial-table tr:last-child th,
+.compact-financial-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.reconciliation-notice {
+  background: #fff8e8;
+  border: 1px solid #e4ce91;
+  border-radius: 14px;
+  color: #664d0b;
+  display: grid;
+  gap: 4px;
+  padding: 16px 18px;
+}
+
+.reconciliation-notice span {
+  font-size: 0.84rem;
+}
+
 .currency-value-list {
   display: grid;
   gap: 10px;
@@ -2191,7 +2462,12 @@ button.quiet {
   }
 
   .owner-financial-grid,
-  .owner-activity-grid {
+  .owner-activity-grid,
+  .revenue-primary-grid,
+  .revenue-status-grid,
+  .owner-earnings-layout,
+  .payout-grid,
+  .additional-charge-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -2252,8 +2528,63 @@ button.quiet {
 
   .owner-financial-grid,
   .owner-activity-grid,
+  .revenue-primary-grid,
+  .revenue-status-grid,
+  .owner-earnings-layout,
+  .revenue-earnings-grid,
+  .revenue-balance-grid,
+  .payout-grid,
+  .payout-current-grid,
+  .additional-charge-grid,
+  .secondary-financial-row,
   .custom-period-panel {
     grid-template-columns: 1fr;
+  }
+
+  .compact-table-wrap {
+    padding: 6px 16px;
+  }
+
+  .compact-financial-table,
+  .compact-financial-table tbody,
+  .compact-financial-table tr,
+  .compact-financial-table th,
+  .compact-financial-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .compact-financial-table thead {
+    display: none;
+  }
+
+  .compact-financial-table tr {
+    border-bottom: 1px solid #e3ebe7;
+    padding: 11px 0;
+  }
+
+  .compact-financial-table tr:last-child {
+    border-bottom: 0;
+  }
+
+  .compact-financial-table th,
+  .compact-financial-table td {
+    border: 0;
+    padding: 3px 0;
+  }
+
+  .compact-financial-table td {
+    display: inline;
+  }
+
+  .compact-financial-table td + td::before {
+    color: var(--muted);
+    content: ' · ';
+  }
+
+  .balance-heading {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .custom-period-actions {

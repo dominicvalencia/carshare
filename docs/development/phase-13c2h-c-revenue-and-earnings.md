@@ -26,3 +26,33 @@ The representative local query plans completed in approximately 0.185 ms for cap
 The migration count remains 39. Both local `carrental` and disposable integration `carrental_test` were up to date at acceptance; no schema or historical migration changed.
 
 See [ADR 0029](../decisions/0029-owner-revenue-and-earnings-contract.md) for terminology and accounting boundaries.
+
+## C2 — Owner Revenue & Earnings UI baseline
+
+The Owner workspace route `/admin/owner/finance` presents the authoritative `owner-revenue-v1` response without recalculating financial values or period boundaries in the browser. It separates selected-period collections, CarShare commission, owner earnings, and payout lifecycle activity from point-in-time Owner Payable Liability and Available for Payout balances.
+
+The Owner workspace is the executive business-oversight surface: **How is CarShare performing?** The Operations Console remains the deliberate operational-workflow surface: **What work needs to be done?** Dedicated Owner navigation destinations for **Bookings & rentals** and **Users & vehicles** were removed because their individual records, queues, and actions already exist in Operations Console. Legacy direct URLs for those two destinations redirect to Owner Reports. OWNER operational authority is unchanged, while authoritative aggregate booking, renter, owner, vehicle, and supply insights remain appropriate for Overview and future Reports.
+
+Local and non-production figures carry the API-provided synthetic-data warning. Currency groups remain separate and minor-unit strings are formatted with BigInt-safe presentation helpers. Reconciliation warnings expose no payment, provider, customer, ledger, or audit identifiers. Security-deposit authorization is not presented as collected cash.
+
+Authoritative trend series and charts remain deferred to C3. C2 introduces no schema change or migration.
+
+The physical-review refinement reduces information density without removing authoritative categories: Total Owner Earnings remains a primary card while Pending, Held, Available, Paid, and Reversed share one compact earnings breakdown. Pending Approval, Approved, Processing, Paid, Failed, and Reversed payouts share one amount/count lifecycle table. The additional-charge breakdown preserves the distinct Approved, Collected, Refunded, Owner Compensation, and CarShare Share accounting categories; it does not reuse owner-earning statuses. Additional Charge Collections and Additional Charge CarShare Share use secondary visual treatment. Owner Payable Liability and Available for Payout remain prominent, separate point-in-time balances.
+
+Physical Owner browser review accepted this refined hierarchy, compact presentation, responsive behavior, and simplified Owner workspace. Phase 13C-2H-C2 is **IMPLEMENTED / AUTOMATED VERIFICATION PASS / PHYSICAL OWNER UX ACCEPTANCE PASS**.
+
+### Focused physical QA
+
+1. Sign in as OWNER and open **Revenue & earnings**.
+2. Confirm the local synthetic-data warning is visible and **This Month** is selected by default.
+3. Confirm Rental Collections, Completed Refunds, and Recognized CarShare Commission match the API response.
+4. Confirm Total, Pending, Held, Available, Paid, and Reversed Owner Earnings remain separate.
+5. Confirm Owner Payable Liability is labelled **CURRENT BALANCE** and Available for Payout is separately labelled **CURRENTLY ELIGIBLE**.
+6. Confirm neither point-in-time balance shows a previous-period comparison.
+7. Confirm the payout amount/count lifecycle table and current allocation cards are distinct.
+8. Confirm zero payout and additional-charge states look intentional.
+9. Confirm the reconciliation notice contains no private identifiers.
+10. Exercise Today, This Week, This Month, and a valid Custom range; reject an invalid or over-366-day range.
+11. Check desktop, laptop, tablet, and narrow browser widths for overflow and readable stacked balances.
+12. Confirm SUPER_ADMIN and STAFF cannot open the Owner route and the Operations Console remains unchanged.
+13. Confirm no customer-sensitive information, security-deposit collection card, or fabricated trend chart appears.

@@ -37,6 +37,7 @@ import { StaffDetailPanel } from './StaffDetailPanel';
 import { OwnerStaffActivityPanel } from './OwnerStaffActivityPanel';
 import { AdminAuditPanel } from './AdminAuditPanel';
 import { OwnerOverviewDashboard, type OwnerAnalyticsOverview } from './OwnerOverviewDashboard';
+import { OwnerRevenueDashboard, type OwnerRevenueSummary } from './OwnerRevenueDashboard';
 
 import { API_URL, adminEnvironment } from './admin-environment';
 interface Envelope<T> {
@@ -346,6 +347,7 @@ export type AdminModule =
   | 'inspection-corrections'
   | 'owner-verification'
   | 'owner-overview'
+  | 'owner-revenue'
   | 'owner-reports'
   | 'owner-staff-activity'
   | 'payouts'
@@ -450,6 +452,12 @@ const moduleTitles: Record<AdminModule, { eyebrow: string; title: string; descri
     title: 'Business performance overview',
     description: 'Authoritative marketplace activity and financial performance at a glance.',
   },
+  'owner-revenue': {
+    eyebrow: 'OWNER FINANCE',
+    title: 'Revenue & earnings',
+    description:
+      'Understand marketplace collections, CarShare earnings, owner liabilities and payout activity.',
+  },
   'owner-reports': {
     eyebrow: 'OWNER REPORTING',
     title: 'Reports',
@@ -512,9 +520,12 @@ export function AdminConsole({
     users: 'users.read',
     vehicles: 'vehicles.read',
   };
-  const ownerOnlyModule = ['owner-overview', 'owner-reports', 'owner-staff-activity'].includes(
-    activeModule,
-  );
+  const ownerOnlyModule = [
+    'owner-overview',
+    'owner-revenue',
+    'owner-reports',
+    'owner-staff-activity',
+  ].includes(activeModule);
   const missingStaffDetailPermission =
     activeModule === 'staff-detail' && (!can('staff.edit') || !can('staff.permissions.manage'));
   const api = async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
@@ -857,6 +868,9 @@ export function AdminConsole({
       )}
       {activeModule === 'owner-overview' && (
         <OwnerOverviewDashboard requestOverview={(path) => api<OwnerAnalyticsOverview>(path)} />
+      )}
+      {activeModule === 'owner-revenue' && (
+        <OwnerRevenueDashboard requestRevenue={(path) => api<OwnerRevenueSummary>(path)} />
       )}
       {activeModule === 'owner-reports' && (
         <section className="admin-card owner-foundation-panel">

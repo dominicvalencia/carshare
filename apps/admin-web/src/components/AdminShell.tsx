@@ -57,18 +57,6 @@ const ownerNavigation = [
     label: 'Revenue & earnings',
     permission: 'payouts.read',
   },
-  {
-    href: '/admin/owner/bookings-rentals',
-    icon: '↔',
-    label: 'Bookings & rentals',
-    permission: 'rentals.read',
-  },
-  {
-    href: '/admin/owner/users-vehicles',
-    icon: '◎',
-    label: 'Users & vehicles',
-    permission: 'users.read',
-  },
   { href: '/admin/owner/reports', icon: '▤', label: 'Reports', permission: null },
   {
     href: '/admin/owner/staff-activity',
