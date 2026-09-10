@@ -32,3 +32,58 @@ The endpoint is aggregate-only and explicitly labelled with environment and synt
 8. Verify cancellation breakdowns exclude free text and identity.
 9. Verify integrity metadata contains counts only.
 10. Verify OWNER access and denial for every other administrative role.
+
+## D3 Marketplace trend-series API core
+
+D3 introduces `owner-marketplace-trends-v1` at
+`GET /api/v1/admin/owner/reports/marketplace/trends`. It is an API-only additive
+event series intended for a future Reports presentation; D3 does not add that
+presentation or any chart.
+
+The eight series preserve the D2 event authorities exactly: booking creation;
+the first `CONFIRMED`, `ACTIVE`, and `COMPLETED` lifecycle transitions;
+cancellation-record creation; the first RENTER role assignment; Owner-profile
+creation; and vehicle creation. Repeated lifecycle or role events are collapsed
+to the first qualifying event before bucket attribution. Current mutable status
+and `actualPickupAt` are never substituted for historical events.
+
+The server selects the established granularity: Today is hourly; This Week and
+This Month are daily; custom periods through 31 calendar days are daily, 32–180
+days are weekly, and 181–366 days are monthly. All bucket boundaries use
+`Asia/Manila` calendar semantics and `[startInclusive, endExclusive)` intervals.
+Every valid interval is returned, with a decimal-string `"0"` count when it has
+no event.
+
+Before returning, the server sums each of the eight series and compares it with
+the corresponding `owner-marketplace-reports-v1` period metric for the same
+request. Any mismatch fails closed with
+`OWNER_MARKETPLACE_TRENDS_RECONCILIATION_FAILED`. The D2 rental-start integrity
+result is carried forward as aggregate metadata; the first ACTIVE transition
+remains authoritative and the one-second `actualPickupAt` material-difference
+threshold remains an integrity check only.
+
+Active Renters During Period is deliberately excluded because bucket-level
+distinct renter populations are not additive. Confirmation and cancellation
+conversion remain cohort-to-date metrics and require a separate cohort-series
+design before they can be trended. Active Rentals Now and Approved Listings Now
+are point-in-time values and cannot be reconstructed as historical series from
+the current model. Cancellation actor/reason trends are also deferred; the D3
+primary contract contains only total cancellations per bucket.
+
+The response remains aggregate-only and environment/synthetic-data labelled.
+It contains no identities, record identifiers, free text, location, evidence,
+financial detail, provider reference, or audit payload. Access remains OWNER
+only; general Admin or Finance Staff permissions do not imply Reports access.
+
+Representative query plans for This Month and a 366-day custom interval must be
+recorded during local acceptance. Indexes, caches, projections, materialized
+views, and reporting jobs remain evidence-driven future decisions rather than
+D3 defaults.
+
+Local read-only acceptance measured the grouped trend query at 1.086 ms
+execution (8.345 ms planning) for 30 daily This Month buckets and 0.656 ms
+execution (0.689 ms planning) for 13 monthly buckets spanning the maximum
+366-day custom interval. The representative This Month series reconciled to D2
+at 4 bookings created, 3 confirmations, 3 rental starts, 2 completions, 0
+cancellations, 10 new renters, 6 new vehicle owners, and 2 new vehicles. These
+results do not justify a schema or caching change.

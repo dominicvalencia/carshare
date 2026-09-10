@@ -9,13 +9,21 @@ describe('OwnerMarketplaceReportsController', () => {
     const marketplace = vi
       .fn()
       .mockResolvedValue({ definitionVersion: 'owner-marketplace-reports-v1' });
-    const controller = new OwnerMarketplaceReportsController({ marketplace } as never);
+    const trends = vi.fn().mockResolvedValue({ definitionVersion: 'owner-marketplace-trends-v1' });
+    const controller = new OwnerMarketplaceReportsController(
+      { marketplace } as never,
+      { trends } as never,
+    );
     const query = { period: 'CUSTOM' as const, startDate: '2026-09-01', endDate: '2026-09-09' };
 
     await expect(controller.marketplace(query)).resolves.toEqual({
       definitionVersion: 'owner-marketplace-reports-v1',
     });
     expect(marketplace).toHaveBeenCalledWith(query);
+    await expect(controller.trends(query)).resolves.toEqual({
+      definitionVersion: 'owner-marketplace-trends-v1',
+    });
+    expect(trends).toHaveBeenCalledWith(query);
     expect(Reflect.getMetadata(PATH_METADATA, OwnerMarketplaceReportsController)).toBe(
       'admin/owner/reports/marketplace',
     );

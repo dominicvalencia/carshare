@@ -8,6 +8,7 @@ import { OwnerRevenueController } from './owner-revenue.controller';
 import { OwnerRevenueTrendsService } from './owner-revenue-trends.service';
 import { OwnerMarketplaceReportsController } from './owner-marketplace-reports.controller';
 import { OwnerMarketplaceReportsService } from './owner-marketplace-reports.service';
+import { OwnerMarketplaceTrendsService } from './owner-marketplace-trends.service';
 
 @Module({
   imports: [PayoutsModule],
@@ -19,6 +20,7 @@ import { OwnerMarketplaceReportsService } from './owner-marketplace-reports.serv
   providers: [
     OwnerAnalyticsService,
     OwnerMarketplaceReportsService,
+    OwnerMarketplaceTrendsService,
     OwnerOnlyGuard,
     OwnerRevenueService,
     OwnerRevenueTrendsService,
