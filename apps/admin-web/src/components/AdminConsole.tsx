@@ -42,6 +42,11 @@ import {
   type OwnerRevenueSummary,
   type OwnerRevenueTrends,
 } from './OwnerRevenueDashboard';
+import {
+  OwnerMarketplaceReportsDashboard,
+  type OwnerMarketplaceReport,
+  type OwnerMarketplaceTrends,
+} from './OwnerMarketplaceReportsDashboard';
 
 import { API_URL, adminEnvironment } from './admin-environment';
 interface Envelope<T> {
@@ -464,8 +469,9 @@ const moduleTitles: Record<AdminModule, { eyebrow: string; title: string; descri
   },
   'owner-reports': {
     eyebrow: 'OWNER REPORTING',
-    title: 'Reports',
-    description: 'The foundation for reviewed financial and marketplace reporting.',
+    title: 'Marketplace Performance',
+    description:
+      'Understand booking activity, rental progression, customer growth and marketplace supply.',
   },
   'owner-staff-activity': {
     eyebrow: 'OWNER OVERSIGHT',
@@ -880,15 +886,10 @@ export function AdminConsole({
         />
       )}
       {activeModule === 'owner-reports' && (
-        <section className="admin-card owner-foundation-panel">
-          <span className="eyebrow">REPORTING FOUNDATION</span>
-          <h2>Reviewed reports will appear here</h2>
-          <p>
-            Daily revenue, booking trends, utilization, cancellation rates, geography, and provider
-            reports are deferred until their source queries and financial definitions are
-            authoritative.
-          </p>
-        </section>
+        <OwnerMarketplaceReportsDashboard
+          requestReport={(path) => api<OwnerMarketplaceReport>(path)}
+          requestTrends={(path) => api<OwnerMarketplaceTrends>(path)}
+        />
       )}
       {activeModule === 'owner-staff-activity' && <OwnerStaffActivityPanel />}
       {activeModule === 'staff-new' && <StaffCreatePanel />}

@@ -1684,6 +1684,104 @@ button.quiet {
   gap: 26px;
 }
 
+.owner-marketplace-dashboard {
+  display: grid;
+  gap: 26px;
+}
+
+.marketplace-period-context {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  margin: -10px 0 0;
+}
+
+.marketplace-section {
+  display: grid;
+  gap: 14px;
+}
+
+.marketplace-primary-grid,
+.marketplace-secondary-grid,
+.marketplace-growth-grid,
+.marketplace-cohort-grid,
+.marketplace-current-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.marketplace-primary-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.marketplace-secondary-grid,
+.marketplace-cohort-grid,
+.marketplace-current-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.marketplace-growth-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.marketplace-count-card {
+  min-height: 142px;
+}
+
+.marketplace-count-card.prominent {
+  border-top: 4px solid #258365;
+  min-height: 174px;
+}
+
+.marketplace-count-card small,
+.cohort-card small,
+.marketplace-current-card small,
+.cohort-caveat {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.cohort-card {
+  align-content: start;
+}
+
+.cohort-badge {
+  color: var(--primary);
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+}
+
+.cohort-unavailable {
+  font-size: 1.05rem;
+}
+
+.cohort-caveat {
+  background: #f5f8f6;
+  border-radius: 9px;
+  font-size: 0.82rem;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.marketplace-current-card {
+  min-height: 160px;
+}
+
+.marketplace-zero-state {
+  background: #f6f9f7;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--muted);
+  padding: 18px;
+}
+
+.marketplace-trend-chart circle:focus {
+  outline: none;
+  stroke: #071f18;
+  stroke-width: 3;
+}
+
 .revenue-period-context {
   align-items: center;
   color: var(--muted);
@@ -2592,7 +2690,9 @@ button.quiet {
   .revenue-status-grid,
   .owner-earnings-layout,
   .payout-grid,
-  .additional-charge-grid {
+  .additional-charge-grid,
+  .marketplace-primary-grid,
+  .marketplace-growth-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -2662,7 +2762,12 @@ button.quiet {
   .payout-current-grid,
   .additional-charge-grid,
   .secondary-financial-row,
-  .custom-period-panel {
+  .custom-period-panel,
+  .marketplace-primary-grid,
+  .marketplace-secondary-grid,
+  .marketplace-growth-grid,
+  .marketplace-cohort-grid,
+  .marketplace-current-grid {
     grid-template-columns: 1fr;
   }
 

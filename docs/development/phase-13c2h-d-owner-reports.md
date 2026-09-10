@@ -87,3 +87,45 @@ execution (0.689 ms planning) for 13 monthly buckets spanning the maximum
 at 4 bookings created, 3 confirmations, 3 rental starts, 2 completions, 0
 cancellations, 10 new renters, 6 new vehicle owners, and 2 new vehicles. These
 results do not justify a schema or caching change.
+
+## D4 Owner Marketplace Reports UI candidate
+
+D4 activates the existing Owner Reports destination at
+`/admin/owner/reports` as **Marketplace Performance**. The page is a
+presentation-only integration of `owner-marketplace-reports-v1` and
+`owner-marketplace-trends-v1`; it does not reproduce metric definitions,
+reporting boundaries, lifecycle attribution, bucket generation, or cohort
+arithmetic in the browser.
+
+The initial executive report contains Booking & Rental Activity, Marketplace
+Activity Trends, Customer & Supply Growth, Booking Cohort, Current Marketplace,
+and Cancellation Breakdown. The accepted Owner period interaction is reused for
+Today, This Week, This Month, and a validated custom range of up to 366 days,
+with a Reports-specific browser-session key. Environment and synthetic-data
+metadata come from the API and drive the established local-data warning.
+
+The count chart consumes every server-returned bucket, including zero buckets,
+and preserves the server-selected granularity. Bookings Created, Rentals
+Started, and Completed Rentals are selected initially; all eight additive D3
+series remain available and at least one must stay selected. Exact values remain
+available through focusable data points and a collapsed semantic table. No
+point-in-time or cohort metric is presented as an additive trend.
+
+Summary and trend requests have independent safe loading and failure states. A
+trend failure does not remove authoritative summary totals. Cohort measures are
+explicitly labelled cohort-to-date and include the recent-cohort maturity
+caveat; a zero denominator is intentionally unavailable rather than represented
+as zero percent. Active Rentals Now and Approved Listings Now remain visibly
+separate point-in-time values with their API-provided as-of time.
+
+D4 remains OWNER-only and aggregate-only. It exposes no record-level customer,
+booking, vehicle, location, evidence, financial, provider, or audit data and
+introduces no operational actions. Financial reporting remains in the Owner
+Overview and Revenue & Earnings destinations. Utilization, mature cohort
+series, cancellation trends, historical supply, geography, rankings,
+risk/quality reporting, exports, and all later Reports slices remain deferred.
+
+D4 physical Owner browser review is accepted. Its final status is:
+**IMPLEMENTED / AUTOMATED VERIFICATION PASS / PHYSICAL OWNER UX ACCEPTANCE
+PASS**. No database schema or migration change is part of this presentation
+slice.

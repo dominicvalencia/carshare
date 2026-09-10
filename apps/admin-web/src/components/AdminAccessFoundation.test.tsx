@@ -53,7 +53,9 @@ describe('Admin staff access foundation', () => {
     expect(shell).not.toContain("label: 'Users & vehicles'");
     expect(consoleSource).toContain('<OwnerOverviewDashboard');
     expect(consoleSource).toContain('<OwnerRevenueDashboard');
+    expect(consoleSource).toContain('<OwnerMarketplaceReportsDashboard');
     expect(consoleSource).toContain("'owner-revenue'");
+    expect(consoleSource).toContain("'owner-reports'");
     expect(consoleSource).toContain("admin.role !== 'OWNER'");
     const overview = readFileSync('src/components/OwnerOverviewDashboard.tsx', 'utf8');
     expect(overview).toContain('/admin/owner/analytics/overview');
@@ -64,6 +66,14 @@ describe('Admin staff access foundation', () => {
     expect(revenue).toContain('owner-revenue-v1');
     expect(revenue).not.toContain('percentageChange');
     expect(revenue).not.toContain('<canvas');
+    const marketplaceReports = readFileSync(
+      'src/components/OwnerMarketplaceReportsDashboard.tsx',
+      'utf8',
+    );
+    expect(marketplaceReports).toContain('/admin/owner/reports/marketplace?');
+    expect(marketplaceReports).toContain('/marketplace/trends?');
+    expect(marketplaceReports).not.toContain('/admin/bookings');
+    expect(marketplaceReports).not.toContain('Gross Booking Value');
     const styles = readFileSync('src/app/styles.css', 'utf8');
     expect(styles).toContain('.owner-financial-grid');
     expect(styles).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))');

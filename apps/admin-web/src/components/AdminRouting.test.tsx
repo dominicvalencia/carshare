@@ -23,6 +23,7 @@ describe('admin information architecture', () => {
     expect(resolveAdminModule(['staff', 'staff-id'])).toBe('staff-detail');
     expect(resolveAdminModule(['owner', 'overview'])).toBe('owner-overview');
     expect(resolveAdminModule(['owner', 'finance'])).toBe('owner-revenue');
+    expect(resolveAdminModule(['owner', 'reports'])).toBe('owner-reports');
     expect(resolveAdminModule(['owner', 'bookings-rentals'])).toBe('dashboard');
     expect(resolveAdminModule(['owner', 'users-vehicles'])).toBe('dashboard');
     expect(resolveAdminModule(['operations-console', 'rentals'])).toBe('rentals');
