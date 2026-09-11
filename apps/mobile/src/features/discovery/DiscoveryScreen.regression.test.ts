@@ -40,3 +40,31 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).not.toContain('policyVersionId');
   });
 });
+
+describe('fulfillment discovery presentation', () => {
+  it('keeps server-owned handover filtering and contextual badges', () => {
+    expect(source).toContain("query.set('handover', handover)");
+    expect(source).toContain('Pickup & delivery available');
+    expect(source).toContain('Delivery to your location');
+    expect(source).not.toContain('Self-drive');
+    expect(source).toContain(
+      "vehicle.fulfillment.deliveryToSearchLocationReason === 'INSUFFICIENT_NOTICE'",
+    );
+    expect(source).toContain('Delivery requires');
+    expect(source).not.toContain(
+      "vehicle.fulfillment.deliveryToSearchLocationReason === 'OUTSIDE_SERVICE_RADIUS'",
+    );
+  });
+
+  it('presents safe handover policy detail without booking selection or point fabrication', () => {
+    expect(source).toContain('title="Handover options"');
+    expect(source).toContain(
+      'Actual booking total and handover eligibility are confirmed during booking.',
+    );
+    expect(source).toContain('approximately ${Math.round');
+    expect(source).toContain('Delivery & collection notice');
+    expect(source).toContain('This notice period only applies to owner delivery or collection.');
+    expect(source).toContain("'No minimum notice.'");
+    expect(source).not.toContain('Owner Payable Liability');
+  });
+});

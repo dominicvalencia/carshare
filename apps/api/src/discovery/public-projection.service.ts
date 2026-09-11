@@ -3,6 +3,7 @@ import { FileAssetStatus, FileClassification, MileagePolicyType } from '@carrent
 import { FilesService } from '../files/files.service';
 import type { AdvisoryAvailability } from './availability.service';
 import type { PublicVehicleRecord } from './public-eligibility.service';
+import { publicFulfillment, publicSearchFulfillment } from './fulfillment-discovery';
 
 function publicDurationDiscounts(policy: PublicVehicleRecord['policyVersions'][number]) {
   return [
@@ -30,6 +31,7 @@ export class PublicProjectionService {
     favorite: boolean,
     availability?: AdvisoryAvailability,
     rating?: { readonly averageRating: string; readonly reviewCount: number } | null,
+    fulfillmentContext?: { readonly distanceMeters: number; readonly scheduledAt: Date },
   ) {
     const policy = vehicle.policyVersions[0]!;
     const cover = vehicle.photos.find(({ isCover }) => isCover)!;
@@ -59,6 +61,7 @@ export class PublicProjectionService {
       distanceKm: Math.round(distanceKm * 10) / 10,
       favorite,
       fuelType: vehicle.fuelType,
+      fulfillment: publicSearchFulfillment(policy, fulfillmentContext),
       make: vehicle.make,
       model: vehicle.model,
       rating: rating ?? { averageRating: null, label: 'New', reviewCount: 0 },
@@ -93,6 +96,7 @@ export class PublicProjectionService {
       favorite,
       features: vehicle.features.map(({ feature }) => feature),
       fuelType: vehicle.fuelType,
+      fulfillment: publicFulfillment(policy),
       location: {
         city: vehicle.location!.city,
         country: vehicle.location!.country,

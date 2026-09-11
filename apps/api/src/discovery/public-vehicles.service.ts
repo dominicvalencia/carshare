@@ -12,7 +12,8 @@ import type { RequestPrincipal } from '../security/security-context';
 import { AnalyticsEventType, DiscoveryAnalyticsService } from './analytics.service';
 import { AvailabilityService } from './availability.service';
 import type { SearchVehiclesDto } from './discovery.dto';
-import { VehicleSearchSort } from './discovery.dto';
+import { VehicleHandoverFilter, VehicleSearchSort } from './discovery.dto';
+import { matchesHandoverFilter } from './fulfillment-discovery';
 import { RentalDurationService } from './duration.service';
 import { durationDiscount } from './duration-discounts';
 import {
@@ -134,6 +135,9 @@ export class PublicVehiclesService {
         favoriteIds.has(vehicle.id),
         availabilities?.get(vehicle.id),
         ratings.get(vehicle.id),
+        input.start
+          ? { distanceMeters: distance.get(vehicle.id)! * 1000, scheduledAt: new Date(input.start) }
+          : undefined,
       );
       if (chargeableDays) {
         const policy = vehicle.policyVersions[0]!;
@@ -342,7 +346,8 @@ export class PublicVehiclesService {
         (policy.mileagePolicy === 'UNLIMITED') === input.unlimitedMileage) &&
       (!input.featureIds ||
         input.featureIds.length === 0 ||
-        input.featureIds.every((id) => featureIds.has(id)))
+        input.featureIds.every((id) => featureIds.has(id))) &&
+      matchesHandoverFilter(policy, input.handover ?? VehicleHandoverFilter.ANY)
     );
   }
 
@@ -490,6 +495,7 @@ export class PublicVehiclesService {
       start: input.start ?? null,
       transmission: input.transmission ?? null,
       unlimitedMileage: input.unlimitedMileage ?? null,
+      handover: input.handover ?? VehicleHandoverFilter.ANY,
     });
   }
 
@@ -514,6 +520,7 @@ export class PublicVehiclesService {
       input.maxPrice,
       input.unlimitedMileage,
       input.featureIds?.length,
+      !input.handover || input.handover === VehicleHandoverFilter.ANY ? undefined : input.handover,
     ].filter((value) => value !== undefined).length;
   }
 }

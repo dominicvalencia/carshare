@@ -24,6 +24,13 @@ export enum VehicleSearchSort {
   NEWEST = 'NEWEST',
 }
 
+export enum VehicleHandoverFilter {
+  ANY = 'ANY',
+  PICKUP_AVAILABLE = 'PICKUP_AVAILABLE',
+  DELIVERY_AVAILABLE = 'DELIVERY_AVAILABLE',
+  PICKUP_AND_DELIVERY = 'PICKUP_AND_DELIVERY',
+}
+
 const commaSeparated = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string'
     ? value
@@ -76,6 +83,10 @@ export class SearchVehiclesDto {
   @IsOptional()
   @IsEnum(VehicleSearchSort)
   sort: VehicleSearchSort = VehicleSearchSort.RECOMMENDED;
+  @ApiPropertyOptional({ enum: VehicleHandoverFilter, default: VehicleHandoverFilter.ANY })
+  @IsOptional()
+  @IsEnum(VehicleHandoverFilter)
+  handover: VehicleHandoverFilter = VehicleHandoverFilter.ANY;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(1000) cursor?: string;
   @ApiPropertyOptional({ default: 10, maximum: 50 })
   @Type(() => Number)

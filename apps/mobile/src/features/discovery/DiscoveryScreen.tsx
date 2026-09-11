@@ -61,6 +61,19 @@ interface Rating {
   readonly label?: string;
   readonly reviewCount: number;
 }
+interface PublicFulfillment {
+  readonly renterPickupAvailable: boolean;
+  readonly ownerDeliveryAvailable: boolean;
+  readonly renterReturnAvailable?: boolean;
+  readonly ownerCollectionAvailable?: boolean;
+  readonly deliveryToSearchLocation: boolean | null;
+  readonly deliveryToSearchLocationReason?: string | null;
+  readonly deliveryDistanceMeters: number | null;
+  readonly deliveryFeeMinor?: number | null;
+  readonly collectionFeeMinor?: number | null;
+  readonly fulfillmentServiceRadiusMeters?: number | null;
+  readonly fulfillmentMinimumNoticeMinutes?: number;
+}
 export interface VehicleCardView {
   readonly vehicleId: string;
   readonly make: string | null;
@@ -79,6 +92,7 @@ export interface VehicleCardView {
   readonly rating?: Rating;
   readonly availability: { available: boolean; warning: string };
   readonly estimatedRentalTotal?: { amountMinor: number; chargeableDays: number };
+  readonly fulfillment: PublicFulfillment;
 }
 interface SearchResponse {
   readonly items: readonly VehicleCardView[];
@@ -126,6 +140,7 @@ interface VehicleDetail {
   };
   readonly turnaroundMinutes?: number;
   readonly rentalRequirements?: string | null;
+  readonly fulfillment: PublicFulfillment;
 }
 interface Quote {
   readonly id: string;
@@ -186,6 +201,7 @@ export function DiscoveryScreen({
   const [powertrain, setPowertrain] = useState('');
   const [minPrice, setMinPrice] = useState('');
   const [maxPrice, setMaxPrice] = useState('');
+  const [handover, setHandover] = useState('ANY');
   const [locationError, setLocationError] = useState('');
   const validDates = returnAt.getTime() > pickup.getTime();
   const queryString = useMemo(() => {
@@ -205,6 +221,7 @@ export function DiscoveryScreen({
     if (powertrain) query.set('powertrain', powertrain);
     if (minPrice) query.set('minPrice', String(Math.round(Number(minPrice) * 100)));
     if (maxPrice) query.set('maxPrice', String(Math.round(Number(maxPrice) * 100)));
+    if (handover !== 'ANY') query.set('handover', handover);
     return query.toString();
   }, [
     make,
@@ -218,6 +235,7 @@ export function DiscoveryScreen({
     returnAt,
     seats,
     transmission,
+    handover,
   ]);
   const search = useInfiniteQuery({
     enabled: mode === 'results' || home,
@@ -438,7 +456,11 @@ export function DiscoveryScreen({
               <StateView
                 icon="search-outline"
                 title="No cars found"
-                message="Try a nearby city, wider radius, or different dates."
+                message={
+                  handover === 'ANY'
+                    ? 'Try a nearby city, wider radius, or different dates.'
+                    : 'No cars match this handover option. Try another handover option or expand your search.'
+                }
                 actionLabel="Change search"
                 onAction={() => setMode('form')}
               />
@@ -481,6 +503,8 @@ export function DiscoveryScreen({
               setMinPrice,
               maxPrice,
               setMaxPrice,
+              handover,
+              setHandover,
             }}
             onApply={() => {
               setFiltersOpen(false);
@@ -551,8 +575,9 @@ export function DiscoveryScreen({
               powertrain,
               minPrice,
               maxPrice,
+              handover: handover === 'ANY' ? '' : handover,
             })
-              ? `${activeFilterCount({ make, categoryId, seats, transmission, powertrain, minPrice, maxPrice })} filters`
+              ? `${activeFilterCount({ make, categoryId, seats, transmission, powertrain, minPrice, maxPrice, handover: handover === 'ANY' ? '' : handover })} filters`
               : 'Filters'
           }
           onPress={() => setFiltersOpen(true)}
@@ -629,6 +654,8 @@ export function DiscoveryScreen({
           setMinPrice,
           maxPrice,
           setMaxPrice,
+          handover,
+          setHandover,
         }}
         onApply={() => setFiltersOpen(false)}
       />
@@ -688,6 +715,21 @@ function VehicleCard({
             {vehicle.seats ?? '—'} seats
           </Text>
         </View>
+        <View accessibilityLabel="Available handover options" style={styles.quickRow}>
+          {vehicle.fulfillment.renterPickupAvailable && <StatusBadge label="Pickup" />}
+          {vehicle.fulfillment.deliveryToSearchLocation === true ? (
+            <StatusBadge label="Delivery to your location" />
+          ) : (
+            vehicle.fulfillment.ownerDeliveryAvailable && <StatusBadge label="Delivery" />
+          )}
+        </View>
+        {vehicle.fulfillment.deliveryToSearchLocationReason === 'INSUFFICIENT_NOTICE' &&
+          typeof vehicle.fulfillment.fulfillmentMinimumNoticeMinutes === 'number' && (
+            <Text style={styles.note}>
+              Delivery requires {noticeLabel(vehicle.fulfillment.fulfillmentMinimumNoticeMinutes)}{' '}
+              notice.
+            </Text>
+          )}
         {vehicle.estimatedRentalTotal && (
           <Text style={styles.estimate}>
             Estimated total {money(vehicle.estimatedRentalTotal.amountMinor, vehicle.currency)} for{' '}
@@ -974,6 +1016,65 @@ function VehicleView(properties: {
             The owner allows {vehicle.turnaroundMinutes / 60} hours between rentals for preparation.
           </Text>
         )}
+      </Card>
+      <SectionHeader title="Handover options" />
+      <Card>
+        <Text style={styles.cardTitle}>Start of rental</Text>
+        <Text style={styles.body}>
+          {[
+            vehicle.fulfillment.renterPickupAvailable ? 'Pick up from the owner’s area' : null,
+            vehicle.fulfillment.ownerDeliveryAvailable ? 'Owner delivery may be available' : null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'No start handover option is currently published.'}
+        </Text>
+        <Text style={styles.note}>
+          Pickup area: {vehicle.location.city}, {vehicle.location.province}
+        </Text>
+        <Text style={styles.cardTitle}>End of rental</Text>
+        <Text style={styles.body}>
+          {[
+            vehicle.fulfillment.renterReturnAvailable ? 'Return the car yourself' : null,
+            vehicle.fulfillment.ownerCollectionAvailable
+              ? 'Owner collection may be available'
+              : null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'No return handover option is currently published.'}
+        </Text>
+        {vehicle.fulfillment.ownerDeliveryAvailable && (
+          <Text style={styles.note}>
+            Delivery policy:{' '}
+            {fulfillmentFeeLabel(vehicle.fulfillment.deliveryFeeMinor, vehicle.pricing.currency)}
+            {vehicle.fulfillment.fulfillmentServiceRadiusMeters
+              ? ` within approximately ${Math.round(vehicle.fulfillment.fulfillmentServiceRadiusMeters / 1000)} km`
+              : ''}
+            .
+          </Text>
+        )}
+        {vehicle.fulfillment.ownerCollectionAvailable && (
+          <Text style={styles.note}>
+            Collection policy:{' '}
+            {fulfillmentFeeLabel(vehicle.fulfillment.collectionFeeMinor, vehicle.pricing.currency)}.
+          </Text>
+        )}
+        {(vehicle.fulfillment.ownerDeliveryAvailable ||
+          vehicle.fulfillment.ownerCollectionAvailable) && (
+          <View>
+            <Text style={styles.cardTitle}>Delivery & collection notice</Text>
+            <Text style={styles.note}>
+              {vehicle.fulfillment.fulfillmentMinimumNoticeMinutes
+                ? `Requires at least ${noticeLabel(vehicle.fulfillment.fulfillmentMinimumNoticeMinutes)} advance notice.`
+                : 'No minimum notice.'}
+            </Text>
+            <Text style={styles.note}>
+              This notice period only applies to owner delivery or collection.
+            </Text>
+          </View>
+        )}
+        <Text style={styles.note}>
+          Actual booking total and handover eligibility are confirmed during booking.
+        </Text>
       </Card>
       <SectionHeader title="Your host" />
       <Pressable
@@ -1296,6 +1397,8 @@ type FilterProperties = {
   readonly setMinPrice: (value: string) => void;
   readonly maxPrice: string;
   readonly setMaxPrice: (value: string) => void;
+  readonly handover: string;
+  readonly setHandover: (value: string) => void;
   readonly onApply: () => void;
 };
 function FilterSheet(properties: FilterProperties) {
@@ -1314,6 +1417,7 @@ function FilterSheet(properties: FilterProperties) {
     properties.setPowertrain('');
     properties.setMinPrice('');
     properties.setMaxPrice('');
+    properties.setHandover('ANY');
     properties.setRadiusKm(25);
   };
   return (
@@ -1355,6 +1459,22 @@ function FilterSheet(properties: FilterProperties) {
           onChange={properties.setCategoryId}
         />
         <SectionHeader title="Advanced filters" />
+        <SectionHeader title="Handover" />
+        <View accessibilityLabel="Handover filter" style={styles.quickRow}>
+          {[
+            ['ANY', 'Any'],
+            ['PICKUP_AVAILABLE', 'Pickup available'],
+            ['DELIVERY_AVAILABLE', 'Delivery available'],
+            ['PICKUP_AND_DELIVERY', 'Pickup & delivery available'],
+          ].map(([value, label]) => (
+            <Chip
+              key={value}
+              label={label!}
+              selected={properties.handover === value}
+              onPress={() => properties.setHandover(value!)}
+            />
+          ))}
+        </View>
         <Field
           label="Minimum seats (optional)"
           value={properties.seats}
@@ -1430,6 +1550,19 @@ function DetailRow({
 }
 function activeFilterCount(filters: Record<string, string>) {
   return Object.values(filters).filter(Boolean).length;
+}
+
+function fulfillmentFeeLabel(amountMinor: number | null | undefined, currency: string) {
+  if (amountMinor === 0) return 'Free';
+  return amountMinor == null
+    ? 'Fee confirmed during booking'
+    : `${money(amountMinor, currency)} policy fee`;
+}
+
+function noticeLabel(minutes: number) {
+  if (minutes % 1440 === 0) return `${minutes / 1440} day${minutes === 1440 ? '' : 's'}`;
+  if (minutes % 60 === 0) return `${minutes / 60} hour${minutes === 60 ? '' : 's'}`;
+  return `${minutes} minutes`;
 }
 
 const styles = StyleSheet.create({

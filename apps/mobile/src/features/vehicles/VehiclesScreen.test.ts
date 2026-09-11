@@ -70,4 +70,77 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(source).toContain('refetchInterval: (query)');
     expect(source).toContain('refetchOnWindowFocus: true');
   });
+
+  it('lets owners configure fulfillment through the immutable policy-version flow', () => {
+    expect(source).toContain('label="Edit handover options"');
+    expect(source).toContain('label="Renter pickup"');
+    expect(source).toContain('label="I can deliver the car"');
+    expect(source).toContain('label="Renter returns the car"');
+    expect(source).toContain('label="I can collect the car"');
+    expect(source).toContain('/policy-versions');
+    expect(source).toContain('fulfillmentServiceRadiusMeters: radiusMeters');
+    expect(source).toContain('fulfillmentMinimumNoticeMinutes: ownerService ? minimumNotice : 0');
+  });
+
+  it('uses safe defaults, conditional service controls, and friendly validation', () => {
+    expect(source).toContain('current?.supportsRenterPickup ?? true');
+    expect(source).toContain('current?.supportsOwnerDelivery ?? false');
+    expect(source).toContain('current?.supportsRenterReturn ?? true');
+    expect(source).toContain('current?.supportsOwnerCollection ?? false');
+    expect(source).toContain('Choose at least one way for renters to receive the car.');
+    expect(source).toContain('Choose at least one way for the car to be returned.');
+    expect(source).toContain('{ownerService && (');
+    expect(source).toContain('[5, 10, 15, 25, 50]');
+    expect(source).toContain("[10080, '7 days']");
+    expect(source).toContain('Delivery & collection notice');
+    expect(source).toContain(
+      'This only applies when you deliver or collect the vehicle. Renter pickup and return are',
+    );
+  });
+
+  it('keeps every long-booking field with its existing description before handover', () => {
+    const description = source.indexOf('Enter a percentage from 0 to 40.');
+    const shortTier = source.indexOf('label="3+ days (%)"');
+    const weeklyTier = source.indexOf('label="7+ days (%)"');
+    const extendedTier = source.indexOf('label="14+ days (%)"');
+    const monthlyTier = source.indexOf('label="30+ days (%)"');
+    const handover = source.indexOf('<Text style={styles.label}>Handover options</Text>');
+
+    expect(description).toBeGreaterThan(-1);
+    expect(description).toBeLessThan(shortTier);
+    expect(shortTier).toBeLessThan(weeklyTier);
+    expect(weeklyTier).toBeLessThan(extendedTier);
+    expect(extendedTier).toBeLessThan(monthlyTier);
+    expect(monthlyTier).toBeLessThan(handover);
+    expect(source.match(/Long-booking discounts \(optional\)/g)).toHaveLength(1);
+  });
+
+  it('explains authoritative per-day mileage and whole-kilometer excess fees conditionally', () => {
+    expect(source).toContain('label="Included mileage per rental day (km)"');
+    expect(source).toContain(
+      'How many kilometers are included per rental day before excess mileage charges apply.',
+    );
+    expect(source).toContain('label="Excess mileage fee (PHP per whole km)"');
+    expect(source).toContain(
+      'Amount charged for each whole kilometer driven beyond the included mileage allowance.',
+    );
+    expect(source.indexOf('label="Included mileage per rental day (km)"')).toBeLessThan(
+      source.indexOf('label="Excess mileage fee (PHP per whole km)"'),
+    );
+    expect(source).toContain('{limited && (');
+    expect(source).toContain('current?.includedKilometersPerDay ?? 150');
+    expect(source).toContain('current?.excessKilometerRateMinor ?? 1500');
+  });
+
+  it('preserves unrelated latest policy values and explains marketplace lifecycle', () => {
+    expect(source).toContain('minimumRentalDays: current?.minimumRentalDays ?? 1');
+    expect(source).toContain('availabilityPolicy: current?.availabilityPolicy ??');
+    expect(source).toContain('fuelReturnPolicy: current?.fuelReturnPolicy ??');
+    expect(source).toContain('title="Marketplace status"');
+    expect(source).toContain('CarShare Operations must approve this vehicle');
+    expect(source).toContain('apiClient.request(`/owner/vehicles/${id}/operational-status`');
+    expect(source).toContain("? 'Mark temporarily unavailable'");
+    expect(source).toContain(": 'Mark available'");
+    expect(source).not.toContain('Available for search');
+  });
 });

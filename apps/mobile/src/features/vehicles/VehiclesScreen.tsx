@@ -59,12 +59,38 @@ interface VehicleDocument {
 interface Policy {
   readonly version: number;
   readonly dailyRateMinor: number;
+  readonly currency: string;
+  readonly minimumRentalDays: number;
+  readonly maximumRentalDays: number;
   readonly mileagePolicy: string;
+  readonly includedKilometersPerDay: number | null;
+  readonly excessKilometerRateMinor: number | null;
   readonly turnaroundMinutes: number;
+  readonly availabilityPolicy: string;
+  readonly monday: boolean;
+  readonly tuesday: boolean;
+  readonly wednesday: boolean;
+  readonly thursday: boolean;
+  readonly friday: boolean;
+  readonly saturday: boolean;
+  readonly sunday: boolean;
+  readonly fuelReturnPolicy: string | null;
+  readonly fuelTolerancePercent: number | null;
+  readonly evReturnPolicy: string | null;
+  readonly evRequiredPercentage: number | null;
+  readonly evTolerancePercent: number | null;
   readonly shortDurationDiscountBps: number | null;
   readonly weeklyDiscountBps: number | null;
   readonly extendedTripDiscountBps: number | null;
   readonly monthlyDiscountBps: number | null;
+  readonly supportsRenterPickup: boolean;
+  readonly supportsOwnerDelivery: boolean;
+  readonly supportsRenterReturn: boolean;
+  readonly supportsOwnerCollection: boolean;
+  readonly fulfillmentServiceRadiusMeters: number | null;
+  readonly deliveryFeeMinor: number | null;
+  readonly collectionFeeMinor: number | null;
+  readonly fulfillmentMinimumNoticeMinutes: number;
 }
 interface VehicleBlock {
   readonly id: string;
@@ -149,6 +175,7 @@ export function VehiclesScreen() {
   const client = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [editStep, setEditStep] = useState<number | undefined>();
   const vehicles = useQuery({
     queryKey: ['vehicles'],
     queryFn: () => apiClient.request<Vehicle[]>('/owner/vehicles'),
@@ -171,15 +198,20 @@ export function VehiclesScreen() {
       <VehicleDetail
         id={selectedId}
         onClose={() => setSelectedId(null)}
-        onEdit={() => setEditing(true)}
+        onEdit={(step) => {
+          setEditStep(step);
+          setEditing(true);
+        }}
       />
     );
   if (selectedId)
     return (
       <VehicleEditor
         id={selectedId}
+        {...(editStep === undefined ? {} : { initialStep: editStep })}
         onClose={() => {
           setEditing(false);
+          setEditStep(undefined);
           void client.invalidateQueries({ queryKey: ['vehicles'] });
         }}
       />
@@ -263,7 +295,7 @@ function VehicleDetail({
 }: {
   readonly id: string;
   readonly onClose: () => void;
-  readonly onEdit: () => void;
+  readonly onEdit: (step?: number) => void;
 }) {
   const [managingAvailability, setManagingAvailability] = useState(false);
   const vehicle = useQuery({
@@ -272,6 +304,14 @@ function VehicleDetail({
     refetchInterval: (query) =>
       transitionalVehicleStatuses.includes(query.state.data?.status ?? '') ? 5_000 : false,
     refetchOnWindowFocus: true,
+  });
+  const operationalStatus = useMutation({
+    mutationFn: (status: string) =>
+      apiClient.request(`/owner/vehicles/${id}/operational-status`, {
+        body: JSON.stringify({ status }),
+        method: 'PATCH',
+      }),
+    onSuccess: () => void vehicle.refetch(),
   });
   if (vehicle.isPending) return <StateView loading title="Loading vehicle…" />;
   if (vehicle.isError || !vehicle.data)
@@ -304,7 +344,7 @@ function VehicleDetail({
         </Text>
         <StatusBadge label={vehicleStatusLabel(value.status)} tone={vehicleTone(value.status)} />
         <View style={styles.wrap}>
-          <Choice label="Edit vehicle" selected={false} onPress={onEdit} />
+          <Choice label="Edit vehicle" selected={false} onPress={() => onEdit()} />
         </View>
         <DetailSection title="Vehicle details">
           <Text style={styles.body}>
@@ -331,6 +371,37 @@ function VehicleDetail({
               ? `${money(value.policyVersions[0].dailyRateMinor)} / day · ${value.policyVersions[0].turnaroundMinutes / 60}h turnaround`
               : 'Not configured'}
           </Text>
+        </DetailSection>
+        <DetailSection title="Handover options">
+          <Text style={styles.body}>{ownerHandoverSummary(value.policyVersions[0])}</Text>
+          <Button label="Edit handover options" onPress={() => onEdit(5)} variant="secondary" />
+        </DetailSection>
+        <DetailSection title="Marketplace status">
+          <Text style={styles.cardTitle}>{ownerMarketplaceStatus(value)}</Text>
+          <Text style={styles.body}>{ownerMarketplaceExplanation(value)}</Text>
+          {value.status === 'APPROVED' && (
+            <Button
+              disabled={operationalStatus.isPending}
+              label={
+                operationalStatus.isPending
+                  ? 'Saving…'
+                  : value.operationalStatus === 'AVAILABLE'
+                    ? 'Mark temporarily unavailable'
+                    : 'Mark available'
+              }
+              onPress={() =>
+                operationalStatus.mutate(
+                  value.operationalStatus === 'AVAILABLE' ? 'TEMPORARILY_UNAVAILABLE' : 'AVAILABLE',
+                )
+              }
+              variant="secondary"
+            />
+          )}
+          {operationalStatus.error && (
+            <Text accessibilityRole="alert" style={styles.error}>
+              {operationalStatus.error.message}
+            </Text>
+          )}
         </DetailSection>
         <DetailSection title="Availability">
           <Text style={styles.body}>
@@ -362,14 +433,22 @@ function DetailSection({
   );
 }
 
-function VehicleEditor({ id, onClose }: { readonly id: string; readonly onClose: () => void }) {
+function VehicleEditor({
+  id,
+  initialStep,
+  onClose,
+}: {
+  readonly id: string;
+  readonly initialStep?: number;
+  readonly onClose: () => void;
+}) {
   const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding(spacing.xl);
   const client = useQueryClient();
   const vehicle = useQuery({
     queryKey: ['vehicle', id],
     queryFn: () => apiClient.request<Vehicle>(`/owner/vehicles/${id}`),
   });
-  const [selectedStep, setSelectedStep] = useState<number | null>(null);
+  const [selectedStep, setSelectedStep] = useState<number | null>(initialStep ?? null);
   const [wizardError, setWizardError] = useState('');
   const completedSection = vehicle.data?.lastCompletedSection;
   const completedIndex = steps.findIndex((section) => section.toUpperCase() === completedSection);
@@ -1175,8 +1254,8 @@ function PolicyStep({
     current ? String(current.dailyRateMinor / 100) : '2500',
   );
   const [limited, setLimited] = useState(current?.mileagePolicy !== 'UNLIMITED');
-  const [included, setIncluded] = useState('150');
-  const [excess, setExcess] = useState('15');
+  const [included, setIncluded] = useState(String(current?.includedKilometersPerDay ?? 150));
+  const [excess, setExcess] = useState(String((current?.excessKilometerRateMinor ?? 1500) / 100));
   const [turnaround, setTurnaround] = useState(current?.turnaroundMinutes ?? 120);
   const [shortDiscount, setShortDiscount] = useState(
     current?.shortDurationDiscountBps == null ? '' : String(current.shortDurationDiscountBps / 100),
@@ -1190,12 +1269,57 @@ function PolicyStep({
   const [monthlyDiscount, setMonthlyDiscount] = useState(
     current?.monthlyDiscountBps == null ? '' : String(current.monthlyDiscountBps / 100),
   );
+  const [renterPickup, setRenterPickup] = useState(current?.supportsRenterPickup ?? true);
+  const [ownerDelivery, setOwnerDelivery] = useState(current?.supportsOwnerDelivery ?? false);
+  const [renterReturn, setRenterReturn] = useState(current?.supportsRenterReturn ?? true);
+  const [ownerCollection, setOwnerCollection] = useState(current?.supportsOwnerCollection ?? false);
+  const [serviceRadiusKm, setServiceRadiusKm] = useState(
+    String((current?.fulfillmentServiceRadiusMeters ?? 25_000) / 1000),
+  );
+  const [deliveryFee, setDeliveryFee] = useState(String((current?.deliveryFeeMinor ?? 0) / 100));
+  const [collectionFee, setCollectionFee] = useState(
+    String((current?.collectionFeeMinor ?? 0) / 100),
+  );
+  const [minimumNotice, setMinimumNotice] = useState(current?.fulfillmentMinimumNoticeMinutes ?? 0);
+  const [fulfillmentError, setFulfillmentError] = useState('');
   const electric = vehicle.powertrain === 'BATTERY_ELECTRIC';
+  const ownerService = ownerDelivery || ownerCollection;
   const save = useMutation({
     mutationFn: async () => {
+      setFulfillmentError('');
+      if (!renterPickup && !ownerDelivery) {
+        setFulfillmentError('Choose at least one way for renters to receive the car.');
+        throw new Error('Choose at least one way for renters to receive the car.');
+      }
+      if (!renterReturn && !ownerCollection) {
+        setFulfillmentError('Choose at least one way for the car to be returned.');
+        throw new Error('Choose at least one way for the car to be returned.');
+      }
+      const radiusMeters = Math.round(Number(serviceRadiusKm) * 1000);
+      const deliveryFeeMinor = Math.round(Number(deliveryFee) * 100);
+      const collectionFeeMinor = Math.round(Number(collectionFee) * 100);
+      if (
+        ownerService &&
+        (!Number.isInteger(radiusMeters) || radiusMeters <= 0 || radiusMeters > 50_000)
+      ) {
+        setFulfillmentError('Choose a service area from 1 to 50 km.');
+        throw new Error('Choose a service area from 1 to 50 km.');
+      }
+      if (ownerDelivery && (!Number.isSafeInteger(deliveryFeeMinor) || deliveryFeeMinor < 0)) {
+        setFulfillmentError('Enter a valid Delivery fee. Zero means free delivery.');
+        throw new Error('Enter a valid Delivery fee.');
+      }
+      if (
+        ownerCollection &&
+        (!Number.isSafeInteger(collectionFeeMinor) || collectionFeeMinor < 0)
+      ) {
+        setFulfillmentError('Enter a valid Collection fee. Zero means free collection.');
+        throw new Error('Enter a valid Collection fee.');
+      }
       await apiClient.request(`/owner/vehicles/${id}/policy-versions`, {
         body: JSON.stringify({
           dailyRateMinor: Math.round(Number(dailyRate) * 100),
+          currency: current?.currency ?? 'PHP',
           ...(shortDiscount.trim()
             ? { shortDurationDiscountBps: Math.round(Number(shortDiscount) * 100) }
             : {}),
@@ -1208,8 +1332,8 @@ function PolicyStep({
           ...(monthlyDiscount.trim()
             ? { monthlyDiscountBps: Math.round(Number(monthlyDiscount) * 100) }
             : {}),
-          minimumRentalDays: 1,
-          maximumRentalDays: 30,
+          minimumRentalDays: current?.minimumRentalDays ?? 1,
+          maximumRentalDays: current?.maximumRentalDays ?? 30,
           mileagePolicy: limited ? 'LIMITED' : 'UNLIMITED',
           ...(limited
             ? {
@@ -1218,10 +1342,34 @@ function PolicyStep({
               }
             : {}),
           ...(electric
-            ? { evReturnPolicy: 'SAME_TO_SAME', evTolerancePercent: 5 }
-            : { fuelReturnPolicy: 'SAME_TO_SAME', fuelTolerancePercent: 5 }),
+            ? {
+                evReturnPolicy: current?.evReturnPolicy ?? 'SAME_TO_SAME',
+                ...(current?.evRequiredPercentage == null
+                  ? {}
+                  : { evRequiredPercentage: current.evRequiredPercentage }),
+                evTolerancePercent: current?.evTolerancePercent ?? 5,
+              }
+            : {
+                fuelReturnPolicy: current?.fuelReturnPolicy ?? 'SAME_TO_SAME',
+                fuelTolerancePercent: current?.fuelTolerancePercent ?? 5,
+              }),
           turnaroundMinutes: turnaround,
-          availabilityPolicy: 'EVERY_DAY',
+          availabilityPolicy: current?.availabilityPolicy ?? 'EVERY_DAY',
+          monday: current?.monday ?? true,
+          tuesday: current?.tuesday ?? true,
+          wednesday: current?.wednesday ?? true,
+          thursday: current?.thursday ?? true,
+          friday: current?.friday ?? true,
+          saturday: current?.saturday ?? true,
+          sunday: current?.sunday ?? true,
+          supportsRenterPickup: renterPickup,
+          supportsOwnerDelivery: ownerDelivery,
+          supportsRenterReturn: renterReturn,
+          supportsOwnerCollection: ownerCollection,
+          ...(ownerService ? { fulfillmentServiceRadiusMeters: radiusMeters } : {}),
+          ...(ownerDelivery ? { deliveryFeeMinor } : {}),
+          ...(ownerCollection ? { collectionFeeMinor } : {}),
+          fulfillmentMinimumNoticeMinutes: ownerService ? minimumNotice : 0,
         }),
         method: 'POST',
       });
@@ -1276,6 +1424,114 @@ function PolicyStep({
           after the weekly discount.
         </Text>
       )}
+      <Text style={styles.label}>Handover options</Text>
+      <Text style={styles.label}>START OF RENTAL</Text>
+      <View style={styles.wrap}>
+        <Choice
+          label="Renter pickup"
+          selected={renterPickup}
+          onPress={() => setRenterPickup((value) => !value)}
+        />
+        <Choice
+          label="I can deliver the car"
+          selected={ownerDelivery}
+          onPress={() => setOwnerDelivery((value) => !value)}
+        />
+      </View>
+      <Text style={styles.label}>END OF RENTAL</Text>
+      <View style={styles.wrap}>
+        <Choice
+          label="Renter returns the car"
+          selected={renterReturn}
+          onPress={() => setRenterReturn((value) => !value)}
+        />
+        <Choice
+          label="I can collect the car"
+          selected={ownerCollection}
+          onPress={() => setOwnerCollection((value) => !value)}
+        />
+      </View>
+      {ownerService && (
+        <>
+          <Text style={styles.label}>Service area</Text>
+          <Text style={styles.body}>
+            How far are you willing to{' '}
+            {ownerDelivery && ownerCollection
+              ? 'deliver or collect'
+              : ownerDelivery
+                ? 'deliver'
+                : 'collect'}{' '}
+            the vehicle?
+          </Text>
+          <View accessibilityLabel="Owner service radius" style={styles.wrap}>
+            {[5, 10, 15, 25, 50].map((kilometers) => (
+              <Choice
+                key={kilometers}
+                label={`${kilometers} km`}
+                selected={serviceRadiusKm === String(kilometers)}
+                onPress={() => setServiceRadiusKm(String(kilometers))}
+              />
+            ))}
+          </View>
+          {ownerDelivery && (
+            <>
+              <Field
+                label="Delivery fee (PHP)"
+                value={deliveryFee}
+                onChange={setDeliveryFee}
+                keyboard="decimal-pad"
+              />
+              <Text style={styles.body}>
+                Amount shown when you offer delivery. Zero means free delivery.
+              </Text>
+            </>
+          )}
+          {ownerCollection && (
+            <>
+              <Field
+                label="Collection fee (PHP)"
+                value={collectionFee}
+                onChange={setCollectionFee}
+                keyboard="decimal-pad"
+              />
+              <Text style={styles.body}>
+                Amount shown when you offer collection. Zero means free collection.
+              </Text>
+            </>
+          )}
+          <Text style={styles.label}>Delivery & collection notice</Text>
+          <Text style={styles.body}>
+            How much advance notice do you need to deliver or collect the vehicle?
+          </Text>
+          <Text style={styles.body}>
+            This only applies when you deliver or collect the vehicle. Renter pickup and return are
+            not affected.
+          </Text>
+          <View accessibilityLabel="Delivery and collection notice" style={styles.wrap}>
+            {[
+              [0, 'No minimum'],
+              [180, '3 hours'],
+              [360, '6 hours'],
+              [720, '12 hours'],
+              [1440, '24 hours'],
+              [2880, '48 hours'],
+              [10080, '7 days'],
+            ].map(([minutes, label]) => (
+              <Choice
+                key={minutes}
+                label={String(label)}
+                selected={minimumNotice === minutes}
+                onPress={() => setMinimumNotice(Number(minutes))}
+              />
+            ))}
+          </View>
+        </>
+      )}
+      {fulfillmentError && (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {fulfillmentError}
+        </Text>
+      )}
       <Text style={styles.label}>Mileage</Text>
       <View style={styles.wrap}>
         <Choice label="150 km/day" selected={limited} onPress={() => setLimited(true)} />
@@ -1284,17 +1540,23 @@ function PolicyStep({
       {limited && (
         <>
           <Field
-            label="Included km per chargeable day"
+            label="Included mileage per rental day (km)"
             value={included}
             onChange={setIncluded}
             keyboard="numeric"
           />
+          <Text style={styles.body}>
+            How many kilometers are included per rental day before excess mileage charges apply.
+          </Text>
           <Field
-            label="Excess charge per whole km (PHP)"
+            label="Excess mileage fee (PHP per whole km)"
             value={excess}
             onChange={setExcess}
             keyboard="numeric"
           />
+          <Text style={styles.body}>
+            Amount charged for each whole kilometer driven beyond the included mileage allowance.
+          </Text>
         </>
       )}
       <Text style={styles.label}>Turnaround buffer</Text>
@@ -1552,7 +1814,12 @@ function Choice({
   readonly onPress: () => void;
 }) {
   return (
-    <Pressable onPress={onPress} style={[styles.choice, selected && styles.choiceActive]}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      style={[styles.choice, selected && styles.choiceActive]}
+    >
       <Text style={selected ? styles.primaryText : styles.body}>{label}</Text>
     </Pressable>
   );
@@ -1603,6 +1870,53 @@ function vehicleTone(status: string): 'success' | 'warning' | 'neutral' | 'dange
   if (['CHANGES_REQUIRED', 'PENDING_APPROVAL'].includes(status)) return 'warning';
   if (['REJECTED', 'SUSPENDED'].includes(status)) return 'danger';
   return 'neutral';
+}
+
+function ownerHandoverSummary(policy?: Policy) {
+  if (!policy) return 'Configure pricing and handover policies to continue.';
+  const start = [
+    policy.supportsRenterPickup ? 'Pickup' : null,
+    policy.supportsOwnerDelivery ? 'Delivery' : null,
+  ]
+    .filter(Boolean)
+    .join(' + ');
+  const end = [
+    policy.supportsRenterReturn ? 'Renter return' : null,
+    policy.supportsOwnerCollection ? 'Owner collection' : null,
+  ]
+    .filter(Boolean)
+    .join(' + ');
+  return `Start: ${start || 'Not configured'} · End: ${end || 'Not configured'}`;
+}
+
+function ownerMarketplaceStatus(vehicle: Vehicle) {
+  if (vehicle.status === 'DRAFT') return 'Draft';
+  if (vehicle.status === 'PENDING_APPROVAL') return 'Under review';
+  if (vehicle.status === 'CHANGES_REQUIRED') return 'Changes required';
+  if (vehicle.status === 'REJECTED') return 'Rejected';
+  if (vehicle.status === 'SUSPENDED') return 'Suspended';
+  if (vehicle.status === 'ARCHIVED') return 'Archived';
+  if (vehicle.status === 'APPROVED' && vehicle.operationalStatus === 'AVAILABLE')
+    return 'Approved · marked available';
+  if (vehicle.status === 'APPROVED') return 'Approved · temporarily unavailable';
+  return vehicleStatusLabel(vehicle.status);
+}
+
+function ownerMarketplaceExplanation(vehicle: Vehicle) {
+  if (vehicle.status === 'DRAFT')
+    return 'Complete the vehicle, pricing, location, photos, and documents, then submit it for CarShare review.';
+  if (vehicle.status === 'PENDING_APPROVAL')
+    return 'CarShare Operations must approve this vehicle before it can appear in Search.';
+  if (vehicle.status === 'CHANGES_REQUIRED')
+    return vehicle.reviewReason ?? 'Complete the requested changes and submit the vehicle again.';
+  if (vehicle.status === 'REJECTED')
+    return vehicle.reviewReason ?? 'This vehicle is not approved for the marketplace.';
+  if (vehicle.status === 'SUSPENDED')
+    return 'This listing is suspended and cannot appear in Search.';
+  if (vehicle.status === 'ARCHIVED') return 'This vehicle is archived and cannot appear in Search.';
+  if (vehicle.status === 'APPROVED' && vehicle.operationalStatus !== 'AVAILABLE')
+    return 'Use Mark available in the Review step when you are ready. Availability does not bypass marketplace eligibility checks.';
+  return 'Public Search still verifies the Owner, required documents, location, policy, and public-ready cover photo.';
 }
 
 const styles = StyleSheet.create({

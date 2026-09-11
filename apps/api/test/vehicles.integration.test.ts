@@ -20,6 +20,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
   const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const password = 'correct horse battery staple';
   const ownerEmail = `vehicle-owner-${unique}@example.test`;
+  const ownerMobile = `+63917${String(Math.floor(Math.random() * 10_000_000)).padStart(7, '0')}`;
   let ownerToken = '';
   let ownerId = '';
   let renterToken = '';
@@ -107,7 +108,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
       .send({
         addressLine1: '1 Vehicle Test Street',
         city: 'Makati',
-        contactNumber: '+639171234567',
+        contactNumber: ownerMobile,
         legalName: 'Phase Three Owner',
         postalCode: '1200',
         province: 'Metro Manila',
@@ -354,6 +355,45 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .send(basePolicy({ availabilityPolicy: 'WEEKLY', monday: true }))
       .expect(201);
+    const beforeOwnerServices = await database.client.vehiclePolicyVersion.findFirstOrThrow({
+      orderBy: { version: 'desc' },
+      where: { vehicleId },
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${vehicleId}/policy-versions`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(
+        basePolicy({
+          collectionFeeMinor: 30_000,
+          dailyRateMinor: beforeOwnerServices.dailyRateMinor,
+          deliveryFeeMinor: 30_000,
+          fulfillmentMinimumNoticeMinutes: 0,
+          fulfillmentServiceRadiusMeters: 25_000,
+          supportsOwnerCollection: true,
+          supportsOwnerDelivery: true,
+          supportsRenterPickup: true,
+          supportsRenterReturn: true,
+        }),
+      )
+      .expect(201);
+    const ownerServicePolicies = await database.client.vehiclePolicyVersion.findMany({
+      orderBy: { version: 'desc' },
+      take: 2,
+      where: { vehicleId },
+    });
+    expect(ownerServicePolicies[0]).toMatchObject({
+      collectionFeeMinor: 30_000,
+      dailyRateMinor: beforeOwnerServices.dailyRateMinor,
+      deliveryFeeMinor: 30_000,
+      fulfillmentMinimumNoticeMinutes: 0,
+      fulfillmentServiceRadiusMeters: 25_000,
+      supportsOwnerCollection: true,
+      supportsOwnerDelivery: true,
+      supportsRenterPickup: true,
+      supportsRenterReturn: true,
+    });
+    expect(ownerServicePolicies[1]?.id).toBe(beforeOwnerServices.id);
+    expect(ownerServicePolicies[1]?.supportsOwnerCollection).toBe(false);
     const startsAt = '2026-09-01T08:00:00+08:00';
     const endsAt = '2026-09-02T08:00:00+08:00';
     await request(app.getHttpServer())
@@ -513,6 +553,54 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(201)
       .expect(({ body }) => expect(body.data.status).toBe('APPROVED'));
+    for (const handover of ['PICKUP_AVAILABLE', 'DELIVERY_AVAILABLE', 'PICKUP_AND_DELIVERY']) {
+      await request(app.getHttpServer())
+        .get('/api/v1/vehicles/search')
+        .set('Authorization', `Bearer ${renterToken}`)
+        .query({
+          end: '2027-01-05T09:00:00+08:00',
+          handover,
+          latitude: '14.5547',
+          longitude: '121.0244',
+          radius: 100,
+          sort: 'NEWEST',
+          start: '2027-01-04T09:00:00+08:00',
+        })
+        .expect(200)
+        .expect(({ body }) => {
+          const item = body.data.items.find(
+            (candidate: { vehicleId: string }) => candidate.vehicleId === vehicleId,
+          );
+          expect(item.fulfillment).toMatchObject({
+            deliveryToSearchLocation: true,
+            ownerDeliveryAvailable: true,
+            renterPickupAvailable: true,
+          });
+        });
+    }
+    await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .query({
+        end: '2027-01-05T09:00:00+08:00',
+        handover: 'DELIVERY_AVAILABLE',
+        latitude: '14.8547',
+        longitude: '121.0244',
+        radius: 100,
+        sort: 'NEWEST',
+        start: '2027-01-04T09:00:00+08:00',
+      })
+      .expect(200)
+      .expect(({ body }) => {
+        const item = body.data.items.find(
+          (candidate: { vehicleId: string }) => candidate.vehicleId === vehicleId,
+        );
+        expect(item.fulfillment).toMatchObject({
+          deliveryToSearchLocation: false,
+          deliveryToSearchLocationReason: 'OUTSIDE_SERVICE_RADIUS',
+          ownerDeliveryAvailable: true,
+        });
+      });
     await request(app.getHttpServer())
       .get(`/api/v1/files/${approvedPhotoFileId}/content`)
       .set('Authorization', `Bearer ${renterToken}`)
