@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { adminLabel, formatBasisPoints, formatMoney, visibilityReason } from './admin-presentation';
+import {
+  adminLabel,
+  formatBasisPoints,
+  formatMoney,
+  marketplaceRoleLabel,
+  visibilityReason,
+} from './admin-presentation';
 
 describe('Admin presentation language', () => {
   it('maps backend status and event codes to operator-facing labels', () => {
@@ -7,6 +13,11 @@ describe('Admin presentation language', () => {
     expect(adminLabel('RETURN_PENDING')).toBe('Return awaiting confirmation');
     expect(adminLabel('TOKEN_REFRESH')).toBe('Session refreshed');
     expect(adminLabel('INTERIOR_DASHBOARD')).toBe('Interior / dashboard');
+  });
+
+  it('distinguishes marketplace Vehicle Owner capability from administrative Owner', () => {
+    expect(marketplaceRoleLabel('RENTER')).toBe('Renter');
+    expect(marketplaceRoleLabel('OWNER')).toBe('Vehicle Owner');
   });
 
   it('formats financial and inspection values for primary presentation', () => {

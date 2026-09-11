@@ -54,6 +54,11 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
     ownerToken = owner.body.data.accessToken;
     const renter = await register(`vehicle-renter-${unique}@example.test`);
     renterToken = renter.body.data.accessToken;
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .send({ persona: 'RENTER' })
+      .expect(201);
     adminToken = await administrativeToken(
       RoleCode.SUPER_ADMIN,
       `vehicle-admin-${unique}@example.test`,

@@ -99,6 +99,9 @@ interface AreaResponse {
 
 export function RenterVerificationWorkflow({
   onboardingNavigation,
+  onBackBeforeFirstStep,
+  progressOffset = 0,
+  progressTotal,
   snapshot,
 }: {
   readonly onboardingNavigation?: {
@@ -106,6 +109,9 @@ export function RenterVerificationWorkflow({
     readonly onNext: () => void;
     readonly step: number;
   };
+  readonly onBackBeforeFirstStep?: () => void;
+  readonly progressOffset?: number;
+  readonly progressTotal?: number;
   readonly snapshot: RenterVerificationSnapshot;
 }) {
   const client = useQueryClient();
@@ -257,8 +263,11 @@ export function RenterVerificationWorkflow({
         onboardingNavigation ? onboardingNavigation.onNext() : setInternalStep(nextStep),
     });
   };
-  const back = (nextStep: number) =>
-    onboardingNavigation ? onboardingNavigation.onBack() : setInternalStep(nextStep);
+  const back = (nextStep: number) => {
+    if (onboardingNavigation) return onboardingNavigation.onBack();
+    if (step === 0 && onBackBeforeFirstStep) return onBackBeforeFirstStep();
+    setInternalStep(nextStep);
+  };
   const advancePersonal = () => {
     const error = personalError(form);
     if (error) return setFormError(error);
@@ -368,10 +377,17 @@ export function RenterVerificationWorkflow({
           {!onboardingNavigation && (
             <Card style={styles.progressCard}>
               <Text style={styles.progressText}>
-                Step {step + 1} of {stages.length}
+                Step {step + 1 + progressOffset} of {progressTotal ?? stages.length}
               </Text>
               <Text style={styles.cardTitle}>{stages[step]}</Text>
               <View style={styles.progressDots}>
+                {progressOffset > 0 && (
+                  <Pressable
+                    accessibilityLabel="Go to Contact information"
+                    onPress={onBackBeforeFirstStep}
+                    style={[styles.progressDot, styles.progressDotActive]}
+                  />
+                )}
                 {stages.map((label, index) => (
                   <Pressable
                     accessibilityLabel={`Go to ${label}`}

@@ -8,6 +8,11 @@ export interface AuthUser {
   readonly mobileVerified: boolean;
   readonly roles: readonly string[];
   readonly status: string;
+  readonly profile: {
+    readonly initialMarketplacePersona: 'RENTER' | 'OWNER' | null;
+    readonly ownerOnboardingFirstEnteredAt: string | null;
+    readonly renterOnboardingCompletedAt: string | null;
+  } | null;
 }
 
 export interface AuthTokens {

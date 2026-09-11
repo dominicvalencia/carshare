@@ -8,6 +8,18 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const source = (path: string) => readFileSync(resolve(root, path), 'utf8');
 
 describe('Phase 12 renter acceptance stabilization', () => {
+  it('presents Contact information as step one without renumbering persisted KYC stages', () => {
+    const account = source('features/account/AccountScreen.tsx');
+    const workflow = source('features/account/RenterVerificationWorkflow.tsx');
+    expect(account).toContain("useState<'contact' | 'details'>('contact')");
+    expect(account).toContain('Step 1 of 8');
+    expect(account).toContain('progressOffset={1}');
+    expect(account).toContain('progressTotal={8}');
+    expect(workflow).toContain('onBackBeforeFirstStep');
+    expect(workflow).toContain('profile?.renterVerificationDraftStep ?? 0');
+    expect(workflow).not.toContain('renterVerificationDraftStep + 1');
+  });
+
   it('validates confirm password without sending it through registration persistence', () => {
     const authFlow = source('features/auth/AuthFlow.tsx');
     const provider = source('auth/AuthProvider.tsx');
@@ -18,20 +30,19 @@ describe('Phase 12 renter acceptance stabilization', () => {
     expect(provider).not.toContain('apiClient.register(email, password, confirmPassword)');
   });
 
-  it('persists a skippable eight-page onboarding flow without embedding account Verification', () => {
+  it('persists a server-authoritative skippable onboarding flow without embedding Verification', () => {
     const app = source('../App.tsx');
     const onboarding = source('features/account/RenterOnboardingPages.tsx');
+    const guided = source('onboarding/GuidedOnboarding.tsx');
     const provider = source('auth/AuthProvider.tsx');
-    const storage = source('auth/renter-onboarding-storage.ts');
-    expect(provider).toContain('renterOnboardingStorage.markPending');
-    expect(provider).toContain('renterOnboardingStorage.isPending');
-    expect(provider).toContain('catch {');
-    expect(storage).toContain('renter-onboarding_${userId}');
-    expect(storage).not.toContain('renter-onboarding:${userId}');
-    expect(app).toContain('Skip onboarding');
+    expect(provider).toContain("user?.roles.includes('RENTER')");
+    expect(provider).toContain('renterOnboardingCompletedAt');
+    expect(provider).not.toContain('renterOnboardingStorage');
+    expect(provider).toContain("'/me/personas/renter/onboarding-completion'");
+    expect(guided).toContain('Skip onboarding');
     expect(app).not.toContain('<VerificationScreen');
-    expect(app).toContain('WELCOME TO CAR RENTAL');
-    expect(app).toContain('<PageIndicator count={8} current={stage} />');
+    expect(guided).toContain('WELCOME TO CARSHARE');
+    expect(app).toContain('pageCount={8}');
     for (const title of [
       'Personal information',
       'Contact verification',
@@ -43,13 +54,12 @@ describe('Phase 12 renter acceptance stabilization', () => {
     ])
       expect(onboarding).toContain(title);
     expect(onboarding).toContain('onboardingNavigation={{ onBack, onNext, step }}');
-    expect(app).toContain('PanResponder.create');
-    expect(app).toContain('translateX.setValue(-stage * width + gesture.dx * resistance)');
-    expect(app).toContain('const pages = Array.from({ length: 8 }, (_, page) => page)');
-    expect(app).toContain('<View key={page} style={{ width }}>');
-    expect(app).toContain('toValue: -boundedStage * width');
-    expect(app).toContain("overflow: 'hidden'");
-    expect(app).toContain('<Button label="Skip onboarding" onPress={onSkip} variant="ghost" />');
+    expect(guided).toContain('PanResponder.create');
+    expect(guided).toContain('Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5');
+    expect(guided).toContain('<View key={index} style={{ width }}>');
+    expect(guided).toContain('toValue: -nextPage * width');
+    expect(guided).toContain("overflow: 'hidden'");
+    expect(guided).toContain('<Button label="Skip onboarding" onPress={onSkip} variant="ghost" />');
     const workflow = source('features/account/RenterVerificationWorkflow.tsx');
     expect(workflow).not.toContain('registerSwipeNext');
     expect(workflow).not.toContain(

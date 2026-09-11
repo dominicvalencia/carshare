@@ -82,7 +82,7 @@ describe.sequential('Phase 2 identity integration', () => {
     await app.close();
   });
 
-  it('registers one user with a hashed password and default RENTER role', async () => {
+  it('registers one roleless user, then explicitly enrolls the RENTER persona', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/v1/auth/register')
       .send({
@@ -96,12 +96,69 @@ describe.sequential('Phase 2 identity integration', () => {
       .expect(201);
     accessToken = response.body.data.accessToken;
     firstRefreshToken = response.body.data.refreshToken;
-    expect(response.body.data.user.roles).toEqual(['RENTER']);
+    expect(response.body.data.user.roles).toEqual([]);
     const stored = await database.client.user.findUniqueOrThrow({
       where: { normalizedEmail: email },
     });
     expect(stored.passwordHash).toMatch(/^\$argon2id\$/);
     expect(stored.passwordHash).not.toContain(password);
+    const rolelessState = await request(app.getHttpServer())
+      .get('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+    expect(rolelessState.body.data).toMatchObject({
+      owner: { enabled: false, onboarding: 'NOT_ENABLED', status: null },
+      renter: { enabled: false, onboarding: 'NOT_ENABLED' },
+    });
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ persona: 'ADMIN' })
+      .expect(400);
+    const enrolled = await request(app.getHttpServer())
+      .post('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ persona: 'RENTER' })
+      .expect(201);
+    expect(enrolled.body.data).toMatchObject({
+      newlyEnrolled: true,
+      renter: { enabled: true, onboarding: 'IN_PROGRESS' },
+    });
+    const repeatedEnrollment = await request(app.getHttpServer())
+      .post('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ persona: 'RENTER' })
+      .expect(201);
+    expect(repeatedEnrollment.body.data.newlyEnrolled).toBe(false);
+    const initialPersona = await database.client.userProfile.findUniqueOrThrow({
+      where: { userId: stored.id },
+      select: { initialMarketplacePersona: true },
+    });
+    expect(initialPersona.initialMarketplacePersona).toBe('RENTER');
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas/owner/onboarding-entry')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(403);
+    const completed = await request(app.getHttpServer())
+      .post('/api/v1/me/personas/renter/onboarding-completion')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(201);
+    expect(completed.body.data.renter).toEqual({ enabled: true, onboarding: 'COMPLETE' });
+    const firstCompletion = await database.client.userProfile.findUniqueOrThrow({
+      where: { userId: stored.id },
+      select: { renterOnboardingCompletedAt: true },
+    });
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas/renter/onboarding-completion')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(201);
+    const repeatedCompletion = await database.client.userProfile.findUniqueOrThrow({
+      where: { userId: stored.id },
+      select: { renterOnboardingCompletedAt: true },
+    });
+    expect(repeatedCompletion.renterOnboardingCompletedAt).toEqual(
+      firstCompletion.renterOnboardingCompletedAt,
+    );
     await request(app.getHttpServer())
       .post('/api/v1/auth/register')
       .send({ email, password, platform: 'WEB' })
@@ -120,6 +177,85 @@ describe.sequential('Phase 2 identity integration', () => {
       .post('/api/v1/auth/register')
       .send({ email: 'invalid', password: 'short', platform: 'WEB' })
       .expect(400);
+  });
+
+  it('enrolls OWNER idempotently without exposing administrative role assignment', async () => {
+    const ownerFirstEmail = `owner-first-${unique}@example.test`;
+    const registration = await request(app.getHttpServer())
+      .post('/api/v1/auth/register')
+      .send({ email: ownerFirstEmail, password, platform: 'WEB' })
+      .expect(201);
+    const token = registration.body.data.accessToken as string;
+    const userId = registration.body.data.user.id as string;
+    const concurrentEnrollments = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/v1/me/personas')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ persona: 'OWNER' })
+        .expect(201),
+      request(app.getHttpServer())
+        .post('/api/v1/me/personas')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ persona: 'OWNER' })
+        .expect(201),
+    ]);
+    expect(
+      concurrentEnrollments.map((response) => response.body.data.newlyEnrolled).sort(),
+    ).toEqual([false, true]);
+    expect(await database.client.ownerProfile.count({ where: { userId } })).toBe(1);
+    const ownerAssignments = await database.client.userRole.findMany({
+      where: { userId },
+      include: { role: true },
+    });
+    expect(ownerAssignments.map(({ role }) => role.code)).toEqual(['OWNER']);
+    const assignedAt = ownerAssignments[0]!.assignedAt;
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ persona: 'OWNER' })
+      .expect(201);
+    const repeatedOwner = await database.client.userRole.findFirstOrThrow({
+      where: { userId, role: { code: RoleCode.OWNER } },
+    });
+    expect(repeatedOwner.assignedAt).toEqual(assignedAt);
+    const firstEntry = await request(app.getHttpServer())
+      .post('/api/v1/me/personas/owner/onboarding-entry')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(201);
+    expect(firstEntry.body.data.ownerOnboardingFirstEnteredAt).toEqual(expect.any(String));
+    const firstEntryTimestamp = await database.client.userProfile.findUniqueOrThrow({
+      where: { userId },
+      select: { initialMarketplacePersona: true, ownerOnboardingFirstEnteredAt: true },
+    });
+    expect(firstEntryTimestamp.initialMarketplacePersona).toBe('OWNER');
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas/owner/onboarding-entry')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(201);
+    const repeatedEntryTimestamp = await database.client.userProfile.findUniqueOrThrow({
+      where: { userId },
+      select: { ownerOnboardingFirstEnteredAt: true },
+    });
+    expect(repeatedEntryTimestamp.ownerOnboardingFirstEnteredAt).toEqual(
+      firstEntryTimestamp.ownerOnboardingFirstEnteredAt,
+    );
+
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ persona: 'RENTER' })
+      .expect(201);
+    const afterSecondPersona = await database.client.userProfile.findUniqueOrThrow({
+      where: { userId },
+      select: { initialMarketplacePersona: true },
+    });
+    expect(afterSecondPersona.initialMarketplacePersona).toBe('OWNER');
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ persona: 'SUPER_ADMIN' })
+      .expect(400);
+    expect(await database.client.adminUser.count({ where: { credentialUserId: userId } })).toBe(0);
   });
 
   it('protects login enumeration and verifies email with a one-time hashed token', async () => {
@@ -183,7 +319,7 @@ describe.sequential('Phase 2 identity integration', () => {
       .expect(200);
     accessToken = login.body.data.accessToken;
     currentSessionId = login.body.data.sessionId;
-  });
+  }, 15_000);
 
   it('manages sessions and authenticates with mobile OTP without exposing its hash', async () => {
     const sessions = await request(app.getHttpServer())

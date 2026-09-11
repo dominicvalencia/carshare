@@ -15,6 +15,7 @@ import {
   LoginSecurityScreen,
   OwnerMoreScreen,
   OwnerOnboardingScreen,
+  OwnerProfileScreen,
   PersonalInformationScreen,
   SettingsScreen,
   VerificationScreen,
@@ -130,7 +131,8 @@ function tabOptions(icons: { active: IconName; idle: IconName }, bottomInset: nu
 function RenterNavigation({
   onModeChange,
   ownerCapable,
-}: Pick<AppNavigationProperties, 'onModeChange' | 'ownerCapable'>) {
+  ownerStatus,
+}: Pick<AppNavigationProperties, 'onModeChange' | 'ownerCapable' | 'ownerStatus'>) {
   const badges = useBadges('renter');
   const insets = useSafeAreaInsets();
   return (
@@ -153,7 +155,13 @@ function RenterNavigation({
         )}
       </RenterTabs.Screen>
       <RenterTabs.Screen name="Profile">
-        {() => <AccountScreen onModeChange={onModeChange} ownerCapable={ownerCapable} />}
+        {() => (
+          <AccountScreen
+            onModeChange={onModeChange}
+            ownerCapable={ownerCapable}
+            ownerStatus={ownerStatus}
+          />
+        )}
       </RenterTabs.Screen>
     </RenterTabs.Navigator>
   );
@@ -246,6 +254,7 @@ export function AppNavigation(properties: AppNavigationProperties) {
               <RenterNavigation
                 onModeChange={properties.onModeChange}
                 ownerCapable={properties.ownerCapable}
+                ownerStatus={properties.ownerStatus}
               />
             ) : (
               <OwnerNavigation
@@ -278,6 +287,11 @@ export function AppNavigation(properties: AppNavigationProperties) {
         <Stack.Screen
           component={OwnerOnboardingScreen}
           name="OwnerOnboarding"
+          options={{ gestureEnabled: false, headerShown: false }}
+        />
+        <Stack.Screen
+          component={OwnerProfileScreen}
+          name="OwnerProfile"
           options={{ headerShown: false }}
         />
         <Stack.Screen name="Notifications" options={{ headerShown: false }}>

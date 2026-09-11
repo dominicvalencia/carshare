@@ -28,6 +28,7 @@ export type RootStackParamList = {
   LoginSecurity: undefined;
   ActiveDevices: undefined;
   OwnerOnboarding: undefined;
+  OwnerProfile: undefined;
   Notifications: undefined;
   Favorites: undefined;
   Reviews: undefined;

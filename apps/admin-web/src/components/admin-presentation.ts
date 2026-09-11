@@ -37,6 +37,10 @@ export function adminLabel(value: string | null | undefined): string {
   );
 }
 
+export function marketplaceRoleLabel(value: string): string {
+  return value === 'OWNER' ? 'Vehicle Owner' : adminLabel(value);
+}
+
 export function formatDate(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleString() : 'Not recorded';
 }

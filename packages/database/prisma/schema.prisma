@@ -37,6 +37,11 @@ enum RoleCode {
   FINANCE_ADMIN
 }
 
+enum MarketplacePersona {
+  RENTER
+  OWNER
+}
+
 enum SessionPlatform {
   IOS
   ANDROID
@@ -839,37 +844,40 @@ model User {
 }
 
 model UserProfile {
-  id                            String    @id @default(uuid()) @db.Uuid
-  userId                        String    @unique @map("user_id") @db.Uuid
-  firstName                     String?   @map("first_name") @db.VarChar(100)
-  middleName                    String?   @map("middle_name") @db.VarChar(100)
-  lastName                      String?   @map("last_name") @db.VarChar(100)
-  displayName                   String?   @map("display_name") @db.VarChar(150)
-  dateOfBirth                   DateTime? @map("date_of_birth") @db.Date
-  avatarFileId                  String?   @map("avatar_file_id") @db.Uuid
-  addressLine1                  String?   @map("address_line_1") @db.VarChar(255)
-  region                        String?   @db.VarChar(120)
-  regionCode                    String?   @map("region_code") @db.VarChar(10)
-  addressScopeCode              String?   @map("address_scope_code") @db.VarChar(10)
-  barangay                      String?   @db.VarChar(120)
-  barangayCode                  String?   @map("barangay_code") @db.VarChar(10)
-  cityMunicipality              String?   @map("city_municipality") @db.VarChar(120)
-  cityMunicipalityCode          String?   @map("city_municipality_code") @db.VarChar(10)
-  province                      String?   @db.VarChar(120)
-  provinceCode                  String?   @map("province_code") @db.VarChar(10)
-  postalCode                    String?   @map("postal_code") @db.VarChar(12)
-  driverLicenseNumberHash       String?   @unique @map("driver_license_number_hash") @db.Char(64)
-  driverLicenseLastFour         String?   @map("driver_license_last_four") @db.VarChar(4)
-  driverLicenseExpiry           DateTime? @map("driver_license_expiry") @db.Date
-  driverLicenseClass            String?   @map("driver_license_class") @db.VarChar(100)
-  driverLicenseRestrictions     String?   @map("driver_license_restrictions") @db.VarChar(255)
-  emergencyContactName          String?   @map("emergency_contact_name") @db.VarChar(200)
-  emergencyContactMobile        String?   @map("emergency_contact_mobile") @db.VarChar(32)
-  emergencyContactRelation      String?   @map("emergency_contact_relation") @db.VarChar(100)
-  emergencyContactRelationOther String?   @map("emergency_contact_relation_other") @db.VarChar(100)
-  renterVerificationDraftStep   Int       @default(0) @map("renter_verification_draft_step")
-  createdAt                     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt                     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                            String              @id @default(uuid()) @db.Uuid
+  userId                        String              @unique @map("user_id") @db.Uuid
+  firstName                     String?             @map("first_name") @db.VarChar(100)
+  middleName                    String?             @map("middle_name") @db.VarChar(100)
+  lastName                      String?             @map("last_name") @db.VarChar(100)
+  displayName                   String?             @map("display_name") @db.VarChar(150)
+  dateOfBirth                   DateTime?           @map("date_of_birth") @db.Date
+  avatarFileId                  String?             @map("avatar_file_id") @db.Uuid
+  addressLine1                  String?             @map("address_line_1") @db.VarChar(255)
+  region                        String?             @db.VarChar(120)
+  regionCode                    String?             @map("region_code") @db.VarChar(10)
+  addressScopeCode              String?             @map("address_scope_code") @db.VarChar(10)
+  barangay                      String?             @db.VarChar(120)
+  barangayCode                  String?             @map("barangay_code") @db.VarChar(10)
+  cityMunicipality              String?             @map("city_municipality") @db.VarChar(120)
+  cityMunicipalityCode          String?             @map("city_municipality_code") @db.VarChar(10)
+  province                      String?             @db.VarChar(120)
+  provinceCode                  String?             @map("province_code") @db.VarChar(10)
+  postalCode                    String?             @map("postal_code") @db.VarChar(12)
+  driverLicenseNumberHash       String?             @unique @map("driver_license_number_hash") @db.Char(64)
+  driverLicenseLastFour         String?             @map("driver_license_last_four") @db.VarChar(4)
+  driverLicenseExpiry           DateTime?           @map("driver_license_expiry") @db.Date
+  driverLicenseClass            String?             @map("driver_license_class") @db.VarChar(100)
+  driverLicenseRestrictions     String?             @map("driver_license_restrictions") @db.VarChar(255)
+  emergencyContactName          String?             @map("emergency_contact_name") @db.VarChar(200)
+  emergencyContactMobile        String?             @map("emergency_contact_mobile") @db.VarChar(32)
+  emergencyContactRelation      String?             @map("emergency_contact_relation") @db.VarChar(100)
+  emergencyContactRelationOther String?             @map("emergency_contact_relation_other") @db.VarChar(100)
+  renterVerificationDraftStep   Int                 @default(0) @map("renter_verification_draft_step")
+  renterOnboardingCompletedAt   DateTime?           @map("renter_onboarding_completed_at") @db.Timestamptz(3)
+  initialMarketplacePersona     MarketplacePersona? @map("initial_marketplace_persona")
+  ownerOnboardingFirstEnteredAt DateTime?           @map("owner_onboarding_first_entered_at") @db.Timestamptz(3)
+  createdAt                     DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   user       User       @relation(fields: [userId], references: [id], onDelete: Restrict)
   avatarFile FileAsset? @relation("ProfileAvatar", fields: [avatarFileId], references: [id], onDelete: SetNull)

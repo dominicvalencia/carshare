@@ -1,15 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Animated,
-  PanResponder,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from './src/auth/AuthProvider';
 import { apiClient } from './src/auth/api-client';
@@ -30,6 +22,13 @@ import { RenterOnboardingDraftProvider } from './src/features/account/RenterVeri
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { activeRoleStorage } from './src/navigation/active-role-storage';
+import { OwnerOnboardingScreen } from './src/features/account/AccountScreen';
+import { GuidedOnboarding, OnboardingWelcome } from './src/onboarding/GuidedOnboarding';
+import {
+  ownerFirstEntryIntentStorage,
+  ownerOnboardingStorage,
+} from './src/onboarding/owner-onboarding-storage';
+import { resolvePersonaMode, shouldPresentOwnerFirstEntry } from './src/navigation/persona-mode';
 
 const OnboardingStack = createNativeStackNavigator();
 
@@ -66,33 +65,88 @@ function AppContent() {
   const auth = useAuth();
   const userId = auth.user?.id;
   const [mode, setMode] = useState<MobileMode>('renter');
-  const [modeReady, setModeReady] = useState(false);
+  const [restoredModeKey, setRestoredModeKey] = useState<string | null>(null);
+  const [ownerGuideState, setOwnerGuideState] = useState<{
+    readonly dismissed: boolean;
+    readonly firstEntryIntent: boolean;
+    readonly userId: string;
+  } | null>(null);
+  const roles = auth.user?.roles ?? [];
+  const renterCapable = roles.includes('RENTER');
+  const ownerRole = roles.includes('OWNER');
+  const modeResolutionKey = userId
+    ? `${userId}:${auth.user?.profile?.initialMarketplacePersona ?? 'NONE'}:${renterCapable}:${ownerRole}`
+    : null;
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || !modeResolutionKey) return;
     let active = true;
     void activeRoleStorage
       .get(userId)
       .then((stored) => {
-        if (active) setMode(stored);
+        if (!active) return;
+        setMode(
+          resolvePersonaMode({
+            initialPersona: auth.user?.profile?.initialMarketplacePersona ?? null,
+            ownerEnabled: ownerRole,
+            renterEnabled: renterCapable,
+            savedMode: stored,
+          }) ?? 'renter',
+        );
       })
       .finally(() => {
-        if (active) setModeReady(true);
+        if (active) setRestoredModeKey(modeResolutionKey);
       });
     return () => {
       active = false;
     };
-  }, [userId]);
+  }, [
+    auth.user?.profile?.initialMarketplacePersona,
+    modeResolutionKey,
+    ownerRole,
+    renterCapable,
+    userId,
+  ]);
+  useEffect(() => {
+    if (!userId || !ownerRole) return;
+    let active = true;
+    void Promise.all([
+      ownerOnboardingStorage.isDismissed(userId),
+      ownerFirstEntryIntentStorage.exists(userId),
+    ]).then(([dismissed, firstEntryIntent]) => {
+      if (active) setOwnerGuideState({ dismissed, firstEntryIntent, userId });
+    });
+    return () => {
+      active = false;
+    };
+  }, [ownerRole, userId]);
+  const ownerGuideReady = !userId || !ownerRole || ownerGuideState?.userId === userId;
+  const ownerGuideDismissed = Boolean(
+    ownerGuideState && ownerGuideState.userId === userId && ownerGuideState.dismissed,
+  );
+  const ownerFirstEntryIntent = Boolean(
+    ownerGuideState && ownerGuideState.userId === userId && ownerGuideState.firstEntryIntent,
+  );
   const changeMode = useCallback(
     (nextMode: MobileMode) => {
       setMode(nextMode);
-      if (userId) void activeRoleStorage.set(userId, nextMode);
+      if (userId) {
+        void activeRoleStorage.set(userId, nextMode);
+        if (
+          nextMode === 'owner' &&
+          ownerRole &&
+          !auth.user?.profile?.ownerOnboardingFirstEnteredAt
+        ) {
+          setOwnerGuideState({ dismissed: false, firstEntryIntent: true, userId });
+          void ownerFirstEntryIntentStorage.set(userId);
+        }
+      }
     },
-    [userId],
+    [auth.user?.profile?.ownerOnboardingFirstEnteredAt, ownerRole, userId],
   );
   const owner = useQuery({
     queryKey: ['owner'],
     queryFn: () => apiClient.request<{ status: OwnerStatus }>('/owners/me'),
-    enabled: Boolean(auth.user) && !auth.booting,
+    enabled: Boolean(auth.user) && ownerRole && !auth.booting,
     retry: false,
   });
   if (auth.booting)
@@ -102,13 +156,14 @@ function AppContent() {
       </View>
     );
   if (!auth.user) return <AuthFlow />;
-  if (!modeReady)
+  if (!renterCapable && !ownerRole) return <PersonaSelection />;
+  if (restoredModeKey !== modeResolutionKey || !ownerGuideReady)
     return (
       <View style={styles.loading}>
         <Text>Restoring your workspace…</Text>
       </View>
     );
-  if (auth.renterOnboardingPending)
+  if (mode === 'renter' && auth.renterOnboardingPending)
     return (
       <NavigationContainer>
         <OnboardingStack.Navigator screenOptions={{ headerShown: false }}>
@@ -118,7 +173,39 @@ function AppContent() {
         </OnboardingStack.Navigator>
       </NavigationContainer>
     );
-  const ownerCapable = Boolean(owner.data) || auth.user.roles.includes('OWNER');
+  if (!renterCapable && ownerRole && owner.isPending)
+    return (
+      <View style={styles.loading}>
+        <Text>Restoring Vehicle Owner setup…</Text>
+      </View>
+    );
+  if (
+    !ownerGuideDismissed &&
+    owner.data &&
+    shouldPresentOwnerFirstEntry({
+      firstEntryIntent: ownerFirstEntryIntent,
+      initialPersona: auth.user.profile?.initialMarketplacePersona ?? null,
+      mode,
+      ownerEnabled: ownerRole,
+      ownerOnboardingFirstEnteredAt: auth.user.profile?.ownerOnboardingFirstEnteredAt ?? null,
+    })
+  )
+    return (
+      <NavigationContainer>
+        <OnboardingStack.Navigator screenOptions={{ headerShown: false }}>
+          <OnboardingStack.Screen name="OwnerOnboarding" options={{ gestureEnabled: false }}>
+            {() => (
+              <OwnerOnboardingScreen
+                onSkip={() => {
+                  setOwnerGuideState({ dismissed: true, firstEntryIntent: false, userId: userId! });
+                }}
+              />
+            )}
+          </OnboardingStack.Screen>
+        </OnboardingStack.Navigator>
+      </NavigationContainer>
+    );
+  const ownerCapable = Boolean(owner.data) || ownerRole;
   return (
     <AppLockProvider userId={auth.user.id}>
       <ProtectedApplication
@@ -131,74 +218,109 @@ function AppContent() {
   );
 }
 
+function PersonaSelection() {
+  const auth = useAuth();
+  const [selected, setSelected] = useState<'RENTER' | 'OWNER' | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const choose = async () => {
+    if (!selected || submitting) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await auth.enrollPersona(selected);
+    } catch {
+      setError('We could not save your choice. Check your connection and try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <SafeAreaView edges={['top', 'bottom']} style={styles.personaShell}>
+      <View style={styles.personaContent}>
+        <Text style={styles.onboardingEyebrow}>WELCOME TO CARSHARE</Text>
+        <Text accessibilityRole="header" style={styles.onboardingTitle}>
+          How would you like to use CarShare?
+        </Text>
+        <Text style={styles.personaSupporting}>
+          You can add the other option later from your profile.
+        </Text>
+        <PersonaOption
+          description="Find and book vehicles from CarShare owners."
+          icon="car-sport-outline"
+          label="Rent a car"
+          onPress={() => setSelected('RENTER')}
+          selected={selected === 'RENTER'}
+        />
+        <PersonaOption
+          description="Earn by listing your vehicle for verified renters."
+          icon="key-outline"
+          label="List my car"
+          onPress={() => setSelected('OWNER')}
+          selected={selected === 'OWNER'}
+        />
+        {error ? (
+          <Text accessibilityRole="alert" style={styles.personaError}>
+            {error}
+          </Text>
+        ) : null}
+        <Button
+          disabled={!selected || submitting}
+          label={submitting ? 'Saving…' : 'Continue'}
+          onPress={() => void choose()}
+        />
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function PersonaOption({
+  description,
+  icon,
+  label,
+  onPress,
+  selected,
+}: {
+  readonly description: string;
+  readonly icon: 'car-sport-outline' | 'key-outline';
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly selected: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected }}
+      onPress={onPress}
+      style={[styles.personaOption, selected && styles.personaOptionSelected]}
+    >
+      <Icon color={colors.primary} name={icon} size={32} />
+      <View style={styles.personaOptionCopy}>
+        <Text style={styles.personaOptionTitle}>{label}</Text>
+        <Text style={styles.personaSupporting}>{description}</Text>
+      </View>
+      <Icon
+        color={selected ? colors.primary : colors.border}
+        name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+        size={26}
+      />
+    </Pressable>
+  );
+}
+
 function RenterOnboarding({ onSkip }: { readonly onSkip: () => void }) {
   const [stage, setStage] = useState(0);
-  const { width } = useWindowDimensions();
-  const [translateX] = useState(() => new Animated.Value(0));
-  useEffect(() => translateX.setValue(-stage * width), [stage, translateX, width]);
-  const settle = useCallback(
-    (nextStage: number) => {
-      const boundedStage = Math.max(0, Math.min(7, nextStage));
-      Animated.spring(translateX, {
-        damping: 24,
-        mass: 0.8,
-        stiffness: 240,
-        toValue: -boundedStage * width,
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished) setStage(boundedStage);
-      });
-    },
-    [translateX, width],
-  );
-  const pager = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
-          Math.abs(gesture.dx) > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
-        onMoveShouldSetPanResponder: (_event, gesture) =>
-          Math.abs(gesture.dx) > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
-        onPanResponderMove: (_event, gesture) => {
-          const atFirst = stage === 0 && gesture.dx > 0;
-          const atLast = stage === 7 && gesture.dx < 0;
-          const resistance = atFirst || atLast ? 0.25 : 1;
-          translateX.setValue(-stage * width + gesture.dx * resistance);
-        },
-        onPanResponderRelease: (_event, gesture) => {
-          const advance = gesture.dx < -width * 0.2 || gesture.vx < -0.5;
-          const retreat = gesture.dx > width * 0.2 || gesture.vx > 0.5;
-          if (advance && stage < 7) settle(stage + 1);
-          else if (retreat && stage > 0) settle(stage - 1);
-          else settle(stage);
-        },
-        onPanResponderTerminate: () => settle(stage),
-      }),
-    [settle, stage, translateX, width],
-  );
+  const settle = setStage;
   const renderPage = (page: number) => {
     if (page === 0)
       return (
-        <ScrollView
-          contentContainerStyle={styles.onboardingWelcome}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.onboardingHero}>
-            <View style={styles.onboardingIcon}>
-              <Icon color={colors.primary} name="car-sport-outline" size={52} />
-            </View>
-            <Text style={styles.onboardingEyebrow}>WELCOME TO CAR RENTAL</Text>
-            <Text accessibilityRole="header" style={styles.onboardingTitle}>
-              Your next drive starts here.
-            </Text>
-            <Text style={styles.onboardingBody}>
-              Find and book vehicles from trusted owners. Complete your verification when you’re
-              ready to rent.
-            </Text>
-          </View>
-          <View style={styles.onboardingActions}>
-            <Button label="Next" onPress={() => settle(1)} />
-          </View>
-        </ScrollView>
+        <OnboardingWelcome
+          body="Find and book vehicles from trusted owners. Complete your verification when you’re ready to rent."
+          icon="car-sport-outline"
+          onNext={() => settle(1)}
+          title="Your next drive starts here."
+        />
       );
     if (page === 2)
       return <RenterOnboardingContactPage onBack={() => settle(1)} onNext={() => settle(3)} />;
@@ -211,52 +333,12 @@ function RenterOnboarding({ onSkip }: { readonly onSkip: () => void }) {
       />
     );
   };
-  const pages = Array.from({ length: 8 }, (_, page) => page);
   return (
     <RenterOnboardingDraftProvider>
-      <SafeAreaView
-        accessibilityHint="Swipe left for next or right for previous"
-        edges={['top', 'bottom']}
-        style={styles.onboardingShell}
-        {...pager.panHandlers}
-      >
-        <View style={styles.onboardingProgressHeader}>
-          <PageIndicator count={8} current={stage} />
-          <Button label="Skip onboarding" onPress={onSkip} variant="ghost" />
-        </View>
-        <View style={styles.onboardingViewport} {...pager.panHandlers}>
-          <Animated.View
-            style={[
-              styles.onboardingTrack,
-              { transform: [{ translateX }], width: width * pages.length },
-            ]}
-          >
-            {pages.map((page) => (
-              <View key={page} style={{ width }}>
-                {renderPage(page)}
-              </View>
-            ))}
-          </Animated.View>
-        </View>
-      </SafeAreaView>
+      <GuidedOnboarding currentPage={stage} onPageChange={setStage} onSkip={onSkip} pageCount={8}>
+        {Array.from({ length: 8 }, (_, page) => renderPage(page))}
+      </GuidedOnboarding>
     </RenterOnboardingDraftProvider>
-  );
-}
-
-function PageIndicator({ count, current }: { readonly count: number; readonly current: number }) {
-  return (
-    <View
-      accessible
-      accessibilityLabel={`Onboarding page ${current + 1} of ${count}`}
-      style={styles.pageDots}
-    >
-      <Text style={styles.pageStatus}>
-        {current + 1} / {count}
-      </Text>
-      {Array.from({ length: count }, (_, index) => (
-        <View key={index} style={[styles.pageDot, index === current && styles.pageDotActive]} />
-      ))}
-    </View>
   );
 }
 
@@ -296,26 +378,22 @@ function ProtectedApplication({
 const styles = StyleSheet.create({
   container: { backgroundColor: colors.surface, flex: 1 },
   loading: { alignItems: 'center', flex: 1, justifyContent: 'center' },
-  onboardingActions: { gap: 12 },
-  onboardingBody: { color: colors.subtleText, fontSize: 18, lineHeight: 27, textAlign: 'center' },
   onboardingEyebrow: { color: colors.primary, fontSize: 13, fontWeight: '900', letterSpacing: 2 },
-  onboardingHero: { alignItems: 'center', flex: 1, gap: 18, justifyContent: 'center' },
-  onboardingIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderRadius: 48,
-    height: 96,
-    justifyContent: 'center',
-    width: 96,
-  },
-  onboardingProgressHeader: { alignItems: 'center', flexDirection: 'row', paddingHorizontal: 20 },
-  onboardingShell: { backgroundColor: colors.surface, flex: 1 },
-  onboardingTrack: { flex: 1, flexDirection: 'row' },
   onboardingTitle: { color: colors.ink, fontSize: 34, fontWeight: '900', textAlign: 'center' },
-  onboardingViewport: { flex: 1, overflow: 'hidden' },
-  onboardingWelcome: { flexGrow: 1, padding: 24 },
-  pageDot: { backgroundColor: colors.border, borderRadius: 4, height: 8, width: 8 },
-  pageDotActive: { backgroundColor: colors.primary, width: 24 },
-  pageDots: { flex: 1, flexDirection: 'row', gap: 8, justifyContent: 'center' },
-  pageStatus: { color: colors.subtleText, fontSize: 12, fontWeight: '700' },
+  personaContent: { flex: 1, gap: 18, justifyContent: 'center', padding: 24 },
+  personaError: { color: colors.danger, fontSize: 14 },
+  personaOption: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: 18,
+    borderWidth: 2,
+    flexDirection: 'row',
+    gap: 14,
+    padding: 20,
+  },
+  personaOptionCopy: { flex: 1, gap: 4 },
+  personaOptionSelected: { backgroundColor: colors.primarySoft, borderColor: colors.primary },
+  personaOptionTitle: { color: colors.ink, fontSize: 20, fontWeight: '800' },
+  personaShell: { backgroundColor: colors.surface, flex: 1 },
+  personaSupporting: { color: colors.subtleText, fontSize: 16, lineHeight: 23 },
 });

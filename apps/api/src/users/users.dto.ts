@@ -1,5 +1,16 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsDateString, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+import { IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+
+export const selfServicePersonas = ['RENTER', 'OWNER'] as const;
+export type SelfServicePersona = (typeof selfServicePersonas)[number];
+
+export class EnrollPersonaDto {
+  @ApiProperty({ enum: selfServicePersonas })
+  @IsString()
+  @IsIn(selfServicePersonas)
+  persona!: SelfServicePersona;
+}
 
 export class UpdateProfileDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(100) firstName?: string;

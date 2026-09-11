@@ -56,11 +56,21 @@ describe.sequential('Phase 4 public discovery integration', () => {
 
     const renter = await register(`phase4-renter-${unique}@example.test`);
     renterToken = renter.body.data.accessToken;
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .send({ persona: 'RENTER' })
+      .expect(201);
     renterUserId = renter.body.data.user.id;
     await approveRenter(renterUserId);
     const owner = await register(`phase4-owner-${unique}@example.test`);
     ownerToken = owner.body.data.accessToken;
     ownerUserId = owner.body.data.user.id;
+    await request(app.getHttpServer())
+      .post('/api/v1/me/personas')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ persona: 'RENTER' })
+      .expect(201);
     const ownerRole = await database.client.role.findUniqueOrThrow({
       where: { code: RoleCode.OWNER },
     });

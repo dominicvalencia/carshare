@@ -38,10 +38,10 @@ describe('Android native layout stabilization', () => {
   });
 
   it('protects every renter onboarding page from the bottom system inset', () => {
-    const app = source('App.tsx');
-    expect(app).toContain("edges={['top', 'bottom']}");
-    expect(app).toContain('contentContainerStyle={styles.onboardingWelcome}');
-    expect(app).toContain('onboardingWelcome: { flexGrow: 1');
+    const onboarding = source('src/onboarding/GuidedOnboarding.tsx');
+    expect(onboarding).toContain("edges={['top', 'bottom']}");
+    expect(onboarding).toContain('contentContainerStyle={styles.welcome}');
+    expect(onboarding).toContain('welcome: { flexGrow: 1');
   });
 
   it('uses an in-app front-facing camera for Android selfies only', () => {

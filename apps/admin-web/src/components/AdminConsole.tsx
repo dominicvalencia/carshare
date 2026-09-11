@@ -23,6 +23,7 @@ import {
   formatBasisPoints,
   formatDate,
   formatMoney,
+  marketplaceRoleLabel,
   visibilityReason,
 } from './admin-presentation';
 import { AdminUserDetail } from './AdminUserDetail';
@@ -2552,7 +2553,7 @@ export function AdminConsole({
                   >
                     <option value="ALL">All roles</option>
                     <option value="RENTER">Renter</option>
-                    <option value="OWNER">Owner</option>
+                    <option value="OWNER">Vehicle Owner</option>
                   </select>
                 </label>
                 <label>
@@ -2603,7 +2604,7 @@ export function AdminConsole({
                             </strong>
                           </td>
                           <td>{user.email ?? user.mobileNumber ?? 'No contact'}</td>
-                          <td>{roles.join(' / ') || '—'}</td>
+                          <td>{roles.map(marketplaceRoleLabel).join(' • ') || '—'}</td>
                           <td>
                             <StatusBadge value={verification} />
                           </td>

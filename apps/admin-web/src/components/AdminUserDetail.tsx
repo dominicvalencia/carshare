@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useState } from 'react';
 import { DataTable, EmptyState, StatusBadge } from './AdminPrimitives';
+import { marketplaceRoleLabel } from './admin-presentation';
 
 import { API_URL } from './admin-environment';
 
@@ -165,7 +166,7 @@ export function AdminUserDetail({
             ← Accounts
           </Link>
           <h2>{name}</h2>
-          <p>{roles.join(' · ') || 'No marketplace role assigned'}</p>
+          <p>{roles.map(marketplaceRoleLabel).join(' • ') || 'No marketplace role assigned'}</p>
         </div>
         <StatusBadge value={user.status} />
       </div>

@@ -5,7 +5,6 @@ import {
   AuthTokenType,
   OtpPurpose,
   PushTokenStatus,
-  RoleCode,
   UserStatus,
   type Prisma,
   type SessionPlatform,
@@ -100,7 +99,6 @@ export class AuthService {
 
     const passwordHash = await this.crypto.hashPassword(input.password);
     const user = await this.database.client.$transaction(async (transaction) => {
-      const renter = await transaction.role.findUniqueOrThrow({ where: { code: RoleCode.RENTER } });
       return transaction.user.create({
         data: {
           email: input.email.trim(),
@@ -118,7 +116,6 @@ export class AuthService {
                 : {}),
             },
           },
-          roles: { create: { roleId: renter.id } },
         },
         include: sessionUserInclude,
       });
