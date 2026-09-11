@@ -215,6 +215,16 @@ enum BookingStatus {
   EXPIRED
 }
 
+enum StartFulfillmentMethod {
+  RENTER_PICKUP
+  OWNER_DELIVERY
+}
+
+enum EndFulfillmentMethod {
+  RENTER_RETURN
+  OWNER_COLLECTION
+}
+
 enum VehicleOccupancyType {
   OWNER_BLOCK
   BOOKING_RESERVATION
@@ -1566,42 +1576,51 @@ model VehicleLocation {
 }
 
 model VehiclePolicyVersion {
-  id                       String                 @id @default(uuid()) @db.Uuid
-  vehicleId                String                 @map("vehicle_id") @db.Uuid
-  version                  Int
-  currency                 String                 @default("PHP") @db.Char(3)
-  dailyRateMinor           Int                    @map("daily_rate_minor")
-  shortDurationDiscountBps Int?                   @map("short_duration_discount_bps")
-  weeklyDiscountBps        Int?                   @map("weekly_discount_bps")
-  extendedTripDiscountBps  Int?                   @map("extended_trip_discount_bps")
-  monthlyDiscountBps       Int?                   @map("monthly_discount_bps")
-  minimumRentalDays        Int                    @map("minimum_rental_days")
-  maximumRentalDays        Int                    @map("maximum_rental_days")
-  mileagePolicy            MileagePolicyType      @map("mileage_policy")
-  includedKilometersPerDay Int?                   @map("included_kilometers_per_day")
-  excessKilometerRateMinor Int?                   @map("excess_kilometer_rate_minor")
-  fuelReturnPolicy         FuelReturnPolicyType?  @map("fuel_return_policy")
-  fuelTolerancePercent     Int?                   @map("fuel_tolerance_percent")
-  fuelCalculationPolicyRef String?                @map("fuel_calculation_policy_ref") @db.VarChar(100)
-  evReturnPolicy           EvReturnPolicyType?    @map("ev_return_policy")
-  evRequiredPercentage     Int?                   @map("ev_required_percentage")
-  evTolerancePercent       Int?                   @map("ev_tolerance_percent")
-  evCalculationPolicyRef   String?                @map("ev_calculation_policy_ref") @db.VarChar(100)
-  turnaroundMinutes        Int                    @default(120) @map("turnaround_minutes")
-  availabilityPolicy       AvailabilityPolicyType @default(EVERY_DAY) @map("availability_policy")
-  monday                   Boolean                @default(true)
-  tuesday                  Boolean                @default(true)
-  wednesday                Boolean                @default(true)
-  thursday                 Boolean                @default(true)
-  friday                   Boolean                @default(true)
-  saturday                 Boolean                @default(true)
-  sunday                   Boolean                @default(true)
-  createdByUserId          String                 @map("created_by_user_id") @db.Uuid
-  createdAt                DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  id                              String                 @id @default(uuid()) @db.Uuid
+  vehicleId                       String                 @map("vehicle_id") @db.Uuid
+  version                         Int
+  currency                        String                 @default("PHP") @db.Char(3)
+  dailyRateMinor                  Int                    @map("daily_rate_minor")
+  shortDurationDiscountBps        Int?                   @map("short_duration_discount_bps")
+  weeklyDiscountBps               Int?                   @map("weekly_discount_bps")
+  extendedTripDiscountBps         Int?                   @map("extended_trip_discount_bps")
+  monthlyDiscountBps              Int?                   @map("monthly_discount_bps")
+  minimumRentalDays               Int                    @map("minimum_rental_days")
+  maximumRentalDays               Int                    @map("maximum_rental_days")
+  mileagePolicy                   MileagePolicyType      @map("mileage_policy")
+  includedKilometersPerDay        Int?                   @map("included_kilometers_per_day")
+  excessKilometerRateMinor        Int?                   @map("excess_kilometer_rate_minor")
+  fuelReturnPolicy                FuelReturnPolicyType?  @map("fuel_return_policy")
+  fuelTolerancePercent            Int?                   @map("fuel_tolerance_percent")
+  fuelCalculationPolicyRef        String?                @map("fuel_calculation_policy_ref") @db.VarChar(100)
+  evReturnPolicy                  EvReturnPolicyType?    @map("ev_return_policy")
+  evRequiredPercentage            Int?                   @map("ev_required_percentage")
+  evTolerancePercent              Int?                   @map("ev_tolerance_percent")
+  evCalculationPolicyRef          String?                @map("ev_calculation_policy_ref") @db.VarChar(100)
+  turnaroundMinutes               Int                    @default(120) @map("turnaround_minutes")
+  availabilityPolicy              AvailabilityPolicyType @default(EVERY_DAY) @map("availability_policy")
+  monday                          Boolean                @default(true)
+  tuesday                         Boolean                @default(true)
+  wednesday                       Boolean                @default(true)
+  thursday                        Boolean                @default(true)
+  friday                          Boolean                @default(true)
+  saturday                        Boolean                @default(true)
+  sunday                          Boolean                @default(true)
+  supportsRenterPickup            Boolean                @default(true) @map("supports_renter_pickup")
+  supportsOwnerDelivery           Boolean                @default(false) @map("supports_owner_delivery")
+  supportsRenterReturn            Boolean                @default(true) @map("supports_renter_return")
+  supportsOwnerCollection         Boolean                @default(false) @map("supports_owner_collection")
+  fulfillmentServiceRadiusMeters  Int?                   @map("fulfillment_service_radius_meters")
+  deliveryFeeMinor                Int?                   @map("delivery_fee_minor")
+  collectionFeeMinor              Int?                   @map("collection_fee_minor")
+  fulfillmentMinimumNoticeMinutes Int                    @default(0) @map("fulfillment_minimum_notice_minutes")
+  createdByUserId                 String                 @map("created_by_user_id") @db.Uuid
+  createdAt                       DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  vehicle       Vehicle        @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  createdBy     User           @relation("VehiclePolicyCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  pricingQuotes PricingQuote[]
+  vehicle              Vehicle                      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  createdBy            User                         @relation("VehiclePolicyCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  pricingQuotes        PricingQuote[]
+  fulfillmentSnapshots BookingFulfillmentSnapshot[]
 
   @@unique([vehicleId, version])
   @@index([vehicleId, createdAt])
@@ -1755,39 +1774,40 @@ model Booking {
   createdAt               DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt               DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  renter             User                              @relation("BookingRenter", fields: [renterUserId], references: [id], onDelete: Restrict)
-  owner              User                              @relation("BookingOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  ownerProfile       OwnerProfile                      @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
-  vehicle            Vehicle                           @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  quote              PricingQuote                      @relation(fields: [quoteId], references: [id], onDelete: Restrict)
-  occupancy          VehicleOccupancy?
-  pricingSnapshot    BookingPricingSnapshot?
-  policySnapshot     BookingPolicySnapshot?
-  statusHistory      BookingStatusHistory[]
-  cancellation       BookingCancellation?
-  ownerDecision      BookingOwnerDecision?
-  idempotencyRecord  BookingIdempotencyRecord?
-  analyticsEvents    AnalyticsEvent[]
-  payments           Payment[]
-  commissionSnapshot CommissionSnapshot?
-  ownerEarning       OwnerEarning?
-  securityDeposit    SecurityDepositAuthorization?
-  inspections        Inspection[]
-  usageSummary       BookingUsageSummary?
-  pickupChallenges   InspectionVerificationChallenge[]
-  postReturnClaims   PostReturnClaim[]
-  rentalIncidents    RentalIncident[]
-  disputes           Dispute[]
-  additionalCharges  AdditionalCharge[]
-  pickupWindowStart  DateTime?                         @map("pickup_window_start") @db.Timestamptz(3)
-  pickupWindowEnd    DateTime?                         @map("pickup_window_end") @db.Timestamptz(3)
-  actualPickupAt     DateTime?                         @map("actual_pickup_at") @db.Timestamptz(3)
-  actualReturnAt     DateTime?                         @map("actual_return_at") @db.Timestamptz(3)
-  claimDeadlineAt    DateTime?                         @map("claim_deadline_at") @db.Timestamptz(3)
-  operationalHold    Boolean                           @default(false) @map("operational_hold")
-  conversation       Conversation?
-  reviews            Review[]
-  supportTickets     SupportTicket[]
+  renter              User                              @relation("BookingRenter", fields: [renterUserId], references: [id], onDelete: Restrict)
+  owner               User                              @relation("BookingOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  ownerProfile        OwnerProfile                      @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  vehicle             Vehicle                           @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  quote               PricingQuote                      @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  occupancy           VehicleOccupancy?
+  pricingSnapshot     BookingPricingSnapshot?
+  policySnapshot      BookingPolicySnapshot?
+  fulfillmentSnapshot BookingFulfillmentSnapshot?
+  statusHistory       BookingStatusHistory[]
+  cancellation        BookingCancellation?
+  ownerDecision       BookingOwnerDecision?
+  idempotencyRecord   BookingIdempotencyRecord?
+  analyticsEvents     AnalyticsEvent[]
+  payments            Payment[]
+  commissionSnapshot  CommissionSnapshot?
+  ownerEarning        OwnerEarning?
+  securityDeposit     SecurityDepositAuthorization?
+  inspections         Inspection[]
+  usageSummary        BookingUsageSummary?
+  pickupChallenges    InspectionVerificationChallenge[]
+  postReturnClaims    PostReturnClaim[]
+  rentalIncidents     RentalIncident[]
+  disputes            Dispute[]
+  additionalCharges   AdditionalCharge[]
+  pickupWindowStart   DateTime?                         @map("pickup_window_start") @db.Timestamptz(3)
+  pickupWindowEnd     DateTime?                         @map("pickup_window_end") @db.Timestamptz(3)
+  actualPickupAt      DateTime?                         @map("actual_pickup_at") @db.Timestamptz(3)
+  actualReturnAt      DateTime?                         @map("actual_return_at") @db.Timestamptz(3)
+  claimDeadlineAt     DateTime?                         @map("claim_deadline_at") @db.Timestamptz(3)
+  operationalHold     Boolean                           @default(false) @map("operational_hold")
+  conversation        Conversation?
+  reviews             Review[]
+  supportTickets      SupportTicket[]
 
   @@index([renterUserId, createdAt])
   @@index([ownerUserId, status, createdAt])
@@ -2185,6 +2205,43 @@ model VehicleOccupancy {
   @@index([vehicleId, active, occupiedStart, occupiedEnd])
   @@index([active, expiresAt])
   @@map("vehicle_occupancies")
+}
+
+model BookingFulfillmentSnapshot {
+  bookingId                String                 @id @map("booking_id") @db.Uuid
+  startMethod              StartFulfillmentMethod @map("start_method")
+  endMethod                EndFulfillmentMethod   @map("end_method")
+  startAddressLine1        String?                @map("start_address_line_1") @db.VarChar(255)
+  startBarangay            String?                @map("start_barangay") @db.VarChar(120)
+  startCity                String                 @map("start_city") @db.VarChar(120)
+  startProvince            String                 @map("start_province") @db.VarChar(120)
+  startPostalCode          String?                @map("start_postal_code") @db.VarChar(12)
+  startCountry             String                 @default("PH") @map("start_country") @db.Char(2)
+  startLatitude            Decimal                @map("start_latitude") @db.Decimal(9, 6)
+  startLongitude           Decimal                @map("start_longitude") @db.Decimal(9, 6)
+  endAddressLine1          String?                @map("end_address_line_1") @db.VarChar(255)
+  endBarangay              String?                @map("end_barangay") @db.VarChar(120)
+  endCity                  String                 @map("end_city") @db.VarChar(120)
+  endProvince              String                 @map("end_province") @db.VarChar(120)
+  endPostalCode            String?                @map("end_postal_code") @db.VarChar(12)
+  endCountry               String                 @default("PH") @map("end_country") @db.Char(2)
+  endLatitude              Decimal                @map("end_latitude") @db.Decimal(9, 6)
+  endLongitude             Decimal                @map("end_longitude") @db.Decimal(9, 6)
+  deliveryDistanceMeters   Int?                   @map("delivery_distance_meters")
+  collectionDistanceMeters Int?                   @map("collection_distance_meters")
+  deliveryFeeMinor         Int                    @default(0) @map("delivery_fee_minor")
+  collectionFeeMinor       Int                    @default(0) @map("collection_fee_minor")
+  currency                 String                 @db.Char(3)
+  serviceRadiusMeters      Int?                   @map("service_radius_meters")
+  minimumNoticeMinutes     Int                    @map("minimum_notice_minutes")
+  sourcePolicyVersionId    String                 @map("source_policy_version_id") @db.Uuid
+  createdAt                DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking             Booking              @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  sourcePolicyVersion VehiclePolicyVersion @relation(fields: [sourcePolicyVersionId], references: [id], onDelete: Restrict)
+
+  @@index([sourcePolicyVersionId])
+  @@map("booking_fulfillment_snapshots")
 }
 
 model BookingPricingSnapshot {

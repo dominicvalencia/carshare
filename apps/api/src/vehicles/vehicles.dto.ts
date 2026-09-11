@@ -190,6 +190,44 @@ export class CreateVehiclePolicyVersionDto {
   @ApiPropertyOptional() @IsOptional() @IsBoolean() friday?: boolean;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() saturday?: boolean;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() sunday?: boolean;
+  @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  supportsRenterPickup?: boolean;
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  supportsOwnerDelivery?: boolean;
+  @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  supportsRenterReturn?: boolean;
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  supportsOwnerCollection?: boolean;
+  @ApiPropertyOptional({ description: 'Shared owner-service radius in meters.' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(50_000)
+  fulfillmentServiceRadiusMeters?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  deliveryFeeMinor?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  collectionFeeMinor?: number;
+  @ApiPropertyOptional({ default: 0 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(10_080)
+  fulfillmentMinimumNoticeMinutes?: number;
 }
 
 export class CreateVehicleBlockDto {

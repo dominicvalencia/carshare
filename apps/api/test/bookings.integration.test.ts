@@ -452,6 +452,47 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       }),
     ).rejects.toThrow();
 
+    await database.client.bookingFulfillmentSnapshot.create({
+      data: {
+        bookingId: winnerBooking.id,
+        collectionFeeMinor: 0,
+        currency: 'PHP',
+        deliveryDistanceMeters: 10_000,
+        deliveryFeeMinor: 12_500,
+        endCity: 'Makati',
+        endCountry: 'PH',
+        endLatitude: '14.554700',
+        endLongitude: '121.024400',
+        endMethod: 'RENTER_RETURN',
+        endProvince: 'Metro Manila',
+        minimumNoticeMinutes: 120,
+        serviceRadiusMeters: 10_000,
+        sourcePolicyVersionId: vehicle.policyId,
+        startCity: 'Taguig',
+        startCountry: 'PH',
+        startLatitude: '14.550000',
+        startLongitude: '121.050000',
+        startMethod: 'OWNER_DELIVERY',
+        startProvince: 'Metro Manila',
+      },
+    });
+    const fulfillmentSnapshot = await database.client.bookingFulfillmentSnapshot.findUniqueOrThrow({
+      where: { bookingId: winnerBooking.id },
+    });
+    expect(fulfillmentSnapshot).toMatchObject({
+      deliveryDistanceMeters: 10_000,
+      deliveryFeeMinor: 12_500,
+      endMethod: 'RENTER_RETURN',
+      sourcePolicyVersionId: vehicle.policyId,
+      startMethod: 'OWNER_DELIVERY',
+    });
+    await expect(
+      database.client.bookingFulfillmentSnapshot.update({
+        data: { deliveryFeeMinor: 1 },
+        where: { bookingId: winnerBooking.id },
+      }),
+    ).rejects.toThrow();
+
     await request(app.getHttpServer())
       .patch(`/api/v1/owner/vehicles/${vehicle.id}/operational-status`)
       .set('Authorization', `Bearer ${owner.token}`)
@@ -1234,6 +1275,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
         latitude: '13.9414',
         longitude: '121.6230',
         radius: '10',
+        sort: 'NEWEST',
         start: rentalStart.toISOString(),
       })
       .expect(200);

@@ -11,6 +11,7 @@ import { OwnerProfileStatus, RoleCode, VehicleLifecycleStatus } from '@carrental
 import { AppModule } from '../src/app.module';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
 import { CryptoService } from '../src/security/crypto.service';
+import { FulfillmentServiceabilityService } from '../src/fulfillment/fulfillment-serviceability';
 import { attachAdminIdentity } from './admin-fixture';
 
 describe.sequential('Phase 3 vehicle supply integration', () => {
@@ -281,6 +282,57 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
         where: { id: policies[0]!.id },
       }),
     ).rejects.toThrow();
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${vehicleId}/policy-versions`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(
+        basePolicy({
+          supportsOwnerDelivery: true,
+          supportsRenterPickup: false,
+        }),
+      )
+      .expect(422)
+      .expect(({ body }) => expect(body.error.code).toBe('INVALID_FULFILLMENT_POLICY'));
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${vehicleId}/policy-versions`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(
+        basePolicy({
+          deliveryFeeMinor: 0,
+          fulfillmentMinimumNoticeMinutes: 120,
+          fulfillmentServiceRadiusMeters: 10_000,
+          supportsOwnerDelivery: true,
+        }),
+      )
+      .expect(201);
+    const fulfillmentPolicy = await database.client.vehiclePolicyVersion.findFirstOrThrow({
+      orderBy: { version: 'desc' },
+      where: { vehicleId },
+    });
+    expect(fulfillmentPolicy).toMatchObject({
+      deliveryFeeMinor: 0,
+      fulfillmentMinimumNoticeMinutes: 120,
+      fulfillmentServiceRadiusMeters: 10_000,
+      supportsOwnerDelivery: true,
+      supportsRenterPickup: true,
+    });
+    const serviceability = app.get(FulfillmentServiceabilityService);
+    await expect(
+      serviceability.evaluate({
+        destinationLatitude: 14.5547,
+        destinationLongitude: 121.0244,
+        method: 'OWNER_DELIVERY',
+        now: new Date('2026-09-11T00:00:00.000Z'),
+        policyVersionId: fulfillmentPolicy.id,
+        scheduledAt: new Date('2026-09-11T02:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({
+      distanceMeters: 0,
+      noticeSatisfied: true,
+      reason: 'SUPPORTED',
+      supported: true,
+      withinRadius: true,
+    });
     await request(app.getHttpServer())
       .post(`/api/v1/owner/vehicles/${vehicleId}/policy-versions`)
       .set('Authorization', `Bearer ${ownerToken}`)

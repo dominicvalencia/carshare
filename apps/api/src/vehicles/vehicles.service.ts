@@ -35,6 +35,10 @@ import type {
   UpdateVehicleDto,
 } from './vehicles.dto';
 import { validateDurationDiscounts } from '../discovery/duration-discounts';
+import {
+  normalizeFulfillmentPolicy,
+  validateFulfillmentPolicy,
+} from '../fulfillment/fulfillment-policy';
 
 const MATERIAL_EDITABLE: readonly VehicleLifecycleStatus[] = [
   VehicleLifecycleStatus.DRAFT,
@@ -509,6 +513,7 @@ export class VehiclesService {
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(vehicle.status, POLICY_EDITABLE, 'Policies cannot be changed in this state.');
     this.validatePolicy(vehicle.powertrain, input);
+    const fulfillment = normalizeFulfillmentPolicy(input);
     const latest = await this.database.client.vehiclePolicyVersion.findFirst({
       orderBy: { version: 'desc' },
       where: { vehicleId: id },
@@ -549,6 +554,7 @@ export class VehiclesService {
           input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.saturday === true,
         sunday:
           input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.sunday === true,
+        ...fulfillment,
         thursday:
           input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.thursday === true,
         turnaroundMinutes: input.turnaroundMinutes,
@@ -986,6 +992,14 @@ export class VehiclesService {
         discountError,
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
+    const fulfillmentError = validateFulfillmentPolicy(input);
+    if (fulfillmentError) {
+      throw new ApplicationException(
+        VehicleErrorCode.INVALID_FULFILLMENT_POLICY,
+        fulfillmentError,
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
     if (input.currency && input.currency.toUpperCase() !== 'PHP') {
       throw new ApplicationException(
         VehicleErrorCode.INVALID_PRICING,
