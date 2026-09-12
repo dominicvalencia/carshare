@@ -1370,6 +1370,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
         end: rentalEnd.toISOString(),
         latitude: '13.9414',
         longitude: '121.6230',
+        make: `PhaseFive-${unique}`,
         radius: '10',
         sort: 'NEWEST',
         start: rentalStart.toISOString(),

@@ -40,6 +40,11 @@ export enum VehicleHandoverFilter {
   PICKUP_AND_DELIVERY = 'PICKUP_AND_DELIVERY',
 }
 
+export enum VehicleSearchMode {
+  LIST = 'LIST',
+  MAP = 'MAP',
+}
+
 const commaSeparated = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string'
     ? value
@@ -57,6 +62,10 @@ export class SearchVehiclesDto {
   @Min(1)
   @Max(1000)
   radius!: number;
+  @ApiPropertyOptional({ enum: VehicleSearchMode, default: VehicleSearchMode.LIST })
+  @IsOptional()
+  @IsEnum(VehicleSearchMode)
+  mode: VehicleSearchMode = VehicleSearchMode.LIST;
   @ApiPropertyOptional() @IsOptional() @IsDateString() start?: string;
   @ApiPropertyOptional() @IsOptional() @IsDateString() end?: string;
   @ApiPropertyOptional() @IsOptional() @IsUUID() categoryId?: string;

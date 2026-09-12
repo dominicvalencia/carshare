@@ -313,6 +313,8 @@ describe.sequential('Phase 4 public discovery integration', () => {
         latitude: 13.9414,
         longitude: 121.623,
         make: `PhaseFour-${unique}`,
+        mode: 'MAP',
+        limit: 50,
         radius: 25,
         sort: 'DISTANCE',
         start,
@@ -323,6 +325,16 @@ describe.sequential('Phase 4 public discovery integration', () => {
       secondVehicleId,
     ]);
     expect(search.body.data.items[0].distanceKm).toBe(0);
+    expect(search.body.data.search).toMatchObject({
+      locationPrivacy: 'APPROXIMATE_CELL_AND_WHOLE_KILOMETER_DISTANCE',
+      mode: 'MAP',
+      resultLimit: 50,
+    });
+    expect(search.body.data.items[0].mapPosition).toMatchObject({
+      precision: 'APPROXIMATE_CELL',
+    });
+    expect(search.body.data.items[0].mapPosition.mapLatitude).not.toBe(13.9414);
+    expect(search.body.data.items[0].mapPosition.mapLongitude).not.toBe(121.623);
     expect(JSON.stringify(search.body.data)).not.toContain('latitude');
     expect(JSON.stringify(search.body.data)).not.toContain('longitude');
 

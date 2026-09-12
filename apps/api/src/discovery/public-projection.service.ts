@@ -4,6 +4,7 @@ import { FilesService } from '../files/files.service';
 import type { AdvisoryAvailability } from './availability.service';
 import type { PublicVehicleRecord } from './public-eligibility.service';
 import { publicFulfillment, publicSearchFulfillment } from './fulfillment-discovery';
+import { publicMapDistanceKm, publicMapPosition } from './public-map-position';
 
 function publicDurationDiscounts(policy: PublicVehicleRecord['policyVersions'][number]) {
   return [
@@ -32,6 +33,7 @@ export class PublicProjectionService {
     availability?: AdvisoryAvailability,
     rating?: { readonly averageRating: string; readonly reviewCount: number } | null,
     fulfillmentContext?: { readonly distanceMeters: number; readonly scheduledAt: Date },
+    mapMode = false,
   ) {
     const policy = vehicle.policyVersions[0]!;
     const cover = vehicle.photos.find(({ isCover }) => isCover)!;
@@ -58,7 +60,7 @@ export class PublicProjectionService {
         label: 'From',
         unit: 'DAY',
       },
-      distanceKm: Math.round(distanceKm * 10) / 10,
+      distanceKm: mapMode ? publicMapDistanceKm(distanceKm) : Math.round(distanceKm * 10) / 10,
       favorite,
       fuelType: vehicle.fuelType,
       fulfillment: publicSearchFulfillment(policy, fulfillmentContext),
@@ -70,6 +72,14 @@ export class PublicProjectionService {
       transmission: vehicle.transmission,
       vehicleId: vehicle.id,
       year: vehicle.modelYear,
+      ...(mapMode
+        ? {
+            mapPosition: publicMapPosition(
+              Number(vehicle.location!.latitude),
+              Number(vehicle.location!.longitude),
+            ),
+          }
+        : {}),
     };
   }
 

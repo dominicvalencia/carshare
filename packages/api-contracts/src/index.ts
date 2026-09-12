@@ -108,6 +108,20 @@ export const DiscoveryErrorCode = {
 
 export type DiscoveryErrorCode = (typeof DiscoveryErrorCode)[keyof typeof DiscoveryErrorCode];
 
+export interface PublicVehicleMapPosition {
+  readonly mapLatitude: number;
+  readonly mapLongitude: number;
+  readonly precision: 'APPROXIMATE_CELL';
+}
+
+export interface VehicleMapSearchMetadata {
+  readonly candidateLimit: number;
+  readonly locationPrivacy: 'APPROXIMATE_CELL_AND_WHOLE_KILOMETER_DISTANCE';
+  readonly mode: 'MAP';
+  readonly resultCount: number;
+  readonly resultLimit: number;
+}
+
 export const BookingErrorCode = {
   BOOKING_ALREADY_CANCELLED: 'BOOKING_ALREADY_CANCELLED',
   BOOKING_CONFLICT: 'BOOKING_CONFLICT',

@@ -1,16 +1,18 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigationProp } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Location from 'expo-location';
 import {
   FlatList,
+  Keyboard,
   Linking,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -48,6 +50,7 @@ import {
   locationLabel as confirmedLocationLabel,
   type CarShareLocation,
 } from '../../location/booking-location-provider';
+import { bookingLocationProvider } from '../../location/booking-location-provider';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import {
   chargeableDays,
@@ -56,6 +59,7 @@ import {
   positiveDurationDiscounts,
   type PublicDurationDiscount,
 } from './duration-discount-presentation';
+import { DiscoveryMap, type MapSearchArea } from './DiscoveryMap';
 
 interface Grant {
   readonly contentPath: string;
@@ -98,6 +102,11 @@ export interface VehicleCardView {
   readonly availability: { available: boolean; warning: string };
   readonly estimatedRentalTotal?: { amountMinor: number; chargeableDays: number };
   readonly fulfillment: PublicFulfillment;
+  readonly mapPosition?: {
+    readonly mapLatitude: number;
+    readonly mapLongitude: number;
+    readonly precision: 'APPROXIMATE_CELL';
+  };
 }
 interface SearchResponse {
   readonly items: readonly VehicleCardView[];
@@ -196,6 +205,8 @@ type ViewMode = 'form' | 'results' | 'detail' | 'favorites' | 'quote';
 
 const locations = developmentLocationSuggestions;
 const sessionRecentlyViewed: string[] = [];
+const searchLocationSession = () =>
+  `search_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
 function futureDate(days: number, hour = 9) {
   const value = new Date();
@@ -221,9 +232,13 @@ export function DiscoveryScreen({
   const detailOrigin = useRef<ViewMode>(initialMode === 'favorites' ? 'favorites' : 'results');
   const [vehicleId, setVehicleId] = useState<string | null>(initialVehicleId ?? null);
   const [place, setPlace] = useState<SearchLocation>(locations[0]!);
+  const [activePlace, setActivePlace] = useState<SearchLocation>(locations[0]!);
   const [pickup, setPickup] = useState(futureDate(1));
   const [returnAt, setReturnAt] = useState(futureDate(2));
   const [radiusKm, setRadiusKm] = useState(25);
+  const [activeRadiusKm, setActiveRadiusKm] = useState(25);
+  const [presentationMode, setPresentationMode] = useState<'list' | 'map'>('list');
+  const [selectedMapVehicleId, setSelectedMapVehicleId] = useState<string | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const [make, setMake] = useState('');
@@ -238,13 +253,14 @@ export function DiscoveryScreen({
   const validDates = returnAt.getTime() > pickup.getTime();
   const queryString = useMemo(() => {
     const query = new URLSearchParams({
-      latitude: String(place.latitude),
-      longitude: String(place.longitude),
-      radius: String(radiusKm),
+      latitude: String(activePlace.latitude),
+      longitude: String(activePlace.longitude),
+      radius: String(activeRadiusKm),
       sort: 'RECOMMENDED',
       start: pickup.toISOString(),
       end: returnAt.toISOString(),
-      limit: '10',
+      limit: presentationMode === 'map' ? '50' : '10',
+      mode: presentationMode === 'map' ? 'MAP' : 'LIST',
     });
     if (make.trim()) query.set('make', make.trim());
     if (categoryId) query.set('categoryId', categoryId);
@@ -261,9 +277,10 @@ export function DiscoveryScreen({
     maxPrice,
     minPrice,
     pickup,
-    place,
+    activePlace,
+    activeRadiusKm,
     powertrain,
-    radiusKm,
+    presentationMode,
     returnAt,
     seats,
     transmission,
@@ -366,7 +383,30 @@ export function DiscoveryScreen({
   }
   function performSearch() {
     if (!validDates) return;
+    setActivePlace(place);
+    setActiveRadiusKm(radiusKm);
+    setSelectedMapVehicleId(null);
     setMode('results');
+  }
+  function searchMapArea(area: MapSearchArea) {
+    setActivePlace({
+      city: 'Map area',
+      detail: 'Area selected from the map',
+      label: 'Map area',
+      latitude: area.latitude,
+      longitude: area.longitude,
+      province: '',
+    });
+    setPlace({
+      city: 'Map area',
+      detail: 'Area selected from the map',
+      label: 'Map area',
+      latitude: area.latitude,
+      longitude: area.longitude,
+      province: '',
+    });
+    setRadiusKm(area.radiusKm);
+    setActiveRadiusKm(area.radiusKm);
   }
   async function selectCurrentLocation() {
     setLocationError('');
@@ -433,7 +473,7 @@ export function DiscoveryScreen({
         scroll={false}
         leading={<BackControl label="Edit search" onPress={() => setMode('form')} />}
         eyebrow="Available cars"
-        title={`${searchItems.length} cars loaded near ${place.label}`}
+        title={`${searchItems.length} cars loaded near ${activePlace.label}`}
         action={
           <IconButton
             icon="options-outline"
@@ -448,19 +488,75 @@ export function DiscoveryScreen({
             {dateTimeLabel(pickup)} → {dateTimeLabel(returnAt)}
           </Text>
         </View>
-        {search.isPending ? (
+        <View accessibilityLabel="Search result view" style={styles.viewToggle}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: presentationMode === 'list' }}
+            onPress={() => {
+              setPresentationMode('list');
+              setSelectedMapVehicleId(null);
+            }}
+            style={[
+              styles.viewToggleButton,
+              presentationMode === 'list' && styles.viewToggleSelected,
+            ]}
+          >
+            <Text
+              style={
+                presentationMode === 'list' ? styles.viewToggleSelectedText : styles.viewToggleText
+              }
+            >
+              List
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: presentationMode === 'map' }}
+            onPress={() => setPresentationMode('map')}
+            style={[
+              styles.viewToggleButton,
+              presentationMode === 'map' && styles.viewToggleSelected,
+            ]}
+          >
+            <Text
+              style={
+                presentationMode === 'map' ? styles.viewToggleSelectedText : styles.viewToggleText
+              }
+            >
+              Map
+            </Text>
+          </Pressable>
+        </View>
+        {search.isPending && presentationMode === 'list' ? (
           <StateView
             loading
             title="Finding cars…"
             message="Checking availability for your dates."
           />
-        ) : search.isError && !search.data ? (
+        ) : search.isError && !search.data && presentationMode === 'list' ? (
           <StateView
             icon="cloud-offline-outline"
             title="Search unavailable"
             message={search.error.message}
             actionLabel="Retry"
             onAction={() => void search.refetch()}
+          />
+        ) : presentationMode === 'map' ? (
+          <DiscoveryMap
+            error={search.isError ? search.error : null}
+            initialRegion={{
+              latitude: activePlace.latitude,
+              longitude: activePlace.longitude,
+              latitudeDelta: Math.max(0.03, activeRadiusKm / 55.5),
+              longitudeDelta: Math.max(0.03, activeRadiusKm / 55.5),
+            }}
+            items={searchItems}
+            loading={search.isFetching}
+            onOpen={openVehicle}
+            onRetry={() => void search.refetch()}
+            onSearchArea={searchMapArea}
+            onSelect={setSelectedMapVehicleId}
+            selectedId={selectedMapVehicleId}
           />
         ) : (
           <FlatList
@@ -1577,6 +1673,63 @@ function LocationSheet({
   readonly onCurrent: () => void;
   readonly error: string;
 }) {
+  const [query, setQuery] = useState('');
+  const [suggestions, setSuggestions] = useState<
+    readonly { providerReference: string; displayName: string; secondaryText: string }[]
+  >([]);
+  const [providerError, setProviderError] = useState('');
+  const [pending, setPending] = useState(false);
+  const session = useRef(searchLocationSession());
+  const request = useRef(0);
+  useEffect(() => {
+    if (!open || query.trim().length < 3) {
+      return;
+    }
+    const id = ++request.current;
+    const timer = setTimeout(() => {
+      setPending(true);
+      setProviderError('');
+      bookingLocationProvider
+        .searchPlaces(query.trim(), session.current)
+        .then((items) => {
+          if (id === request.current) setSuggestions(items);
+        })
+        .catch(() => {
+          if (id === request.current)
+            setProviderError(
+              'Place search is temporarily unavailable. Your current search is unchanged.',
+            );
+        })
+        .finally(() => {
+          if (id === request.current) setPending(false);
+        });
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [open, query]);
+  async function selectSuggestion(providerReference: string) {
+    const id = ++request.current;
+    setPending(true);
+    setProviderError('');
+    Keyboard.dismiss();
+    try {
+      const value = await bookingLocationProvider.resolvePlace(providerReference, session.current);
+      if (id !== request.current) return;
+      session.current = searchLocationSession();
+      onSelect({
+        city: value.city,
+        detail: [value.addressLine1, value.city, value.province].filter(Boolean).join(', '),
+        label: value.displayName,
+        latitude: value.latitude,
+        longitude: value.longitude,
+        province: value.province,
+      });
+    } catch {
+      if (id === request.current)
+        setProviderError('This place could not be selected. Try another result.');
+    } finally {
+      if (id === request.current) setPending(false);
+    }
+  }
   return (
     <Modal
       animationType="slide"
@@ -1588,6 +1741,38 @@ function LocationSheet({
         title="Choose pickup area"
         subtitle="Search uses your area internally. Exact vehicle locations stay private."
       >
+        <View style={styles.placeSearch}>
+          <Icon name="search" size={18} />
+          <TextInput
+            accessibilityLabel="Search city, area, landmark, or address"
+            onChangeText={(value) => {
+              setQuery(value);
+              if (value.trim().length < 3) setSuggestions([]);
+            }}
+            placeholder="Search city, landmark, or address"
+            placeholderTextColor={colors.placeholder}
+            style={styles.placeSearchInput}
+            value={query}
+          />
+        </View>
+        {pending ? <Text style={styles.note}>Searching places…</Text> : null}
+        {providerError ? <Text style={styles.error}>{providerError}</Text> : null}
+        {suggestions.map((item) => (
+          <Pressable
+            accessibilityRole="button"
+            key={item.providerReference}
+            onPress={() => void selectSuggestion(item.providerReference)}
+            style={styles.locationOption}
+          >
+            <View style={styles.searchIcon}>
+              <Icon color={colors.primary} name="location-outline" />
+            </View>
+            <View style={styles.flex}>
+              <Text style={styles.cardTitle}>{item.displayName}</Text>
+              <Text style={styles.body}>{item.secondaryText}</Text>
+            </View>
+          </Pressable>
+        ))}
         <Button
           icon="navigate-outline"
           label="Use current location"
@@ -1983,6 +2168,33 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   titleRow: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
+  viewToggle: {
+    alignSelf: 'center',
+    backgroundColor: colors.muted,
+    borderRadius: radius.pill,
+    flexDirection: 'row',
+    marginBottom: spacing.sm,
+    padding: 3,
+  },
+  viewToggleButton: {
+    borderRadius: radius.pill,
+    minWidth: 84,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  viewToggleSelected: { backgroundColor: colors.primary },
+  viewToggleSelectedText: { color: colors.surface, fontWeight: '800', textAlign: 'center' },
+  viewToggleText: { color: colors.ink, fontWeight: '700', textAlign: 'center' },
+  placeSearch: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  placeSearchInput: { color: colors.ink, flex: 1, minHeight: 48 },
   tripCard: { gap: spacing.sm },
   total: { color: colors.ink, fontSize: 24, fontWeight: '900' },
   totalLabel: { color: colors.ink, fontSize: 17, fontWeight: '800' },

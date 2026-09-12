@@ -12,7 +12,7 @@ import type { RequestPrincipal } from '../security/security-context';
 import { AnalyticsEventType, DiscoveryAnalyticsService } from './analytics.service';
 import { AvailabilityService } from './availability.service';
 import type { SearchVehiclesDto } from './discovery.dto';
-import { VehicleHandoverFilter, VehicleSearchSort } from './discovery.dto';
+import { VehicleHandoverFilter, VehicleSearchMode, VehicleSearchSort } from './discovery.dto';
 import { matchesHandoverFilter } from './fulfillment-discovery';
 import { RentalDurationService } from './duration.service';
 import { durationDiscount } from './duration-discounts';
@@ -107,8 +107,10 @@ export class PublicVehiclesService {
         (vehicle) => this.compareToCursor(vehicle, cursor, distance, input.sort) > 0,
       );
     }
-    const hasNextPage = vehicles.length > input.limit;
-    const page = vehicles.slice(0, input.limit);
+    const resultLimit =
+      input.mode === VehicleSearchMode.MAP ? Math.min(input.limit, 50) : input.limit;
+    const hasNextPage = vehicles.length > resultLimit;
+    const page = vehicles.slice(0, resultLimit);
     const favoriteIds = principal
       ? new Set(
           (
@@ -138,6 +140,7 @@ export class PublicVehiclesService {
         input.start
           ? { distanceMeters: distance.get(vehicle.id)! * 1000, scheduledAt: new Date(input.start) }
           : undefined,
+        input.mode === VehicleSearchMode.MAP,
       );
       if (chargeableDays) {
         const policy = vehicle.policyVersions[0]!;
@@ -181,7 +184,16 @@ export class PublicVehiclesService {
         nextCursor:
           hasNextPage && page.length ? this.encodeCursor(page.at(-1)!, distance, input) : null,
       },
-      search: { candidateLimit: 500, locationPrivacy: 'CITY_PROVINCE_AND_ROUNDED_DISTANCE' },
+      search: {
+        candidateLimit: 500,
+        locationPrivacy:
+          input.mode === VehicleSearchMode.MAP
+            ? 'APPROXIMATE_CELL_AND_WHOLE_KILOMETER_DISTANCE'
+            : 'CITY_PROVINCE_AND_ROUNDED_DISTANCE',
+        mode: input.mode,
+        resultCount: items.length,
+        resultLimit,
+      },
     };
   }
 
@@ -490,6 +502,7 @@ export class PublicVehiclesService {
       model: input.model?.toLowerCase() ?? null,
       powertrain: input.powertrain ?? null,
       radius: input.radius,
+      mode: input.mode,
       seats: input.seats ?? null,
       sort: input.sort,
       start: input.start ?? null,
