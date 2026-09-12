@@ -15,9 +15,10 @@ import { PublicVehicleEligibilityService } from './public-eligibility.service';
 import { PublicProjectionService } from './public-projection.service';
 import { PublicVehiclesService } from './public-vehicles.service';
 import { FilesModule } from '../files/files.module';
+import { FulfillmentModule } from '../fulfillment/fulfillment.module';
 
 @Module({
-  imports: [FilesModule],
+  imports: [FilesModule, FulfillmentModule],
   controllers: [
     PublicVehiclesController,
     PublicHostsController,

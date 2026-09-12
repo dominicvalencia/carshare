@@ -29,6 +29,13 @@ remains environment-provided through `EXPO_PUBLIC_PROJECT_ID` and is exposed to 
 `extra.eas.projectId`. Non-local profiles must explicitly bind it with `EXPO_PUBLIC_PROJECT_ENV`
 matching `EXPO_PUBLIC_APP_ENV`; no Firebase server credential belongs in an `EXPO_PUBLIC_*` value.
 
+The B3 Google location picker uses separate environment-bound credentials:
+`EXPO_ANDROID_GOOGLE_MAPS_KEY`, `EXPO_IOS_GOOGLE_MAPS_KEY`, and
+`EXPO_GOOGLE_MAPS_ENV=local` configure the native Google map renderers. The separate server-only
+`GOOGLE_MAPS_SERVER_KEY` is required only when `GEOCODING_PROVIDER=google` and is restricted to
+Places API (New) and Geocoding API. Keep every value in the ignored root `.env`; never expose the
+server key through an `EXPO_PUBLIC_*` variable.
+
 The explicit local/test Semaphore transport certification additionally requires
 `SMS_OTP_ENABLED=true`, `SMS_PROVIDER=semaphore`, `SEMAPHORE_CERTIFICATION_ENABLED=true`, and
 `SEMAPHORE_CERTIFICATION_RECIPIENT`. `SEMAPHORE_SENDER_NAME` is optional only when the Semaphore

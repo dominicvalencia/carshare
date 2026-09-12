@@ -452,39 +452,15 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       }),
     ).rejects.toThrow();
 
-    await database.client.bookingFulfillmentSnapshot.create({
-      data: {
-        bookingId: winnerBooking.id,
-        collectionFeeMinor: 0,
-        currency: 'PHP',
-        deliveryDistanceMeters: 10_000,
-        deliveryFeeMinor: 12_500,
-        endCity: 'Makati',
-        endCountry: 'PH',
-        endLatitude: '14.554700',
-        endLongitude: '121.024400',
-        endMethod: 'RENTER_RETURN',
-        endProvince: 'Metro Manila',
-        minimumNoticeMinutes: 120,
-        serviceRadiusMeters: 10_000,
-        sourcePolicyVersionId: vehicle.policyId,
-        startCity: 'Taguig',
-        startCountry: 'PH',
-        startLatitude: '14.550000',
-        startLongitude: '121.050000',
-        startMethod: 'OWNER_DELIVERY',
-        startProvince: 'Metro Manila',
-      },
-    });
     const fulfillmentSnapshot = await database.client.bookingFulfillmentSnapshot.findUniqueOrThrow({
       where: { bookingId: winnerBooking.id },
     });
     expect(fulfillmentSnapshot).toMatchObject({
-      deliveryDistanceMeters: 10_000,
-      deliveryFeeMinor: 12_500,
+      deliveryDistanceMeters: null,
+      deliveryFeeMinor: 0,
       endMethod: 'RENTER_RETURN',
       sourcePolicyVersionId: vehicle.policyId,
-      startMethod: 'OWNER_DELIVERY',
+      startMethod: 'RENTER_PICKUP',
     });
     await expect(
       database.client.bookingFulfillmentSnapshot.update({
@@ -514,6 +490,126 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       .expect(409)
       .expect(({ body }) => expect(body.error.code).toBe('OWNER_CANNOT_BOOK_OWN_VEHICLE'));
   }, 120_000);
+
+  it('quotes and snapshots all four authoritative fulfillment combinations', async () => {
+    const renter = await createActor('b3-fulfillment', [RoleCode.RENTER]);
+    const vehicle = await createVehicle('B3Fulfillment');
+    const policy = await database.client.vehiclePolicyVersion.create({
+      data: {
+        ...policyData(vehicle.id, 2, 250_000),
+        collectionFeeMinor: 20_000,
+        deliveryFeeMinor: 30_000,
+        fulfillmentMinimumNoticeMinutes: 0,
+        fulfillmentServiceRadiusMeters: 25_000,
+        supportsOwnerCollection: true,
+        supportsOwnerDelivery: true,
+      },
+    });
+    const destination = {
+      addressLine1: '100 Synthetic Certification Street',
+      city: 'Lucena City',
+      country: 'PH',
+      latitude: 13.942,
+      longitude: 121.624,
+      province: 'Quezon',
+    };
+    const combinations = [
+      ['RENTER_PICKUP', 'RENTER_RETURN', 250_000, []],
+      ['RENTER_PICKUP', 'OWNER_COLLECTION', 270_000, ['OWNER_COLLECTION']],
+      ['OWNER_DELIVERY', 'RENTER_RETURN', 280_000, ['OWNER_DELIVERY']],
+      ['OWNER_DELIVERY', 'OWNER_COLLECTION', 300_000, ['OWNER_DELIVERY', 'OWNER_COLLECTION']],
+    ] as const;
+    let bookingReference = '';
+    for (const [startMethod, endMethod, totalMinor, serviceLines] of combinations) {
+      const rentalStart = future(
+        40 +
+          combinations.indexOf(
+            combinations.find((item) => item[0] === startMethod && item[1] === endMethod)!,
+          ),
+        9,
+      );
+      const rentalEnd = new Date(rentalStart.getTime() + 24 * 60 * 60 * 1000);
+      const quoted = await request(app.getHttpServer())
+        .post(`/api/v1/vehicles/${vehicle.id}/quotes`)
+        .set('Authorization', `Bearer ${renter.token}`)
+        .send({
+          ...(endMethod === 'OWNER_COLLECTION'
+            ? startMethod === 'OWNER_DELIVERY'
+              ? { collectionSameAsDelivery: true }
+              : { collectionDestination: destination }
+            : {}),
+          ...(startMethod === 'OWNER_DELIVERY' ? { deliveryDestination: destination } : {}),
+          end: rentalEnd.toISOString(),
+          endMethod,
+          start: rentalStart.toISOString(),
+          startMethod,
+        })
+        .expect(201);
+      expect(quoted.body.data).toMatchObject({
+        fulfillment: { endMethod, startMethod },
+        totalMinor,
+      });
+      expect(
+        quoted.body.data.lines
+          .filter((line: { code: string }) => line.code.startsWith('OWNER_'))
+          .map((line: { code: string }) => line.code),
+      ).toEqual(serviceLines);
+      const persisted = await database.client.pricingQuoteFulfillment.findUniqueOrThrow({
+        where: { quoteId: quoted.body.data.id },
+      });
+      expect(persisted.sourcePolicyVersionId).toBe(policy.id);
+      if (startMethod === 'OWNER_DELIVERY' && endMethod === 'OWNER_COLLECTION') {
+        const held = await hold(renter.token, quoted.body.data.id, `b3-four-way-${unique}`).expect(
+          201,
+        );
+        bookingReference = held.body.data.publicReference;
+      }
+    }
+    const booking = await database.client.booking.findUniqueOrThrow({
+      include: { fulfillmentSnapshot: true, pricingSnapshot: true },
+      where: { publicReference: bookingReference },
+    });
+    expect(booking.fulfillmentSnapshot).toMatchObject({
+      collectionFeeMinor: 20_000,
+      deliveryFeeMinor: 30_000,
+      endMethod: 'OWNER_COLLECTION',
+      sourcePolicyVersionId: policy.id,
+      startMethod: 'OWNER_DELIVERY',
+    });
+    expect(booking.pricingSnapshot?.discountedRentalSubtotalMinor).toBe(250_000);
+    expect(booking.pricingSnapshot?.totalMinor).toBe(300_000);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${bookingReference}/continue`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${bookingReference}/payment/authorize`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${bookingReference}/accept`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(201);
+    const captured = await database.client.booking.findUniqueOrThrow({
+      include: { ownerEarning: true, payments: true },
+      where: { publicReference: bookingReference },
+    });
+    expect(captured.payments[0]?.capturedAmountMinor).toBe(300_000n);
+    expect(captured.ownerEarning).toMatchObject({
+      collectionEarningMinor: 20_000n,
+      deliveryEarningMinor: 30_000n,
+      grossRentalAmountMinor: 250_000n,
+      netEarningAmountMinor: 212_500n,
+    });
+    const allocation = await database.client.ledgerTransaction.findFirstOrThrow({
+      include: { entries: { include: { account: true } } },
+      where: { sourceId: captured.payments[0]!.id, type: 'CAPTURE_ALLOCATION' },
+    });
+    expect(allocation.entries.reduce((sum, entry) => sum + entry.amountMinor, 0n)).toBe(0n);
+    expect(
+      allocation.entries.find((entry) => entry.account.type === 'OWNER_PAYABLE')?.amountMinor,
+    ).toBe(-262_500n);
+  }, 60_000);
 
   it('converges retries, expires holds, and atomically captures accepted authorized requests', async () => {
     const renterA = await createActor('idempotent-a', [RoleCode.RENTER]);

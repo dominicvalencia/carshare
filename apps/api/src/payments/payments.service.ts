@@ -39,6 +39,23 @@ const PAYMENT_INCLUDE = {
 
 type PaymentRecord = Prisma.PaymentGetPayload<{ include: typeof PAYMENT_INCLUDE }>;
 
+export function reconcileCaptureComponents(input: {
+  readonly rentalComponentMinor: bigint;
+  readonly deliveryComponentMinor: bigint;
+  readonly collectionComponentMinor: bigint;
+  readonly capturedTotalMinor: bigint;
+  readonly pricingTotalMinor: bigint;
+}) {
+  const accountedTotalMinor =
+    input.rentalComponentMinor + input.deliveryComponentMinor + input.collectionComponentMinor;
+  if (
+    accountedTotalMinor !== input.capturedTotalMinor ||
+    accountedTotalMinor !== input.pricingTotalMinor
+  )
+    throw new Error('Captured total does not reconcile to rental and fulfillment components.');
+  return { ...input, accountedTotalMinor };
+}
+
 @Injectable()
 export class PaymentsService {
   constructor(
@@ -369,6 +386,8 @@ export class PaymentsService {
     const projected = earnings.map((earning) => {
       const total =
         earning.netEarningAmountMinor +
+        earning.deliveryEarningMinor +
+        earning.collectionEarningMinor +
         earning.additionalCompensationMinor +
         earning.adjustmentAmountMinor;
       const held = earning.holds
@@ -381,8 +400,10 @@ export class PaymentsService {
         availableAt: earning.availableAt,
         booking: earning.booking,
         commissionAmountMinor: this.minor(earning.commissionAmountMinor),
+        collectionEarningMinor: this.minor(earning.collectionEarningMinor),
         createdAt: earning.createdAt,
         currency: earning.currency,
+        deliveryEarningMinor: this.minor(earning.deliveryEarningMinor),
         grossRentalAmountMinor: this.minor(earning.grossRentalAmountMinor),
         heldAmountMinor: this.minor(held),
         holds: earning.holds.map((hold) => ({
@@ -679,7 +700,11 @@ export class PaymentsService {
         return;
       }
       const booking = await transaction.booking.findUniqueOrThrow({
-        include: { pricingSnapshot: true, vehicle: { select: { categoryId: true } } },
+        include: {
+          fulfillmentSnapshot: true,
+          pricingSnapshot: true,
+          vehicle: { select: { categoryId: true } },
+        },
         where: { id: payment.bookingId },
       });
       if (booking.status !== BookingStatus.CAPTURE_PENDING) {
@@ -693,9 +718,17 @@ export class PaymentsService {
         booking.ownerProfileId,
         booking.vehicle.categoryId,
       );
-      const gross = BigInt(booking.pricingSnapshot.subtotalMinor);
-      if (gross !== payment.amountMinor)
-        throw new Error('MVP rental total must equal commissionable rental subtotal.');
+      const rentalComponent = BigInt(booking.pricingSnapshot.discountedRentalSubtotalMinor);
+      const deliveryComponent = BigInt(booking.fulfillmentSnapshot?.deliveryFeeMinor ?? 0);
+      const collectionComponent = BigInt(booking.fulfillmentSnapshot?.collectionFeeMinor ?? 0);
+      const { accountedTotalMinor: capturedTotal } = reconcileCaptureComponents({
+        capturedTotalMinor: payment.amountMinor,
+        collectionComponentMinor: collectionComponent,
+        deliveryComponentMinor: deliveryComponent,
+        pricingTotalMinor: BigInt(booking.pricingSnapshot.totalMinor),
+        rentalComponentMinor: rentalComponent,
+      });
+      const gross = rentalComponent;
       let commission = (gross * BigInt(rule.rateBasisPoints)) / 10_000n + rule.fixedAmountMinor;
       if (rule.minimumAmountMinor !== null && commission < rule.minimumAmountMinor)
         commission = rule.minimumAmountMinor;
@@ -759,7 +792,9 @@ export class PaymentsService {
         data: {
           bookingId: booking.id,
           commissionAmountMinor: commission,
+          collectionEarningMinor: collectionComponent,
           currency: payment.currency,
+          deliveryEarningMinor: deliveryComponent,
           grossRentalAmountMinor: gross,
           netEarningAmountMinor: net,
           ownerProfileId: booking.ownerProfileId,
@@ -776,13 +811,13 @@ export class PaymentsService {
             create: [
               {
                 accountId: account(FinancialAccountType.PAYMENT_PROVIDER_RECEIVABLE),
-                amountMinor: payment.amountMinor,
+                amountMinor: capturedTotal,
                 currency: payment.currency,
                 memo: 'Provider receivable',
               },
               {
                 accountId: account(FinancialAccountType.CUSTOMER_FUNDS_HELD),
-                amountMinor: -payment.amountMinor,
+                amountMinor: -capturedTotal,
                 currency: payment.currency,
                 memo: 'Customer funds held',
               },
@@ -802,13 +837,13 @@ export class PaymentsService {
             create: [
               {
                 accountId: account(FinancialAccountType.CUSTOMER_FUNDS_HELD),
-                amountMinor: payment.amountMinor,
+                amountMinor: capturedTotal,
                 currency: payment.currency,
                 memo: 'Allocate held customer funds',
               },
               {
                 accountId: account(FinancialAccountType.OWNER_PAYABLE),
-                amountMinor: -net,
+                amountMinor: -(net + deliveryComponent + collectionComponent),
                 currency: payment.currency,
                 memo: 'Pending owner earning',
               },

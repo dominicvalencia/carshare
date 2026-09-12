@@ -16,6 +16,8 @@ const { resolveGoogleServicesFile, resolveMobileEnvironment } =
       extra: Record<string, boolean | string | undefined>;
       googleServicesFile?: string;
       projectId?: string;
+      androidGoogleMapsKey?: string;
+      iosGoogleMapsKey?: string;
     };
   };
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -40,6 +42,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ios: {
       bundleIdentifier: mobile.identifier,
       supportsTablet: true,
+      ...(mobile.iosGoogleMapsKey ? { config: { googleMapsApiKey: mobile.iosGoogleMapsKey } } : {}),
     },
     android: {
       ...(googleServicesFile ? { googleServicesFile } : {}),
@@ -49,6 +52,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       },
       icon: './assets/carshare-app-icon.png',
       package: mobile.identifier,
+      ...(mobile.androidGoogleMapsKey
+        ? { config: { googleMaps: { apiKey: mobile.androidGoogleMapsKey } } }
+        : {}),
     },
     plugins: [
       ['@sentry/react-native/expo', { disableAutoUpload: true }],

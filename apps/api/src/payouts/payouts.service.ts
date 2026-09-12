@@ -1295,10 +1295,14 @@ export class PayoutsService {
   private earningAmount(earning: {
     additionalCompensationMinor: bigint;
     adjustmentAmountMinor: bigint;
+    collectionEarningMinor: bigint;
+    deliveryEarningMinor: bigint;
     netEarningAmountMinor: bigint;
   }) {
     return (
       earning.netEarningAmountMinor +
+      earning.deliveryEarningMinor +
+      earning.collectionEarningMinor +
       earning.additionalCompensationMinor +
       earning.adjustmentAmountMinor
     );

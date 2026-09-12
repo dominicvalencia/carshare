@@ -39,6 +39,25 @@ export interface BookingView {
   readonly ownerResponseDeadlineAt: string | null;
   readonly pickupWindow?: { readonly closesAt: string; readonly opensAt: string };
   readonly pricing: { totalMinor: number; currency: string };
+  readonly fulfillment: {
+    readonly startMethod: 'RENTER_PICKUP' | 'OWNER_DELIVERY';
+    readonly endMethod: 'RENTER_RETURN' | 'OWNER_COLLECTION';
+    readonly startLocation?: {
+      readonly addressLine1: string | null;
+      readonly city: string;
+      readonly province: string;
+    };
+    readonly endLocation?: {
+      readonly addressLine1: string | null;
+      readonly city: string;
+      readonly province: string;
+    };
+    readonly deliveryFeeMinor: number;
+    readonly collectionFeeMinor: number;
+    readonly deliveryDistanceMeters: number | null;
+    readonly collectionDistanceMeters: number | null;
+    readonly legacyCompatibility: boolean;
+  };
   readonly payments: readonly {
     amountMinor: number;
     authorizedAmountMinor: number;
@@ -376,6 +395,55 @@ function BookingDetail({
           />
         )}
       </Card>
+      <Card>
+        <Text style={styles.vehicle}>Contractual handover</Text>
+        <Detail
+          label="How you'll receive the car"
+          value={
+            booking.fulfillment.startMethod === 'OWNER_DELIVERY'
+              ? 'Owner Delivery'
+              : 'Pick up the car'
+          }
+          icon="navigate-outline"
+        />
+        {booking.fulfillment.startLocation && (
+          <Detail
+            label="Start location"
+            value={fulfillmentLocation(booking.fulfillment.startLocation)}
+            icon="location-outline"
+          />
+        )}
+        {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
+          <Detail
+            label="Delivery fee"
+            value={money(booking.fulfillment.deliveryFeeMinor, booking.pricing.currency)}
+            icon="cash-outline"
+          />
+        )}
+        <Detail
+          label="How you'll return the car"
+          value={
+            booking.fulfillment.endMethod === 'OWNER_COLLECTION'
+              ? 'Owner Collection'
+              : 'Return it yourself'
+          }
+          icon="return-down-back-outline"
+        />
+        {booking.fulfillment.endLocation && (
+          <Detail
+            label="End location"
+            value={fulfillmentLocation(booking.fulfillment.endLocation)}
+            icon="location-outline"
+          />
+        )}
+        {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
+          <Detail
+            label="Collection fee"
+            value={money(booking.fulfillment.collectionFeeMinor, booking.pricing.currency)}
+            icon="cash-outline"
+          />
+        )}
+      </Card>
       {booking.conversationId && (
         <Button
           icon="chatbubble-outline"
@@ -471,6 +539,14 @@ function BookingDetail({
       )}
     </Screen>
   );
+}
+
+function fulfillmentLocation(location: {
+  readonly addressLine1: string | null;
+  readonly city: string;
+  readonly province: string;
+}) {
+  return [location.addressLine1, location.city, location.province].filter(Boolean).join(', ');
 }
 
 function Detail({

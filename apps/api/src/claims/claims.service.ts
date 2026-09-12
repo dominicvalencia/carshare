@@ -208,6 +208,8 @@ export class ClaimsService {
       if (booking.ownerEarning) {
         const exposure =
           booking.ownerEarning.netEarningAmountMinor +
+          booking.ownerEarning.deliveryEarningMinor +
+          booking.ownerEarning.collectionEarningMinor +
           booking.ownerEarning.additionalCompensationMinor +
           booking.ownerEarning.adjustmentAmountMinor;
         if (exposure > 0n) {
@@ -601,6 +603,8 @@ export class ClaimsService {
         });
         const exposure =
           claim.booking.ownerEarning.netEarningAmountMinor +
+          claim.booking.ownerEarning.deliveryEarningMinor +
+          claim.booking.ownerEarning.collectionEarningMinor +
           claim.booking.ownerEarning.additionalCompensationMinor +
           claim.booking.ownerEarning.adjustmentAmountMinor;
         const holdAmount = this.minimum(exposure, approved.amount);

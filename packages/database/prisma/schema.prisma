@@ -1620,6 +1620,7 @@ model VehiclePolicyVersion {
   vehicle              Vehicle                      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   createdBy            User                         @relation("VehiclePolicyCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
   pricingQuotes        PricingQuote[]
+  quoteFulfillments    PricingQuoteFulfillment[]
   fulfillmentSnapshots BookingFulfillmentSnapshot[]
 
   @@unique([vehicleId, version])
@@ -1705,10 +1706,11 @@ model PricingQuote {
   expiresAt                     DateTime @map("expires_at") @db.Timestamptz(3)
   createdAt                     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  renter          User                 @relation("QuoteRenter", fields: [renterUserId], references: [id], onDelete: Restrict)
-  vehicle         Vehicle              @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  policyVersion   VehiclePolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Restrict)
+  renter          User                     @relation("QuoteRenter", fields: [renterUserId], references: [id], onDelete: Restrict)
+  vehicle         Vehicle                  @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  policyVersion   VehiclePolicyVersion     @relation(fields: [policyVersionId], references: [id], onDelete: Restrict)
   lines           PricingQuoteLine[]
+  fulfillment     PricingQuoteFulfillment?
   analyticsEvents AnalyticsEvent[]
   booking         Booking?
 
@@ -1716,6 +1718,43 @@ model PricingQuote {
   @@index([vehicleId, createdAt])
   @@index([expiresAt])
   @@map("pricing_quotes")
+}
+
+model PricingQuoteFulfillment {
+  quoteId                  String                 @id @map("quote_id") @db.Uuid
+  sourcePolicyVersionId    String                 @map("source_policy_version_id") @db.Uuid
+  startMethod              StartFulfillmentMethod @map("start_method")
+  endMethod                EndFulfillmentMethod   @map("end_method")
+  startAddressLine1        String?                @map("start_address_line_1") @db.VarChar(255)
+  startBarangay            String?                @map("start_barangay") @db.VarChar(120)
+  startCity                String                 @map("start_city") @db.VarChar(120)
+  startProvince            String                 @map("start_province") @db.VarChar(120)
+  startPostalCode          String?                @map("start_postal_code") @db.VarChar(12)
+  startCountry             String                 @default("PH") @map("start_country") @db.Char(2)
+  startLatitude            Decimal                @map("start_latitude") @db.Decimal(9, 6)
+  startLongitude           Decimal                @map("start_longitude") @db.Decimal(9, 6)
+  endAddressLine1          String?                @map("end_address_line_1") @db.VarChar(255)
+  endBarangay              String?                @map("end_barangay") @db.VarChar(120)
+  endCity                  String                 @map("end_city") @db.VarChar(120)
+  endProvince              String                 @map("end_province") @db.VarChar(120)
+  endPostalCode            String?                @map("end_postal_code") @db.VarChar(12)
+  endCountry               String                 @default("PH") @map("end_country") @db.Char(2)
+  endLatitude              Decimal                @map("end_latitude") @db.Decimal(9, 6)
+  endLongitude             Decimal                @map("end_longitude") @db.Decimal(9, 6)
+  deliveryDistanceMeters   Int?                   @map("delivery_distance_meters")
+  collectionDistanceMeters Int?                   @map("collection_distance_meters")
+  deliveryFeeMinor         Int                    @default(0) @map("delivery_fee_minor")
+  collectionFeeMinor       Int                    @default(0) @map("collection_fee_minor")
+  currency                 String                 @db.Char(3)
+  serviceRadiusMeters      Int?                   @map("service_radius_meters")
+  minimumNoticeMinutes     Int                    @map("minimum_notice_minutes")
+  createdAt                DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  quote               PricingQuote         @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  sourcePolicyVersion VehiclePolicyVersion @relation(fields: [sourcePolicyVersionId], references: [id], onDelete: Restrict)
+
+  @@index([sourcePolicyVersionId])
+  @@map("pricing_quote_fulfillments")
 }
 
 model PricingQuoteLine {
@@ -2885,6 +2924,8 @@ model OwnerEarning {
   grossRentalAmountMinor      BigInt             @map("gross_rental_amount_minor")
   commissionAmountMinor       BigInt             @map("commission_amount_minor")
   netEarningAmountMinor       BigInt             @map("net_earning_amount_minor")
+  deliveryEarningMinor        BigInt             @default(0) @map("delivery_earning_minor")
+  collectionEarningMinor      BigInt             @default(0) @map("collection_earning_minor")
   additionalCompensationMinor BigInt             @default(0) @map("additional_compensation_minor")
   adjustmentAmountMinor       BigInt             @default(0) @map("adjustment_amount_minor")
   currency                    String             @db.Char(3)

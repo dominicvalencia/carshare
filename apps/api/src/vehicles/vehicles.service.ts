@@ -39,6 +39,7 @@ import {
   normalizeFulfillmentPolicy,
   validateFulfillmentPolicy,
 } from '../fulfillment/fulfillment-policy';
+import { manilaTodayWindow, ownerAvailabilityToday } from './owner-availability';
 
 const MATERIAL_EDITABLE: readonly VehicleLifecycleStatus[] = [
   VehicleLifecycleStatus.DRAFT,
@@ -178,7 +179,59 @@ export class VehiclesService {
       orderBy: { updatedAt: 'desc' },
       where: { ownerUserId: userId },
     });
-    return vehicles.map((vehicle) => this.withOwnerPhotoGrants(vehicle));
+    const { endExclusive, startInclusive } = manilaTodayWindow();
+    const vehicleIds = vehicles.map(({ id }) => id);
+    const [occupancies, blocks] = vehicleIds.length
+      ? await Promise.all([
+          this.database.client.vehicleOccupancy.findMany({
+            select: { type: true, vehicleId: true },
+            where: {
+              active: true,
+              occupiedEnd: { gt: startInclusive },
+              occupiedStart: { lt: endExclusive },
+              vehicleId: { in: vehicleIds },
+            },
+          }),
+          this.database.client.vehicleBlockedPeriod.findMany({
+            select: { endsAt: true, reason: true, vehicleId: true },
+            where: {
+              endsAt: { gt: startInclusive },
+              removedAt: null,
+              startsAt: { lt: endExclusive },
+              vehicleId: { in: vehicleIds },
+            },
+          }),
+        ])
+      : [[], []];
+    return vehicles.map((vehicle) => ({
+      ...this.withOwnerPhotoGrants(vehicle),
+      availabilityToday: ownerAvailabilityToday({
+        blocks: blocks.filter(({ vehicleId }) => vehicleId === vehicle.id),
+        lifecycleStatus: vehicle.status,
+        occupancies: occupancies.filter(({ vehicleId }) => vehicleId === vehicle.id),
+        operationalStatus: vehicle.operationalStatus,
+      }),
+    }));
+  }
+
+  async ownerDashboardSummary(userId: string) {
+    await this.owners.assertDraftCapable(userId);
+    const { endExclusive, startInclusive } = manilaTodayWindow();
+    const rows = await this.database.client.vehicleBlockedPeriod.findMany({
+      distinct: ['vehicleId'],
+      select: { vehicleId: true },
+      where: {
+        endsAt: { gt: startInclusive },
+        removedAt: null,
+        startsAt: { lt: endExclusive },
+        vehicle: { ownerUserId: userId },
+      },
+    });
+    return {
+      asOf: new Date().toISOString(),
+      ownerBlockedVehiclesToday: rows.length,
+      timezone: 'Asia/Manila',
+    };
   }
 
   async getOwned(userId: string, id: string) {
@@ -187,7 +240,36 @@ export class VehiclesService {
       where: { id, ownerUserId: userId },
     });
     if (!vehicle) this.notFound();
-    return this.withOwnerPhotoGrants(vehicle);
+    const { endExclusive, startInclusive } = manilaTodayWindow();
+    const [occupancies, blocks] = await Promise.all([
+      this.database.client.vehicleOccupancy.findMany({
+        select: { type: true },
+        where: {
+          active: true,
+          occupiedEnd: { gt: startInclusive },
+          occupiedStart: { lt: endExclusive },
+          vehicleId: id,
+        },
+      }),
+      this.database.client.vehicleBlockedPeriod.findMany({
+        select: { endsAt: true, reason: true },
+        where: {
+          endsAt: { gt: startInclusive },
+          removedAt: null,
+          startsAt: { lt: endExclusive },
+          vehicleId: id,
+        },
+      }),
+    ]);
+    return {
+      ...this.withOwnerPhotoGrants(vehicle),
+      availabilityToday: ownerAvailabilityToday({
+        blocks,
+        lifecycleStatus: vehicle.status,
+        occupancies,
+        operationalStatus: vehicle.operationalStatus,
+      }),
+    };
   }
 
   async update(userId: string, id: string, input: UpdateVehicleDto) {
@@ -474,7 +556,13 @@ export class VehiclesService {
           provinceCode: address.province?.code ?? null,
           regionCode: address.region.code,
         }
-      : {};
+      : {
+          addressScopeCode: null,
+          barangayCode: null,
+          cityMunicipalityCode: null,
+          provinceCode: null,
+          regionCode: null,
+        };
     await this.database.client.vehicleLocation.upsert({
       create: {
         ...structured,
@@ -628,9 +716,17 @@ export class VehiclesService {
     await this.ownedRecord(userId, id);
     const result = await this.database.client.$transaction(async (transaction) => {
       const block = await transaction.vehicleBlockedPeriod.findFirst({
-        where: { id: blockId, removedAt: null, vehicleId: id },
+        where: { id: blockId, vehicleId: id },
       });
       if (!block) return 0;
+      if (block.removedAt) return 0;
+      if (block.endsAt <= new Date()) {
+        throw new ApplicationException(
+          VehicleErrorCode.INVALID_BLOCKED_PERIOD,
+          'Past unavailable periods are read-only.',
+          HttpStatus.CONFLICT,
+        );
+      }
       await this.occupancy.release(transaction, block.occupancyId, 'OWNER_BLOCK_REMOVED');
       await transaction.vehicleBlockedPeriod.update({
         data: { removedAt: new Date() },
@@ -638,7 +734,7 @@ export class VehiclesService {
       });
       return 1;
     });
-    if (!result) this.notFound();
+    return { removed: result === 1 };
   }
 
   async submit(userId: string, id: string, request: RequestMetadata) {

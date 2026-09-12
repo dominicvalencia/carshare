@@ -87,8 +87,7 @@ export class PricingQuotesController {
     return this.quotes.create(
       principal.userId,
       vehicleId,
-      input.start,
-      input.end,
+      input,
       requestMetadata(request).correlationId,
     );
   }

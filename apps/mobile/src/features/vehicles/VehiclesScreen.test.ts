@@ -18,7 +18,7 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
 
   it('saves before continuing and protects against duplicate taps', () => {
     expect(source).toContain('label="Save and continue"');
-    expect(source).toContain('disabled={mutation.isPending}');
+    expect(source).toContain('disabled={disabled || mutation.isPending}');
     expect(source).toContain('lastCompletedSection');
   });
 
@@ -33,7 +33,7 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     ).toBeGreaterThanOrEqual(2);
   });
 
-  it('shows clean photo cards, attached document preview, PSGC hierarchy, and owner blocks', () => {
+  it('shows clean photo cards, attached document preview, shared private location picker, and owner blocks', () => {
     expect(source).toContain("photo.isCover ? 'Cover' : 'Vehicle photo'");
     expect(source).not.toContain('Position ${photo.displayOrder + 1}');
     expect(source).not.toContain('label="←"');
@@ -41,10 +41,14 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(source).toContain('label="Remove"');
     expect(source).toContain('variant="danger"');
     expect(source).toContain('documentPreview');
-    expect(source).toContain("['geography', 'regions']");
-    expect(source).toContain("['geography', 'barangays'");
+    expect(source).toContain('<LocationPicker');
+    expect(source).toContain('Your exact location is kept private from public browsing');
+    expect(source).toContain('kind="pickup"');
+    expect(source).not.toContain('Use this device at the pickup point');
     expect(source).toContain("['vehicle-blocks', id]");
-    expect(source).toContain('Remove future block');
+    expect(source).toContain('Remove unavailable period?');
+    expect(source).toContain("text: 'Remove block'");
+    expect(source).toContain('Past period · read-only');
   });
 
   it('makes photo wizard navigation explicit, validated, and duplicate-safe', () => {
@@ -61,6 +65,9 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(source).toContain('Registration / verification');
     expect(source).toContain('Pricing & usage');
     expect(source).toContain('label="Manage availability"');
+    expect(source).toContain('<DetailSection title="Private pickup location">');
+    expect(source).toContain('ownerPrivateLocationLabel(value.location)');
+    expect(source).toContain('<Button label="Change location" onPress={() => onEdit(4)}');
   });
 
   it('keeps availability in vehicle detail and live-refreshes transitional review states', () => {
@@ -69,6 +76,10 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(source).toContain('transitionalVehicleStatuses');
     expect(source).toContain('refetchInterval: (query)');
     expect(source).toContain('refetchOnWindowFocus: true');
+    expect(source).toContain('Owner-blocked today');
+    expect(source).toContain('Booked today');
+    expect(source).toContain("timeZone: 'Asia/Manila'");
+    expect(source).toContain("queryKey: ['owner-vehicle-dashboard-summary']");
   });
 
   it('lets owners configure fulfillment through the immutable policy-version flow', () => {

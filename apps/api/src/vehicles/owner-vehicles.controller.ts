@@ -57,6 +57,11 @@ export class OwnerVehiclesController {
     return this.vehicles.listOwned(principal.userId);
   }
 
+  @Get('dashboard-summary')
+  dashboardSummary(@CurrentPrincipal() principal: RequestPrincipal) {
+    return this.vehicles.ownerDashboardSummary(principal.userId);
+  }
+
   @Get(':id')
   detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
     return this.vehicles.getOwned(principal.userId, id);

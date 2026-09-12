@@ -43,6 +43,11 @@ import {
 } from '../../ui/primitives';
 import type { BookingView } from '../bookings/MyBookingsScreen';
 import { invalidateRenterVerification } from '../../query/verification-invalidation';
+import { LocationPicker } from '../../location/LocationPicker';
+import {
+  locationLabel as confirmedLocationLabel,
+  type CarShareLocation,
+} from '../../location/booking-location-provider';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import {
   chargeableDays,
@@ -154,6 +159,33 @@ interface Quote {
   readonly includedMileageKm: number | null;
   readonly expiresAt: string;
   readonly lines: readonly { code: string; description: string; amountMinor: number }[];
+  readonly fulfillment: {
+    readonly startMethod: 'RENTER_PICKUP' | 'OWNER_DELIVERY';
+    readonly endMethod: 'RENTER_RETURN' | 'OWNER_COLLECTION';
+    readonly startLocation: FulfillmentDestination;
+    readonly endLocation: FulfillmentDestination;
+    readonly deliveryFeeMinor: number;
+    readonly collectionFeeMinor: number;
+    readonly deliveryDistanceMeters: number | null;
+    readonly collectionDistanceMeters: number | null;
+  };
+}
+interface FulfillmentDestination {
+  readonly addressLine1?: string;
+  readonly barangay?: string;
+  readonly city: string;
+  readonly province: string;
+  readonly postalCode?: string;
+  readonly country: string;
+  readonly latitude: number;
+  readonly longitude: number;
+}
+interface QuoteFulfillmentInput {
+  readonly startMethod: 'RENTER_PICKUP' | 'OWNER_DELIVERY';
+  readonly endMethod: 'RENTER_RETURN' | 'OWNER_COLLECTION';
+  readonly deliveryDestination?: FulfillmentDestination;
+  readonly collectionDestination?: FulfillmentDestination;
+  readonly collectionSameAsDelivery: boolean;
 }
 interface PaymentSetupResult {
   readonly booking: BookingView;
@@ -278,9 +310,13 @@ export function DiscoveryScreen({
     },
   });
   const quote = useMutation({
-    mutationFn: () =>
+    mutationFn: (fulfillment: QuoteFulfillmentInput) =>
       apiClient.request<Quote>(`/vehicles/${vehicleId}/quotes`, {
-        body: JSON.stringify({ start: pickup.toISOString(), end: returnAt.toISOString() }),
+        body: JSON.stringify({
+          start: pickup.toISOString(),
+          end: returnAt.toISOString(),
+          ...fulfillment,
+        }),
         method: 'POST',
       }),
     onSuccess: () => setMode('quote'),
@@ -371,6 +407,7 @@ export function DiscoveryScreen({
   if ((mode === 'detail' || mode === 'quote') && vehicleId)
     return (
       <VehicleView
+        key={detail.data?.vehicleId ?? 'loading'}
         vehicle={detail.data}
         loading={detail.isPending}
         error={detail.error}
@@ -387,6 +424,7 @@ export function DiscoveryScreen({
         reserve={reserve}
         continueBooking={continueBooking}
         mode={mode}
+        searchLocation={place}
       />
     );
   if (mode === 'results')
@@ -752,10 +790,11 @@ function VehicleView(properties: {
   readonly setReturnAt: (value: Date) => void;
   readonly onBack: () => void;
   readonly onFavorite: () => void;
-  readonly quote: ReturnType<typeof useMutation<Quote, Error, void>>;
+  readonly quote: ReturnType<typeof useMutation<Quote, Error, QuoteFulfillmentInput>>;
   readonly reserve: ReturnType<typeof useMutation<BookingView, Error, string>>;
   readonly continueBooking: ReturnType<typeof useMutation<PaymentSetupResult, Error, string>>;
   readonly mode: ViewMode;
+  readonly searchLocation: SearchLocation;
 }) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const { vehicle } = properties;
@@ -765,6 +804,22 @@ function VehicleView(properties: {
   const lastScrolledQuoteId = useRef<string | null>(null);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [galleryOpen, setGalleryOpen] = useState(false);
+  const [startMethod, setStartMethod] = useState<'RENTER_PICKUP' | 'OWNER_DELIVERY'>(
+    vehicle?.fulfillment.renterPickupAvailable === false &&
+      vehicle.fulfillment.ownerDeliveryAvailable
+      ? 'OWNER_DELIVERY'
+      : 'RENTER_PICKUP',
+  );
+  const [endMethod, setEndMethod] = useState<'RENTER_RETURN' | 'OWNER_COLLECTION'>(
+    vehicle?.fulfillment.renterReturnAvailable === false &&
+      vehicle.fulfillment.ownerCollectionAvailable
+      ? 'OWNER_COLLECTION'
+      : 'RENTER_RETURN',
+  );
+  const [sameAsDelivery, setSameAsDelivery] = useState(true);
+  const [deliveryLocation, setDeliveryLocation] = useState<CarShareLocation>();
+  const [collectionLocation, setCollectionLocation] = useState<CarShareLocation>();
+  const [picker, setPicker] = useState<'delivery' | 'collection' | null>(null);
   const quoteData = properties.quote.data;
   if (properties.loading)
     return (
@@ -793,6 +848,37 @@ function VehicleView(properties: {
   const durationDiscounts = positiveDurationDiscounts(vehicle.pricing.durationDiscounts);
   const selectedChargeableDays = chargeableDays(properties.pickup, properties.returnAt);
   const discountMessage = durationDiscountMessage(selectedChargeableDays, durationDiscounts);
+  const destination = (location: CarShareLocation): FulfillmentDestination => ({
+    ...(location.addressLine1 ? { addressLine1: location.addressLine1 } : {}),
+    ...(location.barangay ? { barangay: location.barangay } : {}),
+    city: location.city,
+    country: location.country,
+    latitude: location.latitude,
+    longitude: location.longitude,
+    ...(location.postalCode ? { postalCode: location.postalCode } : {}),
+    province: location.province,
+  });
+  const fulfillmentInput = (): QuoteFulfillmentInput => ({
+    collectionSameAsDelivery:
+      startMethod === 'OWNER_DELIVERY' && endMethod === 'OWNER_COLLECTION' && sameAsDelivery,
+    ...(endMethod === 'OWNER_COLLECTION' && !(startMethod === 'OWNER_DELIVERY' && sameAsDelivery)
+      ? {
+          collectionDestination: destination(collectionLocation!),
+        }
+      : {}),
+    ...(startMethod === 'OWNER_DELIVERY'
+      ? {
+          deliveryDestination: destination(deliveryLocation!),
+        }
+      : {}),
+    endMethod,
+    startMethod,
+  });
+  const fulfillmentValid =
+    (startMethod !== 'OWNER_DELIVERY' || Boolean(deliveryLocation)) &&
+    (endMethod !== 'OWNER_COLLECTION' ||
+      (startMethod === 'OWNER_DELIVERY' && sameAsDelivery) ||
+      Boolean(collectionLocation));
   return (
     <Screen
       scrollRef={scrollRef}
@@ -918,11 +1004,109 @@ function VehicleView(properties: {
             onChange={properties.setReturnAt}
           />
         </View>
+        <SectionHeader title="How would you like to receive the car?" />
+        <View style={styles.quickRow}>
+          {vehicle.fulfillment.renterPickupAvailable && (
+            <Chip
+              label="Pick up the car"
+              selected={startMethod === 'RENTER_PICKUP'}
+              onPress={() => {
+                setStartMethod('RENTER_PICKUP');
+                properties.quote.reset();
+              }}
+            />
+          )}
+          {vehicle.fulfillment.ownerDeliveryAvailable && (
+            <Chip
+              label="Have it delivered"
+              selected={startMethod === 'OWNER_DELIVERY'}
+              onPress={() => {
+                setStartMethod('OWNER_DELIVERY');
+                properties.quote.reset();
+              }}
+            />
+          )}
+        </View>
+        {startMethod === 'OWNER_DELIVERY' && (
+          <ConfirmedLocationCard
+            kind="delivery"
+            location={deliveryLocation}
+            onChange={() => setPicker('delivery')}
+          />
+        )}
+        <SectionHeader title="How would you like to return the car?" />
+        <View style={styles.quickRow}>
+          {vehicle.fulfillment.renterReturnAvailable && (
+            <Chip
+              label="Return it yourself"
+              selected={endMethod === 'RENTER_RETURN'}
+              onPress={() => {
+                setEndMethod('RENTER_RETURN');
+                properties.quote.reset();
+              }}
+            />
+          )}
+          {vehicle.fulfillment.ownerCollectionAvailable && (
+            <Chip
+              label="Have the owner collect it"
+              selected={endMethod === 'OWNER_COLLECTION'}
+              onPress={() => {
+                setEndMethod('OWNER_COLLECTION');
+                properties.quote.reset();
+              }}
+            />
+          )}
+        </View>
+        {endMethod === 'OWNER_COLLECTION' && startMethod === 'OWNER_DELIVERY' && (
+          <Pressable
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: sameAsDelivery }}
+            onPress={() => {
+              setSameAsDelivery(!sameAsDelivery);
+              if (sameAsDelivery) setCollectionLocation(undefined);
+              properties.quote.reset();
+            }}
+            style={styles.locationRow}
+          >
+            <Icon
+              color={colors.primary}
+              name={sameAsDelivery ? 'checkbox' : 'square-outline'}
+              size={22}
+            />
+            <Text style={styles.body}>Same as delivery location</Text>
+          </Pressable>
+        )}
+        {endMethod === 'OWNER_COLLECTION' &&
+          !(startMethod === 'OWNER_DELIVERY' && sameAsDelivery) && (
+            <ConfirmedLocationCard
+              kind="collection"
+              location={collectionLocation}
+              onChange={() => setPicker('collection')}
+            />
+          )}
+        {picker && (
+          <LocationPicker
+            visible
+            kind={picker}
+            initial={picker === 'collection' ? collectionLocation : deliveryLocation}
+            onCancel={() => setPicker(null)}
+            onConfirm={(location) => {
+              if (picker === 'delivery') setDeliveryLocation(location);
+              else setCollectionLocation(location);
+              properties.quote.reset();
+              setPicker(null);
+            }}
+          />
+        )}
         <Text style={styles.quoteNote}>Checking the price does not reserve this car.</Text>
         <Button
-          disabled={properties.quote.isPending || properties.returnAt <= properties.pickup}
+          disabled={
+            properties.quote.isPending ||
+            properties.returnAt <= properties.pickup ||
+            !fulfillmentValid
+          }
           label={properties.quote.isPending ? 'Checking price…' : 'Check price'}
-          onPress={() => properties.quote.mutate()}
+          onPress={() => properties.quote.mutate(fulfillmentInput())}
         />
       </Card>
       {properties.quote.isError && (
@@ -956,7 +1140,7 @@ function VehicleView(properties: {
             onRefreshQuote={() => {
               properties.reserve.reset();
               properties.continueBooking.reset();
-              properties.quote.mutate();
+              properties.quote.mutate(fulfillmentInput());
             }}
           />
         </View>
@@ -1165,7 +1349,12 @@ function QuoteCard({
         {dateTimeLabel(pickup)} → {dateTimeLabel(returnAt)}
       </Text>
       <Text style={styles.body}>
-        Pickup near {vehicle.location.city}, {vehicle.location.province}
+        Start: {fulfillmentMethodLabel(quote.fulfillment.startMethod)} ·{' '}
+        {locationLabel(quote.fulfillment.startLocation)}
+      </Text>
+      <Text style={styles.body}>
+        End: {fulfillmentMethodLabel(quote.fulfillment.endMethod)} ·{' '}
+        {locationLabel(quote.fulfillment.endLocation)}
       </Text>
       <Text style={styles.body}>
         {money(vehicle.pricing.dailyRateMinor, quote.currency)} per day · {quote.chargeableDays}{' '}
@@ -1243,6 +1432,58 @@ function QuoteCard({
       )}
     </Card>
   );
+}
+
+function ConfirmedLocationCard({
+  kind,
+  location,
+  onChange,
+}: {
+  readonly kind: 'delivery' | 'collection';
+  readonly location: CarShareLocation | undefined;
+  readonly onChange: () => void;
+}) {
+  return (
+    <View style={styles.addressFields}>
+      <Text style={styles.cardTitle}>
+        {kind === 'delivery' ? 'Delivery location' : 'Collection location'}
+      </Text>
+      {location ? (
+        <Text style={styles.body}>{confirmedLocationLabel(location)}</Text>
+      ) : (
+        <Text style={styles.note}>
+          {kind === 'delivery'
+            ? 'Where should we deliver the car?'
+            : 'Where should the owner collect the car?'}
+        </Text>
+      )}
+      <Button
+        label={location ? 'Change location' : `Select ${kind} location`}
+        onPress={onChange}
+        variant="secondary"
+      />
+      <Text style={styles.note}>
+        Confirm the destination. The server checks the owner’s service area and notice requirement.
+      </Text>
+    </View>
+  );
+}
+
+function fulfillmentMethodLabel(method: string) {
+  return (
+    (
+      {
+        RENTER_PICKUP: 'Pick up the car',
+        OWNER_DELIVERY: 'Owner Delivery',
+        RENTER_RETURN: 'Renter Return',
+        OWNER_COLLECTION: 'Owner Collection',
+      } as Record<string, string>
+    )[method] ?? domainLabel(method)
+  );
+}
+
+function locationLabel(location: FulfillmentDestination) {
+  return [location.addressLine1, location.city, location.province].filter(Boolean).join(', ');
 }
 
 function FavoritesView({
@@ -1566,6 +1807,7 @@ function noticeLabel(minutes: number) {
 }
 
 const styles = StyleSheet.create({
+  addressFields: { gap: spacing.sm },
   body: { color: colors.subtleText, lineHeight: 21 },
   cardTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
   cardImage: { height: 190, width: '100%' },

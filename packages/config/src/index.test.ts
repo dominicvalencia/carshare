@@ -194,6 +194,16 @@ describe('environment configuration', () => {
         SENTRY_ENABLED: 'true',
       }),
     ).toThrow('SENTRY_WORKERS_DSN');
+    expect(() => parseApiEnvironment({ ...base, GEOCODING_PROVIDER: 'google' })).toThrow(
+      'GOOGLE_MAPS_SERVER_KEY',
+    );
+    expect(
+      parseApiEnvironment({
+        ...base,
+        GEOCODING_PROVIDER: 'google',
+        GOOGLE_MAPS_SERVER_KEY: 'development-key',
+      }).GEOCODING_PROVIDER,
+    ).toBe('google');
     expect(
       parseWorkerEnvironment({
         DATABASE_URL: base.DATABASE_URL,

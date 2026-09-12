@@ -17,6 +17,11 @@ interface VehicleSummary {
 interface BookingSummary {
   readonly status: string;
 }
+interface OwnerVehicleDashboardSummary {
+  readonly ownerBlockedVehiclesToday: number;
+  readonly timezone: 'Asia/Manila';
+  readonly asOf: string;
+}
 export function OwnerDashboardScreen({
   ownerStatus,
 }: {
@@ -33,11 +38,17 @@ export function OwnerDashboardScreen({
     enabled: ownerStatus === 'VERIFIED',
     retry: false,
   });
+  const availability = useQuery({
+    queryKey: ['owner-vehicle-dashboard-summary'],
+    queryFn: () =>
+      apiClient.request<OwnerVehicleDashboardSummary>('/owner/vehicles/dashboard-summary'),
+  });
   useRefreshOnFocusAndForeground(() => {
     void vehicles.refetch();
+    void availability.refetch();
     if (ownerStatus === 'VERIFIED') void bookings.refetch();
   });
-  const dashboardError = vehicles.error ?? bookings.error;
+  const dashboardError = vehicles.error ?? bookings.error ?? availability.error;
   if (dashboardError)
     return (
       <Screen eyebrow="Owner mode" title="Dashboard">
@@ -48,12 +59,17 @@ export function OwnerDashboardScreen({
           actionLabel="Retry"
           onAction={() => {
             void vehicles.refetch();
+            void availability.refetch();
             if (ownerStatus === 'VERIFIED') void bookings.refetch();
           }}
         />
       </Screen>
     );
-  if (vehicles.isPending || (ownerStatus === 'VERIFIED' && bookings.isPending))
+  if (
+    vehicles.isPending ||
+    availability.isPending ||
+    (ownerStatus === 'VERIFIED' && bookings.isPending)
+  )
     return (
       <Screen eyebrow="Owner mode" title="Dashboard">
         <StateView loading title="Loading owner dashboard…" />
@@ -108,6 +124,11 @@ export function OwnerDashboardScreen({
         <Metric icon="key-outline" label="Active rentals" value={active} />
         <Metric icon="calendar-outline" label="Upcoming rentals" value={upcoming} />
         <Metric icon="create-outline" label="Drafts" value={counts.DRAFT ?? 0} />
+        <Metric
+          icon="pause-circle-outline"
+          label="Owner-blocked today"
+          value={availability.data?.ownerBlockedVehiclesToday ?? 0}
+        />
       </View>
       <SectionHeader title="Quick actions" />
       <View style={styles.actions}>

@@ -5,6 +5,7 @@ import { FileAssetStatus, FileClassification, Prisma } from '@carrental/database
 import { FilesService } from '../files/files.service';
 
 export const bookingInclude = {
+  fulfillmentSnapshot: true,
   conversation: { select: { id: true } },
   cancellation: true,
   occupancy: {
@@ -107,6 +108,7 @@ export class BookingProjectionService {
       createdAt: booking.createdAt,
       conversationId: booking.conversation?.id ?? null,
       holdExpiresAt: booking.holdExpiresAt,
+      fulfillment: this.fulfillment(booking),
       owner: {
         displayName:
           booking.owner.profile?.displayName ??
@@ -207,8 +209,10 @@ export class BookingProjectionService {
       },
       earning: booking.ownerEarning
         ? {
+            collectionEarningMinor: Number(booking.ownerEarning.collectionEarningMinor),
             commissionAmountMinor: Number(booking.ownerEarning.commissionAmountMinor),
             currency: booking.ownerEarning.currency,
+            deliveryEarningMinor: Number(booking.ownerEarning.deliveryEarningMinor),
             netEarningAmountMinor: Number(booking.ownerEarning.netEarningAmountMinor),
             status: booking.ownerEarning.status,
           }
@@ -330,6 +334,43 @@ export class BookingProjectionService {
       totalMinor: pricing.totalMinor,
       unlimitedMileage: pricing.unlimitedMileage,
       vehicleTimezone: pricing.vehicleTimezone,
+    };
+  }
+
+  private fulfillment(booking: BookingRecord) {
+    const snapshot = booking.fulfillmentSnapshot;
+    if (!snapshot)
+      return {
+        collectionDistanceMeters: null,
+        collectionFeeMinor: 0,
+        deliveryDistanceMeters: null,
+        deliveryFeeMinor: 0,
+        endMethod: 'RENTER_RETURN',
+        legacyCompatibility: true,
+        startMethod: 'RENTER_PICKUP',
+      };
+    const location = (prefix: 'start' | 'end') => ({
+      addressLine1: snapshot[`${prefix}AddressLine1`],
+      barangay: snapshot[`${prefix}Barangay`],
+      city: snapshot[`${prefix}City`],
+      country: snapshot[`${prefix}Country`],
+      latitude: Number(snapshot[`${prefix}Latitude`]),
+      longitude: Number(snapshot[`${prefix}Longitude`]),
+      postalCode: snapshot[`${prefix}PostalCode`],
+      province: snapshot[`${prefix}Province`],
+    });
+    return {
+      collectionDistanceMeters: snapshot.collectionDistanceMeters,
+      collectionFeeMinor: snapshot.collectionFeeMinor,
+      endLocation: location('end'),
+      endMethod: snapshot.endMethod,
+      legacyCompatibility: false,
+      minimumNoticeMinutes: snapshot.minimumNoticeMinutes,
+      deliveryDistanceMeters: snapshot.deliveryDistanceMeters,
+      deliveryFeeMinor: snapshot.deliveryFeeMinor,
+      serviceRadiusMeters: snapshot.serviceRadiusMeters,
+      startLocation: location('start'),
+      startMethod: snapshot.startMethod,
     };
   }
 }

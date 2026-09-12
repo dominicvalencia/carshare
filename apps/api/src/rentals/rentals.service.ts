@@ -797,6 +797,8 @@ export class RentalsService {
         if (earning) {
           const exposure =
             earning.netEarningAmountMinor +
+            earning.deliveryEarningMinor +
+            earning.collectionEarningMinor +
             earning.additionalCompensationMinor +
             earning.adjustmentAmountMinor;
           if (exposure > 0n) {

@@ -255,6 +255,55 @@ function OwnerRequestDetail({
           />
         )}
       </Card>
+      <Card>
+        <Text style={styles.title}>Handover request</Text>
+        <Info
+          icon="navigate-outline"
+          label="Start"
+          value={
+            booking.fulfillment.startMethod === 'OWNER_DELIVERY'
+              ? 'Deliver to renter'
+              : 'Renter pickup'
+          }
+        />
+        {booking.fulfillment.startLocation && (
+          <Info
+            icon="location-outline"
+            label="Start location"
+            value={ownerFulfillmentLocation(booking.fulfillment.startLocation)}
+          />
+        )}
+        {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
+          <Info
+            icon="cash-outline"
+            label="Delivery fee"
+            value={money(booking.fulfillment.deliveryFeeMinor, booking.pricing.currency)}
+          />
+        )}
+        <Info
+          icon="return-down-back-outline"
+          label="End"
+          value={
+            booking.fulfillment.endMethod === 'OWNER_COLLECTION'
+              ? 'Owner collection'
+              : 'Renter return'
+          }
+        />
+        {booking.fulfillment.endLocation && (
+          <Info
+            icon="location-outline"
+            label="End location"
+            value={ownerFulfillmentLocation(booking.fulfillment.endLocation)}
+          />
+        )}
+        {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
+          <Info
+            icon="cash-outline"
+            label="Collection fee"
+            value={money(booking.fulfillment.collectionFeeMinor, booking.pricing.currency)}
+          />
+        )}
+      </Card>
       <Card style={styles.notice}>
         <Text style={styles.title}>Payment is authorized, not captured</Text>
         <Text style={styles.body}>
@@ -376,6 +425,14 @@ function OwnerRequestDetail({
       {decision.isError && <Text style={styles.error}>{decision.error.message}</Text>}
     </Screen>
   );
+}
+
+function ownerFulfillmentLocation(location: {
+  readonly addressLine1: string | null;
+  readonly city: string;
+  readonly province: string;
+}) {
+  return [location.addressLine1, location.city, location.province].filter(Boolean).join(', ');
 }
 
 function Info({

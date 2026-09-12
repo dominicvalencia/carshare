@@ -421,6 +421,125 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
     expect(storedBlock.startsAt.toISOString()).toBe('2026-09-01T00:00:00.000Z');
   });
 
+  it('soft-removes active Owner blocks idempotently and refreshes authoritative summaries', async () => {
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/owner/vehicles')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({})
+      .expect(201);
+    const availabilityVehicleId = created.body.data.id as string;
+    await database.client.vehicle.update({
+      data: {
+        make: 'Availability',
+        model: `Refinement-${unique}`,
+        operationalStatus: 'AVAILABLE',
+        status: VehicleLifecycleStatus.APPROVED,
+      },
+      where: { id: availabilityVehicleId },
+    });
+    const before = await request(app.getHttpServer())
+      .get('/api/v1/owner/vehicles/dashboard-summary')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    const startsAt = new Date(Date.now() - 60_000);
+    const endsAt = new Date(Date.now() + 60 * 60_000);
+    const block = await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${availabilityVehicleId}/blocked-periods`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        endsAt: endsAt.toISOString(),
+        reason: 'MAINTENANCE',
+        startsAt: startsAt.toISOString(),
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .delete(
+        `/api/v1/owner/vehicles/${availabilityVehicleId}/blocked-periods/${block.body.data.id}`,
+      )
+      .set('Authorization', `Bearer ${renterToken}`)
+      .expect(404);
+    const during = await request(app.getHttpServer())
+      .get('/api/v1/owner/vehicles/dashboard-summary')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    expect(during.body.data).toMatchObject({
+      ownerBlockedVehiclesToday: before.body.data.ownerBlockedVehiclesToday + 1,
+      timezone: 'Asia/Manila',
+    });
+    const list = await request(app.getHttpServer())
+      .get('/api/v1/owner/vehicles')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    expect(
+      list.body.data.find((vehicle: { id: string }) => vehicle.id === availabilityVehicleId)
+        .availabilityToday,
+    ).toMatchObject({ blockReason: 'MAINTENANCE', state: 'OWNER_BLOCKED' });
+
+    const removePath = `/api/v1/owner/vehicles/${availabilityVehicleId}/blocked-periods/${block.body.data.id}`;
+    await request(app.getHttpServer())
+      .delete(removePath)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(204);
+    await request(app.getHttpServer())
+      .delete(removePath)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(204);
+    const stored = await database.client.vehicleBlockedPeriod.findUniqueOrThrow({
+      include: { occupancy: true },
+      where: { id: block.body.data.id },
+    });
+    expect(stored.removedAt).not.toBeNull();
+    expect(stored.occupancy).toMatchObject({
+      active: false,
+      releaseReason: 'OWNER_BLOCK_REMOVED',
+    });
+    const after = await request(app.getHttpServer())
+      .get('/api/v1/owner/vehicles/dashboard-summary')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    expect(after.body.data.ownerBlockedVehiclesToday).toBe(
+      before.body.data.ownerBlockedVehiclesToday,
+    );
+
+    const futureStart = new Date(Date.now() + 2 * 24 * 60 * 60_000);
+    const futureEnd = new Date(futureStart.getTime() + 60 * 60_000);
+    const futureBlock = await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${availabilityVehicleId}/blocked-periods`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        endsAt: futureEnd.toISOString(),
+        reason: 'PERSONAL_USE',
+        startsAt: futureStart.toISOString(),
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .delete(
+        `/api/v1/owner/vehicles/${availabilityVehicleId}/blocked-periods/${futureBlock.body.data.id}`,
+      )
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(204);
+
+    const pastStart = new Date(Date.now() - 2 * 60 * 60_000);
+    const pastEnd = new Date(Date.now() - 60 * 60_000);
+    const pastBlock = await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${availabilityVehicleId}/blocked-periods`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        endsAt: pastEnd.toISOString(),
+        reason: 'OTHER',
+        startsAt: pastStart.toISOString(),
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .delete(
+        `/api/v1/owner/vehicles/${availabilityVehicleId}/blocked-periods/${pastBlock.body.data.id}`,
+      )
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('INVALID_BLOCKED_PERIOD'));
+  });
+
   it('requires five private photos and jurisdiction-required sensitive documents', async () => {
     await request(app.getHttpServer())
       .post(`/api/v1/owner/vehicles/${vehicleId}/submission`)

@@ -187,7 +187,8 @@ const apiEnvironmentSchema = commonSchema
     KYC_PROVIDER: z.enum(['manual', 'fake', 'sumsub']).default('manual'),
     SUMSUB_APP_TOKEN: z.string().min(1).optional(),
     SUMSUB_SECRET_KEY: z.string().min(1).optional(),
-    GEOCODING_PROVIDER: z.enum(['disabled', 'external']).default('disabled'),
+    GEOCODING_PROVIDER: z.enum(['disabled', 'external', 'google']).default('disabled'),
+    GOOGLE_MAPS_SERVER_KEY: z.string().min(1).optional(),
     OBSERVABILITY_ENABLED: z
       .enum(['true', 'false'])
       .default('false')
@@ -308,6 +309,10 @@ function validateCommunicationsEnvironment<
 }
 
 function validateAuthDeliveryEnvironment<T extends ApiEnvironment>(environment: T): T {
+  if (environment.GEOCODING_PROVIDER === 'google' && !environment.GOOGLE_MAPS_SERVER_KEY)
+    throw new Error(
+      'GOOGLE_MAPS_SERVER_KEY is required when Google location services are enabled.',
+    );
   if (
     environment.APP_ENV === 'production' &&
     environment.AUTH_DELIVERY_PROVIDER === 'development'

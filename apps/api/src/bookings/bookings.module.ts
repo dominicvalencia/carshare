@@ -4,6 +4,7 @@ import { FilesModule } from '../files/files.module';
 import { OwnersModule } from '../owners/owners.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { RenterVerificationModule } from '../renter-verification/renter-verification.module';
+import { FulfillmentModule } from '../fulfillment/fulfillment.module';
 import {
   AdminBookingsController,
   OwnerBookingsController,
@@ -17,7 +18,14 @@ import { OutboxService } from './outbox.service';
 @Module({
   controllers: [RenterBookingsController, OwnerBookingsController, AdminBookingsController],
   exports: [BookingsService, OccupancyService],
-  imports: [DiscoveryModule, FilesModule, OwnersModule, PaymentsModule, RenterVerificationModule],
+  imports: [
+    DiscoveryModule,
+    FilesModule,
+    FulfillmentModule,
+    OwnersModule,
+    PaymentsModule,
+    RenterVerificationModule,
+  ],
   providers: [BookingsService, BookingProjectionService, OccupancyService, OutboxService],
 })
 export class BookingsModule {}

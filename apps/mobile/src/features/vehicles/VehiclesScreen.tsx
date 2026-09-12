@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
-import * as Location from 'expo-location';
 import {
+  Alert,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -22,6 +22,8 @@ import { ensureCameraPermission } from '../../ui/camera-permission';
 import { domainLabel, money, vehicleStatusLabel } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import { SearchableReferenceSelector } from '../../ui/SearchableReferenceSelector';
+import { LocationPicker } from '../../location/LocationPicker';
+import { locationLabel, type CarShareLocation } from '../../location/booking-location-provider';
 import {
   BackControl,
   Button,
@@ -98,10 +100,16 @@ interface VehicleBlock {
   readonly endsAt: string;
   readonly reason: string;
 }
+interface AvailabilityToday {
+  readonly state: 'AVAILABLE' | 'BOOKED' | 'OWNER_BLOCKED' | 'MARKETPLACE_UNAVAILABLE';
+  readonly blockReason: string | null;
+  readonly blockedUntil: string | null;
+}
 interface Vehicle {
   readonly id: string;
   readonly status: string;
   readonly operationalStatus: string;
+  readonly availabilityToday?: AvailabilityToday;
   readonly make: string | null;
   readonly model: string | null;
   readonly modelYear: number | null;
@@ -137,16 +145,6 @@ interface Vehicle {
     readonly landmark: string | null;
   } | null;
   readonly policyVersions: Policy[];
-}
-
-interface AreaResponse {
-  readonly datasetVersion: string | null;
-  readonly items: ReadonlyArray<{
-    readonly code: string;
-    readonly name: string;
-    readonly kind?: string;
-    readonly provinceCode?: string | null;
-  }>;
 }
 
 const steps = [
@@ -241,6 +239,7 @@ export function VehiclesScreen() {
         {vehicles.data?.map((vehicle) => (
           <Pressable
             key={vehicle.id}
+            accessibilityLabel={`${vehicle.make ?? ''} ${vehicle.model ?? 'vehicle'}. Marketplace status: ${vehicleStatusLabel(vehicle.status)}. Vehicle availability: ${availabilityTodayLabel(vehicle.availabilityToday)}.`}
             accessibilityRole="button"
             onPress={() => setSelectedId(vehicle.id)}
             style={styles.fleetCard}
@@ -260,6 +259,9 @@ export function VehiclesScreen() {
                 tone={vehicleTone(vehicle.status)}
               />
               <Text style={styles.body}>{vehicleStatusLabel(vehicle.operationalStatus)}</Text>
+              <Text style={styles.availabilityText}>
+                {availabilityTodayLabel(vehicle.availabilityToday)}
+              </Text>
               {vehicle.category && <Text style={styles.body}>{vehicle.category.name}</Text>}
               {vehicle.location && (
                 <Text numberOfLines={1} style={styles.body}>
@@ -358,12 +360,13 @@ function VehicleDetail({
             {value.plateNumber ?? 'Plate not set'}
           </Text>
         </DetailSection>
-        <DetailSection title="Pickup location">
+        <DetailSection title="Private pickup location">
           <Text style={styles.body}>
-            {value.location
-              ? `${value.location.city}, ${value.location.province}`
-              : 'Not configured'}
+            {value.location ? ownerPrivateLocationLabel(value.location) : 'Not configured'}
           </Text>
+          {['DRAFT', 'CHANGES_REQUIRED', 'REJECTED'].includes(value.status) && (
+            <Button label="Change location" onPress={() => onEdit(4)} variant="secondary" />
+          )}
         </DetailSection>
         <DetailSection title="Pricing & usage">
           <Text style={styles.body}>
@@ -404,9 +407,8 @@ function VehicleDetail({
           )}
         </DetailSection>
         <DetailSection title="Availability">
-          <Text style={styles.body}>
-            Available by default except bookings, turnaround, maintenance, and owner blocks.
-          </Text>
+          <Text style={styles.cardTitle}>{availabilityTodayLabel(value.availabilityToday)}</Text>
+          <Text style={styles.body}>{availabilityTodayDetail(value.availabilityToday)}</Text>
           <Button
             label="Manage availability"
             onPress={() => setManagingAvailability(true)}
@@ -804,7 +806,7 @@ function FeaturesStep({
           />
         ))}
       </View>
-      <Save mutation={save} label="Save and continue" />
+      <Save disabled={!location} mutation={save} label="Save and continue" />
     </Section>
   );
 }
@@ -1063,71 +1065,38 @@ function LocationStep({
   readonly onSaved: () => void;
   readonly onContinue: () => void;
 }) {
-  const [form, setForm] = useState({
-    latitude: vehicle.location?.latitude ?? '14.5547',
-    longitude: vehicle.location?.longitude ?? '121.0244',
-    city: vehicle.location?.city ?? '',
-    province: vehicle.location?.province ?? 'Metro Manila',
-    pickupAreaLabel: vehicle.location?.pickupAreaLabel ?? '',
-    regionCode: vehicle.location?.regionCode ?? '',
-    addressScopeCode: vehicle.location?.addressScopeCode ?? '',
-    provinceCode: vehicle.location?.provinceCode ?? '',
-    cityMunicipalityCode: vehicle.location?.cityMunicipalityCode ?? '',
-    barangayCode: vehicle.location?.barangayCode ?? '',
-    barangay: vehicle.location?.barangay ?? '',
-    addressLine1: vehicle.location?.addressLine1 ?? '',
-    landmark: vehicle.location?.landmark ?? '',
-  });
-  const [locationError, setLocationError] = useState('');
-  const regions = useQuery({
-    queryKey: ['geography', 'regions'],
-    queryFn: () => apiClient.request<AreaResponse>('/geography/regions'),
-  });
-  const scopes = useQuery({
-    enabled: Boolean(form.regionCode),
-    queryKey: ['geography', 'scopes', form.regionCode],
-    queryFn: () => apiClient.request<AreaResponse>(`/geography/regions/${form.regionCode}/scopes`),
-  });
-  const localities = useQuery({
-    enabled: Boolean(form.regionCode && form.addressScopeCode),
-    queryKey: ['geography', 'localities', form.regionCode, form.addressScopeCode],
-    queryFn: () =>
-      apiClient.request<AreaResponse>(
-        `/geography/regions/${form.regionCode}/localities?scopeCode=${form.addressScopeCode}`,
-      ),
-  });
-  const barangays = useQuery({
-    enabled: Boolean(form.cityMunicipalityCode),
-    queryKey: ['geography', 'barangays', form.cityMunicipalityCode],
-    queryFn: () =>
-      apiClient.request<AreaResponse>(
-        `/geography/localities/${form.cityMunicipalityCode}/barangays?limit=100`,
-      ),
-  });
-  const captureDeviceLocation = async () => {
-    setLocationError('');
-    const permission = await Location.requestForegroundPermissionsAsync();
-    if (!permission.granted) {
-      setLocationError(
-        'Location access was not granted. Enable it to save the exact private pickup point.',
-      );
-      return;
-    }
-    try {
-      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      setForm({
-        ...form,
-        latitude: String(current.coords.latitude),
-        longitude: String(current.coords.longitude),
-      });
-    } catch {
-      setLocationError('We could not capture this location. Try again or choose a city.');
-    }
-  };
+  const initialLocation: CarShareLocation | undefined = vehicle.location
+    ? {
+        displayName:
+          vehicle.location.pickupAreaLabel ??
+          vehicle.location.addressLine1 ??
+          `${vehicle.location.city}, ${vehicle.location.province}`,
+        ...(vehicle.location.addressLine1 ? { addressLine1: vehicle.location.addressLine1 } : {}),
+        ...(vehicle.location.barangay ? { barangay: vehicle.location.barangay } : {}),
+        city: vehicle.location.city,
+        country: 'PH',
+        latitude: Number(vehicle.location.latitude),
+        longitude: Number(vehicle.location.longitude),
+        province: vehicle.location.province,
+      }
+    : undefined;
+  const [location, setLocation] = useState<CarShareLocation | undefined>(initialLocation);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const save = useMutation({
     mutationFn: async () => {
       await apiClient.request(`/owner/vehicles/${id}/location`, {
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          ...(location?.addressLine1 ? { addressLine1: location.addressLine1 } : {}),
+          ...(location?.barangay ? { barangay: location.barangay } : {}),
+          city: location?.city,
+          country: location?.country,
+          latitude: location ? String(location.latitude) : undefined,
+          longitude: location ? String(location.longitude) : undefined,
+          ...(vehicle.location?.landmark ? { landmark: vehicle.location.landmark } : {}),
+          pickupAreaLabel: location?.displayName,
+          province: location?.province,
+          timezone: 'Asia/Manila',
+        }),
         method: 'PUT',
       });
       return markSectionComplete(id, 'Location');
@@ -1140,99 +1109,43 @@ function LocationStep({
   return (
     <Section title="Private pickup location">
       <Text style={styles.body}>
-        Before booking, renters see only the city/municipality and province. The street, barangay,
-        landmark, and exact coordinates remain private until the booking is authorized.
+        Choose the exact pickup and return point for this vehicle. This can be your preferred
+        meeting point and does not need to be your home.
       </Text>
-      <SearchableReferenceSelector
-        label="Region"
-        options={(regions.data?.items ?? []).map((area) => ({
-          id: area.code,
-          code: area.code,
-          name: area.name,
-        }))}
-        value={form.regionCode}
-        onChange={(regionCode) =>
-          setForm({
-            ...form,
-            regionCode,
-            addressScopeCode: '',
-            provinceCode: '',
-            cityMunicipalityCode: '',
-            barangayCode: '',
-            province: '',
-            city: '',
-            barangay: '',
-          })
-        }
-      />
-      <SearchableReferenceSelector
-        label="Province / geographic scope"
-        options={(scopes.data?.items ?? []).map((area) => ({
-          id: area.code,
-          code: area.code,
-          name: area.name,
-        }))}
-        value={form.addressScopeCode}
-        onChange={(addressScopeCode) => {
-          const area = scopes.data?.items.find(({ code }) => code === addressScopeCode);
-          setForm({
-            ...form,
-            addressScopeCode,
-            provinceCode: area?.kind === 'PROVINCE' ? area.code : '',
-            province: area?.name ?? '',
-            cityMunicipalityCode: '',
-            barangayCode: '',
-            city: '',
-            barangay: '',
-          });
-        }}
-      />
-      <SearchableReferenceSelector
-        label="City / municipality"
-        options={(localities.data?.items ?? []).map((area) => ({
-          id: area.code,
-          code: area.code,
-          name: area.name,
-        }))}
-        value={form.cityMunicipalityCode}
-        onChange={(cityMunicipalityCode) => {
-          const area = localities.data?.items.find(({ code }) => code === cityMunicipalityCode);
-          setForm({
-            ...form,
-            cityMunicipalityCode,
-            city: area?.name ?? '',
-            barangayCode: '',
-            barangay: '',
-          });
-        }}
-      />
-      <SearchableReferenceSelector
-        label="Barangay"
-        options={(barangays.data?.items ?? []).map((area) => ({
-          id: area.code,
-          code: area.code,
-          name: area.name,
-        }))}
-        value={form.barangayCode}
-        onChange={(barangayCode) => {
-          const area = barangays.data?.items.find(({ code }) => code === barangayCode);
-          setForm({ ...form, barangayCode, barangay: area?.name ?? '' });
-        }}
-      />
-      <Field
-        label="Street / address line"
-        value={form.addressLine1}
-        onChange={(addressLine1) => setForm({ ...form, addressLine1 })}
-      />
-      <Field
-        label="Landmark / pickup instructions (optional)"
-        value={form.landmark}
-        onChange={(landmark) => setForm({ ...form, landmark })}
-      />
-      <Pressable style={styles.secondaryButton} onPress={() => void captureDeviceLocation()}>
-        <Text>Use this device at the pickup point</Text>
-      </Pressable>
-      {locationError && <Text style={styles.error}>{locationError}</Text>}
+      <Text style={styles.body}>
+        Your exact location is kept private from public browsing and is shared only where permitted
+        for an authorized booking.
+      </Text>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>
+          {location ? 'Location confirmed' : 'Location required'}
+        </Text>
+        <Text style={styles.body}>
+          {location ? locationLabel(location) : 'Choose a private pickup and return point.'}
+        </Text>
+        <Button
+          label={location ? 'Change location' : 'Choose location'}
+          onPress={() => setPickerOpen(true)}
+          variant="secondary"
+        />
+      </View>
+      {pickerOpen && (
+        <LocationPicker
+          visible
+          kind="pickup"
+          initial={location}
+          title="Private pickup location"
+          description="Choose the exact pickup and return point for this vehicle."
+          confirmLabel="Confirm location"
+          mapAccessibilityLabel="Google map for choosing the private vehicle pickup point"
+          mapGuidance="Move the map to adjust the exact pickup and return point."
+          onCancel={() => setPickerOpen(false)}
+          onConfirm={(value) => {
+            setLocation(value);
+            setPickerOpen(false);
+          }}
+        />
+      )}
       <Save mutation={save} label="Save and continue" />
     </Section>
   );
@@ -1627,13 +1540,27 @@ function AvailabilityStep({
       }),
     onSuccess: () => {
       onSaved();
-      void client.invalidateQueries({ queryKey: ['vehicle-blocks', id] });
+      void Promise.all([
+        client.invalidateQueries({ queryKey: ['vehicle-blocks', id] }),
+        client.invalidateQueries({ queryKey: ['vehicle', id] }),
+        client.invalidateQueries({ queryKey: ['vehicles'] }),
+        client.invalidateQueries({ queryKey: ['owner-vehicle-dashboard-summary'] }),
+      ]);
     },
   });
   const remove = useMutation({
     mutationFn: (blockId: string) =>
       apiClient.request(`/owner/vehicles/${id}/blocked-periods/${blockId}`, { method: 'DELETE' }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ['vehicle-blocks', id] }),
+    onSuccess: () => {
+      Alert.alert('Unavailable period removed.');
+      void Promise.all([
+        client.invalidateQueries({ queryKey: ['vehicle-blocks', id] }),
+        client.invalidateQueries({ queryKey: ['vehicle', id] }),
+        client.invalidateQueries({ queryKey: ['vehicles'] }),
+        client.invalidateQueries({ queryKey: ['owner-vehicle-dashboard-summary'] }),
+      ]);
+      onSaved();
+    },
   });
   return (
     <Section title="Availability">
@@ -1645,7 +1572,7 @@ function AvailabilityStep({
         Current preparation buffer: {(current?.turnaroundMinutes ?? 120) / 60} hours between
         rentals.
       </Text>
-      <Text style={styles.label}>Block a future period</Text>
+      <Text style={styles.label}>Add an unavailable period</Text>
       <SearchableReferenceSelector
         label="Reason"
         options={[
@@ -1668,19 +1595,91 @@ function AvailabilityStep({
       <Save mutation={add} label="Add blocked period" />
       {blocks.data?.map((block) => (
         <View key={block.id} style={styles.card}>
-          <Text style={styles.cardTitle}>{domainLabel(block.reason)}</Text>
-          <Text style={styles.body}>
-            {new Date(block.startsAt).toLocaleString()} → {new Date(block.endsAt).toLocaleString()}
+          <Text style={styles.cardTitle}>
+            {domainLabel(block.reason)} · {blockPeriodState(block)}
           </Text>
-          {new Date(block.startsAt) > new Date() && (
-            <Pressable onPress={() => remove.mutate(block.id)}>
-              <Text style={styles.error}>Remove future block</Text>
+          <Text style={styles.body}>
+            {formatManilaDateTime(block.startsAt)} → {formatManilaDateTime(block.endsAt)}
+          </Text>
+          {new Date(block.endsAt) > new Date() ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={remove.isPending}
+              onPress={() =>
+                Alert.alert(
+                  'Remove unavailable period?',
+                  'The vehicle may become available for bookings during these dates if there are no other bookings or unavailable periods.',
+                  [
+                    { style: 'cancel', text: 'Keep block' },
+                    {
+                      onPress: () => remove.mutate(block.id),
+                      style: 'destructive',
+                      text: 'Remove block',
+                    },
+                  ],
+                )
+              }
+            >
+              <Text style={styles.error}>Remove block</Text>
             </Pressable>
+          ) : (
+            <Text style={styles.body}>Past period · read-only</Text>
           )}
         </View>
       ))}
+      {blocks.data?.length === 0 && <Text style={styles.body}>No unavailable periods.</Text>}
+      {remove.error && (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {remove.error.message || 'This unavailable period could not be removed.'}
+        </Text>
+      )}
     </Section>
   );
+}
+
+function formatManilaDateTime(value: string): string {
+  return new Intl.DateTimeFormat('en-PH', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Asia/Manila',
+  }).format(new Date(value));
+}
+
+function blockPeriodState(block: VehicleBlock): string {
+  const now = new Date();
+  if (new Date(block.endsAt) <= now) return 'Past';
+  if (new Date(block.startsAt) <= now) return 'Active now';
+  return 'Upcoming';
+}
+
+function availabilityTodayLabel(value?: AvailabilityToday): string {
+  if (!value) return 'Availability being checked';
+  if (value.state === 'AVAILABLE') return 'Available today';
+  if (value.state === 'BOOKED') return 'Booked today';
+  if (value.state === 'OWNER_BLOCKED') {
+    return value.blockReason
+      ? `Owner-blocked today · ${domainLabel(value.blockReason)}`
+      : 'Owner-blocked today';
+  }
+  return 'Not currently marketplace-available';
+}
+
+function availabilityTodayDetail(value?: AvailabilityToday): string {
+  if (!value) return 'Refresh to check current availability.';
+  if (value.state === 'OWNER_BLOCKED' && value.blockedUntil) {
+    return `${value.blockReason ? domainLabel(value.blockReason) : 'Unavailable'} until ${formatManilaDateTime(value.blockedUntil)}.`;
+  }
+  if (value.state === 'BOOKED') return 'A booking or active rental occupies this vehicle today.';
+  if (value.state === 'AVAILABLE') {
+    return 'No booking or Owner-created block currently covers today.';
+  }
+  return 'Marketplace lifecycle or operational controls currently prevent availability.';
+}
+
+function ownerPrivateLocationLabel(location: NonNullable<Vehicle['location']>): string {
+  return [location.addressLine1, location.barangay, location.city, location.province]
+    .filter(Boolean)
+    .join(', ');
 }
 
 function ReviewStep({
@@ -1827,6 +1826,7 @@ function Choice({
 function Save({
   mutation,
   label = 'Save draft',
+  disabled = false,
 }: {
   readonly mutation: {
     readonly mutate: () => void;
@@ -1834,12 +1834,15 @@ function Save({
     readonly error: Error | null;
   };
   readonly label?: string;
+  readonly disabled?: boolean;
 }) {
   return (
     <>
       <Pressable
-        disabled={mutation.isPending}
-        style={styles.primaryButton}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: disabled || mutation.isPending }}
+        disabled={disabled || mutation.isPending}
+        style={[styles.primaryButton, (disabled || mutation.isPending) && styles.disabledButton]}
         onPress={() => mutation.mutate()}
       >
         <Text style={styles.primaryText}>{mutation.isPending ? 'Saving…' : label}</Text>
@@ -1921,6 +1924,7 @@ function ownerMarketplaceExplanation(vehicle: Vehicle) {
 
 const styles = StyleSheet.create({
   body: { color: colors.subtleText, marginTop: spacing.xs },
+  disabledButton: { opacity: 0.5 },
   card: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
@@ -1980,6 +1984,7 @@ const styles = StyleSheet.create({
   editorStateHeader: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   empty: { color: colors.subtleText, marginTop: spacing.xl, textAlign: 'center' },
   error: { color: '#A12626', marginTop: spacing.sm },
+  availabilityText: { color: colors.primary, fontWeight: '700', marginTop: spacing.xxs },
   eyebrow: { color: colors.primary, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
   flex: { backgroundColor: colors.background, flex: 1 },
   fleetCard: {

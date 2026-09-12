@@ -143,6 +143,28 @@ describe('mobile environment', () => {
       }),
     ).toThrow('must match');
   });
+  it('keeps native Google Maps credentials environment-bound and outside public extras', () => {
+    const resolved = resolveMobileEnvironment({
+      EXPO_ANDROID_GOOGLE_MAPS_KEY: 'android-development-key',
+      EXPO_IOS_GOOGLE_MAPS_KEY: 'ios-development-key',
+      EXPO_GOOGLE_MAPS_ENV: 'local',
+    });
+    expect(resolved).toMatchObject({
+      androidGoogleMapsKey: 'android-development-key',
+      iosGoogleMapsKey: 'ios-development-key',
+    });
+    expect(resolved.extra).not.toHaveProperty('androidGoogleMapsKey');
+    expect(resolved.extra).not.toHaveProperty('iosGoogleMapsKey');
+    expect(() =>
+      resolveMobileEnvironment({
+        EXPO_PUBLIC_APP_ENV: 'staging',
+        EXPO_PUBLIC_API_ENV: 'staging',
+        EXPO_PUBLIC_API_URL: 'https://api.staging.example.com',
+        EXPO_ANDROID_GOOGLE_MAPS_KEY: 'local-key',
+        EXPO_GOOGLE_MAPS_ENV: 'local',
+      }),
+    ).toThrow('must match');
+  });
   it('resolves the EAS project ID and fails safely when its environment is ambiguous', () => {
     expect(
       resolveMobileEnvironment({

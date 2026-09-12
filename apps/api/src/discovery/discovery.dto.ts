@@ -7,14 +7,23 @@ import {
   IsEnum,
   IsInt,
   IsNumber,
+  IsBoolean,
   IsOptional,
   IsString,
   IsUUID,
   Max,
   MaxLength,
   Min,
+  ValidateIf,
+  ValidateNested,
 } from 'class-validator';
-import { VehicleFuelType, VehiclePowertrain, VehicleTransmission } from '@carrental/database';
+import {
+  EndFulfillmentMethod,
+  StartFulfillmentMethod,
+  VehicleFuelType,
+  VehiclePowertrain,
+  VehicleTransmission,
+} from '@carrental/database';
 
 export enum VehicleSearchSort {
   RECOMMENDED = 'RECOMMENDED',
@@ -102,7 +111,53 @@ export class AvailabilityQueryDto {
   @ApiProperty() @IsDateString() end!: string;
 }
 
-export class CreatePricingQuoteDto extends AvailabilityQueryDto {}
+export class FulfillmentDestinationDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) addressLine1?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(120) barangay?: string;
+  @ApiProperty() @IsString() @MaxLength(120) city!: string;
+  @ApiProperty() @IsString() @MaxLength(120) province!: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(12) postalCode?: string;
+  @ApiPropertyOptional({ default: 'PH' }) @IsOptional() @IsString() @MaxLength(2) country = 'PH';
+  @ApiProperty() @Type(() => Number) @IsNumber() @Min(-90) @Max(90) latitude!: number;
+  @ApiProperty() @Type(() => Number) @IsNumber() @Min(-180) @Max(180) longitude!: number;
+}
+
+export class CreatePricingQuoteDto extends AvailabilityQueryDto {
+  @ApiPropertyOptional({
+    enum: StartFulfillmentMethod,
+    default: StartFulfillmentMethod.RENTER_PICKUP,
+  })
+  @IsOptional()
+  @IsEnum(StartFulfillmentMethod)
+  startMethod: StartFulfillmentMethod = StartFulfillmentMethod.RENTER_PICKUP;
+
+  @ApiPropertyOptional({ enum: EndFulfillmentMethod, default: EndFulfillmentMethod.RENTER_RETURN })
+  @IsOptional()
+  @IsEnum(EndFulfillmentMethod)
+  endMethod: EndFulfillmentMethod = EndFulfillmentMethod.RENTER_RETURN;
+
+  @ApiPropertyOptional({ type: FulfillmentDestinationDto })
+  @ValidateIf(
+    (input: CreatePricingQuoteDto) => input.startMethod === StartFulfillmentMethod.OWNER_DELIVERY,
+  )
+  @ValidateNested()
+  @Type(() => FulfillmentDestinationDto)
+  deliveryDestination?: FulfillmentDestinationDto;
+
+  @ApiPropertyOptional({ type: FulfillmentDestinationDto })
+  @ValidateIf(
+    (input: CreatePricingQuoteDto) =>
+      input.endMethod === EndFulfillmentMethod.OWNER_COLLECTION && !input.collectionSameAsDelivery,
+  )
+  @ValidateNested()
+  @Type(() => FulfillmentDestinationDto)
+  collectionDestination?: FulfillmentDestinationDto;
+
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  collectionSameAsDelivery = false;
+}
 
 export class FavoriteVehicleParamDto {
   @ApiProperty() @IsUUID() vehicleId!: string;

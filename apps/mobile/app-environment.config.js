@@ -54,6 +54,12 @@ function resolveMobileEnvironment(input) {
   if (googleServicesFile && firebaseEnvironment !== environment)
     throw new Error('EXPO_ANDROID_FIREBASE_ENV must match EXPO_PUBLIC_APP_ENV.');
   const projectId = input.EXPO_PUBLIC_PROJECT_ID;
+  const androidGoogleMapsKey = input.EXPO_ANDROID_GOOGLE_MAPS_KEY;
+  const iosGoogleMapsKey = input.EXPO_IOS_GOOGLE_MAPS_KEY;
+  const mapsEnvironment =
+    input.EXPO_GOOGLE_MAPS_ENV ?? (environment === 'local' ? 'local' : undefined);
+  if ((androidGoogleMapsKey || iosGoogleMapsKey) && mapsEnvironment !== environment)
+    throw new Error('EXPO_GOOGLE_MAPS_ENV must match EXPO_PUBLIC_APP_ENV.');
   const projectEnvironment =
     input.EXPO_PUBLIC_PROJECT_ENV ?? (environment === 'local' ? 'local' : undefined);
   if (googleServicesFile && !projectId)
@@ -65,6 +71,8 @@ function resolveMobileEnvironment(input) {
     ...identity,
     googleServicesFile,
     projectId,
+    androidGoogleMapsKey,
+    iosGoogleMapsKey,
     extra: {
       serviceName: 'carshare-mobile',
       appEnvironment: environment,
@@ -77,7 +85,6 @@ function resolveMobileEnvironment(input) {
       sentryDsn,
       sentryEnabled,
       sentryTestEventEnabled,
-      mapsToken: input.EXPO_PUBLIC_MAPS_TOKEN,
       paymentPublicKey: input.EXPO_PUBLIC_PAYMENT_KEY,
     },
   };

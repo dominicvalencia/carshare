@@ -20,7 +20,16 @@ export const publicVehicleSelect = {
   fuelType: true,
   id: true,
   location: {
-    select: { city: true, country: true, province: true, timezone: true },
+    select: {
+      addressLine1: true,
+      barangay: true,
+      city: true,
+      country: true,
+      latitude: true,
+      longitude: true,
+      province: true,
+      timezone: true,
+    },
   },
   make: true,
   model: true,

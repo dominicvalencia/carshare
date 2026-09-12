@@ -112,6 +112,8 @@ export class PayoutEligibilityService {
       return {
         amountMinor:
           earning.netEarningAmountMinor +
+          earning.deliveryEarningMinor +
+          earning.collectionEarningMinor +
           earning.additionalCompensationMinor +
           earning.adjustmentAmountMinor,
         blockers,
@@ -130,7 +132,7 @@ export class PayoutEligibilityService {
     return Prisma.sql`
       SELECT e."currency",
         COUNT(*)::integer AS "count",
-        SUM(e."net_earning_amount_minor" + e."additional_compensation_minor" + e."adjustment_amount_minor") AS "amountMinor"
+        SUM(e."net_earning_amount_minor" + e."delivery_earning_minor" + e."collection_earning_minor" + e."additional_compensation_minor" + e."adjustment_amount_minor") AS "amountMinor"
       FROM (${eligible}) eligible
       JOIN "owner_earnings" e ON e."id" = eligible."id"
       GROUP BY e."currency"

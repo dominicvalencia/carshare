@@ -18,6 +18,7 @@ import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata } from '../security/security-context';
 import { OwnersService } from '../owners/owners.service';
 import { RenterEligibilityService } from '../renter-verification/renter-eligibility.service';
+import { FulfillmentServiceabilityService } from '../fulfillment/fulfillment-serviceability';
 import {
   BookingProjectionService,
   bookingInclude,
@@ -40,6 +41,7 @@ export class BookingsService {
     private readonly analytics: DiscoveryAnalyticsService,
     private readonly owners: OwnersService,
     private readonly renterEligibility: RenterEligibilityService,
+    private readonly fulfillmentServiceability: FulfillmentServiceabilityService,
     @Inject(ConfigService) private readonly configuration: ConfigService<ApiEnvironment, true>,
   ) {}
 
@@ -86,6 +88,7 @@ export class BookingsService {
           const quote = await transaction.pricingQuote.findUnique({
             include: {
               lines: { orderBy: { displayOrder: 'asc' } },
+              fulfillment: true,
               policyVersion: true,
             },
             where: { id: quoteId },
@@ -120,6 +123,88 @@ export class BookingsService {
               HttpStatus.CONFLICT,
             );
           }
+          if (vehicle.policyVersions[0]?.id !== quote.policyVersionId) {
+            throw new ApplicationException(
+              DiscoveryErrorCode.QUOTE_CONFIGURATION_CHANGED,
+              "The vehicle's pricing or handover options changed. Please get a new quote.",
+              HttpStatus.CONFLICT,
+            );
+          }
+          if (
+            quote.fulfillment &&
+            quote.fulfillment.sourcePolicyVersionId !== quote.policyVersionId
+          ) {
+            throw new ApplicationException(
+              BookingErrorCode.QUOTE_REQUIRED,
+              'The quote is missing authoritative handover terms.',
+              HttpStatus.CONFLICT,
+            );
+          }
+          const fulfillment = quote.fulfillment ?? {
+            collectionDistanceMeters: null,
+            collectionFeeMinor: 0,
+            currency: quote.currency,
+            deliveryDistanceMeters: null,
+            deliveryFeeMinor: 0,
+            endAddressLine1: vehicle.location!.addressLine1,
+            endBarangay: vehicle.location!.barangay,
+            endCity: vehicle.location!.city,
+            endCountry: vehicle.location!.country,
+            endLatitude: vehicle.location!.latitude,
+            endLongitude: vehicle.location!.longitude,
+            endMethod: 'RENTER_RETURN' as const,
+            endPostalCode: null,
+            endProvince: vehicle.location!.province,
+            minimumNoticeMinutes: quote.policyVersion.fulfillmentMinimumNoticeMinutes,
+            serviceRadiusMeters: quote.policyVersion.fulfillmentServiceRadiusMeters,
+            sourcePolicyVersionId: quote.policyVersionId,
+            startAddressLine1: vehicle.location!.addressLine1,
+            startBarangay: vehicle.location!.barangay,
+            startCity: vehicle.location!.city,
+            startCountry: vehicle.location!.country,
+            startLatitude: vehicle.location!.latitude,
+            startLongitude: vehicle.location!.longitude,
+            startMethod: 'RENTER_PICKUP' as const,
+            startPostalCode: null,
+            startProvince: vehicle.location!.province,
+          };
+          const startServiceability =
+            fulfillment.startMethod === 'OWNER_DELIVERY'
+              ? await this.fulfillmentServiceability.evaluate({
+                  destinationLatitude: Number(fulfillment.startLatitude),
+                  destinationLongitude: Number(fulfillment.startLongitude),
+                  method: fulfillment.startMethod,
+                  policyVersionId: quote.policyVersionId,
+                  scheduledAt: quote.rentalStart,
+                })
+              : { distanceMeters: null, supported: true };
+          const endServiceability =
+            fulfillment.endMethod === 'OWNER_COLLECTION'
+              ? await this.fulfillmentServiceability.evaluate({
+                  destinationLatitude: Number(fulfillment.endLatitude),
+                  destinationLongitude: Number(fulfillment.endLongitude),
+                  method: fulfillment.endMethod,
+                  policyVersionId: quote.policyVersionId,
+                  scheduledAt: quote.rentalEnd,
+                })
+              : { distanceMeters: null, supported: true };
+          if (!startServiceability.supported || !endServiceability.supported) {
+            throw new ApplicationException(
+              DiscoveryErrorCode.QUOTE_CONFIGURATION_CHANGED,
+              'The handover terms changed. Please review your booking and get a new quote.',
+              HttpStatus.CONFLICT,
+            );
+          }
+          if (
+            startServiceability.distanceMeters !== fulfillment.deliveryDistanceMeters ||
+            endServiceability.distanceMeters !== fulfillment.collectionDistanceMeters
+          ) {
+            throw new ApplicationException(
+              DiscoveryErrorCode.QUOTE_CONFIGURATION_CHANGED,
+              'The handover location changed. Please get a new quote.',
+              HttpStatus.CONFLICT,
+            );
+          }
           this.validateQuoteIntegrity(quote);
           const period = this.duration.calculate(quote.rentalStart, quote.rentalEnd);
           this.validatePolicyPeriod(
@@ -140,6 +225,36 @@ export class BookingsService {
               id: bookingId,
               ownerProfileId: vehicle.ownerProfile.id,
               ownerUserId: vehicle.ownerProfile.userId,
+              fulfillmentSnapshot: {
+                create: {
+                  collectionDistanceMeters: fulfillment.collectionDistanceMeters,
+                  collectionFeeMinor: fulfillment.collectionFeeMinor,
+                  currency: fulfillment.currency,
+                  deliveryDistanceMeters: fulfillment.deliveryDistanceMeters,
+                  deliveryFeeMinor: fulfillment.deliveryFeeMinor,
+                  endAddressLine1: fulfillment.endAddressLine1,
+                  endBarangay: fulfillment.endBarangay,
+                  endCity: fulfillment.endCity,
+                  endCountry: fulfillment.endCountry,
+                  endLatitude: fulfillment.endLatitude,
+                  endLongitude: fulfillment.endLongitude,
+                  endMethod: fulfillment.endMethod,
+                  endPostalCode: fulfillment.endPostalCode,
+                  endProvince: fulfillment.endProvince,
+                  minimumNoticeMinutes: fulfillment.minimumNoticeMinutes,
+                  serviceRadiusMeters: fulfillment.serviceRadiusMeters,
+                  sourcePolicyVersionId: fulfillment.sourcePolicyVersionId,
+                  startAddressLine1: fulfillment.startAddressLine1,
+                  startBarangay: fulfillment.startBarangay,
+                  startCity: fulfillment.startCity,
+                  startCountry: fulfillment.startCountry,
+                  startLatitude: fulfillment.startLatitude,
+                  startLongitude: fulfillment.startLongitude,
+                  startMethod: fulfillment.startMethod,
+                  startPostalCode: fulfillment.startPostalCode,
+                  startProvince: fulfillment.startProvince,
+                },
+              },
               policySnapshot: {
                 create: {
                   availabilityPolicy: quote.policyVersion.availabilityPolicy,
