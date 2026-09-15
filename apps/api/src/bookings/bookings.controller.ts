@@ -15,7 +15,12 @@ import { ApplicationException } from '../common/errors/application.exception';
 import type { RequestPrincipal } from '../security/security-context';
 import { HttpStatus } from '@nestjs/common';
 import { BookingsService } from './bookings.service';
-import { CancelBookingDto, CreateBookingHoldDto, RejectBookingDto } from './bookings.dto';
+import {
+  CancelBookingDto,
+  CreateBookingHoldDto,
+  PreCustodyCancellationDto,
+  RejectBookingDto,
+} from './bookings.dto';
 import { PaymentsService } from '../payments/payments.service';
 
 @ApiBearerAuth()
@@ -81,6 +86,41 @@ export class RenterBookingsController {
     await this.bookings.cancel(principal.userId, reference, input.reason, requestMetadata(request));
     await this.payments.processPendingForBooking(reference, requestMetadata(request));
     return this.bookings.renterDetail(principal.userId, reference);
+  }
+
+  @Get(':reference/handover-cancellation/quote')
+  handoverCancellationQuote(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+  ) {
+    return this.payments.previewPreCustodyCancellation(principal.userId, reference);
+  }
+
+  @Post(':reference/handover-cancellation')
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  handoverCancellation(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: PreCustodyCancellationDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() request: Request,
+  ) {
+    if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 200)
+      throw new ApplicationException(
+        BookingErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+        'A valid Idempotency-Key header is required.',
+        HttpStatus.BAD_REQUEST,
+      );
+    return this.payments.cancelPreCustodyHandover(
+      principal.userId,
+      reference,
+      input.reasonCode,
+      input.reasonText,
+      {
+        ...requestMetadata(request),
+        correlationId: requestMetadata(request).correlationId ?? idempotencyKey,
+      },
+    );
   }
 }
 

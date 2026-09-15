@@ -8,6 +8,8 @@ import {
   BookingStatus,
   CommissionScope,
   FinancialAccountType,
+  HandoverPhase,
+  HandoverTravelStatus,
   LedgerTransactionType,
   OwnerEarningStatus,
   PaymentFailureCategory,
@@ -18,6 +20,7 @@ import {
   PaymentStatus,
   PaymentWebhookStatus,
   Prisma,
+  RefundStatus,
   SecurityDepositStatus,
 } from '@carrental/database';
 import {
@@ -39,6 +42,31 @@ const PAYMENT_INCLUDE = {
 
 type PaymentRecord = Prisma.PaymentGetPayload<{ include: typeof PAYMENT_INCLUDE }>;
 
+type HandoverCancellationReason =
+  | 'VEHICLE_CONDITION_DIFFERS_FROM_INSPECTION'
+  | 'UNDISCLOSED_DAMAGE'
+  | 'SAFETY_CONCERN'
+  | 'MECHANICAL_OR_WARNING_LIGHT'
+  | 'VEHICLE_CLEANLINESS_OR_CONDITION'
+  | 'VEHICLE_DOES_NOT_MATCH_BOOKING'
+  | 'OWNER_RENTER_COULD_NOT_AGREE'
+  | 'OTHER';
+
+export interface HandoverCancellationQuote {
+  capturedAmountMinor: string;
+  collectionFeeMinor: string;
+  collectionRefundedMinor: string;
+  commissionRetainedMinor: string;
+  currency: string;
+  deliveryCompleted: boolean;
+  deliveryFeeMinor: string;
+  deliveryRefundedMinor: string;
+  deliveryRetainedMinor: string;
+  refundAmountMinor: string;
+  rentalComponentMinor: string;
+  rentalRefundedMinor: string;
+}
+
 export function reconcileCaptureComponents(input: {
   readonly rentalComponentMinor: bigint;
   readonly deliveryComponentMinor: bigint;
@@ -56,6 +84,51 @@ export function reconcileCaptureComponents(input: {
   return { ...input, accountedTotalMinor };
 }
 
+export function calculatePreCustodyCancellation(input: {
+  readonly capturedAmountMinor: bigint;
+  readonly collectionFeeMinor: bigint;
+  readonly commissionRetainedMinor: bigint;
+  readonly currency: string;
+  readonly deliveryCompleted: boolean;
+  readonly deliveryFeeMinor: bigint;
+  readonly rentalComponentMinor: bigint;
+}): HandoverCancellationQuote {
+  const deliveryRetainedMinor = input.deliveryCompleted ? input.deliveryFeeMinor : 0n;
+  const deliveryRefundedMinor = input.deliveryFeeMinor - deliveryRetainedMinor;
+  const rentalRefundedMinor = input.rentalComponentMinor - input.commissionRetainedMinor;
+  if (rentalRefundedMinor < 0n) throw new Error('Commission cannot exceed the rental component.');
+  const refundAmountMinor = rentalRefundedMinor + deliveryRefundedMinor + input.collectionFeeMinor;
+  if (
+    input.rentalComponentMinor + input.deliveryFeeMinor + input.collectionFeeMinor !==
+      input.capturedAmountMinor ||
+    refundAmountMinor + input.commissionRetainedMinor + deliveryRetainedMinor !==
+      input.capturedAmountMinor
+  )
+    throw new Error('Cancellation components do not reconcile to the captured amount.');
+  return {
+    capturedAmountMinor: input.capturedAmountMinor.toString(),
+    collectionFeeMinor: input.collectionFeeMinor.toString(),
+    collectionRefundedMinor: input.collectionFeeMinor.toString(),
+    commissionRetainedMinor: input.commissionRetainedMinor.toString(),
+    currency: input.currency,
+    deliveryCompleted: input.deliveryCompleted,
+    deliveryFeeMinor: input.deliveryFeeMinor.toString(),
+    deliveryRefundedMinor: deliveryRefundedMinor.toString(),
+    deliveryRetainedMinor: deliveryRetainedMinor.toString(),
+    refundAmountMinor: refundAmountMinor.toString(),
+    rentalComponentMinor: input.rentalComponentMinor.toString(),
+    rentalRefundedMinor: rentalRefundedMinor.toString(),
+  };
+}
+
+export function calculatePreCustodyOwnerAdjustment(input: {
+  readonly currentAdjustmentMinor: bigint;
+  readonly originalNetEarningMinor: bigint;
+  readonly retainedDeliveryMinor: bigint;
+}) {
+  return input.currentAdjustmentMinor + input.retainedDeliveryMinor - input.originalNetEarningMinor;
+}
+
 @Injectable()
 export class PaymentsService {
   constructor(
@@ -64,6 +137,279 @@ export class PaymentsService {
     @Inject(ConfigService) private readonly configuration: ConfigService<ApiEnvironment, true>,
     private readonly renterEligibility: RenterEligibilityService,
   ) {}
+
+  async previewPreCustodyCancellation(userId: string, reference: string) {
+    const booking = await this.database.client.booking.findFirst({
+      include: {
+        commissionSnapshot: true,
+        fulfillmentSnapshot: true,
+        handoverTravelEvents: true,
+        inspections: {
+          include: {
+            confirmations: {
+              include: {
+                discrepancyResponses: {
+                  include: { resolutionReview: true },
+                  orderBy: { roundNumber: 'asc' },
+                },
+              },
+            },
+          },
+          where: { type: 'PICKUP', status: 'FINALIZED' },
+        },
+        payments: { where: { purpose: PaymentPurpose.RENTAL }, orderBy: { createdAt: 'desc' } },
+        pickupChallenges: true,
+        pricingSnapshot: true,
+      },
+      where: { renterUserId: userId, ...this.bookingIdentity(reference) },
+    });
+    if (!booking) this.notFound();
+    this.assertPreCustodyCancellation(booking);
+    const payment = booking.payments[0]!;
+    const fulfillment = booking.fulfillmentSnapshot!;
+    const commission = booking.commissionSnapshot!;
+    const deliveryCompleted =
+      fulfillment.startMethod === 'OWNER_DELIVERY' &&
+      booking.handoverTravelEvents.some(
+        (event) =>
+          event.phase === HandoverPhase.START && event.status === HandoverTravelStatus.ARRIVED,
+      );
+    const deliveryFeeMinor = BigInt(fulfillment.deliveryFeeMinor);
+    const collectionFeeMinor = BigInt(fulfillment.collectionFeeMinor);
+    const rentalComponentMinor = commission.commissionableBaseMinor;
+    const commissionRetainedMinor = commission.calculatedCommissionMinor;
+    try {
+      return calculatePreCustodyCancellation({
+        capturedAmountMinor: payment.capturedAmountMinor,
+        collectionFeeMinor,
+        commissionRetainedMinor,
+        currency: payment.currency,
+        deliveryCompleted,
+        deliveryFeeMinor,
+        rentalComponentMinor,
+      });
+    } catch {
+      throw new ApplicationException(
+        'HANDOVER_CANCELLATION_RECONCILIATION_FAILED',
+        'The accepted booking financial snapshot does not reconcile.',
+        HttpStatus.CONFLICT,
+      );
+    }
+  }
+
+  async cancelPreCustodyHandover(
+    userId: string,
+    reference: string,
+    reasonCode: HandoverCancellationReason,
+    reasonText: string | undefined,
+    request: RequestMetadata,
+  ) {
+    if (!this.provider.capabilities.supportsRefund)
+      this.invalidState('Provider refunds are not enabled.');
+    if (reasonCode === 'OTHER' && !reasonText?.trim())
+      this.invalidState('Explain the other cancellation reason.');
+    const existing = await this.database.client.booking.findFirst({
+      include: { cancellationSettlement: { include: { refund: true } } },
+      where: { renterUserId: userId, ...this.bookingIdentity(reference) },
+    });
+    if (existing?.cancellationSettlement)
+      return this.toSerializable(existing.cancellationSettlement);
+    const prepared = await this.database.client.$transaction(async (transaction) => {
+      const found = await transaction.booking.findFirst({
+        where: { renterUserId: userId, ...this.bookingIdentity(reference) },
+      });
+      if (!found) this.notFound();
+      await this.lockBooking(transaction, found.id);
+      const booking = await transaction.booking.findUniqueOrThrow({
+        include: {
+          commissionSnapshot: true,
+          fulfillmentSnapshot: true,
+          handoverTravelEvents: true,
+          inspections: {
+            include: {
+              confirmations: {
+                include: {
+                  discrepancyResponses: {
+                    include: { resolutionReview: true },
+                    orderBy: { roundNumber: 'asc' },
+                  },
+                },
+              },
+            },
+            where: { type: 'PICKUP', status: 'FINALIZED' },
+          },
+          payments: { where: { purpose: PaymentPurpose.RENTAL }, orderBy: { createdAt: 'desc' } },
+          pickupChallenges: true,
+          pricingSnapshot: true,
+          cancellationSettlement: true,
+        },
+        where: { id: found.id },
+      });
+      if (booking.cancellationSettlement)
+        return { existingSettlement: booking.cancellationSettlement } as const;
+      this.assertPreCustodyCancellation(booking);
+      const payment = booking.payments[0]!;
+      await this.lockPayment(transaction, payment.id);
+      const fulfillment = booking.fulfillmentSnapshot!;
+      const commission = booking.commissionSnapshot!;
+      const deliveryCompleted =
+        fulfillment.startMethod === 'OWNER_DELIVERY' &&
+        booking.handoverTravelEvents.some(
+          (event) =>
+            event.phase === HandoverPhase.START && event.status === HandoverTravelStatus.ARRIVED,
+        );
+      let quote: HandoverCancellationQuote;
+      try {
+        quote = calculatePreCustodyCancellation({
+          capturedAmountMinor: payment.capturedAmountMinor,
+          collectionFeeMinor: BigInt(fulfillment.collectionFeeMinor),
+          commissionRetainedMinor: commission.calculatedCommissionMinor,
+          currency: payment.currency,
+          deliveryCompleted,
+          deliveryFeeMinor: BigInt(fulfillment.deliveryFeeMinor),
+          rentalComponentMinor: commission.commissionableBaseMinor,
+        });
+      } catch {
+        throw new ApplicationException(
+          'HANDOVER_CANCELLATION_RECONCILIATION_FAILED',
+          'The accepted booking financial snapshot does not reconcile.',
+          HttpStatus.CONFLICT,
+        );
+      }
+      const operation = await transaction.paymentOperation.create({
+        data: {
+          amountMinor: BigInt(quote.refundAmountMinor),
+          attemptCount: 1,
+          currency: quote.currency,
+          idempotencyKey: `handover-cancellation:${booking.id}:refund:v1`,
+          paymentId: payment.id,
+          providerRequestReference: randomUUID(),
+          startedAt: new Date(),
+          status: PaymentOperationStatus.PROCESSING,
+          type: PaymentOperationType.REFUND,
+        },
+      });
+      const refund = await transaction.refund.create({
+        data: {
+          amountMinor: BigInt(quote.refundAmountMinor),
+          currency: quote.currency,
+          operationId: operation.id,
+          paymentId: payment.id,
+          reason: `Pre-custody handover cancellation: ${reasonCode}`,
+          status: RefundStatus.PROCESSING,
+        },
+      });
+      const cancellation = await transaction.bookingCancellation.create({
+        data: {
+          actorType: BookingActorType.USER,
+          actorUserId: userId,
+          bookingId: booking.id,
+          correlationId: request.correlationId ?? null,
+          reasonCode,
+          reasonText: reasonText?.trim() ?? null,
+        },
+      });
+      const settlement = await transaction.bookingCancellationSettlement.create({
+        data: {
+          bookingId: booking.id,
+          bookingCancellationId: cancellation.id,
+          calculationVersion: 'PRE_CUSTODY_HANDOVER_V1',
+          capturedAmountMinor: BigInt(quote.capturedAmountMinor),
+          collectionFeeMinor: BigInt(quote.collectionFeeMinor),
+          collectionRefundedMinor: BigInt(quote.collectionRefundedMinor),
+          commissionRetainedMinor: BigInt(quote.commissionRetainedMinor),
+          commissionSnapshotId: booking.commissionSnapshot!.id,
+          currency: quote.currency,
+          deliveryCompleted: quote.deliveryCompleted,
+          deliveryCompletionBasis: quote.deliveryCompleted
+            ? 'OWNER_DELIVERY_START_ARRIVED'
+            : 'NO_START_ARRIVED_EVENT',
+          deliveryFeeMinor: BigInt(quote.deliveryFeeMinor),
+          deliveryRefundedMinor: BigInt(quote.deliveryRefundedMinor),
+          deliveryRetainedMinor: BigInt(quote.deliveryRetainedMinor),
+          paymentId: payment.id,
+          refundAmountMinor: BigInt(quote.refundAmountMinor),
+          refundId: refund.id,
+          rentalComponentMinor: BigInt(quote.rentalComponentMinor),
+        },
+      });
+      await transaction.booking.update({
+        data: { status: BookingStatus.CANCELLED },
+        where: { id: booking.id },
+      });
+      await transaction.vehicleOccupancy.updateMany({
+        data: {
+          active: false,
+          releaseReason: 'RENTER_HANDOVER_DISAGREEMENT_CANCELLED',
+          releasedAt: new Date(),
+        },
+        where: { active: true, bookingId: booking.id },
+      });
+      await transaction.inspectionVerificationChallenge.updateMany({
+        data: { supersededAt: new Date() },
+        where: { bookingId: booking.id, consumedAt: null, supersededAt: null },
+      });
+      await transaction.bookingStatusHistory.create({
+        data: {
+          actorType: BookingActorType.USER,
+          actorUserId: userId,
+          bookingId: booking.id,
+          correlationId: request.correlationId ?? null,
+          fromStatus: booking.status,
+          reasonCode: 'RENTER_PRE_CUSTODY_HANDOVER_CANCELLED',
+          reasonText: reasonText?.trim() ?? null,
+          toStatus: BookingStatus.CANCELLED,
+        },
+      });
+      await transaction.outboxEvent.create({
+        data: {
+          aggregateId: booking.id,
+          aggregateType: 'BOOKING',
+          eventType: 'RENTER_PRE_CUSTODY_HANDOVER_CANCELLED',
+          payload: { bookingId: booking.id, recipientUserId: booking.ownerUserId },
+        },
+      });
+      return { existingSettlement: null, operation, payment, refund, settlement } as const;
+    });
+    if (prepared.existingSettlement) return this.toSerializable(prepared.existingSettlement);
+    if (!prepared.payment.externalPaymentId)
+      this.invalidState('Captured payment reference is missing.');
+    let result: ProviderOperationResult;
+    try {
+      result = await this.provider.refund({
+        amountMinor: prepared.refund.amountMinor,
+        currency: prepared.refund.currency,
+        externalPaymentId: prepared.payment.externalPaymentId,
+        idempotencyKey: prepared.operation.idempotencyKey,
+        reason: 'Pre-custody handover cancellation',
+        requestReference: prepared.operation.providerRequestReference,
+      });
+    } catch {
+      await this.markHandoverRefundUnknown(
+        prepared.payment.id,
+        prepared.refund.id,
+        prepared.operation.id,
+      );
+      return this.toSerializable({ ...prepared.settlement, refundStatus: RefundStatus.PROCESSING });
+    }
+    if (result.kind !== 'SUCCEEDED') {
+      await this.markHandoverRefundUnknown(
+        prepared.payment.id,
+        prepared.refund.id,
+        prepared.operation.id,
+      );
+      return this.toSerializable({ ...prepared.settlement, refundStatus: RefundStatus.PROCESSING });
+    }
+    await this.finalizeHandoverRefund(
+      prepared.settlement.id,
+      prepared.payment.id,
+      prepared.refund.id,
+      prepared.operation.id,
+      result,
+      request,
+    );
+    return this.toSerializable({ ...prepared.settlement, refundStatus: RefundStatus.COMPLETED });
+  }
 
   async authorizeRental(userId: string, reference: string, request: RequestMetadata) {
     const prepared = await this.database.client.$transaction(async (transaction) => {
@@ -247,6 +593,14 @@ export class PaymentsService {
     const operation = [...payment.operations]
       .reverse()
       .find((candidate) => unresolved.includes(candidate.status));
+    // The provider abstraction currently exposes payment retrieval, not refund retrieval. A
+    // captured payment therefore cannot prove that an indeterminate refund failed. Keep the refund
+    // quarantined for reconciliation instead of misclassifying it as a successful capture or
+    // issuing a duplicate refund.
+    if (operation?.type === PaymentOperationType.REFUND) {
+      await this.deferReconciliation(payment.id);
+      return;
+    }
     if (status.state === 'AUTHORIZED' && payment.status === PaymentStatus.AUTHORIZING) {
       const authorization = payment.operations.find(
         (item) => item.type === PaymentOperationType.AUTHORIZE,
@@ -1142,6 +1496,177 @@ export class PaymentsService {
     );
     if (!rows.length) this.notFound();
     return transaction.booking.findUniqueOrThrow({ where: { id } });
+  }
+
+  private assertPreCustodyCancellation(booking: {
+    actualPickupAt: Date | null;
+    commissionSnapshot: {
+      calculatedCommissionMinor: bigint;
+      commissionableBaseMinor: bigint;
+    } | null;
+    fulfillmentSnapshot: object | null;
+    inspections: Array<{
+      confirmations: Array<{
+        decision: string;
+        discrepancyResponses: Array<{ resolutionReview: { decision: string } | null }>;
+      }>;
+    }>;
+    payments: Array<{ capturedAmountMinor: bigint; status: PaymentStatus }>;
+    pickupChallenges: Array<{ consumedAt: Date | null }>;
+    pricingSnapshot: object | null;
+    status: BookingStatus;
+  }) {
+    if (booking.status !== BookingStatus.READY_FOR_PICKUP || booking.actualPickupAt)
+      this.invalidState(
+        'Only a pickup-ready booking before custody transfer may use this cancellation.',
+      );
+    if (booking.pickupChallenges.some(({ consumedAt }) => consumedAt))
+      this.invalidState(
+        'A successfully consumed pickup challenge prevents pre-custody cancellation.',
+      );
+    const renterConfirmation = booking.inspections[0]?.confirmations.find(
+      ({ decision }) => decision === 'DISAGREED',
+    );
+    const latest = renterConfirmation?.discrepancyResponses.at(-1);
+    if (!renterConfirmation || latest?.resolutionReview?.decision === 'ACCEPTED')
+      this.invalidState('An unresolved pickup discrepancy is required.');
+    if (!booking.pricingSnapshot || !booking.fulfillmentSnapshot || !booking.commissionSnapshot)
+      this.invalidState('Accepted booking financial snapshots are required.');
+    if (!booking.payments[0] || booking.payments[0].status !== PaymentStatus.CAPTURED)
+      this.invalidState('A reconciled captured rental payment is required.');
+  }
+
+  private toSerializable<T>(value: T): T {
+    return JSON.parse(
+      JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? item.toString() : item)),
+    ) as T;
+  }
+
+  private async markHandoverRefundUnknown(
+    paymentId: string,
+    refundId: string,
+    operationId: string,
+  ) {
+    const grace = this.configuration.getOrThrow('PAYMENT_UNKNOWN_GRACE_MINUTES', { infer: true });
+    await this.database.client.$transaction([
+      this.database.client.paymentOperation.update({
+        data: {
+          failureCategory: PaymentFailureCategory.UNKNOWN,
+          nextAttemptAt: new Date(Date.now() + 15_000),
+          status: PaymentOperationStatus.UNKNOWN,
+        },
+        where: { id: operationId },
+      }),
+      this.database.client.payment.update({
+        data: {
+          reconcileAfter: new Date(Date.now() + 15_000),
+          reconciliationRequired: true,
+          unknownExpiresAt: new Date(Date.now() + grace * 60_000),
+        },
+        where: { id: paymentId },
+      }),
+      this.database.client.refund.update({
+        data: { status: RefundStatus.PROCESSING },
+        where: { id: refundId },
+      }),
+    ]);
+  }
+
+  private async finalizeHandoverRefund(
+    settlementId: string,
+    paymentId: string,
+    refundId: string,
+    operationId: string,
+    result: ProviderOperationResult,
+    request: RequestMetadata,
+  ) {
+    await this.database.client.$transaction(async (transaction) => {
+      await this.lockPayment(transaction, paymentId);
+      const settlement = await transaction.bookingCancellationSettlement.findUniqueOrThrow({
+        where: { id: settlementId },
+      });
+      const refund = await transaction.refund.findUniqueOrThrow({ where: { id: refundId } });
+      if (refund.status === RefundStatus.COMPLETED) return;
+      const accounts = await transaction.financialAccount.findMany({
+        where: { active: true, currency: settlement.currency },
+      });
+      const account = (type: FinancialAccountType) => {
+        const found = accounts.find((item) => item.type === type);
+        if (!found) throw new Error(`Financial account ${type} is missing.`);
+        return found.id;
+      };
+      const ownerReversal = settlement.refundAmountMinor;
+      await transaction.ledgerTransaction.create({
+        data: {
+          correlationId: request.correlationId ?? null,
+          currency: settlement.currency,
+          description: 'Pre-custody handover cancellation refund',
+          entries: {
+            create: [
+              {
+                accountId: account(FinancialAccountType.OWNER_PAYABLE),
+                amountMinor: ownerReversal,
+                currency: settlement.currency,
+                memo: 'Reverse unvested owner rental and fulfillment',
+              },
+              {
+                accountId: account(FinancialAccountType.PAYMENT_PROVIDER_RECEIVABLE),
+                amountMinor: -settlement.refundAmountMinor,
+                currency: settlement.currency,
+                memo: 'Renter refund',
+              },
+            ],
+          },
+          sourceId: settlement.id,
+          sourceType: 'BOOKING_CANCELLATION_SETTLEMENT',
+          type: LedgerTransactionType.REFUND,
+        },
+      });
+      const earning = await transaction.ownerEarning.findUniqueOrThrow({
+        where: { bookingId: settlement.bookingId },
+      });
+      await transaction.ownerEarning.update({
+        data: {
+          adjustmentAmountMinor: calculatePreCustodyOwnerAdjustment({
+            currentAdjustmentMinor: earning.adjustmentAmountMinor,
+            originalNetEarningMinor: earning.netEarningAmountMinor,
+            retainedDeliveryMinor: settlement.deliveryRetainedMinor,
+          }),
+          lastFinancialResolutionAt: new Date(),
+        },
+        where: { id: earning.id },
+      });
+      await transaction.paymentOperation.update({
+        data: {
+          completedAt: new Date(),
+          externalOperationId: result.externalOperationId ?? null,
+          failureCategory: null,
+          status: PaymentOperationStatus.SUCCEEDED,
+        },
+        where: { id: operationId },
+      });
+      await transaction.refund.update({
+        data: {
+          completedAt: new Date(),
+          externalRefundId: result.externalOperationId ?? null,
+          status: RefundStatus.COMPLETED,
+        },
+        where: { id: refundId },
+      });
+      const payment = await transaction.payment.findUniqueOrThrow({ where: { id: paymentId } });
+      const refunded = payment.refundedAmountMinor + settlement.refundAmountMinor;
+      await transaction.payment.update({
+        data: {
+          refundedAmountMinor: refunded,
+          reconciliationRequired: false,
+          status:
+            refunded === payment.capturedAmountMinor
+              ? PaymentStatus.REFUNDED
+              : PaymentStatus.PARTIALLY_REFUNDED,
+        },
+        where: { id: paymentId },
+      });
+    });
   }
 
   private async lockPayment(transaction: Prisma.TransactionClient, id: string) {

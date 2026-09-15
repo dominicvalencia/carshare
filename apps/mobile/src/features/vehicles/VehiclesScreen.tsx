@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import {
   Alert,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -24,6 +25,7 @@ import { VehicleImage } from '../../ui/VehicleImage';
 import { SearchableReferenceSelector } from '../../ui/SearchableReferenceSelector';
 import { LocationPicker } from '../../location/LocationPicker';
 import { locationLabel, type CarShareLocation } from '../../location/booking-location-provider';
+import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
 import {
   BackControl,
   Button,
@@ -145,6 +147,19 @@ interface Vehicle {
     readonly landmark: string | null;
   } | null;
   readonly policyVersions: Policy[];
+  readonly knownIssues: VehicleKnownIssue[];
+}
+
+interface VehicleKnownIssue {
+  readonly id: string;
+  readonly category: string;
+  readonly vehicleArea: string;
+  readonly classification: string;
+  readonly description: string;
+  readonly status: 'ACTIVE' | 'RESOLVED';
+  readonly createdAt: string;
+  readonly resolvedAt: string | null;
+  readonly evidence: readonly { readonly fileAsset: SafeFile }[];
 }
 
 const steps = [
@@ -300,6 +315,7 @@ function VehicleDetail({
   readonly onEdit: (step?: number) => void;
 }) {
   const [managingAvailability, setManagingAvailability] = useState(false);
+  const [managingKnownIssues, setManagingKnownIssues] = useState(false);
   const vehicle = useQuery({
     queryKey: ['vehicle', id],
     queryFn: () => apiClient.request<Vehicle>(`/owner/vehicles/${id}`),
@@ -327,6 +343,16 @@ function VehicleDetail({
           <AvailabilityStep id={id} vehicle={value} onSaved={() => void vehicle.refetch()} />
         </ScrollView>
       </SafeAreaView>
+    );
+  if (managingKnownIssues)
+    return (
+      <KnownIssuesManager
+        id={id}
+        onClose={() => {
+          setManagingKnownIssues(false);
+          void vehicle.refetch();
+        }}
+      />
     );
   const cover = value.photos.find(({ isCover }) => isCover) ?? value.photos[0];
   return (
@@ -379,6 +405,24 @@ function VehicleDetail({
           <Text style={styles.body}>{ownerHandoverSummary(value.policyVersions[0])}</Text>
           <Button label="Edit handover options" onPress={() => onEdit(5)} variant="secondary" />
         </DetailSection>
+        <DetailSection title="Known vehicle issues">
+          <Text style={styles.cardTitle}>
+            {value.knownIssues.filter(({ status }) => status === 'ACTIVE').length} active
+          </Text>
+          {value.knownIssues
+            .filter(({ status }) => status === 'ACTIVE')
+            .slice(0, 3)
+            .map((issue) => (
+              <Text key={issue.id} style={styles.body}>
+                {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+              </Text>
+            ))}
+          <Button
+            label="Manage issues"
+            onPress={() => setManagingKnownIssues(true)}
+            variant="secondary"
+          />
+        </DetailSection>
         <DetailSection title="Marketplace status">
           <Text style={styles.cardTitle}>{ownerMarketplaceStatus(value)}</Text>
           <Text style={styles.body}>{ownerMarketplaceExplanation(value)}</Text>
@@ -419,6 +463,396 @@ function VehicleDetail({
     </SafeAreaView>
   );
 }
+
+function KnownIssuesManager({
+  id,
+  onClose,
+}: {
+  readonly id: string;
+  readonly onClose: () => void;
+}) {
+  const scrollRef = useRef<ScrollView>(null);
+  const descriptionRef = useRef<TextInput>(null);
+  const scrollOffsetY = useRef(0);
+  const scrollToFormAfterLayout = useRef(false);
+  const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding(spacing.xl);
+  const client = useQueryClient();
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [category, setCategory] = useState('SCRATCH');
+  const [vehicleArea, setVehicleArea] = useState('PASSENGER_SIDE');
+  const [classification, setClassification] = useState('COSMETIC');
+  const [description, setDescription] = useState('');
+  const [descriptionError, setDescriptionError] = useState('');
+  const [evidenceBusy, setEvidenceBusy] = useState<number | 'new' | null>(null);
+  const [evidenceError, setEvidenceError] = useState('');
+  const [evidence, setEvidence] = useState<
+    { readonly fileAsset: SafeFile; readonly previewUri?: string }[]
+  >([]);
+  const issues = useQuery({
+    queryKey: ['vehicle-known-issues', id],
+    queryFn: () => apiClient.request<VehicleKnownIssue[]>(`/owner/vehicles/${id}/known-issues`),
+  });
+  const reset = () => {
+    setShowForm(false);
+    setEditingId(null);
+    setCategory('SCRATCH');
+    setVehicleArea('PASSENGER_SIDE');
+    setClassification('COSMETIC');
+    setDescription('');
+    setDescriptionError('');
+    setEvidenceBusy(null);
+    setEvidenceError('');
+    setEvidence([]);
+  };
+  const save = useMutation({
+    mutationFn: () =>
+      apiClient.request(`/owner/vehicles/${id}/known-issues${editingId ? `/${editingId}` : ''}`, {
+        body: JSON.stringify({
+          category,
+          classification,
+          description: description.trim(),
+          evidenceFileAssetIds: evidence.map(({ fileAsset }) => fileAsset.id),
+          vehicleArea,
+        }),
+        method: editingId ? 'PATCH' : 'POST',
+      }),
+    onSuccess: () => {
+      reset();
+      void client.invalidateQueries({ queryKey: ['vehicle-known-issues', id] });
+      void client.invalidateQueries({ queryKey: ['vehicle', id] });
+    },
+  });
+  const resolve = useMutation({
+    mutationFn: (issueId: string) =>
+      apiClient.request(`/owner/vehicles/${id}/known-issues/${issueId}/resolution`, {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['vehicle-known-issues', id] });
+      void client.invalidateQueries({ queryKey: ['vehicle', id] });
+    },
+  });
+  const captureEvidence = async (replaceIndex?: number) => {
+    if (!(await ensureCameraPermission())) return;
+    const result = await ImagePicker.launchCameraAsync({
+      cameraType: ImagePicker.CameraType.back,
+      mediaTypes: ['images'],
+      quality: 0.85,
+    });
+    const asset = result.assets?.[0];
+    if (!asset) return;
+    setEvidenceBusy(replaceIndex ?? 'new');
+    setEvidenceError('');
+    try {
+      const file = await apiClient.upload<SafeFile>('/files', 'SENSITIVE', {
+        mimeType: asset.mimeType ?? 'image/jpeg',
+        name: asset.fileName ?? 'known-vehicle-issue.jpg',
+        uri: asset.uri,
+      });
+      setEvidence((current) => {
+        const next = { fileAsset: file, previewUri: asset.uri };
+        return replaceIndex === undefined
+          ? [...current, next]
+          : current.map((value, index) => (index === replaceIndex ? next : value));
+      });
+    } catch (caught) {
+      setEvidenceError(
+        caught instanceof Error ? caught.message : 'The supporting photo could not be uploaded.',
+      );
+    } finally {
+      setEvidenceBusy(null);
+    }
+  };
+  const active = issues.data?.filter(({ status }) => status === 'ACTIVE') ?? [];
+  const resolved = issues.data?.filter(({ status }) => status === 'RESOLVED') ?? [];
+  useEffect(() => {
+    const keyboardShown = Keyboard.addListener('keyboardDidShow', ({ endCoordinates }) => {
+      if (descriptionRef.current?.isFocused()) {
+        descriptionRef.current.measureInWindow((_x, y, _width, height) => {
+          const overlap = y + height + spacing.sm - endCoordinates.screenY;
+          if (overlap <= 0) return;
+          scrollRef.current?.scrollTo({
+            animated: true,
+            y: scrollOffsetY.current + overlap,
+          });
+        });
+      }
+    });
+    return () => keyboardShown.remove();
+  }, []);
+  return (
+    <SafeAreaView edges={['top']} style={styles.flex}>
+      <KeyboardAvoidingView style={styles.flex}>
+        <ScrollView
+          ref={scrollRef}
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+          contentContainerStyle={[
+            styles.knownIssuesPage,
+            { paddingBottom: keyboardAwareBottomPadding },
+          ]}
+          keyboardDismissMode={formKeyboardDismissMode}
+          keyboardShouldPersistTaps="handled"
+          onScroll={({ nativeEvent }) => {
+            scrollOffsetY.current = nativeEvent.contentOffset.y;
+          }}
+          scrollEventThrottle={16}
+        >
+          <BackControl label="Vehicle detail" onPress={onClose} />
+          <Text style={styles.knownIssuesTitle}>Known vehicle issues ({active.length})</Text>
+          <Text style={styles.knownIssuesHelper}>
+            Record the current known vehicle condition once. Active issues are preloaded into future
+            pickup inspections.
+          </Text>
+          {active.map((issue) => (
+            <View key={issue.id} style={styles.knownIssueCard}>
+              <Text style={styles.cardTitle}>
+                {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+              </Text>
+              <Text style={styles.status}>{domainLabel(issue.classification)}</Text>
+              <Text style={styles.body}>{issue.description}</Text>
+              <Text style={styles.body}>{issue.evidence.length} supporting photo(s)</Text>
+              <View style={styles.knownIssueCardActions}>
+                <Button
+                  label="Edit"
+                  variant="secondary"
+                  onPress={() => {
+                    scrollToFormAfterLayout.current = true;
+                    setEditingId(issue.id);
+                    setCategory(issue.category);
+                    setVehicleArea(issue.vehicleArea);
+                    setClassification(issue.classification);
+                    setDescription(issue.description);
+                    setEvidence(issue.evidence.map(({ fileAsset }) => ({ fileAsset })));
+                    setShowForm(true);
+                  }}
+                />
+                <Button
+                  label="Mark as resolved"
+                  variant="danger"
+                  onPress={() =>
+                    Alert.alert(
+                      'Has this issue been fixed or is it no longer present?',
+                      'Resolved issues remain in vehicle history and stop preloading into future handovers.',
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Mark resolved', onPress: () => resolve.mutate(issue.id) },
+                      ],
+                    )
+                  }
+                />
+              </View>
+            </View>
+          ))}
+          {!showForm && (
+            <View style={styles.knownIssueAddAction}>
+              <Button
+                label={active.length ? '+ Add another issue' : 'Add issue'}
+                onPress={() => {
+                  scrollToFormAfterLayout.current = true;
+                  setShowForm(true);
+                }}
+              />
+            </View>
+          )}
+          {showForm && (
+            <View
+              onLayout={({ nativeEvent }) => {
+                if (scrollToFormAfterLayout.current) {
+                  scrollToFormAfterLayout.current = false;
+                  scrollRef.current?.scrollTo({
+                    animated: true,
+                    y: Math.max(0, nativeEvent.layout.y - spacing.md),
+                  });
+                }
+              }}
+              style={styles.knownIssueForm}
+            >
+              <Text style={styles.cardTitle}>
+                {editingId ? 'Edit issue' : 'Add existing issue'}
+              </Text>
+              <View style={styles.knownIssueFields}>
+                <SearchableReferenceSelector
+                  label="What’s the issue?"
+                  onChange={setCategory}
+                  options={knownIssueCategoryOptions}
+                  value={category}
+                />
+                <SearchableReferenceSelector
+                  label="Where is it?"
+                  onChange={setVehicleArea}
+                  options={knownIssueAreaOptions}
+                  value={vehicleArea}
+                />
+                <SearchableReferenceSelector
+                  label="How serious is it?"
+                  onChange={setClassification}
+                  options={knownIssueClassificationOptions}
+                  value={classification}
+                />
+              </View>
+              <Text accessibilityLiveRegion="polite" style={styles.classificationHelper}>
+                {knownIssueClassificationExplanation(classification)}
+              </Text>
+              <Text style={styles.knownIssuePrompt}>Describe the issue</Text>
+              <TextInput
+                accessibilityLabel="Describe the issue"
+                multiline
+                onChangeText={(value) => {
+                  setDescription(value);
+                  if (value.trim().length >= 3) setDescriptionError('');
+                }}
+                placeholder="Add a clear description"
+                placeholderTextColor={colors.placeholder}
+                ref={descriptionRef}
+                style={styles.input}
+                value={description}
+              />
+              {descriptionError ? (
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {descriptionError}
+                </Text>
+              ) : null}
+              <Text style={styles.knownIssuePrompt}>Photos</Text>
+              <Text style={styles.body}>
+                Add private supporting photos. They are visible only to authorized reviewers.
+              </Text>
+              <View style={styles.knownIssuePhotos}>
+                {evidence.map((item, index) => (
+                  <SecureCameraPhotoSlot
+                    busy={evidenceBusy === index}
+                    compactRemoveOverlay
+                    guidance="Capture the affected area clearly."
+                    key={item.fileAsset.id}
+                    name={`Photo ${index + 1}`}
+                    onCapture={() => void captureEvidence(index)}
+                    onRemove={() =>
+                      setEvidence((current) =>
+                        current.filter((_, valueIndex) => valueIndex !== index),
+                      )
+                    }
+                    persistedPreview={
+                      !item.previewUri ? (
+                        <VehicleImage
+                          accessibilityLabel={`Known issue photo ${index + 1}`}
+                          contentPath={item.fileAsset.contentGrant?.contentPath}
+                          style={securePhotoPreviewStyle}
+                        />
+                      ) : undefined
+                    }
+                    previewUri={item.previewUri}
+                    required={false}
+                    uploaded
+                  />
+                ))}
+                {evidence.length < 10 ? (
+                  <SecureCameraPhotoSlot
+                    busy={evidenceBusy === 'new'}
+                    captureLabel="Add photo"
+                    guidance="Use the rear camera to add supporting condition evidence."
+                    hideHeader
+                    name="Add photo"
+                    onCapture={() => void captureEvidence()}
+                    required={false}
+                    uploaded={false}
+                  />
+                ) : null}
+              </View>
+              {evidenceError ? (
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {evidenceError} Try again when ready.
+                </Text>
+              ) : null}
+              <View style={styles.knownIssueActions}>
+                <Button
+                  disabled={save.isPending}
+                  label={save.isPending ? 'Saving…' : 'Save issue'}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    if (description.trim().length < 3) {
+                      setDescriptionError('Please enter at least 3 characters.');
+                      return;
+                    }
+                    save.mutate();
+                  }}
+                />
+                {save.error ? (
+                  <Text accessibilityRole="alert" style={styles.error}>
+                    {save.error.message}
+                  </Text>
+                ) : null}
+                <Button label="Cancel" onPress={reset} variant="secondary" />
+              </View>
+            </View>
+          )}
+          {resolved.length > 0 ? (
+            <View style={styles.resolvedIssuesSection}>
+              <Text style={styles.knownIssuesSectionTitle}>
+                Resolved issues ({resolved.length})
+              </Text>
+              {resolved.map((issue) => (
+                <View key={issue.id} style={styles.knownIssueCard}>
+                  <Text style={styles.cardTitle}>
+                    {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+                  </Text>
+                  <Text style={styles.body}>
+                    {domainLabel(issue.classification)} · {issue.description}
+                  </Text>
+                  <Text style={styles.body}>
+                    Resolved{' '}
+                    {issue.resolvedAt
+                      ? new Date(issue.resolvedAt).toLocaleDateString('en-PH')
+                      : '—'}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+function knownIssueClassificationExplanation(classification: string): string {
+  if (classification === 'OPERATIONAL') {
+    return 'A vehicle feature or system is not working correctly and requires review before the vehicle can be rented. Examples: air conditioning, window, sensor, or another functional issue.';
+  }
+  if (classification === 'SAFETY_CRITICAL') {
+    return 'A condition that could make the vehicle unsafe to drive. The vehicle cannot be rented until this issue is resolved. Examples: brakes, unsafe tires, steering, serious overheating, or a critical safety warning.';
+  }
+  return 'Appearance-only damage that does not affect normal vehicle operation or safety. Examples: scratch, small dent, stain, or rim scuff.';
+}
+
+const knownIssueCategoryOptions = [
+  'SCRATCH',
+  'DENT',
+  'CRACK',
+  'PAINT_DAMAGE',
+  'WHEEL_OR_RIM',
+  'TIRE',
+  'GLASS',
+  'INTERIOR',
+  'WARNING_LIGHT',
+  'MECHANICAL_OR_OPERATIONAL',
+  'OTHER',
+].map((value) => ({ code: value, id: value, name: domainLabel(value) }));
+
+const knownIssueAreaOptions = [
+  'FRONT_BUMPER',
+  'REAR_BUMPER',
+  'DRIVER_SIDE',
+  'PASSENGER_SIDE',
+  'WINDSHIELD',
+  'WHEEL_OR_TIRE',
+  'INTERIOR',
+  'DASHBOARD',
+  'OTHER',
+].map((value) => ({ code: value, id: value, name: domainLabel(value) }));
+
+const knownIssueClassificationOptions = ['COSMETIC', 'OPERATIONAL', 'SAFETY_CRITICAL'].map(
+  (value) => ({ code: value, id: value, name: domainLabel(value) }),
+);
 
 function DetailSection({
   title,
@@ -2012,6 +2446,60 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
     padding: spacing.md,
   },
+  classificationHelper: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.md,
+    color: colors.ink,
+    lineHeight: 20,
+    marginTop: spacing.sm,
+    padding: spacing.md,
+  },
+  knownIssueCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.xs,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  knownIssueActions: { gap: spacing.sm, marginTop: spacing.lg },
+  knownIssueAddAction: { marginTop: spacing.xl },
+  knownIssueCardActions: { gap: spacing.sm, marginTop: spacing.md },
+  knownIssueFields: { gap: spacing.lg, marginTop: spacing.lg },
+  knownIssueForm: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    marginTop: spacing.lg,
+    padding: spacing.lg,
+  },
+  knownIssuePhotos: { gap: spacing.md, marginTop: spacing.sm },
+  knownIssuePrompt: {
+    color: colors.ink,
+    fontSize: 15,
+    fontWeight: '800',
+    marginTop: spacing.lg,
+  },
+  knownIssuesHelper: { color: colors.subtleText, lineHeight: 21, marginTop: spacing.xs },
+  knownIssuesPage: {
+    backgroundColor: colors.background,
+    flexGrow: 1,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  knownIssuesSectionTitle: {
+    color: colors.ink,
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  knownIssuesTitle: {
+    color: colors.ink,
+    fontSize: 24,
+    fontWeight: '800',
+    marginTop: spacing.md,
+  },
   label: { color: colors.ink, fontSize: 13, fontWeight: '700', marginTop: spacing.md },
   link: { color: colors.primary, fontWeight: '700', marginTop: spacing.sm },
   loading: { alignItems: 'center', flex: 1, justifyContent: 'center' },
@@ -2051,6 +2539,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     paddingVertical: spacing.sm,
   },
+  resolvedIssuesSection: { marginTop: spacing.xxl },
   reviewSummary: {
     backgroundColor: colors.surface,
     borderColor: colors.border,

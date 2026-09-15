@@ -37,7 +37,7 @@ describe('renter profile persona presentation', () => {
     expect(source).toContain("mutationFn: () => auth.enrollPersona('OWNER')");
     expect(source).toContain("onSuccess: () => onModeChange('owner')");
     expect(source).not.toContain("onSuccess: () => navigation.navigate('OwnerOnboarding')");
-    expect(source).toContain('<LogoutButton variant="secondary" />');
+    expect(source).not.toContain('<LogoutButton variant="secondary" />');
   });
 });
 

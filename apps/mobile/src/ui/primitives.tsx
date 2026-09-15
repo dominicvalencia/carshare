@@ -21,6 +21,9 @@ import {
   TextInput,
   View,
   type KeyboardTypeOptions,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
@@ -72,6 +75,10 @@ export function Screen({
   action,
   scroll = true,
   scrollRef,
+  onScroll,
+  onContentSizeChange,
+  onScrollLayout,
+  constrainOverscroll = false,
   safeTop = true,
 }: ScreenProperties) {
   const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding(screenBottomPadding);
@@ -110,6 +117,8 @@ export function Screen({
               <ScrollView
                 ref={scrollRef}
                 automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+                alwaysBounceVertical={!constrainOverscroll}
+                bounces={!constrainOverscroll}
                 contentInset={iosFocusInsets}
                 contentContainerStyle={[
                   styles.nestedScreenContent,
@@ -118,6 +127,11 @@ export function Screen({
                 keyboardDismissMode={formKeyboardDismissMode}
                 keyboardShouldPersistTaps="handled"
                 nestedScrollEnabled
+                overScrollMode={constrainOverscroll ? 'never' : 'auto'}
+                onScroll={onScroll}
+                onContentSizeChange={onContentSizeChange}
+                onLayout={onScrollLayout}
+                scrollEventThrottle={onScroll ? 16 : undefined}
                 scrollIndicatorInsets={iosFocusInsets}
                 showsVerticalScrollIndicator={false}
               >
@@ -131,6 +145,8 @@ export function Screen({
           <ScrollView
             ref={scrollRef}
             automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+            alwaysBounceVertical={!constrainOverscroll}
+            bounces={!constrainOverscroll}
             contentInset={iosFocusInsets}
             contentContainerStyle={[
               styles.screenContent,
@@ -139,6 +155,11 @@ export function Screen({
             keyboardDismissMode={formKeyboardDismissMode}
             keyboardShouldPersistTaps="handled"
             nestedScrollEnabled
+            overScrollMode={constrainOverscroll ? 'never' : 'auto'}
+            onScroll={onScroll}
+            onContentSizeChange={onContentSizeChange}
+            onLayout={onScrollLayout}
+            scrollEventThrottle={onScroll ? 16 : undefined}
             scrollIndicatorInsets={iosFocusInsets}
             showsVerticalScrollIndicator={false}
           >
@@ -161,6 +182,10 @@ interface ScreenProperties {
   readonly action?: ReactNode | undefined;
   readonly scroll?: boolean | undefined;
   readonly scrollRef?: RefObject<ScrollView | null> | undefined;
+  readonly onScroll?: ((event: NativeSyntheticEvent<NativeScrollEvent>) => void) | undefined;
+  readonly onContentSizeChange?: ((width: number, height: number) => void) | undefined;
+  readonly onScrollLayout?: ((event: LayoutChangeEvent) => void) | undefined;
+  readonly constrainOverscroll?: boolean | undefined;
   readonly safeTop?: boolean | undefined;
 }
 

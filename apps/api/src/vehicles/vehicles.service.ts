@@ -3,6 +3,7 @@ import {
   AvailabilityPolicyType,
   FileAssetStatus,
   FileClassification,
+  InspectionConditionClassification,
   MileagePolicyType,
   Prisma,
   ReviewType,
@@ -10,6 +11,7 @@ import {
   VehicleOperationalStatus,
   VehiclePhotoPerspective,
   VehiclePowertrain,
+  VehicleKnownIssueStatus,
   VerificationStatus,
 } from '@carrental/database';
 import { VehicleErrorCode } from '@carrental/api-contracts';
@@ -26,6 +28,7 @@ import type {
   AddVehicleDocumentDto,
   AddVehiclePhotoDto,
   ChangeOperationalStatusDto,
+  CreateVehicleKnownIssueDto,
   CreateVehicleBlockDto,
   CreateVehicleDto,
   CreateVehiclePolicyVersionDto,
@@ -33,6 +36,7 @@ import type {
   SetVehicleFeaturesDto,
   SetVehicleLocationDto,
   UpdateVehicleDto,
+  UpdateVehicleKnownIssueDto,
 } from './vehicles.dto';
 import { validateDurationDiscounts } from '../discovery/duration-discounts';
 import {
@@ -78,6 +82,10 @@ const ownerVehicleInclude = {
   },
   features: { include: { feature: true } },
   location: true,
+  knownIssues: {
+    include: { evidence: { include: { fileAsset: { select: safeFileSelect } } } },
+    orderBy: { createdAt: 'desc' as const },
+  },
   photos: {
     include: { fileAsset: { select: safeFileSelect } },
     orderBy: { displayOrder: 'asc' as const },
@@ -263,6 +271,7 @@ export class VehiclesService {
     ]);
     return {
       ...this.withOwnerPhotoGrants(vehicle),
+      knownIssues: this.withKnownIssueEvidenceGrants(vehicle.knownIssues),
       availabilityToday: ownerAvailabilityToday({
         blocks,
         lifecycleStatus: vehicle.status,
@@ -270,6 +279,112 @@ export class VehiclesService {
         operationalStatus: vehicle.operationalStatus,
       }),
     };
+  }
+
+  async listKnownIssues(userId: string, id: string) {
+    await this.ownedRecord(userId, id);
+    const issues = await this.database.client.vehicleKnownIssue.findMany({
+      include: { evidence: { include: { fileAsset: { select: safeFileSelect } } } },
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+      where: { vehicleId: id },
+    });
+    return this.withKnownIssueEvidenceGrants(issues);
+  }
+
+  async createKnownIssue(userId: string, id: string, input: CreateVehicleKnownIssueDto) {
+    await this.owners.assertOperational(userId);
+    await this.ownedRecord(userId, id);
+    await this.assertKnownIssueEvidence(userId, input.evidenceFileAssetIds ?? []);
+    const issue = await this.database.client.$transaction(async (transaction) => {
+      const created = await transaction.vehicleKnownIssue.create({
+        data: {
+          category: input.category,
+          classification: input.classification,
+          createdByUserId: userId,
+          description: input.description.trim(),
+          status: VehicleKnownIssueStatus.ACTIVE,
+          vehicleArea: input.vehicleArea,
+          vehicleId: id,
+        },
+      });
+      if (input.evidenceFileAssetIds?.length) {
+        await transaction.vehicleKnownIssueEvidence.createMany({
+          data: [...new Set(input.evidenceFileAssetIds)].map((fileAssetId) => ({
+            fileAssetId,
+            issueId: created.id,
+            uploadedByUserId: userId,
+          })),
+        });
+      }
+      if (input.classification !== InspectionConditionClassification.COSMETIC) {
+        await transaction.vehicle.update({
+          data: { operationalStatus: VehicleOperationalStatus.MAINTENANCE },
+          where: { id },
+        });
+      }
+      return created;
+    });
+    return (await this.listKnownIssues(userId, id)).find(({ id: value }) => value === issue.id);
+  }
+
+  async updateKnownIssue(
+    userId: string,
+    id: string,
+    issueId: string,
+    input: UpdateVehicleKnownIssueDto,
+  ) {
+    await this.owners.assertOperational(userId);
+    await this.ownedRecord(userId, id);
+    const existing = await this.database.client.vehicleKnownIssue.findFirst({
+      where: { id: issueId, status: VehicleKnownIssueStatus.ACTIVE, vehicleId: id },
+    });
+    if (!existing) this.notFound();
+    await this.assertKnownIssueEvidence(userId, input.evidenceFileAssetIds ?? []);
+    await this.database.client.$transaction(async (transaction) => {
+      await transaction.vehicleKnownIssue.update({
+        data: {
+          category: input.category,
+          classification: input.classification,
+          description: input.description.trim(),
+          vehicleArea: input.vehicleArea,
+        },
+        where: { id: issueId },
+      });
+      if (input.evidenceFileAssetIds?.length) {
+        await transaction.vehicleKnownIssueEvidence.createMany({
+          data: [...new Set(input.evidenceFileAssetIds)].map((fileAssetId) => ({
+            fileAssetId,
+            issueId,
+            uploadedByUserId: userId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+      if (input.classification !== InspectionConditionClassification.COSMETIC) {
+        await transaction.vehicle.update({
+          data: { operationalStatus: VehicleOperationalStatus.MAINTENANCE },
+          where: { id },
+        });
+      }
+    });
+    return (await this.listKnownIssues(userId, id)).find(({ id: value }) => value === issueId);
+  }
+
+  async resolveKnownIssue(userId: string, id: string, issueId: string) {
+    await this.owners.assertOperational(userId);
+    await this.ownedRecord(userId, id);
+    const result = await this.database.client.vehicleKnownIssue.updateMany({
+      data: {
+        resolvedAt: new Date(),
+        resolvedByUserId: userId,
+        status: VehicleKnownIssueStatus.RESOLVED,
+      },
+      where: { id: issueId, status: VehicleKnownIssueStatus.ACTIVE, vehicleId: id },
+    });
+    if (!result.count) this.notFound();
+    // Availability is intentionally not restored here; other maintenance and eligibility
+    // authorities must be reviewed before an Owner explicitly makes the vehicle available.
+    return (await this.listKnownIssues(userId, id)).find(({ id: value }) => value === issueId);
   }
 
   async update(userId: string, id: string, input: UpdateVehicleDto) {
@@ -802,6 +917,22 @@ export class VehiclesService {
     );
     if (input.status !== VehicleOperationalStatus.AVAILABLE) {
       await this.occupancy.assertNoFutureBooking(id);
+    } else {
+      const blockingIssue = await this.database.client.vehicleKnownIssue.findFirst({
+        where: {
+          classification: {
+            in: [
+              InspectionConditionClassification.OPERATIONAL,
+              InspectionConditionClassification.SAFETY_CRITICAL,
+            ],
+          },
+          status: VehicleKnownIssueStatus.ACTIVE,
+          vehicleId: id,
+        },
+      });
+      if (blockingIssue) {
+        this.invalidState('Resolve active operational and safety-critical issues first.');
+      }
     }
     return this.database.client.vehicle.update({
       data: { operationalStatus: input.status },
@@ -871,10 +1002,45 @@ export class VehiclesService {
       ...vehicle,
       ...this.serializedLocation(vehicle),
       auditLogs,
+      knownIssues: this.withKnownIssueEvidenceGrants(vehicle.knownIssues),
       publishedRating: rating
         ? { averageRating: rating.averageRating.toString(), reviewCount: rating.reviewCount }
         : { averageRating: null, reviewCount: 0 },
     };
+  }
+
+  private async assertKnownIssueEvidence(userId: string, fileAssetIds: readonly string[]) {
+    const unique = [...new Set(fileAssetIds)];
+    if (!unique.length) return;
+    const count = await this.database.client.fileAsset.count({
+      where: {
+        classification: FileClassification.SENSITIVE,
+        id: { in: unique },
+        mimeType: { startsWith: 'image/' },
+        status: FileAssetStatus.READY,
+        uploadedById: userId,
+      },
+    });
+    if (count !== unique.length)
+      this.invalidFile('Attach only ready private issue evidence uploaded by this owner.');
+  }
+
+  private withKnownIssueEvidenceGrants<
+    T extends { evidence: Array<{ fileAsset: { id: string; status: FileAssetStatus } }> },
+  >(issues: T[]) {
+    return issues.map((issue) => ({
+      ...issue,
+      evidence: issue.evidence.map((item) => ({
+        ...item,
+        fileAsset: {
+          ...item.fileAsset,
+          contentGrant:
+            item.fileAsset.status === FileAssetStatus.READY
+              ? this.files.trustedAuthorizedGrant(item.fileAsset.id)
+              : null,
+        },
+      })),
+    }));
   }
 
   private serializedLocation(vehicle: {

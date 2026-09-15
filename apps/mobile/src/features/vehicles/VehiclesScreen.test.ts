@@ -7,6 +7,10 @@ const source = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), 'VehiclesScreen.tsx'),
   'utf8',
 );
+const securePhotoSlotSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../ui/SecureCameraPhotoSlot.tsx'),
+  'utf8',
+);
 
 describe('Phase 12 owner vehicle acceptance UX', () => {
   it('uses dependent reference selectors with a safe custom-model escape hatch', () => {
@@ -68,6 +72,55 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(source).toContain('<DetailSection title="Private pickup location">');
     expect(source).toContain('ownerPrivateLocationLabel(value.location)');
     expect(source).toContain('<Button label="Change location" onPress={() => onEdit(4)}');
+    expect(source).toContain('<DetailSection title="Known vehicle issues">');
+    expect(source).toContain('label="Manage issues"');
+  });
+
+  it('persists multiple known issues with explicit validation and resolution history', () => {
+    expect(source).toContain("queryKey: ['vehicle-known-issues', id]");
+    expect(source).toContain("/known-issues${editingId ? `/${editingId}` : ''}");
+    expect(source).toContain('Please enter at least 3 characters.');
+    expect(source).toContain("save.isPending ? 'Saving…' : 'Save issue'");
+    expect(source).toContain('Has this issue been fixed or is it no longer present?');
+    expect(source).toContain("status === 'ACTIVE'");
+    expect(source).toContain("status === 'RESOLVED'");
+    expect(source).toContain('+ Add another issue');
+  });
+
+  it('keeps the known-issues manager keyboard-safe and reuses secure inspection photo UX', () => {
+    expect(source).toContain('<KeyboardAvoidingView style={styles.flex}>');
+    expect(source).toContain("automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}");
+    expect(source).toContain('keyboardDismissMode={formKeyboardDismissMode}');
+    expect(source).toContain('{ paddingBottom: keyboardAwareBottomPadding }');
+    expect(source).toContain("Keyboard.addListener('keyboardDidShow'");
+    expect(source).toContain('measureInWindow((_x, y, _width, height)');
+    expect(source).toContain('endCoordinates.screenY');
+    expect(source).toContain('scrollOffsetY.current + overlap');
+    expect(source).toContain('<SecureCameraPhotoSlot');
+    expect(source).toContain('name="Add photo"');
+    expect(source).toContain('captureLabel="Add photo"');
+    expect(source).toContain('hideHeader');
+    expect(source).toContain('compactRemoveOverlay');
+    expect(securePhotoSlotSource).toContain('label="Remove photo"');
+    expect(source).toContain('evidence.length < 10');
+    expect(source).toContain("apiClient.upload<SafeFile>('/files', 'SENSITIVE'");
+  });
+
+  it('explains issue severity and hides empty resolved history', () => {
+    expect(source).toContain(
+      'Appearance-only damage that does not affect normal vehicle operation',
+    );
+    expect(source).toContain('requires review before the vehicle can be rented');
+    expect(source).toContain('The vehicle cannot be rented until this issue is resolved');
+    expect(source).toContain('options={knownIssueCategoryOptions}');
+    expect(source).toContain('options={knownIssueAreaOptions}');
+    expect(source).toContain('options={knownIssueClassificationOptions}');
+    expect(source).toContain('styles.knownIssueActions');
+    expect(source).toContain('styles.knownIssueCardActions');
+    expect(source).toContain('scrollToFormAfterLayout.current = true');
+    expect(source).toContain('resolved.length > 0 ?');
+    expect(source).toContain('Resolved issues ({resolved.length})');
+    expect(source).not.toContain('<Text style={styles.title}>Resolved</Text>');
   });
 
   it('keeps availability in vehicle detail and live-refreshes transitional review states', () => {

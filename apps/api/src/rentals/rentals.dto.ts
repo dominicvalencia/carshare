@@ -1,12 +1,21 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   InspectionConfirmationDecision,
+  HandoverPhase,
+  HandoverTravelStatus,
   InspectionAmendmentStatus,
+  InspectionConditionCategory,
+  InspectionConditionClassification,
+  InspectionConditionDisclosureState,
+  InspectionConditionVehicleArea,
   InspectionPerspective,
   PostReturnClaimCategory,
   RentalIncidentCategory,
   RentalIncidentSeverity,
   RentalIncidentStatus,
+  PickupHandoverOperationsOutcome,
+  PickupDiscrepancyResponseType,
+  PickupDiscrepancyResolutionDecision,
 } from '@carrental/database';
 import {
   ArrayMaxSize,
@@ -73,10 +82,104 @@ export class SubmitInspectionDto {
   @ValidateNested({ each: true })
   @Type(() => InspectionMediaDto)
   media!: InspectionMediaDto[];
+
+  @ApiPropertyOptional({ enum: InspectionConditionDisclosureState })
+  @IsOptional()
+  @IsEnum(InspectionConditionDisclosureState)
+  conditionDisclosureState?: InspectionConditionDisclosureState;
+
+  @ApiPropertyOptional({ type: () => [InspectionConditionIssueDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => InspectionConditionIssueDto)
+  conditionIssues?: InspectionConditionIssueDto[];
+}
+
+export class InspectionConditionIssueDto {
+  @ApiPropertyOptional({ description: 'Active vehicle known issue selected for this snapshot.' })
+  @IsOptional()
+  @IsUUID()
+  knownIssueId?: string;
+  @ApiPropertyOptional({ description: 'Persist a newly discovered issue for future handovers.' })
+  @IsOptional()
+  @IsBoolean()
+  persistAsKnownIssue?: boolean;
+  @ApiProperty({ enum: InspectionConditionCategory })
+  @IsEnum(InspectionConditionCategory)
+  category!: InspectionConditionCategory;
+  @ApiProperty({ enum: InspectionConditionVehicleArea })
+  @IsEnum(InspectionConditionVehicleArea)
+  vehicleArea!: InspectionConditionVehicleArea;
+  @ApiProperty({ enum: InspectionConditionClassification })
+  @IsEnum(InspectionConditionClassification)
+  classification!: InspectionConditionClassification;
+  @ApiProperty() @IsString() @MinLength(3) @MaxLength(1000) description!: string;
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsUUID(undefined, { each: true })
+  evidenceFileAssetIds?: string[];
 }
 
 export class VerifyPickupDto {
   @ApiProperty({ example: '123456' }) @IsString() @Matches(/^\d{6}$/) code!: string;
+}
+
+export class HandoverTravelTransitionDto {
+  @ApiProperty({ enum: HandoverPhase })
+  @IsEnum(HandoverPhase)
+  phase!: HandoverPhase;
+
+  @ApiProperty({ enum: HandoverTravelStatus })
+  @IsEnum(HandoverTravelStatus)
+  status!: HandoverTravelStatus;
+}
+
+export class PickupInspectionReviewDto {
+  @ApiProperty({ enum: InspectionConfirmationDecision })
+  @IsEnum(InspectionConfirmationDecision)
+  decision!: InspectionConfirmationDecision;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  reason?: string;
+}
+
+export class PickupDiscrepancyResponseDto {
+  @ApiProperty({ enum: PickupDiscrepancyResponseType })
+  @IsEnum(PickupDiscrepancyResponseType)
+  responseType!: PickupDiscrepancyResponseType;
+  @ApiProperty() @IsString() @MinLength(3) @MaxLength(1000) responseText!: string;
+  @ApiPropertyOptional() @IsOptional() @IsUUID() acknowledgedConditionIssueId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsUUID() referencedInspectionMediaId?: string;
+  @ApiPropertyOptional({ type: () => InspectionConditionIssueDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => InspectionConditionIssueDto)
+  acknowledgedCondition?: InspectionConditionIssueDto;
+}
+
+export class PickupDiscrepancyResolutionReviewDto {
+  @ApiProperty({ enum: PickupDiscrepancyResolutionDecision })
+  @IsEnum(PickupDiscrepancyResolutionDecision)
+  decision!: PickupDiscrepancyResolutionDecision;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(3) @MaxLength(1000) reason?: string;
+}
+
+export class PickupHandoverOperationsResolutionDto {
+  @ApiProperty({ enum: PickupHandoverOperationsOutcome })
+  @IsEnum(PickupHandoverOperationsOutcome)
+  outcome!: PickupHandoverOperationsOutcome;
+
+  @ApiProperty() @IsString() @MinLength(10) @MaxLength(1000) reason!: string;
+  @ApiProperty() @IsUUID() incidentId!: string;
+  @ApiPropertyOptional() @IsOptional() @IsUUID() disputeId?: string;
 }
 
 export class ReturnConfirmationDto {

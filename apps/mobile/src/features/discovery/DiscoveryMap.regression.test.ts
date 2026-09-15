@@ -22,16 +22,22 @@ describe('map discovery regression', () => {
     expect(mapSource).toContain('accessibilityState={{ selected: active }}');
   });
 
-  it('clusters privacy-safe positions and expands clusters without a dependency', () => {
+  it('clusters privacy-safe positions, zooms, and exposes a vehicle browser', () => {
     expect(mapSource).toContain('clusterMapItems(mapItems)');
     expect(mapSource).toContain('vehicles in this area');
     expect(mapSource).toContain('animateToRegion');
+    expect(mapSource).toContain('cars in this area');
+    expect(mapSource).toContain('View car');
+    expect(mapSource).toContain('setSelectedCluster(cluster)');
   });
 
-  it('queries only after Search this area and distinguishes user movement', () => {
+  it('debounces user-driven area searches and suppresses programmatic loops', () => {
     expect(mapSource).toContain('onPanDrag');
-    expect(mapSource).toContain('setAreaPending(true)');
-    expect(mapSource).toContain("label={loading ? 'Searching…' : 'Search this area'}");
+    expect(mapSource).toContain('setTimeout(() =>');
+    expect(mapSource).toContain('}, 800)');
+    expect(mapSource).toContain('programmaticMove.current');
+    expect(mapSource).toContain('Searching this area…');
+    expect(mapSource).not.toContain("label={loading ? 'Searching…' : 'Search this area'}");
     expect(mapSource).not.toContain('onRegionChange=');
   });
 

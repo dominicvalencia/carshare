@@ -8,6 +8,7 @@ export const bookingInclude = {
   fulfillmentSnapshot: true,
   conversation: { select: { id: true } },
   cancellation: true,
+  cancellationSettlement: { include: { refund: true } },
   occupancy: {
     select: {
       active: true,
@@ -105,6 +106,9 @@ export class BookingProjectionService {
             reasonText: booking.cancellation.reasonText,
           }
         : null,
+      cancellationSettlement: booking.cancellationSettlement
+        ? this.serializeSettlement(booking.cancellationSettlement)
+        : null,
       createdAt: booking.createdAt,
       conversationId: booking.conversation?.id ?? null,
       holdExpiresAt: booking.holdExpiresAt,
@@ -152,6 +156,23 @@ export class BookingProjectionService {
         toStatus: history.toStatus,
       })),
       vehicle: this.vehicle(booking),
+    };
+  }
+
+  private serializeSettlement(settlement: NonNullable<BookingRecord['cancellationSettlement']>) {
+    return {
+      calculationVersion: settlement.calculationVersion,
+      capturedAmountMinor: settlement.capturedAmountMinor.toString(),
+      collectionRefundedMinor: settlement.collectionRefundedMinor.toString(),
+      commissionRetainedMinor: settlement.commissionRetainedMinor.toString(),
+      currency: settlement.currency,
+      deliveryCompleted: settlement.deliveryCompleted,
+      deliveryCompletionBasis: settlement.deliveryCompletionBasis,
+      deliveryRefundedMinor: settlement.deliveryRefundedMinor.toString(),
+      deliveryRetainedMinor: settlement.deliveryRetainedMinor.toString(),
+      refundAmountMinor: settlement.refundAmountMinor.toString(),
+      refundStatus: settlement.refund?.status ?? null,
+      rentalComponentMinor: settlement.rentalComponentMinor.toString(),
     };
   }
 

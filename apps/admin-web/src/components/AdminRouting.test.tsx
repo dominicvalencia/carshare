@@ -81,6 +81,15 @@ describe('admin information architecture', () => {
     expect(consoleSource).toContain('Technical ledger details');
     expect(consoleSource).toContain('Public listing eligibility');
     expect(consoleSource).toContain('Administrative intervention');
+    expect(consoleSource).toContain('/pickup-handover-resolution');
+    expect(consoleSource).toContain('Allow handover to resume');
+    expect(consoleSource).toContain('Pickup custody transfer requires the normal participant');
+    expect(consoleSource).not.toContain('Resolve physical pickup');
+    expect(consoleSource).toContain('Participants resolving');
+    expect(consoleSource).toContain('Participant resolution timeline');
+    expect(consoleSource).toContain('Cancelled before handover');
+    expect(consoleSource).toContain('Commission retained');
+    expect(consoleSource).toContain('Custody never transferred');
   });
 
   it('centralizes authentication expiry and preserves secure file grants', () => {

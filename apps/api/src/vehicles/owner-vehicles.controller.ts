@@ -25,6 +25,7 @@ import {
   AddVehicleDocumentDto,
   AddVehiclePhotoDto,
   ChangeOperationalStatusDto,
+  CreateVehicleKnownIssueDto,
   CreateVehicleBlockDto,
   CreateVehicleDto,
   CreateVehiclePolicyVersionDto,
@@ -32,6 +33,7 @@ import {
   SetVehicleFeaturesDto,
   SetVehicleLocationDto,
   UpdateVehicleDto,
+  UpdateVehicleKnownIssueDto,
 } from './vehicles.dto';
 import { VehiclesService } from './vehicles.service';
 
@@ -65,6 +67,39 @@ export class OwnerVehiclesController {
   @Get(':id')
   detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
     return this.vehicles.getOwned(principal.userId, id);
+  }
+
+  @Get(':id/known-issues')
+  knownIssues(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
+    return this.vehicles.listKnownIssues(principal.userId, id);
+  }
+
+  @Post(':id/known-issues')
+  createKnownIssue(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: CreateVehicleKnownIssueDto,
+  ) {
+    return this.vehicles.createKnownIssue(principal.userId, id, input);
+  }
+
+  @Patch(':id/known-issues/:issueId')
+  updateKnownIssue(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Param('issueId') issueId: string,
+    @Body() input: UpdateVehicleKnownIssueDto,
+  ) {
+    return this.vehicles.updateKnownIssue(principal.userId, id, issueId, input);
+  }
+
+  @Post(':id/known-issues/:issueId/resolution')
+  resolveKnownIssue(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Param('issueId') issueId: string,
+  ) {
+    return this.vehicles.resolveKnownIssue(principal.userId, id, issueId);
   }
 
   @Patch(':id')

@@ -25,12 +25,40 @@ export function renderNotification(
       title: 'Booking cancelled',
       body: `Booking ${reference} was cancelled.`,
     },
+    'booking.pre-custody-cancelled': {
+      title: 'Booking cancelled before handover',
+      body: 'The renter cancelled before handover. Open Booking Detail for the reason and settlement status.',
+    },
     'booking.expired': { title: 'Booking expired', body: `Booking ${reference} expired.` },
     'payment.updated': {
       title: 'Payment update',
       body: `Payment status changed for ${reference}.`,
     },
     'rental.updated': { title: 'Rental update', body: `There is an update for ${reference}.` },
+    'rental.inspection-ready': {
+      title: 'Vehicle inspection ready for review',
+      body: 'Review the owner’s vehicle inspection before handover can continue.',
+    },
+    'rental.discrepancy-reported': {
+      title: 'Renter reported a vehicle-condition issue',
+      body: 'Review the reported discrepancy before handover can continue.',
+    },
+    'rental.discrepancy-response': {
+      title: 'Owner responded to your handover discrepancy',
+      body: 'Review the response before handover can continue.',
+    },
+    'rental.discrepancy-support': {
+      title: 'CarShare support requested',
+      body: 'Support was requested for the handover disagreement. Open the rental for updates.',
+    },
+    'rental.discrepancy-resolution': {
+      title: 'Handover discrepancy updated',
+      body: 'The renter reviewed the discrepancy resolution.',
+    },
+    'rental.operations-resolution': {
+      title: 'CarShare reviewed the handover',
+      body: 'Open the rental to view the Operations decision and your next step.',
+    },
     'inspection-correction.requested': {
       title: 'Correction submitted',
       body: `Your inspection correction for ${reference} is pending administrator review.`,

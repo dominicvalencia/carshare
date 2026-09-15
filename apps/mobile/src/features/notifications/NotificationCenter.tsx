@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { internalDestination } from '../../navigation/deep-links';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import Constants from 'expo-constants';
 import type { RootStackParamList } from '../../navigation/routes';
 import type { MobileMode } from '../../navigation/routes';
@@ -32,7 +33,9 @@ export function NotificationCenter({ mode }: { readonly mode: MobileMode }) {
         `/notifications?limit=50&audience=${mode.toUpperCase()}`,
       ),
     refetchInterval: 15_000,
+    refetchOnMount: 'always',
   });
+  useRefreshOnFocusAndForeground(() => void notifications.refetch());
   const readAll = useMutation({
     mutationFn: () =>
       apiClient.request(`/notifications/read-all?audience=${mode.toUpperCase()}`, {

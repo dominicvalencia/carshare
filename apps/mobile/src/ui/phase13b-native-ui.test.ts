@@ -26,6 +26,12 @@ describe('Phase 13B shared native UI architecture', () => {
     expect(source('features/notifications/NotificationCenter.tsx')).toContain(
       'audience=${mode.toUpperCase()}',
     );
+    expect(source('features/notifications/NotificationCenter.tsx')).toContain(
+      'useRefreshOnFocusAndForeground(() => void notifications.refetch())',
+    );
+    expect(source('features/notifications/NotificationCenter.tsx')).toContain(
+      "refetchOnMount: 'always'",
+    );
     expect(source('navigation/AppNavigation.tsx')).toContain("['notification-summary', mode]");
   });
 });

@@ -288,6 +288,8 @@ export function DiscoveryScreen({
   ]);
   const search = useInfiniteQuery({
     enabled: mode === 'results' || home,
+    refetchInterval: mode === 'results' || home ? 5_000 : false,
+    refetchOnMount: 'always',
     queryKey: ['public-search', queryString],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
@@ -364,9 +366,12 @@ export function DiscoveryScreen({
     },
   });
   useRefreshOnFocusAndForeground(() => {
-    if (mode !== 'detail' && mode !== 'quote') return;
-    reserve.reset();
-    void invalidateRenterVerification(client);
+    if (mode === 'detail' || mode === 'quote') {
+      reserve.reset();
+      void invalidateRenterVerification(client);
+      return;
+    }
+    if (mode === 'results' || home) void search.refetch();
   });
 
   function openVehicle(id: string) {
@@ -1100,29 +1105,49 @@ function VehicleView(properties: {
             onChange={properties.setReturnAt}
           />
         </View>
-        <SectionHeader title="How would you like to receive the car?" />
-        <View style={styles.quickRow}>
-          {vehicle.fulfillment.renterPickupAvailable && (
-            <Chip
-              label="Pick up the car"
-              selected={startMethod === 'RENTER_PICKUP'}
-              onPress={() => {
-                setStartMethod('RENTER_PICKUP');
-                properties.quote.reset();
-              }}
-            />
-          )}
-          {vehicle.fulfillment.ownerDeliveryAvailable && (
-            <Chip
-              label="Have it delivered"
-              selected={startMethod === 'OWNER_DELIVERY'}
-              onPress={() => {
-                setStartMethod('OWNER_DELIVERY');
-                properties.quote.reset();
-              }}
-            />
-          )}
-        </View>
+        <SectionHeader
+          title={
+            vehicle.fulfillment.renterPickupAvailable && vehicle.fulfillment.ownerDeliveryAvailable
+              ? 'How would you like to receive the car?'
+              : "How you'll receive the car"
+          }
+        />
+        {vehicle.fulfillment.renterPickupAvailable !==
+        vehicle.fulfillment.ownerDeliveryAvailable ? (
+          <View style={styles.handoverStatic}>
+            <Text style={styles.handoverStaticTitle}>
+              {vehicle.fulfillment.renterPickupAvailable ? 'Pickup only' : 'Delivery only'}
+            </Text>
+            <Text style={styles.note}>
+              {vehicle.fulfillment.renterPickupAvailable
+                ? "You'll pick up the vehicle at the owner's agreed pickup location."
+                : 'The owner will deliver the vehicle to your selected location.'}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.quickRow}>
+            {vehicle.fulfillment.renterPickupAvailable && (
+              <Chip
+                label="Pick up the car"
+                selected={startMethod === 'RENTER_PICKUP'}
+                onPress={() => {
+                  setStartMethod('RENTER_PICKUP');
+                  properties.quote.reset();
+                }}
+              />
+            )}
+            {vehicle.fulfillment.ownerDeliveryAvailable && (
+              <Chip
+                label="Have it delivered"
+                selected={startMethod === 'OWNER_DELIVERY'}
+                onPress={() => {
+                  setStartMethod('OWNER_DELIVERY');
+                  properties.quote.reset();
+                }}
+              />
+            )}
+          </View>
+        )}
         {startMethod === 'OWNER_DELIVERY' && (
           <ConfirmedLocationCard
             kind="delivery"
@@ -1130,29 +1155,50 @@ function VehicleView(properties: {
             onChange={() => setPicker('delivery')}
           />
         )}
-        <SectionHeader title="How would you like to return the car?" />
-        <View style={styles.quickRow}>
-          {vehicle.fulfillment.renterReturnAvailable && (
-            <Chip
-              label="Return it yourself"
-              selected={endMethod === 'RENTER_RETURN'}
-              onPress={() => {
-                setEndMethod('RENTER_RETURN');
-                properties.quote.reset();
-              }}
-            />
-          )}
-          {vehicle.fulfillment.ownerCollectionAvailable && (
-            <Chip
-              label="Have the owner collect it"
-              selected={endMethod === 'OWNER_COLLECTION'}
-              onPress={() => {
-                setEndMethod('OWNER_COLLECTION');
-                properties.quote.reset();
-              }}
-            />
-          )}
-        </View>
+        <SectionHeader
+          title={
+            vehicle.fulfillment.renterReturnAvailable &&
+            vehicle.fulfillment.ownerCollectionAvailable
+              ? 'How would you like to return the car?'
+              : "How you'll return the car"
+          }
+        />
+        {vehicle.fulfillment.renterReturnAvailable !==
+        vehicle.fulfillment.ownerCollectionAvailable ? (
+          <View style={styles.handoverStatic}>
+            <Text style={styles.handoverStaticTitle}>
+              {vehicle.fulfillment.renterReturnAvailable ? 'Return to owner' : 'Owner collection'}
+            </Text>
+            <Text style={styles.note}>
+              {vehicle.fulfillment.renterReturnAvailable
+                ? "You'll return the vehicle to the agreed return location."
+                : 'The owner will collect the vehicle from your selected location.'}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.quickRow}>
+            {vehicle.fulfillment.renterReturnAvailable && (
+              <Chip
+                label="Return it yourself"
+                selected={endMethod === 'RENTER_RETURN'}
+                onPress={() => {
+                  setEndMethod('RENTER_RETURN');
+                  properties.quote.reset();
+                }}
+              />
+            )}
+            {vehicle.fulfillment.ownerCollectionAvailable && (
+              <Chip
+                label="Have the owner collect it"
+                selected={endMethod === 'OWNER_COLLECTION'}
+                onPress={() => {
+                  setEndMethod('OWNER_COLLECTION');
+                  properties.quote.reset();
+                }}
+              />
+            )}
+          </View>
+        )}
         {endMethod === 'OWNER_COLLECTION' && startMethod === 'OWNER_DELIVERY' && (
           <Pressable
             accessibilityRole="checkbox"
@@ -2125,6 +2171,15 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   note: { color: colors.subtleText, fontSize: 12, lineHeight: 18 },
+  handoverStatic: {
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.xs,
+    padding: spacing.md,
+  },
+  handoverStaticTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
   quoteNote: {
     color: colors.subtleText,
     fontSize: 12,

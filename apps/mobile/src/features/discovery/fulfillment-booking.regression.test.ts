@@ -22,6 +22,12 @@ describe('B3 booking fulfillment presentation', () => {
     expect(discovery).toContain('Have it delivered');
     expect(discovery).toContain('How would you like to return the car?');
     expect(discovery).toContain('Have the owner collect it');
+    expect(discovery).toContain('Pickup only');
+    expect(discovery).toContain('Delivery only');
+    expect(discovery).toContain('Return to owner');
+    expect(discovery).toContain('Owner collection');
+    expect(discovery).toContain('renterPickupAvailable !==');
+    expect(discovery).toContain('vehicle.fulfillment.ownerDeliveryAvailable');
     expect(discovery).toContain('Same as delivery location');
     expect(discovery).not.toContain('insideRadius');
     expect(discovery).not.toContain('serviceable: true');

@@ -1,6 +1,15 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Linking, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  Linking,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type ScrollView,
+} from 'react-native';
 import type { NavigationProp, RouteProp } from '@react-navigation/native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { apiClient } from '../../auth/api-client';
@@ -37,6 +46,20 @@ export interface BookingView {
   readonly rentalEnd: string;
   readonly holdExpiresAt: string | null;
   readonly ownerResponseDeadlineAt: string | null;
+  readonly cancellation: {
+    readonly reasonCode: string | null;
+    readonly reasonText: string | null;
+  } | null;
+  readonly cancellationSettlement: {
+    readonly collectionRefundedMinor: string;
+    readonly commissionRetainedMinor: string;
+    readonly currency: string;
+    readonly deliveryCompleted: boolean;
+    readonly deliveryRefundedMinor: string;
+    readonly deliveryRetainedMinor: string;
+    readonly refundAmountMinor: string;
+    readonly refundStatus: string | null;
+  } | null;
   readonly pickupWindow?: { readonly closesAt: string; readonly opensAt: string };
   readonly pricing: { totalMinor: number; currency: string };
   readonly fulfillment: {
@@ -325,6 +348,9 @@ function BookingDetail({
   readonly payment: ReturnType<typeof useMutation<unknown, Error, BookingView>>;
   readonly refreshPayment: ReturnType<typeof useMutation<unknown, Error, string>>;
 }) {
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollOffsetY = useRef(0);
+  const scrollToCancelledSummaryAfterLayout = useRef(false);
   if (loading)
     return (
       <Screen leading={<BackControl label="All bookings" onPress={onBack} />} title="Booking">
@@ -355,6 +381,10 @@ function BookingDetail({
   ].includes(booking.status);
   return (
     <Screen
+      onScroll={({ nativeEvent }) => {
+        scrollOffsetY.current = nativeEvent.contentOffset.y;
+      }}
+      scrollRef={scrollRef}
       leading={<BackControl label="All bookings" onPress={onBack} />}
       eyebrow="Booking details"
       title={
@@ -395,6 +425,59 @@ function BookingDetail({
           />
         )}
       </Card>
+      {booking.status === 'CANCELLED' && booking.cancellationSettlement ? (
+        <View
+          onLayout={({ nativeEvent }) => {
+            if (scrollToCancelledSummaryAfterLayout.current) {
+              scrollToCancelledSummaryAfterLayout.current = false;
+              scrollRef.current?.scrollTo({
+                animated: true,
+                y: Math.max(0, nativeEvent.layout.y - spacing.md),
+              });
+            }
+          }}
+        >
+          <Card style={styles.notice}>
+            <Text style={styles.vehicle}>Booking cancelled</Text>
+            <Text style={styles.body}>
+              Your rental did not start and custody was not transferred.
+            </Text>
+            <Detail
+              label="Refund"
+              value={money(
+                Number(booking.cancellationSettlement.refundAmountMinor),
+                booking.cancellationSettlement.currency,
+              )}
+              icon="return-down-back-outline"
+            />
+            <Detail
+              label="CarShare commission retained"
+              value={money(
+                Number(booking.cancellationSettlement.commissionRetainedMinor),
+                booking.cancellationSettlement.currency,
+              )}
+              icon="receipt-outline"
+            />
+            <Detail
+              label="Delivery retained / refunded"
+              value={`${money(Number(booking.cancellationSettlement.deliveryRetainedMinor), booking.cancellationSettlement.currency)} / ${money(Number(booking.cancellationSettlement.deliveryRefundedMinor), booking.cancellationSettlement.currency)}`}
+              icon="navigate-outline"
+            />
+            <Detail
+              label="Collection refunded"
+              value={money(
+                Number(booking.cancellationSettlement.collectionRefundedMinor),
+                booking.cancellationSettlement.currency,
+              )}
+              icon="return-down-back-outline"
+            />
+            <Text style={styles.body}>
+              Refund status:{' '}
+              {titleCase(booking.cancellationSettlement.refundStatus ?? 'processing')}
+            </Text>
+          </Card>
+        </View>
+      ) : null}
       <Card>
         <Text style={styles.vehicle}>Contractual handover</Text>
         <Detail
@@ -498,7 +581,22 @@ function BookingDetail({
           onAction={onBack}
         />
       )}
-      {operational && <RenterRentalPanel reference={booking.publicReference} />}
+      {operational && (
+        <RenterRentalPanel
+          onCancellationCompleted={() => {
+            scrollToCancelledSummaryAfterLayout.current = true;
+          }}
+          {...(booking.conversationId
+            ? { onContinueResolving: () => onMessage(booking.conversationId!) }
+            : {})}
+          reference={booking.publicReference}
+          scrollResolutionFormBy={(delta) =>
+            scrollRef.current?.scrollTo({ animated: true, y: scrollOffsetY.current + delta })
+          }
+          scrollToCancellationForm={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
+          scrollToPickupCode={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
+        />
+      )}
       <RenterClaimsPanel bookingReference={booking.publicReference} />
       {booking.status === 'COMPLETED' && <ReviewPanel bookingReference={booking.publicReference} />}
       <SectionHeader title="Trip timeline" />

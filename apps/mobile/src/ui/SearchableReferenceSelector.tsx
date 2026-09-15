@@ -55,7 +55,13 @@ export function SearchableReferenceSelector({
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
-      <Pressable accessibilityRole="button" onPress={show} style={styles.control}>
+      <Pressable
+        accessibilityLabel={`${label}: ${selected?.name ?? (value || anyLabel)}`}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        onPress={show}
+        style={styles.control}
+      >
         <Text style={[styles.value, !selected && !value && styles.placeholder]}>
           {selected?.name ?? (value || anyLabel)}
         </Text>

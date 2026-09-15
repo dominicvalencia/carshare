@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import MapView, { Marker, PROVIDER_GOOGLE, type Region } from 'react-native-maps';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { Button, StatusBadge } from '../../ui/primitives';
 import { VehicleImage } from '../../ui/VehicleImage';
@@ -63,11 +63,21 @@ export function DiscoveryMap({
 }) {
   const map = useRef<MapView>(null);
   const userMoved = useRef(false);
+  const programmaticMove = useRef(false);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSearched = useRef<MapSearchArea | null>(null);
   const [region, setRegion] = useState(initialRegion);
-  const [areaPending, setAreaPending] = useState(false);
+  const [searchPending, setSearchPending] = useState(false);
+  const [selectedCluster, setSelectedCluster] = useState<readonly MapItem[] | null>(null);
   const mapItems = useMemo(() => items.filter(hasMapPosition), [items]);
   const clusters = useMemo(() => clusterMapItems(mapItems), [mapItems]);
   const selected = mapItems.find(({ vehicleId }) => vehicleId === selectedId) ?? null;
+  useEffect(
+    () => () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    },
+    [],
+  );
 
   return (
     <View style={styles.root}>
@@ -80,9 +90,34 @@ export function DiscoveryMap({
         }}
         onRegionChangeComplete={(next, details) => {
           setRegion(next);
+          if (programmaticMove.current) {
+            programmaticMove.current = false;
+            return;
+          }
           if (userMoved.current || details.isGesture) {
-            setAreaPending(true);
             userMoved.current = false;
+            const area = {
+              latitude: next.latitude,
+              longitude: next.longitude,
+              radiusKm: regionRadiusKm(next),
+            };
+            const previous = lastSearched.current;
+            if (
+              previous &&
+              Math.abs(previous.latitude - area.latitude) < 0.0005 &&
+              Math.abs(previous.longitude - area.longitude) < 0.0005 &&
+              Math.abs(previous.radiusKm - area.radiusKm) < 1
+            )
+              return;
+            if (searchTimer.current) clearTimeout(searchTimer.current);
+            setSearchPending(true);
+            searchTimer.current = setTimeout(() => {
+              lastSearched.current = area;
+              setSearchPending(false);
+              setSelectedCluster(null);
+              onSelect(null);
+              onSearchArea(area);
+            }, 800);
           }
         }}
         provider={PROVIDER_GOOGLE}
@@ -101,11 +136,13 @@ export function DiscoveryMap({
                 accessibilityLabel={`${cluster.length} vehicles in this area`}
                 coordinate={coordinate}
                 onPress={() => {
+                  programmaticMove.current = true;
                   map.current?.animateToRegion({
                     ...coordinate,
                     latitudeDelta: Math.max(region.latitudeDelta / 2, 0.01),
                     longitudeDelta: Math.max(region.longitudeDelta / 2, 0.01),
                   });
+                  setSelectedCluster(cluster);
                 }}
               >
                 <View style={styles.cluster}>
@@ -136,22 +173,10 @@ export function DiscoveryMap({
       <Text style={styles.privacy}>
         Vehicle locations are approximate to protect owner privacy.
       </Text>
-      {areaPending ? (
-        <View style={styles.searchArea}>
-          <Button
-            disabled={loading}
-            label={loading ? 'Searching…' : 'Search this area'}
-            onPress={() => {
-              setAreaPending(false);
-              onSelect(null);
-              onSearchArea({
-                latitude: region.latitude,
-                longitude: region.longitude,
-                radiusKm: regionRadiusKm(region),
-              });
-            }}
-          />
-        </View>
+      {searchPending || loading ? (
+        <Text accessibilityLiveRegion="polite" style={styles.searching}>
+          Searching this area…
+        </Text>
       ) : null}
       {error ? (
         <View style={styles.message}>
@@ -197,6 +222,56 @@ export function DiscoveryMap({
             </View>
           </View>
         </Pressable>
+      ) : null}
+      {selectedCluster && selectedCluster.length > 1 ? (
+        <View
+          accessibilityLabel={`${selectedCluster.length} cars in this area`}
+          style={styles.clusterBrowser}
+        >
+          <Text style={styles.clusterTitle}>{selectedCluster.length} cars in this area</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {selectedCluster.map((vehicle) => (
+              <Pressable
+                accessibilityLabel={`Select ${vehicle.year} ${vehicle.make} ${vehicle.model}`}
+                accessibilityRole="button"
+                key={vehicle.vehicleId}
+                onPress={() => {
+                  setSelectedCluster(null);
+                  onSelect(vehicle.vehicleId);
+                }}
+                onLongPress={() => onOpen(vehicle.vehicleId)}
+                style={styles.clusterVehicle}
+              >
+                <VehicleImage
+                  contentPath={vehicle.coverPhoto?.contentPath}
+                  style={styles.clusterImage}
+                />
+                <Text numberOfLines={1} style={styles.clusterVehicleTitle}>
+                  {vehicle.year} {vehicle.make} {vehicle.model}
+                </Text>
+                <Text style={styles.price}>
+                  {money(vehicle.displayPrice.amountMinor, vehicle.currency)} / day
+                </Text>
+                <Text numberOfLines={1} style={styles.detail}>
+                  {vehicle.approximateLocation.city}
+                </Text>
+                <View style={styles.badges}>
+                  {vehicle.fulfillment.renterPickupAvailable ? (
+                    <StatusBadge label="Pickup" />
+                  ) : null}
+                  {vehicle.fulfillment.ownerDeliveryAvailable ? (
+                    <StatusBadge label="Delivery" />
+                  ) : null}
+                </View>
+                <Button
+                  label="View car"
+                  onPress={() => onOpen(vehicle.vehicleId)}
+                  variant="secondary"
+                />
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
       ) : null}
     </View>
   );
@@ -267,6 +342,32 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   root: { flex: 1, minHeight: 360, overflow: 'hidden' },
-  searchArea: { alignSelf: 'center', marginTop: spacing.xl, position: 'absolute' },
+  searching: {
+    alignSelf: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.pill,
+    color: colors.primary,
+    fontWeight: '700',
+    marginTop: spacing.xl,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    position: 'absolute',
+  },
+  clusterBrowser: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    bottom: spacing.md,
+    gap: spacing.sm,
+    left: spacing.md,
+    padding: spacing.sm,
+    position: 'absolute',
+    right: spacing.md,
+  },
+  clusterTitle: { color: colors.ink, fontSize: 16, fontWeight: '900' },
+  clusterVehicle: { gap: 4, marginRight: spacing.sm, width: 180 },
+  clusterImage: { borderRadius: radius.md, height: 72, width: 180 },
+  clusterVehicleTitle: { color: colors.ink, fontWeight: '800' },
   title: { color: colors.ink, fontSize: 16, fontWeight: '800' },
 });

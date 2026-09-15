@@ -304,7 +304,7 @@ export function AccountScreen({
           onPress={() => navigation.navigate('Settings')}
         />
       </MenuSection>
-      <LogoutButton variant="secondary" />
+      <LogoutButton />
     </Screen>
   );
 }

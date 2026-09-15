@@ -609,6 +609,115 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     expect(
       allocation.entries.find((entry) => entry.account.type === 'OWNER_PAYABLE')?.amountMinor,
     ).toBe(-262_500n);
+
+    const travelNow = new Date();
+    await database.client.booking.update({
+      data: {
+        pickupWindowEnd: new Date(travelNow.getTime() + 30 * 60_000),
+        pickupWindowStart: new Date(travelNow.getTime() - 60_000),
+        rentalEnd: new Date(travelNow.getTime() + 60 * 60_000),
+        rentalStart: new Date(travelNow.getTime() + 5 * 60_000),
+      },
+      where: { id: booking.id },
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({ phase: 'START', status: 'PREPARING' })
+      .expect(403);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ phase: 'START', status: 'ON_THE_WAY' })
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('INVALID_HANDOVER_TRAVEL_TRANSITION'));
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ phase: 'START', status: 'PREPARING' })
+      .expect(201);
+    const concurrentOnWay = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        request(app.getHttpServer())
+          .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ phase: 'START', status: 'ON_THE_WAY' }),
+      ),
+    );
+    expect(concurrentOnWay.every(({ status }) => status === 201)).toBe(true);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ phase: 'START', status: 'ARRIVED' })
+      .expect(201);
+    expect(
+      await database.client.bookingHandoverTravelEvent.count({
+        where: { bookingId: booking.id, phase: 'START' },
+      }),
+    ).toBe(3);
+    const immutableTravelEvent = await database.client.bookingHandoverTravelEvent.findFirstOrThrow({
+      where: { bookingId: booking.id, phase: 'START' },
+    });
+    await expect(
+      database.client.bookingHandoverTravelEvent.update({
+        data: { occurredAt: new Date() },
+        where: { id: immutableTravelEvent.id },
+      }),
+    ).rejects.toThrow();
+    await expect(
+      database.client.bookingHandoverTravelEvent.delete({
+        where: { id: immutableTravelEvent.id },
+      }),
+    ).rejects.toThrow();
+    expect(
+      (await database.client.booking.findUniqueOrThrow({ where: { id: booking.id } })).status,
+    ).toBe('CONFIRMED');
+
+    await database.client.booking.update({
+      data: { status: 'READY_FOR_PICKUP' },
+      where: { id: booking.id },
+    });
+    await database.client.booking.update({
+      data: {
+        actualPickupAt: travelNow,
+        rentalEnd: new Date(travelNow.getTime() + 60 * 60_000),
+        status: 'ACTIVE',
+      },
+      where: { id: booking.id },
+    });
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ phase: 'RETURN', status: 'PREPARING' })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ phase: 'RETURN', status: 'ON_THE_WAY' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ phase: 'RETURN', status: 'ARRIVED' })
+      .expect(201);
+    const travelDetail = await request(app.getHttpServer())
+      .get(`/api/v1/bookings/${bookingReference}/rental`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(200);
+    expect(travelDetail.body.data.handoverTravel).toMatchObject({
+      returnStatus: 'ARRIVED',
+      startStatus: 'ARRIVED',
+    });
+    expect(travelDetail.body.data.fulfillment).toMatchObject({
+      endMethod: 'OWNER_COLLECTION',
+      legacyCompatibility: false,
+      startMethod: 'OWNER_DELIVERY',
+    });
+    expect(
+      await database.client.bookingFulfillmentSnapshot.findUniqueOrThrow({
+        where: { bookingId: booking.id },
+      }),
+    ).toMatchObject({ endMethod: 'OWNER_COLLECTION', startMethod: 'OWNER_DELIVERY' });
   }, 60_000);
 
   it('converges retries, expires holds, and atomically captures accepted authorized requests', async () => {
@@ -1001,8 +1110,129 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/owner/bookings/${reference}/rental/pickup/inspection`)
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ fuelBasisPoints: 10000, media: pickupFiles, odometerMeters: '20000000' })
+      .send({
+        conditionDisclosureState: 'NO_KNOWN_ISSUES',
+        fuelBasisPoints: 10000,
+        media: pickupFiles,
+        odometerMeters: '20000000',
+      })
       .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('PICKUP_INSPECTION_REVIEW_REQUIRED'));
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/inspection/review`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({ decision: 'DISAGREED' })
+      .expect(422)
+      .expect(({ body }) =>
+        expect(body.error.code).toBe('PICKUP_INSPECTION_REVIEW_REASON_REQUIRED'),
+      );
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/inspection/review`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ decision: 'AGREED' })
+      .expect(403);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/inspection/review`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({ decision: 'DISAGREED', reason: 'Small undisclosed scratch near the passenger door.' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('PICKUP_INSPECTION_DISAGREED'));
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/rental/pickup/discrepancy/respond`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        responseType: 'ACKNOWLEDGE_CONDITION',
+        responseText: 'I acknowledge this scratch was present before the rental.',
+        acknowledgedCondition: {
+          category: 'SCRATCH',
+          vehicleArea: 'PASSENGER_SIDE',
+          classification: 'COSMETIC',
+          description: 'Small scratch near passenger-side front door.',
+        },
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/discrepancy/review`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({
+        decision: 'STILL_DISAGREES',
+        reason: 'The acknowledged condition still requires CarShare Operations review.',
+      })
+      .expect(201);
+    const originalReview = await database.client.inspectionConfirmation.findFirstOrThrow({
+      where: {
+        inspection: { booking: { publicReference: reference }, type: 'PICKUP' },
+        role: 'RENTER',
+      },
+    });
+    expect(originalReview.decision).toBe('DISAGREED');
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(409);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/rental/pickup/discrepancy/respond`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        responseType: 'ACKNOWLEDGE_CONDITION',
+        responseText: 'I acknowledge this scratch was present before the rental.',
+        acknowledgedCondition: {
+          category: 'SCRATCH',
+          vehicleArea: 'PASSENGER_SIDE',
+          classification: 'COSMETIC',
+          description: 'Small scratch near passenger-side front door.',
+        },
+      })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/rental/pickup/discrepancy/respond`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        responseType: 'ACKNOWLEDGE_CONDITION',
+        responseText: 'I added clearer context and confirm this is documented pre-rental damage.',
+        acknowledgedCondition: {
+          category: 'SCRATCH',
+          vehicleArea: 'PASSENGER_SIDE',
+          classification: 'COSMETIC',
+          description: 'Documented cosmetic scratch near the passenger-side front door.',
+        },
+      })
+      .expect(201);
+    const secondRoundDetail = await request(app.getHttpServer())
+      .get(`/api/v1/bookings/${reference}/rental`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(200);
+    const responseHistory = secondRoundDetail.body.data.inspections
+      .find(({ type }: { type: string }) => type === 'PICKUP')
+      .confirmations.find(({ role }: { role: string }) => role === 'RENTER').discrepancyResponses;
+    expect(responseHistory).toHaveLength(2);
+    expect(responseHistory.map(({ roundNumber }: { roundNumber: number }) => roundNumber)).toEqual([
+      1, 2,
+    ]);
+    expect(responseHistory[1].previousResponseId).toBe(responseHistory[0].id);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/discrepancy/review`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({ decision: 'ACCEPTED' })
+      .expect(201);
+    const pickupIncident = await database.client.rentalIncident.findFirstOrThrow({
+      include: { disputes: true, pickupDiscrepancyResponses: { orderBy: { roundNumber: 'asc' } } },
+      where: {
+        booking: { publicReference: reference },
+        pickupDiscrepancyResponses: { some: {} },
+      },
+    });
+    expect(pickupIncident.pickupDiscrepancyResponses).toHaveLength(2);
+    expect(pickupIncident.disputes).toHaveLength(0);
 
     const expiredPickupCode = await request(app.getHttpServer())
       .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
@@ -1116,7 +1346,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       (await database.client.booking.findUniqueOrThrow({ where: { publicReference: reference } }))
         .status,
     ).toBe('RETURN_PENDING');
-    await submitOwnerReceiptInspection(reference, {
+    await assertOwnerReturnInspectionDenied(reference, {
       fuelBasisPoints: 8500,
       odometerMeters: '20520000',
     });
@@ -1215,6 +1445,129 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     expect(completed.ownerEarning?.status).toBe('PENDING');
   }, 120_000);
 
+  it('settles an unresolved pre-custody cancellation exactly once', async () => {
+    const renter = await createActor('handover-cancellation', [RoleCode.RENTER]);
+    const vehicle = await createVehicle('HandoverCancellation');
+    const rentalStart = new Date(Date.now() + 5 * 60_000);
+    const rentalEnd = new Date(rentalStart.getTime() + 24 * 60 * 60 * 1000);
+    const quote = await createQuote(
+      renter.userId,
+      vehicle.id,
+      vehicle.policyId,
+      rentalStart,
+      rentalEnd,
+    );
+    const held = await hold(renter.token, quote, `handover-cancel-${unique}`).expect(201);
+    const reference = held.body.data.publicReference as string;
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/continue`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/payment/authorize`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/accept`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(201);
+    const media = await Promise.all(
+      Object.values(InspectionPerspective)
+        .filter((perspective) => perspective !== InspectionPerspective.ADDITIONAL)
+        .map(async (perspective) => ({
+          fileAssetId: await file('SENSITIVE', 'image/jpeg'),
+          perspective,
+        })),
+    );
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/rental/pickup/inspection`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        conditionDisclosureState: 'NO_KNOWN_ISSUES',
+        fuelBasisPoints: 10_000,
+        media,
+        odometerMeters: '100000',
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/inspection/review`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({ decision: 'DISAGREED', reason: 'Synthetic pre-custody condition disagreement.' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/rental/pickup/discrepancy/respond`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        responseText: 'Synthetic owner response for cancellation coverage.',
+        responseType: 'CLARIFY_EXISTING_EVIDENCE',
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/discrepancy/review`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .send({ decision: 'STILL_DISAGREES', reason: 'Synthetic disagreement remains unresolved.' })
+      .expect(201);
+    const preview = await request(app.getHttpServer())
+      .get(`/api/v1/bookings/${reference}/handover-cancellation/quote`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(200);
+    expect(
+      BigInt(preview.body.data.refundAmountMinor) +
+        BigInt(preview.body.data.commissionRetainedMinor),
+    ).toBe(BigInt(preview.body.data.capturedAmountMinor));
+    const cancelRequest = () =>
+      request(app.getHttpServer())
+        .post(`/api/v1/bookings/${reference}/handover-cancellation`)
+        .set('Authorization', `Bearer ${renter.token}`)
+        .set('Idempotency-Key', `handover-cancel-${reference}`)
+        .send({ reasonCode: 'OWNER_RENTER_COULD_NOT_AGREE' });
+    await cancelRequest().expect(201);
+    await cancelRequest().expect(201);
+    const cancelled = await database.client.booking.findUniqueOrThrow({
+      include: { cancellationSettlement: true, pickupChallenges: true },
+      where: { publicReference: reference },
+    });
+    expect(cancelled).toMatchObject({ actualPickupAt: null, status: 'CANCELLED' });
+    expect(cancelled.cancellationSettlement?.refundAmountMinor).toBe(
+      BigInt(preview.body.data.refundAmountMinor),
+    );
+    expect(
+      await database.client.bookingCancellation.count({ where: { bookingId: cancelled.id } }),
+    ).toBe(1);
+    expect(
+      await database.client.refund.count({ where: { payment: { bookingId: cancelled.id } } }),
+    ).toBe(1);
+    const reversal = await database.client.ledgerTransaction.findMany({
+      include: { entries: true },
+      where: {
+        sourceId: cancelled.cancellationSettlement!.id,
+        sourceType: 'BOOKING_CANCELLATION_SETTLEMENT',
+      },
+    });
+    expect(reversal).toHaveLength(1);
+    expect(reversal[0]!.entries.reduce((total, entry) => total + entry.amountMinor, 0n)).toBe(0n);
+    const earning = await database.client.ownerEarning.findUniqueOrThrow({
+      where: { bookingId: cancelled.id },
+    });
+    expect(earning.netEarningAmountMinor + earning.adjustmentAmountMinor).toBe(
+      cancelled.cancellationSettlement!.deliveryRetainedMinor,
+    );
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: cancelled.id, eventType: 'RENTER_PRE_CUSTODY_HANDOVER_CANCELLED' },
+      }),
+    ).toBe(1);
+    expect(
+      await database.client.vehicleOccupancy.count({
+        where: { active: true, bookingId: cancelled.id },
+      }),
+    ).toBe(0);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(409);
+  }, 120_000);
+
   it('keeps overdue handovers non-authoritative until a reasoned admin resolution', async () => {
     const renter = await createActor('admin-handover-renter', [RoleCode.RENTER]);
     const operationsAdmin = await createActor('admin-handover-operator', [RoleCode.ADMIN]);
@@ -1257,7 +1610,12 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/owner/bookings/${reference}/rental/pickup/inspection`)
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ fuelBasisPoints: 10_000, media: pickupFiles, odometerMeters: '41000000' })
+      .send({
+        conditionDisclosureState: 'NO_KNOWN_ISSUES',
+        fuelBasisPoints: 10_000,
+        media: pickupFiles,
+        odometerMeters: '41000000',
+      })
       .expect(201);
     await request(app.getHttpServer())
       .post(`/api/v1/bookings/${reference}/rental/incidents`)
@@ -1293,7 +1651,8 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
         occurredAt: new Date(0).toISOString(),
         reason: 'This invalid timestamp must be rejected before authoritative transition.',
       })
-      .expect(422);
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('PICKUP_PARTICIPANT_OTP_REQUIRED'));
     await request(app.getHttpServer())
       .post(`/api/v1/admin/rentals/${reference}/handover-resolution`)
       .set('Authorization', `Bearer ${operationsAdmin.token}`)
@@ -1301,60 +1660,18 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
         action: 'CONFIRM_PICKUP',
         reason: 'Inspection and participant reports establish physical custody transfer.',
       })
-      .expect(201);
-    await request(app.getHttpServer())
-      .post(`/api/v1/admin/rentals/${reference}/handover-resolution`)
-      .set('Authorization', `Bearer ${operationsAdmin.token}`)
-      .send({ action: 'CONFIRM_PICKUP', reason: 'Duplicate administrative attempt.' })
-      .expect(409);
-    const active = await database.client.booking.findUniqueOrThrow({
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('PICKUP_PARTICIPANT_OTP_REQUIRED'));
+    const stillPickupReady = await database.client.booking.findUniqueOrThrow({
       where: { publicReference: reference },
     });
-    expect(active.status).toBe('ACTIVE');
+    expect(stillPickupReady.status).toBe('READY_FOR_PICKUP');
+    expect(stillPickupReady.actualPickupAt).toBeNull();
     expect(
       await database.client.bookingStatusHistory.count({
-        where: { bookingId: active.id, reasonCode: 'ADMIN_PICKUP_CONFIRMED' },
+        where: { bookingId: stillPickupReady.id, reasonCode: 'ADMIN_PICKUP_CONFIRMED' },
       }),
-    ).toBe(1);
-
-    await request(app.getHttpServer())
-      .post(`/api/v1/bookings/${reference}/rental/return/start`)
-      .set('Authorization', `Bearer ${renter.token}`)
-      .expect(201);
-    const returnFiles = await Promise.all(
-      Object.values(InspectionPerspective)
-        .filter((perspective) => perspective !== InspectionPerspective.ADDITIONAL)
-        .map(async (perspective) => ({
-          fileAssetId: await file('SENSITIVE', 'image/jpeg', renter.userId),
-          perspective,
-        })),
-    );
-    await request(app.getHttpServer())
-      .post(`/api/v1/bookings/${reference}/rental/return/inspection`)
-      .set('Authorization', `Bearer ${renter.token}`)
-      .send({ fuelBasisPoints: 9_000, media: returnFiles, odometerMeters: '41200000' })
-      .expect(201);
-    expect(
-      (await database.client.booking.findUniqueOrThrow({ where: { publicReference: reference } }))
-        .status,
-    ).toBe('RETURN_PENDING');
-    await request(app.getHttpServer())
-      .post(`/api/v1/admin/rentals/${reference}/handover-resolution`)
-      .set('Authorization', `Bearer ${operationsAdmin.token}`)
-      .send({
-        action: 'CONFIRM_RETURN',
-        reason:
-          'Return photos, readings, timing, and participant report establish physical return.',
-      })
-      .expect(201);
-    const returned = await database.client.booking.findUniqueOrThrow({
-      include: { occupancy: true, usageSummary: true },
-      where: { publicReference: reference },
-    });
-    expect(returned.status).toBe('RETURNED');
-    expect(returned.actualReturnAt).not.toBeNull();
-    expect(returned.usageSummary?.distanceTravelledKm).toBe(200);
-    expect(returned.occupancy).not.toBeNull();
+    ).toBe(0);
   }, 120_000);
 
   it('completes the Phase 12 pilot happy path through public and participant APIs', async () => {
@@ -1472,8 +1789,14 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/owner/bookings/${reference}/rental/pickup/inspection`)
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ fuelBasisPoints: 10_000, media: pickupFiles, odometerMeters: '30000000' })
+      .send({
+        conditionDisclosureState: 'NO_KNOWN_ISSUES',
+        fuelBasisPoints: 10_000,
+        media: pickupFiles,
+        odometerMeters: '30000000',
+      })
       .expect(201);
+    await acceptPickupInspection(reference, renter.token);
     const pickupCode = await request(app.getHttpServer())
       .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
       .set('Authorization', `Bearer ${renter.token}`)
@@ -1512,7 +1835,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       .set('Authorization', `Bearer ${renter.token}`)
       .send({ fuelBasisPoints: 10_000, media: returnFiles, odometerMeters: '30400000' })
       .expect(201);
-    await submitOwnerReceiptInspection(reference, {
+    await assertOwnerReturnInspectionDenied(reference, {
       fuelBasisPoints: 10_000,
       odometerMeters: '30400000',
     });
@@ -1627,7 +1950,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       }),
       database.client.$queryRaw(Prisma.sql`SELECT "complete_due_returned_bookings"()`),
     ]);
-    const final = await database.client.booking.findUniqueOrThrow({
+    let final = await database.client.booking.findUniqueOrThrow({
       include: { postReturnClaims: true },
       where: { id: bookingId },
     });
@@ -1635,6 +1958,13 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       expect(final.status).toBe('RETURNED');
       expect(final.postReturnClaims).toHaveLength(1);
     } else {
+      if (final.status === 'RETURNED') {
+        await database.client.$queryRaw(Prisma.sql`SELECT "complete_due_returned_bookings"()`);
+        final = await database.client.booking.findUniqueOrThrow({
+          include: { postReturnClaims: true },
+          where: { id: bookingId },
+        });
+      }
       expect(final.status).toBe('COMPLETED');
       expect(final.postReturnClaims).toHaveLength(0);
     }
@@ -1702,8 +2032,14 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/owner/bookings/${reference}/rental/pickup/inspection`)
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ batterySocBasisPoints: 8000, media: pickupFiles, odometerMeters: '1000000' })
+      .send({
+        batterySocBasisPoints: 8000,
+        conditionDisclosureState: 'NO_KNOWN_ISSUES',
+        media: pickupFiles,
+        odometerMeters: '1000000',
+      })
       .expect(201);
+    await acceptPickupInspection(reference, renter.token);
     const pickupCode = await request(app.getHttpServer())
       .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
       .set('Authorization', `Bearer ${renter.token}`)
@@ -1730,7 +2066,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       .set('Authorization', `Bearer ${renter.token}`)
       .send({ batterySocBasisPoints: 6000, media: returnFiles, odometerMeters: '1200000' })
       .expect(201);
-    await submitOwnerReceiptInspection(reference, {
+    await assertOwnerReturnInspectionDenied(reference, {
       batterySocBasisPoints: 6000,
       odometerMeters: '1200000',
     });
@@ -1833,6 +2169,101 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       })
       .expect(409)
       .expect(({ body }) => expect(body.error.code).toBe('BLOCKED_PERIOD_OVERLAP'));
+  }, 60_000);
+
+  it('persists private vehicle known issues with owner isolation and non-destructive resolution', async () => {
+    const vehicle = await createVehicle('KnownIssues');
+    const otherOwner = await createActor('known-issue-other-owner', [RoleCode.OWNER]);
+    await database.client.ownerProfile.create({
+      data: {
+        legalName: 'Other Owner',
+        status: OwnerProfileStatus.VERIFIED,
+        userId: otherOwner.userId,
+      },
+    });
+    const first = await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${vehicle.id}/known-issues`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        category: 'SCRATCH',
+        classification: 'COSMETIC',
+        description: 'Existing passenger-side scratch.',
+        vehicleArea: 'PASSENGER_SIDE',
+      })
+      .expect(201);
+    const second = await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${vehicle.id}/known-issues`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        category: 'WHEEL_OR_RIM',
+        classification: 'COSMETIC',
+        description: 'Existing rim scuff.',
+        vehicleArea: 'WHEEL_OR_TIRE',
+      })
+      .expect(201);
+    expect(first.body.data.status).toBe('ACTIVE');
+    expect(second.body.data.status).toBe('ACTIVE');
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/owner/vehicles/${vehicle.id}/known-issues`)
+      .set('Authorization', `Bearer ${otherOwner.token}`)
+      .expect(404);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${vehicle.id}/known-issues`)
+      .set('Authorization', `Bearer ${otherOwner.token}`)
+      .send({
+        category: 'DENT',
+        classification: 'COSMETIC',
+        description: 'Unauthorized issue.',
+        vehicleArea: 'OTHER',
+      })
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${vehicle.id}/known-issues/${first.body.data.id}/resolution`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(201)
+      .expect(({ body }) => {
+        expect(body.data.status).toBe('RESOLVED');
+        expect(body.data.resolvedAt).toBeTruthy();
+        expect(body.data.resolvedByUserId).toBe(owner.userId);
+      });
+    const list = await request(app.getHttpServer())
+      .get(`/api/v1/owner/vehicles/${vehicle.id}/known-issues`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(200);
+    expect(
+      list.body.data.filter(({ status }: { status: string }) => status === 'ACTIVE'),
+    ).toHaveLength(1);
+    expect(
+      list.body.data.filter(({ status }: { status: string }) => status === 'RESOLVED'),
+    ).toHaveLength(1);
+
+    const publicVehicle = await request(app.getHttpServer())
+      .get(`/api/v1/vehicles/${vehicle.id}`)
+      .expect(200);
+    expect(JSON.stringify(publicVehicle.body)).not.toContain('knownIssues');
+    expect(JSON.stringify(publicVehicle.body)).not.toContain('Existing rim scuff.');
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/vehicles/${vehicle.id}/known-issues`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        category: 'WARNING_LIGHT',
+        classification: 'SAFETY_CRITICAL',
+        description: 'Safety warning remains active.',
+        vehicleArea: 'DASHBOARD',
+      })
+      .expect(201);
+    expect(
+      (await database.client.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } }))
+        .operationalStatus,
+    ).toBe('MAINTENANCE');
+    await request(app.getHttpServer())
+      .patch(`/api/v1/owner/vehicles/${vehicle.id}/operational-status`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ status: 'AVAILABLE' })
+      .expect(409);
   }, 60_000);
 
   function hold(token: string, quoteId: string, key: string) {
@@ -2041,7 +2472,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     return asset.id;
   }
 
-  async function submitOwnerReceiptInspection(
+  async function assertOwnerReturnInspectionDenied(
     reference: string,
     measurements: {
       readonly odometerMeters: string;
@@ -2061,6 +2492,15 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       .post(`/api/v1/owner/bookings/${reference}/rental/return/inspection`)
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ ...measurements, media })
+      .expect(403)
+      .expect(({ body }) => expect(body.error.code).toBe('RETURN_INSPECTION_RENTER_ONLY'));
+  }
+
+  async function acceptPickupInspection(reference: string, renterToken: string): Promise<void> {
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/pickup/inspection/review`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .send({ decision: 'AGREED' })
       .expect(201);
   }
 });

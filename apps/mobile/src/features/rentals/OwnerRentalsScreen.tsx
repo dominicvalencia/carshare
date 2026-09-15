@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View, type ScrollView } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import type { BookingView } from '../bookings/MyBookingsScreen';
@@ -32,25 +32,58 @@ export function OwnerRentalsScreen({
   readonly onClose?: () => void;
 } = {}) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollOffsetY = useRef(0);
+  const scrollViewportHeight = useRef(0);
   const [selected, setSelected] = useState<string | null>(initialBookingReference ?? null);
   const rentals = useQuery({
     queryKey: ['owner-rentals'],
     queryFn: () => apiClient.request<BookingView[]>('/owner/bookings/requests'),
+    refetchInterval: selected ? 5_000 : false,
   });
   useRefreshOnFocusAndForeground(() => void rentals.refetch());
   const selectedBooking = rentals.data?.find(({ publicReference }) => publicReference === selected);
   const items = (rentals.data ?? []).filter(({ status }) => operational.has(status));
   return (
     <NestedScreen
+      constrainOverscroll
+      scrollRef={scrollRef}
+      onScroll={({ nativeEvent }) => {
+        scrollOffsetY.current = nativeEvent.contentOffset.y;
+      }}
+      onScrollLayout={({ nativeEvent }) => {
+        scrollViewportHeight.current = nativeEvent.layout.height;
+      }}
+      onContentSizeChange={(_width, height) => {
+        const maximumOffset = Math.max(0, height - scrollViewportHeight.current);
+        if (scrollOffsetY.current > maximumOffset) {
+          scrollOffsetY.current = maximumOffset;
+          scrollRef.current?.scrollTo({ animated: false, y: maximumOffset });
+        }
+      }}
       backLabel={selected ? 'All rentals' : 'Back'}
-      onBack={selected ? (onClose ?? (() => setSelected(null))) : undefined}
+      onBack={
+        selected
+          ? () => {
+              void rentals.refetch();
+              if (onClose) onClose();
+              else setSelected(null);
+            }
+          : undefined
+      }
       eyebrow="Owner mode"
       title="Active rentals"
       subtitle="Pickup, return, claims, and renter coordination in one place."
     >
       {selected ? (
         <>
-          <OwnerRentalPanel reference={selected} />
+          <OwnerRentalPanel
+            reference={selected}
+            scrollConditionFormBy={(delta) =>
+              scrollRef.current?.scrollTo({ animated: true, y: scrollOffsetY.current + delta })
+            }
+            scrollToConditionForm={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
+          />
           <OwnerClaimsPanel bookingReference={selected} />
           {selectedBooking?.conversationId && (
             <Pressable

@@ -1,5 +1,17 @@
 # Phase 13C-2K-B3.5 — Map-Based Vehicle Discovery
 
+## B4 physical-QA refinement
+
+Clusters continue to use only deterministic `APPROXIMATE_CELL` coordinates. Tapping a multi-car
+cluster zooms toward the shared public point and opens a compact browser for its member vehicles;
+vehicles are never scattered into invented positions and no exact pickup location is exposed.
+
+The persistent **Search this area** button is retired. User-driven pan/zoom completion schedules one
+authoritative Search after an 800 ms debounce, ignores trivial region jitter, resets during rapid
+movement, and suppresses searches caused by programmatic centering or cluster zoom. Explicit Place
+selection and filter/date changes remain direct searches. The successful map area becomes the
+shared List/Map search area, and a non-blocking `Searching this area…` indicator preserves gestures.
+
 ## Status
 
 Implemented. Automated verification passed, and final physical Owner/Renter UX acceptance passed on

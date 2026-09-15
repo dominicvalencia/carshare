@@ -288,6 +288,12 @@ function policyFor(eventType: string): EventPolicy | null {
       templateKey: 'booking.rejected',
       recipients: 'RENTER',
     };
+  if (eventType === 'RENTER_PRE_CUSTODY_HANDOVER_CANCELLED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking.pre-custody-cancelled',
+      recipients: 'OWNER',
+    };
   if (eventType.includes('CANCEL'))
     return {
       category: NotificationCategory.BOOKING_UPDATES,
@@ -323,6 +329,42 @@ function policyFor(eventType: string): EventPolicy | null {
       category: NotificationCategory.RENTAL_REMINDERS,
       templateKey: 'inspection-correction.rejected',
       recipients: 'OWNER',
+    };
+  if (eventType === 'PICKUP_INSPECTION_SUBMITTED')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'rental.inspection-ready',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'PICKUP_INSPECTION_DISAGREED')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'rental.discrepancy-reported',
+      recipients: 'OWNER',
+    };
+  if (eventType === 'PICKUP_DISCREPANCY_OWNER_RESPONDED')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'rental.discrepancy-response',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'PICKUP_DISCREPANCY_SUPPORT_REQUESTED')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'rental.discrepancy-support',
+      recipients: 'BOTH',
+    };
+  if (eventType.startsWith('PICKUP_DISCREPANCY_RESOLUTION_'))
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'rental.discrepancy-resolution',
+      recipients: 'OWNER',
+    };
+  if (eventType === 'PICKUP_HANDOVER_OPERATIONS_RESOLVED')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'rental.operations-resolution',
+      recipients: 'BOTH',
     };
   if (eventType.startsWith('EARNING_'))
     return {

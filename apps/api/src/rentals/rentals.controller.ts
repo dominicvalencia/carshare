@@ -18,10 +18,15 @@ import {
   AdminInspectionCorrectionQueryDto,
   CreateIncidentDto,
   IncidentStatusDto,
+  HandoverTravelTransitionDto,
   OperationalHoldDto,
   RequestInspectionCorrectionDto,
   ReviewInspectionCorrectionDto,
   ReturnConfirmationDto,
+  PickupInspectionReviewDto,
+  PickupDiscrepancyResponseDto,
+  PickupDiscrepancyResolutionReviewDto,
+  PickupHandoverOperationsResolutionDto,
   SubmitInspectionDto,
   UpsertInspectionDraftMediaDto,
   VerifyPickupDto,
@@ -48,6 +53,49 @@ export class RenterRentalsController {
     @Req() request: Request,
   ) {
     return this.rentals.issuePickupCode(principal.userId, reference, requestMetadata(request));
+  }
+
+  @Post('pickup/inspection/review')
+  reviewPickupInspection(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: PickupInspectionReviewDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.reviewPickupInspection(
+      principal.userId,
+      reference,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post('pickup/discrepancy/review')
+  reviewPickupDiscrepancyResolution(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: PickupDiscrepancyResolutionReviewDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.reviewPickupDiscrepancyResolution(
+      principal.userId,
+      reference,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post('pickup/discrepancy/support')
+  escalatePickupDiscrepancy(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Req() request: Request,
+  ) {
+    return this.rentals.escalatePickupDiscrepancy(
+      principal.userId,
+      reference,
+      requestMetadata(request),
+    );
   }
 
   @Post('return/start')
@@ -145,6 +193,49 @@ export class OwnerRentalsController {
       principal.userId,
       reference,
       InspectionType.PICKUP,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post('pickup/discrepancy/respond')
+  respondToPickupDiscrepancy(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: PickupDiscrepancyResponseDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.respondToPickupDiscrepancy(
+      principal.userId,
+      reference,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post('pickup/discrepancy/support')
+  escalatePickupDiscrepancy(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Req() request: Request,
+  ) {
+    return this.rentals.escalatePickupDiscrepancy(
+      principal.userId,
+      reference,
+      requestMetadata(request),
+    );
+  }
+
+  @Post('handover/travel')
+  transitionHandoverTravel(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: HandoverTravelTransitionDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.transitionHandoverTravel(
+      principal.userId,
+      reference,
       input,
       requestMetadata(request),
     );
@@ -300,6 +391,22 @@ export class AdminRentalsController {
     @Req() request: Request,
   ) {
     return this.rentals.adminResolveHandover(principal, reference, input, requestMetadata(request));
+  }
+
+  @Post(':reference/pickup-handover-resolution')
+  @RequirePermissions('rentals.intervene')
+  pickupHandoverResolution(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: PickupHandoverOperationsResolutionDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.resolvePickupHandover(
+      principal,
+      reference,
+      input,
+      requestMetadata(request),
+    );
   }
 
   @Post('incidents/:incidentId/status')

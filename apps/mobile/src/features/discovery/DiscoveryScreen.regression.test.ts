@@ -9,6 +9,12 @@ const source = readFileSync(
 );
 
 describe('vehicle-detail responsive regression', () => {
+  it('refreshes dated results so newly occupied vehicles are removed', () => {
+    expect(source).toContain("refetchInterval: mode === 'results' || home ? 5_000 : false");
+    expect(source).toContain("refetchOnMount: 'always'");
+    expect(source).toContain("if (mode === 'results' || home) void search.refetch()");
+  });
+
   it('sizes the hero gallery from the viewport instead of a device-specific width', () => {
     expect(source).toContain('useWindowDimensions');
     expect(source).toContain('{ width: viewportWidth }');

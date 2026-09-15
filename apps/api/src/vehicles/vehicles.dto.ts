@@ -28,6 +28,9 @@ import {
   MileagePolicyType,
   VehicleBlockReason,
   VehicleFuelType,
+  InspectionConditionCategory,
+  InspectionConditionClassification,
+  InspectionConditionVehicleArea,
   VehicleLifecycleStatus,
   VehicleOperationalStatus,
   VehiclePhotoPerspective,
@@ -244,6 +247,27 @@ export class ChangeOperationalStatusDto {
   @IsEnum(VehicleOperationalStatus)
   status!: VehicleOperationalStatus;
 }
+
+export class CreateVehicleKnownIssueDto {
+  @ApiProperty({ enum: InspectionConditionCategory })
+  @IsEnum(InspectionConditionCategory)
+  category!: InspectionConditionCategory;
+  @ApiProperty({ enum: InspectionConditionVehicleArea })
+  @IsEnum(InspectionConditionVehicleArea)
+  vehicleArea!: InspectionConditionVehicleArea;
+  @ApiProperty({ enum: InspectionConditionClassification })
+  @IsEnum(InspectionConditionClassification)
+  classification!: InspectionConditionClassification;
+  @ApiProperty() @IsString() @MinLength(3) @MaxLength(1000) description!: string;
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsUUID(undefined, { each: true })
+  evidenceFileAssetIds?: string[];
+}
+
+export class UpdateVehicleKnownIssueDto extends CreateVehicleKnownIssueDto {}
 
 export class VehicleReasonDto {
   @ApiProperty() @IsString() @MinLength(3) @MaxLength(1000) reason!: string;

@@ -100,6 +100,7 @@ interface VehicleSummary {
   };
 }
 interface VehicleDetail extends VehicleSummary {
+  readonly knownIssues: readonly VehicleKnownIssue[];
   readonly publishedRating: { readonly averageRating: string | null; readonly reviewCount: number };
   readonly modelYear: number | null;
   readonly powertrain: string | null;
@@ -142,6 +143,17 @@ interface VehicleDetail extends VehicleSummary {
     readonly correlationId: string | null;
     readonly occurredAt: string;
   }>;
+}
+interface VehicleKnownIssue {
+  readonly id: string;
+  readonly category: string;
+  readonly vehicleArea: string;
+  readonly classification: string;
+  readonly description: string;
+  readonly status: string;
+  readonly createdAt: string;
+  readonly resolvedAt: string | null;
+  readonly evidence?: readonly { readonly fileAsset: { readonly id: string } }[];
 }
 interface PublicVisibility {
   readonly discoverable: boolean;
@@ -211,6 +223,35 @@ interface OperationalRental {
   readonly actualReturnAt: string | null;
   readonly claimDeadlineAt: string | null;
   readonly operationalHold: boolean;
+  readonly cancellation: { reasonCode: string; reasonText: string | null } | null;
+  readonly cancellationSettlement: {
+    capturedAmountMinor: string;
+    commissionRetainedMinor: string;
+    currency: string;
+    deliveryCompleted: boolean;
+    deliveryCompletionBasis: string;
+    deliveryRefundedMinor: string;
+    deliveryRetainedMinor: string;
+    collectionRefundedMinor: string;
+    refundAmountMinor: string;
+    refund: { status: string } | null;
+  } | null;
+  readonly currentVehicleKnownIssues?: readonly VehicleKnownIssue[];
+  readonly fulfillment: {
+    readonly startMethod: string;
+    readonly endMethod: string;
+    readonly legacyCompatibility: boolean;
+  };
+  readonly handoverTravel: {
+    readonly startStatus: string | null;
+    readonly returnStatus: string | null;
+    readonly events: readonly {
+      actorUserId: string;
+      phase: string;
+      status: string;
+      occurredAt: string;
+    }[];
+  };
   readonly vehicle: { make: string | null; model: string | null; powertrain: string | null };
   readonly inspections: readonly {
     id: string;
@@ -219,6 +260,36 @@ interface OperationalRental {
     fuelBasisPoints: number | null;
     batterySocBasisPoints: number | null;
     media: readonly { perspective: string; fileAsset: { id: string; originalName: string } }[];
+    conditionDisclosureState: string | null;
+    conditionIssues: readonly {
+      id: string;
+      category: string;
+      vehicleArea: string;
+      classification: string;
+      description: string;
+      evidence: readonly { inspectionMedia: { fileAsset: { id: string } } }[];
+    }[];
+    confirmations: readonly {
+      role: string;
+      decision: string;
+      reason: string | null;
+      discrepancyResponse: {
+        responseType: string;
+        responseText: string;
+        resolutionReview: {
+          decision: string;
+          reason: string | null;
+          operationsResolution: { outcome: string; reason: string } | null;
+        } | null;
+      } | null;
+      discrepancyResponses: readonly {
+        roundNumber: number;
+        responseType: string;
+        responseText: string;
+        respondedAt: string;
+        resolutionReview: { decision: string; reason: string | null } | null;
+      }[];
+    }[];
   }[];
   readonly usageSummary: {
     distanceTravelledKm: number;
@@ -240,6 +311,23 @@ interface OperationalRental {
     category: string;
     severity: string;
     status: string;
+    disputes: readonly { id: string; status: string; reason: string }[];
+    pickupDiscrepancyResponse: {
+      responseType: string;
+      responseText: string;
+      resolutionReview: { decision: string; reason: string | null } | null;
+    } | null;
+    pickupDiscrepancyResponses: readonly {
+      roundNumber: number;
+      responseType: string;
+      responseText: string;
+      resolutionReview: { decision: string; reason: string | null } | null;
+    }[];
+    pickupHandoverOperationsResolution: {
+      outcome: string;
+      reason: string;
+      resolvedAt: string;
+    } | null;
   }[];
   readonly statusHistory: readonly {
     id: string;
@@ -747,6 +835,29 @@ export function AdminConsole({
       void client.invalidateQueries({ queryKey: ['admin-rental', selectedRentalReference] });
     },
   });
+  const pickupOperationsResolution = useMutation({
+    mutationFn: ({
+      disputeId,
+      incidentId,
+      outcome,
+      reason,
+      reference,
+    }: {
+      disputeId?: string;
+      incidentId: string;
+      outcome: string;
+      reason: string;
+      reference: string;
+    }) =>
+      api(`/admin/rentals/${reference}/pickup-handover-resolution`, {
+        body: JSON.stringify({ disputeId, incidentId, outcome, reason }),
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['admin-rentals'] });
+      void client.invalidateQueries({ queryKey: ['admin-rental', selectedRentalReference] });
+    },
+  });
   const incidentAction = useMutation({
     mutationFn: ({ id, status, reason }: { id: string; status: string; reason: string }) =>
       api(`/admin/rentals/incidents/${id}/status`, {
@@ -1039,6 +1150,45 @@ export function AdminConsole({
                     { label: 'Submitted', value: formatDate(vehicle.data.submittedAt) },
                   ]}
                 />
+              </AdminSection>
+
+              <AdminSection
+                title="Known vehicle issues"
+                description="Current private vehicle condition registry. This is separate from booking-specific inspection evidence."
+              >
+                <p>
+                  Operational status: <StatusBadge value={vehicle.data.operationalStatus} />
+                </p>
+                {vehicle.data.knownIssues.length === 0 ? <p>No known issues recorded.</p> : null}
+                {['ACTIVE', 'RESOLVED'].map((status) => (
+                  <div key={status}>
+                    <h3>{adminLabel(status)} known issues</h3>
+                    {vehicle.data.knownIssues
+                      .filter((issue) => issue.status === status)
+                      .map((issue) => (
+                        <article className="compact-panel" key={issue.id}>
+                          <p>
+                            <strong>{adminLabel(issue.category)}</strong> ·{' '}
+                            {adminLabel(issue.vehicleArea)} ·{' '}
+                            <StatusBadge value={issue.classification} />
+                          </p>
+                          <p>{issue.description}</p>
+                          <p>
+                            Created {formatDate(issue.createdAt)}
+                            {issue.resolvedAt ? ` · Resolved ${formatDate(issue.resolvedAt)}` : ''}
+                          </p>
+                          {issue.evidence?.map(({ fileAsset }) => (
+                            <AdminEvidenceCard
+                              key={fileAsset.id}
+                              label="Known-issue evidence"
+                              note="Private temporary audited access"
+                              requestAccess={() => grantFile(fileAsset.id)}
+                            />
+                          ))}
+                        </article>
+                      ))}
+                  </div>
+                ))}
               </AdminSection>
 
               <AdminSection
@@ -1363,6 +1513,28 @@ export function AdminConsole({
                 />
               </AdminSection>
 
+              <AdminSection
+                title="Fulfillment and travel"
+                description="Travel milestones are immutable logistics history and do not transfer custody."
+              >
+                <p>
+                  Start: {adminLabel(rentalDetail.data.fulfillment.startMethod)} · Return:{' '}
+                  {adminLabel(rentalDetail.data.fulfillment.endMethod)}
+                </p>
+                {rentalDetail.data.handoverTravel.events.length ? (
+                  <AdminTimeline
+                    events={rentalDetail.data.handoverTravel.events.map((entry, index) => ({
+                      id: `${entry.phase}-${entry.status}-${index}`,
+                      title: `${adminLabel(entry.phase)} · ${adminLabel(entry.status)}`,
+                      occurredAt: entry.occurredAt,
+                      detail: 'Owner logistics milestone',
+                    }))}
+                  />
+                ) : (
+                  <p>No Owner travel has started.</p>
+                )}
+              </AdminSection>
+
               {rentalDetail.data.inspections.map((inspection, inspectionIndex) => (
                 <AdminSection
                   key={inspection.id}
@@ -1443,6 +1615,68 @@ export function AdminConsole({
                 title="Incidents and claims"
                 description="Each record remains separate and immutable even when multiple reports concern the same rental."
               >
+                {rentalDetail.data.currentVehicleKnownIssues?.length ? (
+                  <article className="compact-panel">
+                    <h3>Current vehicle known issues</h3>
+                    <p>
+                      Current mutable vehicle state—not the historical booking Start-condition
+                      evidence.
+                    </p>
+                    {rentalDetail.data.currentVehicleKnownIssues.map((issue) => (
+                      <p key={issue.id}>
+                        <StatusBadge value={issue.status} /> {adminLabel(issue.category)} ·{' '}
+                        {adminLabel(issue.vehicleArea)} · {adminLabel(issue.classification)} —{' '}
+                        {issue.description}
+                      </p>
+                    ))}
+                  </article>
+                ) : null}
+                {rentalDetail.data.inspections
+                  .filter(({ type }) => type === 'PICKUP')
+                  .map((inspection) => (
+                    <article className="compact-panel" key={inspection.id}>
+                      <h3>Start inspection and participant review</h3>
+                      <p>
+                        Condition declaration:{' '}
+                        {adminLabel(inspection.conditionDisclosureState ?? 'LEGACY_NOT_RECORDED')}
+                      </p>
+                      {inspection.conditionIssues.map((issue) => (
+                        <p key={issue.id}>
+                          <strong>{adminLabel(issue.category)}</strong> ·{' '}
+                          {adminLabel(issue.vehicleArea)} · {adminLabel(issue.classification)} —{' '}
+                          {issue.description}
+                        </p>
+                      ))}
+                      {inspection.confirmations.map((confirmation) => (
+                        <div key={confirmation.role}>
+                          <p>
+                            {adminLabel(confirmation.role)}: {adminLabel(confirmation.decision)}
+                            {confirmation.reason ? ` — ${confirmation.reason}` : ''}
+                          </p>
+                          {confirmation.discrepancyResponses.length ? (
+                            <h4>Participant resolution timeline</h4>
+                          ) : null}
+                          {confirmation.discrepancyResponses.map((response) => (
+                            <div className="compact-panel" key={response.roundNumber}>
+                              <p>
+                                <strong>Owner response {response.roundNumber}</strong>:{' '}
+                                {adminLabel(response.responseType)} — {response.responseText}
+                              </p>
+                              {response.resolutionReview ? (
+                                <p>
+                                  Renter resolution review:{' '}
+                                  {adminLabel(response.resolutionReview.decision)}
+                                  {response.resolutionReview.reason
+                                    ? ` — ${response.resolutionReview.reason}`
+                                    : ''}
+                                </p>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </article>
+                  ))}
                 {rentalDetail.data.postReturnClaims.map((claim) => (
                   <p key={claim.id}>
                     <Link href={`/admin/claims/${claim.id}`}>{adminLabel(claim.category)}</Link> ·{' '}
@@ -1461,6 +1695,55 @@ export function AdminConsole({
                     <AdminTechnicalDetails summary="Incident identifier">
                       <small>{incident.id}</small>
                     </AdminTechnicalDetails>
+                    {incident.pickupDiscrepancyResponse ? (
+                      <p>
+                        {incident.disputes.length
+                          ? 'Escalated to CarShare'
+                          : 'Participants resolving'}
+                      </p>
+                    ) : null}
+                    {incident.pickupHandoverOperationsResolution ? (
+                      <p>
+                        Operations outcome:{' '}
+                        <StatusBadge value={incident.pickupHandoverOperationsResolution.outcome} />{' '}
+                        — {incident.pickupHandoverOperationsResolution.reason}
+                      </p>
+                    ) : null}
+                    {incident.pickupDiscrepancyResponse?.resolutionReview?.decision ===
+                      'STILL_DISAGREES' &&
+                    incident.disputes.length > 0 &&
+                    !incident.pickupHandoverOperationsResolution ? (
+                      <div className="actions">
+                        {(
+                          [
+                            ['HANDOVER_MAY_RESUME', 'Allow handover to resume'],
+                            ['BOOKING_CANCELLATION_REQUIRED', 'Booking must be cancelled'],
+                            ['MAINTENANCE_REQUIRED', 'Vehicle requires maintenance'],
+                            ['SUPPORT_FOLLOW_UP_REQUIRED', 'Further support follow-up required'],
+                          ] as const
+                        ).map(([outcome, label]) => (
+                          <button
+                            className={outcome === 'HANDOVER_MAY_RESUME' ? 'primary' : 'quiet'}
+                            key={outcome}
+                            onClick={() => {
+                              const reason = window.prompt(`Reason: ${label}`);
+                              if (reason && reason.trim().length >= 10)
+                                pickupOperationsResolution.mutate({
+                                  ...(incident.disputes[0]
+                                    ? { disputeId: incident.disputes[0].id }
+                                    : {}),
+                                  incidentId: incident.id,
+                                  outcome,
+                                  reason,
+                                  reference: selectedRentalReference,
+                                });
+                            }}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                     {['OPEN', 'ACKNOWLEDGED'].includes(incident.status) && (
                       <div className="actions">
                         {incident.status === 'OPEN' && (
@@ -1497,6 +1780,45 @@ export function AdminConsole({
                     )}
                   </article>
                 ))}
+                {rentalDetail.data.cancellationSettlement ? (
+                  <article className="compact-panel">
+                    <h3>Cancelled before handover</h3>
+                    <p>
+                      Reason: {adminLabel(rentalDetail.data.cancellation?.reasonCode ?? 'UNKNOWN')}
+                      {rentalDetail.data.cancellation?.reasonText
+                        ? ` — ${rentalDetail.data.cancellation.reasonText}`
+                        : ''}
+                    </p>
+                    <p>
+                      Delivery authority:{' '}
+                      {rentalDetail.data.cancellationSettlement.deliveryCompleted
+                        ? 'Start delivery ARRIVED'
+                        : 'Delivery not completed'}
+                    </p>
+                    <p>
+                      Commission retained:{' '}
+                      {rentalDetail.data.cancellationSettlement.commissionRetainedMinor}{' '}
+                      {rentalDetail.data.cancellationSettlement.currency}
+                    </p>
+                    <p>
+                      Delivery retained/refunded:{' '}
+                      {rentalDetail.data.cancellationSettlement.deliveryRetainedMinor} /{' '}
+                      {rentalDetail.data.cancellationSettlement.deliveryRefundedMinor}
+                    </p>
+                    <p>
+                      Collection refunded:{' '}
+                      {rentalDetail.data.cancellationSettlement.collectionRefundedMinor}
+                    </p>
+                    <p>
+                      Renter refund: {rentalDetail.data.cancellationSettlement.refundAmountMinor} ·{' '}
+                      {rentalDetail.data.cancellationSettlement.refund?.status ?? 'PENDING'}
+                    </p>
+                    <p>
+                      Actual pickup: {rentalDetail.data.actualPickupAt ?? 'Not recorded'} ·{' '}
+                      {'Custody never transferred'}
+                    </p>
+                  </article>
+                ) : null}
                 {rentalDetail.data.postReturnClaims.length === 0 &&
                   rentalDetail.data.rentalIncidents.length === 0 && (
                     <EmptyState
@@ -1511,25 +1833,12 @@ export function AdminConsole({
                 description="Use only after reviewing participant reports, timestamps, inspection evidence, and the effect on the rental lifecycle."
                 danger
               >
-                {rentalDetail.data.status === 'READY_FOR_PICKUP' &&
-                  rentalDetail.data.inspections.some(({ type }) => type === 'PICKUP') && (
-                    <button
-                      className="danger"
-                      onClick={() => {
-                        const reason = window.prompt(
-                          'Reason for administratively confirming physical pickup after reviewing inspection, code activity, timestamps, participant reports, and evidence',
-                        );
-                        if (reason && reason.trim().length >= 10)
-                          handoverResolution.mutate({
-                            action: 'CONFIRM_PICKUP',
-                            reason,
-                            reference: selectedRentalReference,
-                          });
-                      }}
-                    >
-                      Resolve physical pickup
-                    </button>
-                  )}
+                {rentalDetail.data.status === 'READY_FOR_PICKUP' && (
+                  <p>
+                    Pickup custody transfer requires the normal participant six-digit code.
+                    Operations may remove an eligible handover hold but cannot confirm pickup.
+                  </p>
+                )}
                 {rentalDetail.data.status === 'RETURN_PENDING' &&
                   rentalDetail.data.inspections.some(({ type }) => type === 'RETURN') && (
                     <button
@@ -1551,6 +1860,9 @@ export function AdminConsole({
                   )}
                 {handoverResolution.error && (
                   <p className="error-text">{handoverResolution.error.message}</p>
+                )}
+                {pickupOperationsResolution.error && (
+                  <p className="error-text">{pickupOperationsResolution.error.message}</p>
                 )}
                 <button
                   onClick={() => {
