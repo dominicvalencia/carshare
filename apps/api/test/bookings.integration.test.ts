@@ -694,6 +694,15 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ phase: 'RETURN', status: 'ON_THE_WAY' })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${bookingReference}/rental/return/start`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ phase: 'RETURN', status: 'ON_THE_WAY' })
       .expect(201);
     await request(app.getHttpServer())
       .post(`/api/v1/owner/bookings/${bookingReference}/rental/handover/travel`)
@@ -1066,6 +1075,13 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       rentalStart,
       rentalEnd,
     );
+    await request(app.getHttpServer())
+      .post('/api/v1/bookings')
+      .set('Authorization', `Bearer ${renter.token}`)
+      .set('Idempotency-Key', `client-workflow-${unique}`)
+      .send({ quoteId: quote, handoverWorkflowVersion: 2 })
+      .expect(400)
+      .expect(({ body }) => expect(body.error.code).toBe('VALIDATION_ERROR'));
     const held = await hold(renter.token, quote, `operations-${unique}`).expect(201);
     const reference = held.body.data.publicReference as string;
     await request(app.getHttpServer())
@@ -1086,6 +1102,39 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       .set('Authorization', `Bearer ${renter.token}`)
       .expect(200)
       .expect(({ body }) => expect(body.data.status).toBe('READY_FOR_PICKUP'));
+
+    const lateBooking = await database.client.booking.findUniqueOrThrow({
+      where: { publicReference: reference },
+    });
+    expect(lateBooking.handoverWorkflowVersion).toBe(1);
+    await expect(
+      database.client.booking.update({
+        where: { id: lateBooking.id },
+        data: { handoverWorkflowVersion: null },
+      }),
+    ).rejects.toThrow('immutable');
+    const overdueBoundary = new Date(Date.now() - 60_000);
+    await database.client.booking.update({
+      where: { id: lateBooking.id },
+      data: { pickupWindowEnd: overdueBoundary },
+    });
+    const complianceBlocker = async () => {
+      const [result] = await database.client.$queryRaw<{ blocker: string | null }[]>(
+        Prisma.sql`SELECT "booking_workflow_compliance_blocker"(${lateBooking.id}::uuid) AS blocker`,
+      );
+      return result?.blocker;
+    };
+    expect(await complianceBlocker()).toBe('OWNER_INSPECTION_REQUIRED');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await database.client.$queryRaw(
+        Prisma.sql`SELECT "emit_rental_operational_notifications"(120)`,
+      );
+    }
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: lateBooking.id, eventType: 'PICKUP_HANDOVER_OVERDUE' },
+      }),
+    ).toBe(1);
 
     const pickupFiles = await Promise.all(
       Object.values(InspectionPerspective)
@@ -1117,6 +1166,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
         odometerMeters: '20000000',
       })
       .expect(201);
+    expect(await complianceBlocker()).toBe('RENTER_REVIEW_REQUIRED');
     await request(app.getHttpServer())
       .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
       .set('Authorization', `Bearer ${renter.token}`)
@@ -1233,6 +1283,7 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     });
     expect(pickupIncident.pickupDiscrepancyResponses).toHaveLength(2);
     expect(pickupIncident.disputes).toHaveLength(0);
+    expect(await complianceBlocker()).toBe('PICKUP_VERIFICATION_REQUIRED');
 
     const expiredPickupCode = await request(app.getHttpServer())
       .post(`/api/v1/bookings/${reference}/rental/pickup/confirm`)
@@ -1293,6 +1344,10 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     });
     expect(activeBooking.status).toBe('ACTIVE');
     expect(activeBooking.actualPickupAt).not.toBeNull();
+    expect(activeBooking.actualPickupAt!.getTime()).toBeGreaterThan(overdueBoundary.getTime());
+    expect(activeBooking.rentalStart).toEqual(rentalStart);
+    expect(activeBooking.rentalEnd).toEqual(rentalEnd);
+    expect(await complianceBlocker()).toBe('RENTER_RETURN_INSPECTION_REQUIRED');
     expect(activeBooking.ownerEarning?.status).toBe('PENDING');
     expect(
       await database.client.bookingStatusHistory.count({
@@ -1319,6 +1374,31 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
         .expect(403);
     }
     await request(app.getHttpServer()).get(`/api/v1/files/${evidenceId}`).expect(401);
+
+    // Test-only late-return setup; the application must never reschedule the contract this way.
+    const lateReturnEnd = new Date(Date.now() - 3 * 60 * 60_000);
+    await database.client.booking.update({
+      where: { id: activeBooking.id },
+      data: {
+        rentalEnd: lateReturnEnd,
+        rentalStart: new Date(lateReturnEnd.getTime() - 3 * 24 * 60 * 60_000),
+      },
+    });
+    await request(app.getHttpServer())
+      .get(`/api/v1/bookings/${reference}/rental`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.workflowCompliance.return.overdue).toBe(true));
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await database.client.$queryRaw(
+        Prisma.sql`SELECT "emit_rental_operational_notifications"(120)`,
+      );
+    }
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: lateBooking.id, eventType: 'RETURN_CONFIRMATION_OVERDUE' },
+      }),
+    ).toBe(1);
 
     const returnStarts = await Promise.all([
       request(app.getHttpServer())
@@ -1364,6 +1444,9 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       where: { publicReference: reference },
     });
     expect(returnedBooking.status).toBe('RETURNED');
+    expect(returnedBooking.rentalEnd).toEqual(lateReturnEnd);
+    expect(returnedBooking.actualReturnAt!.getTime()).toBeGreaterThan(lateReturnEnd.getTime());
+    expect(await complianceBlocker()).toBeNull();
     expect(returnedBooking.claimDeadlineAt?.getTime()).toBeGreaterThan(Date.now());
     expect(returnedBooking.ownerEarning?.status).toBe('PENDING');
     expect(returnedBooking.usageSummary).toMatchObject({
@@ -1443,6 +1526,20 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     });
     expect(completed.status).toBe('COMPLETED');
     expect(completed.ownerEarning?.status).toBe('PENDING');
+    expect(completed.ownerEarning!.availableAt!.getTime()).toBeGreaterThan(Date.now());
+    // Test-only schedule advance; compliance must not bypass the existing waiting period.
+    await database.client.ownerEarning.update({
+      where: { bookingId: activeBooking.id },
+      data: { availableAt: new Date(Date.now() - 1000) },
+    });
+    await database.client.$queryRaw(Prisma.sql`SELECT "release_due_owner_earnings"()`);
+    expect(
+      (
+        await database.client.ownerEarning.findUniqueOrThrow({
+          where: { bookingId: activeBooking.id },
+        })
+      ).status,
+    ).toBe('AVAILABLE');
   }, 120_000);
 
   it('settles an unresolved pre-custody cancellation exactly once', async () => {
@@ -1528,6 +1625,10 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       where: { publicReference: reference },
     });
     expect(cancelled).toMatchObject({ actualPickupAt: null, status: 'CANCELLED' });
+    const [cancellationCompliance] = await database.client.$queryRaw<{ blocker: string | null }[]>(
+      Prisma.sql`SELECT "booking_workflow_compliance_blocker"(${cancelled.id}::uuid) AS blocker`,
+    );
+    expect(cancellationCompliance?.blocker).toBeNull();
     expect(cancelled.cancellationSettlement?.refundAmountMinor).toBe(
       BigInt(preview.body.data.refundAmountMinor),
     );
@@ -2265,6 +2366,366 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
       .send({ status: 'AVAILABLE' })
       .expect(409);
   }, 60_000);
+
+  for (const [waiveStart, waiveReturn] of [
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ] as const) {
+    it(`Migration 51 preserves custody and financial authority (${waiveStart ? 'WAIVED' : 'VERIFIED'}/${waiveReturn ? 'WAIVED' : 'VERIFIED'})`, async () => {
+      const renter = await createActor(`waiver-renter-${waiveStart}-${waiveReturn}`, [
+        RoleCode.RENTER,
+      ]);
+      const outsider = await createActor(`waiver-outsider-${waiveStart}-${waiveReturn}`, [
+        RoleCode.RENTER,
+        RoleCode.OWNER,
+      ]);
+      const vehicle = await createVehicle('waiver-' + waiveStart + '-' + waiveReturn);
+      const scheduled = new Date(Date.now() + 5 * 60000);
+      let quoteId = await createQuote(
+        renter.userId,
+        vehicle.id,
+        vehicle.policyId,
+        scheduled,
+        new Date(scheduled.getTime() + 86400000),
+      );
+      if (waiveStart && waiveReturn) {
+        await database.client.vehiclePolicyVersion.create({
+          data: {
+            ...policyData(vehicle.id, 2, 250000),
+            supportsOwnerDelivery: true,
+            supportsOwnerCollection: true,
+            deliveryFeeMinor: 30000,
+            collectionFeeMinor: 20000,
+            fulfillmentServiceRadiusMeters: 25000,
+            fulfillmentMinimumNoticeMinutes: 0,
+          },
+        });
+        const quoted = await request(app.getHttpServer())
+          .post(`/api/v1/vehicles/${vehicle.id}/quotes`)
+          .set('Authorization', `Bearer ${renter.token}`)
+          .send({
+            start: scheduled.toISOString(),
+            end: new Date(scheduled.getTime() + 86400000).toISOString(),
+            startMethod: 'OWNER_DELIVERY',
+            endMethod: 'OWNER_COLLECTION',
+            collectionSameAsDelivery: true,
+            deliveryDestination: {
+              addressLine1: '100 Synthetic Certification Street',
+              city: 'Lucena City',
+              province: 'Quezon',
+              country: 'PH',
+              latitude: 13.942,
+              longitude: 121.624,
+            },
+          })
+          .expect(201);
+        quoteId = quoted.body.data.id;
+      }
+      const held = await hold(renter.token, quoteId, 'waiver-' + quoteId).expect(201);
+      const ref = held.body.data.publicReference as string;
+      const booking = await database.client.booking.findUniqueOrThrow({
+        where: { publicReference: ref },
+      });
+      await request(app.getHttpServer())
+        .post(`/api/v1/bookings/${ref}/continue`)
+        .set('Authorization', `Bearer ${renter.token}`)
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/bookings/${ref}/payment/authorize`)
+        .set('Authorization', `Bearer ${renter.token}`)
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/owner/bookings/${ref}/accept`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(201);
+      await request(app.getHttpServer())
+        .get(`/api/v1/owner/bookings/${ref}/rental`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+      const acknowledgement = {
+        acknowledged: true,
+        acknowledgementVersion: 'HANDOVER_EVIDENCE_WAIVER_V1',
+      };
+      let reportedPickupAt = new Date();
+      let reportedReturnAt = new Date();
+      const waive = (token: string, phase: 'pickup' | 'return') =>
+        request(app.getHttpServer())
+          .post(
+            `/api/v1/${phase === 'pickup' ? 'owner/' : ''}bookings/${ref}/rental/${phase}/evidence-waiver`,
+          )
+          .set('Authorization', `Bearer ${token}`)
+          .send({
+            ...acknowledgement,
+            reportedPhysicalHandoverAt:
+              phase === 'pickup' ? reportedPickupAt.toISOString() : reportedReturnAt.toISOString(),
+          });
+      const waiveOwnerReturn = (token: string) =>
+        request(app.getHttpServer())
+          .post(`/api/v1/owner/bookings/${ref}/rental/return/evidence-waiver`)
+          .set('Authorization', `Bearer ${token}`)
+          .send({
+            ...acknowledgement,
+            reportedPhysicalHandoverAt: reportedReturnAt.toISOString(),
+          });
+      const travel = (phase: 'START' | 'RETURN', status: string) =>
+        request(app.getHttpServer())
+          .post(`/api/v1/owner/bookings/${ref}/rental/handover/travel`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ phase, status });
+      const blocker = async () =>
+        (
+          await database.client.$queryRaw<{ blocker: string | null }[]>(
+            Prisma.sql`SELECT booking_workflow_compliance_blocker(${booking.id}::uuid) AS blocker`,
+          )
+        )[0]!.blocker;
+      expect(await blocker()).toBe('OWNER_INSPECTION_REQUIRED');
+      await waive(renter.token, 'pickup').expect(403);
+      await waive(outsider.token, 'pickup').expect(403);
+      await request(app.getHttpServer())
+        .post(`/api/v1/owner/bookings/${ref}/rental/pickup/evidence-waiver`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ ...acknowledgement, acknowledged: false })
+        .expect(400);
+      if (waiveStart) {
+        if (waiveReturn) {
+          await waive(owner.token, 'pickup').expect(409);
+          await travel('START', 'PREPARING').expect(201);
+          await travel('START', 'ON_THE_WAY').expect(201);
+          await travel('START', 'ARRIVED').expect(201);
+          reportedPickupAt = new Date();
+        }
+        await database.client.booking.update({
+          where: { id: booking.id },
+          data: { operationalHold: true },
+        });
+        await waive(owner.token, 'pickup').expect(409);
+        await database.client.booking.update({
+          where: { id: booking.id },
+          data: { operationalHold: false },
+        });
+        await database.client.vehicle.update({
+          where: { id: vehicle.id },
+          data: { operationalStatus: 'MAINTENANCE' },
+        });
+        await waive(owner.token, 'pickup').expect(409);
+        await database.client.vehicle.update({
+          where: { id: vehicle.id },
+          data: { operationalStatus: 'AVAILABLE' },
+        });
+        await waive(owner.token, 'pickup').expect(201);
+        await waive(owner.token, 'pickup').expect(201);
+        expect(await blocker()).toBe('PICKUP_HANDOVER_TIME_CONFIRMATION_REQUIRED');
+        await request(app.getHttpServer())
+          .post(`/api/v1/bookings/${ref}/rental/pickup/handover-report/respond`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ decision: 'CONFIRMED' })
+          .expect(403);
+        await request(app.getHttpServer())
+          .post(`/api/v1/bookings/${ref}/rental/pickup/handover-report/respond`)
+          .set('Authorization', `Bearer ${renter.token}`)
+          .send({ decision: 'CONFIRMED' })
+          .expect(201);
+        expect(await blocker()).toBe('PICKUP_VERIFICATION_REQUIRED');
+        expect(await database.client.inspection.count({ where: { bookingId: booking.id } })).toBe(
+          0,
+        );
+        const w = await database.client.bookingHandoverEvidenceWaiver.findFirstOrThrow({
+          where: { bookingId: booking.id, phase: 'START' },
+        });
+        await expect(
+          database.client.bookingHandoverEvidenceWaiver.update({
+            where: { id: w.id },
+            data: { acknowledgementVersion: 'changed' },
+          }),
+        ).rejects.toThrow();
+        await expect(
+          database.client.bookingHandoverEvidenceWaiver.delete({ where: { id: w.id } }),
+        ).rejects.toThrow();
+      } else {
+        const media = await Promise.all(
+          Object.values(InspectionPerspective)
+            .filter((p) => p !== 'ADDITIONAL')
+            .map(async (perspective) => ({
+              perspective,
+              fileAssetId: await file('SENSITIVE', 'image/jpeg'),
+            })),
+        );
+        await request(app.getHttpServer())
+          .post(`/api/v1/owner/bookings/${ref}/rental/pickup/inspection`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({
+            media,
+            odometerMeters: '100000',
+            fuelBasisPoints: 10000,
+            conditionDisclosureState: 'NO_KNOWN_ISSUES',
+          })
+          .expect(201);
+        await waive(owner.token, 'pickup').expect(409);
+        await acceptPickupInspection(ref, renter.token);
+      }
+      const before = await database.client.booking.findUniqueOrThrow({ where: { id: booking.id } });
+      expect(before.actualPickupAt).toBeNull();
+      expect(before.status).toBe('READY_FOR_PICKUP');
+      const challenge = await request(app.getHttpServer())
+        .post(`/api/v1/bookings/${ref}/rental/pickup/confirm`)
+        .set('Authorization', `Bearer ${renter.token}`)
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/owner/bookings/${ref}/rental/pickup/verify`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ code: challenge.body.data.code })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/owner/bookings/${ref}/rental/pickup/verify`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ code: challenge.body.data.code })
+        .expect(400);
+      await request(app.getHttpServer())
+        .post(`/api/v1/bookings/${ref}/rental/return/start`)
+        .set('Authorization', `Bearer ${renter.token}`)
+        .expect(201);
+      await waive(owner.token, 'return').expect(403);
+      await waive(outsider.token, 'return').expect(403);
+      if (waiveReturn) {
+        if (waiveStart) {
+          await waive(renter.token, 'return').expect(409);
+          // Test-only schedule advancement exercises overdue Owner Collection recovery without
+          // manufacturing travel events. Production waiver never reschedules a contract.
+          await database.client.booking.update({
+            where: { id: booking.id },
+            data: {
+              rentalStart: new Date(Date.now() - 5 * 60 * 60000),
+              rentalEnd: new Date(Date.now() - 4 * 60 * 60000),
+            },
+          });
+        }
+        reportedReturnAt = new Date();
+        if (waiveStart) {
+          await waive(renter.token, 'return').expect(403);
+          await waiveOwnerReturn(owner.token).expect(201);
+          await waiveOwnerReturn(owner.token).expect(201);
+        } else {
+          await waive(renter.token, 'return').expect(201);
+          await waive(renter.token, 'return').expect(201);
+        }
+        expect(await blocker()).toBe('OWNER_RETURN_RECEIPT_REQUIRED');
+        const pending = await database.client.booking.findUniqueOrThrow({
+          where: { id: booking.id },
+        });
+        expect(pending.actualReturnAt).toBeNull();
+        expect(pending.status).toBe('RETURN_PENDING');
+        await request(app.getHttpServer())
+          .post(`/api/v1/owner/bookings/${ref}/rental/return/receipt`)
+          .set('Authorization', `Bearer ${renter.token}`)
+          .send({ vehicleReceived: true })
+          .expect(403);
+        await request(app.getHttpServer())
+          .post(`/api/v1/owner/bookings/${ref}/rental/return/receipt`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ vehicleReceived: true })
+          .expect(201);
+        await request(app.getHttpServer())
+          .post(`/api/v1/owner/bookings/${ref}/rental/return/receipt`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ vehicleReceived: true })
+          .expect(201);
+      } else {
+        const media = await Promise.all(
+          Object.values(InspectionPerspective)
+            .filter((p) => p !== 'ADDITIONAL')
+            .map(async (perspective) => ({
+              perspective,
+              fileAssetId: await file('SENSITIVE', 'image/jpeg', renter.userId),
+            })),
+        );
+        await request(app.getHttpServer())
+          .post(`/api/v1/bookings/${ref}/rental/return/inspection`)
+          .set('Authorization', `Bearer ${renter.token}`)
+          .send({ media, odometerMeters: '110000', fuelBasisPoints: 10000 })
+          .expect(201);
+        await request(app.getHttpServer())
+          .post(`/api/v1/owner/bookings/${ref}/rental/return/confirm`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ decision: 'AGREED' })
+          .expect(201);
+      }
+      const returned = await database.client.booking.findUniqueOrThrow({
+        where: { id: booking.id },
+      });
+      expect(returned.status).toBe('RETURNED');
+      expect(returned.actualPickupAt).not.toBeNull();
+      expect(returned.actualReturnAt).not.toBeNull();
+      expect(await blocker()).toBeNull();
+      if (waiveStart || waiveReturn) {
+        // Reduced inspection evidence is context, not an automatic claim denial or charge.
+        const claim = await request(app.getHttpServer())
+          .post(`/api/v1/owner/bookings/${ref}/claims`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({
+            category: 'DAMAGE',
+            description: 'Additional evidence requires support review, not presumed fault.',
+            evidence: [{ fileAssetId: await file('SENSITIVE', 'image/jpeg', owner.userId) }],
+          })
+          .expect(201);
+        expect(claim.body.data.booking.handoverEvidenceWaivers.length).toBeGreaterThan(0);
+        await request(app.getHttpServer())
+          .post(`/api/v1/owner/claims/${claim.body.data.id}/withdraw`)
+          .set('Authorization', `Bearer ${owner.token}`)
+          .send({ reason: 'QA withdrawal after reduced-evidence context verification.' })
+          .expect(201);
+      }
+      for (const phase of ['START', 'RETURN'] as const) {
+        const waived = phase === 'START' ? waiveStart : waiveReturn;
+        expect(
+          await database.client.bookingHandoverEvidenceWaiver.count({
+            where: { bookingId: booking.id, phase },
+          }),
+        ).toBe(waived ? 1 : 0);
+        expect(
+          await database.client.outboxEvent.count({
+            where: {
+              aggregateId: booking.id,
+              eventType:
+                phase === 'START'
+                  ? 'START_INSPECTION_EVIDENCE_WAIVED'
+                  : waiveStart && waiveReturn
+                    ? 'OWNER_RETURN_INSPECTION_EVIDENCE_WAIVED'
+                    : 'RETURN_INSPECTION_EVIDENCE_WAIVED',
+            },
+          }),
+        ).toBe(waived ? 1 : 0);
+      }
+      await database.client.booking.update({
+        where: { id: booking.id },
+        data: { operationalHold: true },
+      });
+      expect(await blocker()).toBe('OPERATIONS_HOLD');
+      await database.client.booking.update({
+        where: { id: booking.id },
+        data: { operationalHold: false, claimDeadlineAt: new Date(Date.now() - 1000) },
+      });
+      await database.client.$queryRaw`SELECT complete_due_returned_bookings()`;
+      expect(
+        (await database.client.booking.findUniqueOrThrow({ where: { id: booking.id } })).status,
+      ).toBe('COMPLETED');
+      await database.client.$queryRaw`SELECT release_due_owner_earnings()`;
+      expect(
+        (await database.client.ownerEarning.findUniqueOrThrow({ where: { bookingId: booking.id } }))
+          .status,
+      ).toBe('PENDING');
+      await database.client.ownerEarning.update({
+        where: { bookingId: booking.id },
+        data: { availableAt: new Date(Date.now() - 1000) },
+      });
+      await database.client.$queryRaw`SELECT release_due_owner_earnings()`;
+      expect(
+        (await database.client.ownerEarning.findUniqueOrThrow({ where: { bookingId: booking.id } }))
+          .status,
+      ).toBe('AVAILABLE');
+    }, 60000);
+  }
 
   function hold(token: string, quoteId: string, key: string) {
     return request(app.getHttpServer())

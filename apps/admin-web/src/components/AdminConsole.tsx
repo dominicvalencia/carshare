@@ -214,6 +214,55 @@ interface CommissionRule {
   readonly reason: string;
 }
 interface OperationalRental {
+  readonly overdueHandoverRecovery?: {
+    readonly scope: string;
+    readonly responseDeadlineAt: string;
+    readonly reminders: readonly {
+      readonly stage: string;
+      readonly channel: string;
+      readonly status: string;
+      readonly scheduledAt: string;
+      readonly submittedAt: string | null;
+      readonly deliveredAt: string | null;
+      readonly failureCategory: string | null;
+      readonly safeFailureMessage: string | null;
+    }[];
+  } | null;
+  readonly pickupHandoverReport?: {
+    readonly reportedByUserId: string;
+    readonly reportedPhysicalHandoverAt: string;
+    readonly reportedAt: string;
+    readonly response: {
+      readonly respondedByUserId: string;
+      readonly decision: string;
+      readonly proposedPhysicalHandoverAt: string | null;
+      readonly respondedAt: string;
+    } | null;
+  } | null;
+  readonly handoverEvidenceWaivers?: readonly {
+    phase: string;
+    waivedByUserId: string;
+    decidedAt: string;
+    acknowledgementVersion: string;
+  }[];
+  readonly workflowCompliance?: {
+    readonly workflow: string;
+    readonly payoutBlocker: string | null;
+    readonly start: {
+      overdue: boolean;
+      outstandingStep: string | null;
+      custodyRecorded: boolean;
+      evidenceOutcome?: string;
+      graceBoundary: string | null;
+    };
+    readonly return: {
+      overdue: boolean;
+      outstandingStep: string | null;
+      custodyRecorded: boolean;
+      evidenceOutcome?: string;
+      graceBoundary: string | null;
+    };
+  };
   readonly id: string;
   readonly publicReference: string;
   readonly status: string;
@@ -1447,6 +1496,12 @@ export function AdminConsole({
                       <StatusBadge value={rental.status} />
                     </td>
                     <td>
+                      {rental.workflowCompliance?.start.overdue && (
+                        <StatusBadge value="HANDOVER_OVERDUE" />
+                      )}
+                      {rental.workflowCompliance?.return.overdue && (
+                        <StatusBadge value="RETURN_OVERDUE" />
+                      )}
                       {rental.operationalHold ? (
                         <StatusBadge value="OPERATIONAL_HOLD" />
                       ) : rental.rentalIncidents.length ? (
@@ -1496,6 +1551,119 @@ export function AdminConsole({
                   value={formatDate(rentalDetail.data.actualReturnAt)}
                 />
               </AdminSummaryGrid>
+
+              {rentalDetail.data.workflowCompliance && (
+                <AdminSection
+                  title="Handover workflow compliance"
+                  description="Overdue is a reminder and compliance boundary, not evidence of custody. Late normal workflow completion remains available."
+                >
+                  <p>Workflow: {adminLabel(rentalDetail.data.workflowCompliance.workflow)}</p>
+                  <p>
+                    Start evidence outcome:{' '}
+                    {adminLabel(
+                      rentalDetail.data.workflowCompliance.start.evidenceOutcome ?? 'PENDING',
+                    )}
+                  </p>
+                  <p>
+                    Return evidence outcome:{' '}
+                    {adminLabel(
+                      rentalDetail.data.workflowCompliance.return.evidenceOutcome ?? 'PENDING',
+                    )}
+                  </p>
+                  {(rentalDetail.data.handoverEvidenceWaivers ?? []).map((waiver) => (
+                    <p key={waiver.phase}>
+                      {adminLabel(waiver.phase)} inspection evidence waived · Participant:{' '}
+                      {waiver.waivedByUserId} · {formatDate(waiver.decidedAt)} · Acknowledgement:{' '}
+                      {waiver.acknowledgementVersion} · Reduced handover evidence; no automatic
+                      liability decision.
+                    </p>
+                  ))}
+                  {rentalDetail.data.pickupHandoverReport && (
+                    <>
+                      <p>
+                        Owner-reported physical handover:{' '}
+                        {formatDate(
+                          rentalDetail.data.pickupHandoverReport.reportedPhysicalHandoverAt,
+                        )}{' '}
+                        · Reported by {rentalDetail.data.pickupHandoverReport.reportedByUserId} at{' '}
+                        {formatDate(rentalDetail.data.pickupHandoverReport.reportedAt)}. This is a
+                        participant assertion, not the authoritative pickup timestamp.
+                      </p>
+                      <p>
+                        Renter response:{' '}
+                        {rentalDetail.data.pickupHandoverReport.response
+                          ? `${adminLabel(rentalDetail.data.pickupHandoverReport.response.decision)} · ${formatDate(rentalDetail.data.pickupHandoverReport.response.respondedAt)}`
+                          : 'Pending'}
+                        {rentalDetail.data.pickupHandoverReport.response?.proposedPhysicalHandoverAt
+                          ? ` · Proposed time: ${formatDate(rentalDetail.data.pickupHandoverReport.response.proposedPhysicalHandoverAt)}`
+                          : ''}
+                      </p>
+                    </>
+                  )}
+                  {rentalDetail.data.overdueHandoverRecovery && (
+                    <div>
+                      <p>
+                        Recovery reminder history · Scope:{' '}
+                        {adminLabel(rentalDetail.data.overdueHandoverRecovery.scope)} · Response
+                        deadline:{' '}
+                        {formatDate(rentalDetail.data.overdueHandoverRecovery.responseDeadlineAt)}
+                      </p>
+                      {rentalDetail.data.overdueHandoverRecovery.reminders.map((reminder) => (
+                        <p key={`${reminder.stage}:${reminder.channel}`}>
+                          {adminLabel(reminder.stage)} {adminLabel(reminder.channel)} ·{' '}
+                          {adminLabel(reminder.status)} · Scheduled{' '}
+                          {formatDate(reminder.scheduledAt)}
+                          {reminder.submittedAt
+                            ? ` · Submitted ${formatDate(reminder.submittedAt)}`
+                            : ''}
+                          {reminder.deliveredAt
+                            ? ` · Delivered ${formatDate(reminder.deliveredAt)}`
+                            : ''}
+                          {reminder.failureCategory
+                            ? ` · ${adminLabel(reminder.failureCategory)}`
+                            : ''}
+                          {reminder.safeFailureMessage ? ` — ${reminder.safeFailureMessage}` : ''}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  <p>
+                    {rentalDetail.data.workflowCompliance.start.overdue
+                      ? 'Handover overdue'
+                      : 'Start handover'}{' '}
+                    · Grace boundary:{' '}
+                    {formatDate(rentalDetail.data.workflowCompliance.start.graceBoundary)}
+                  </p>
+                  <p>
+                    Outstanding step:{' '}
+                    {adminLabel(
+                      rentalDetail.data.workflowCompliance.start.outstandingStep ?? 'COMPLETE',
+                    )}{' '}
+                    · Custody recorded:{' '}
+                    {rentalDetail.data.workflowCompliance.start.custodyRecorded ? 'Yes' : 'No'}
+                  </p>
+                  <p>
+                    {rentalDetail.data.workflowCompliance.return.overdue
+                      ? 'Return overdue'
+                      : 'Return process'}{' '}
+                    · Grace boundary:{' '}
+                    {formatDate(rentalDetail.data.workflowCompliance.return.graceBoundary)}
+                  </p>
+                  <p>
+                    Outstanding step:{' '}
+                    {adminLabel(
+                      rentalDetail.data.workflowCompliance.return.outstandingStep ?? 'COMPLETE',
+                    )}{' '}
+                    · Return recorded:{' '}
+                    {rentalDetail.data.workflowCompliance.return.custodyRecorded ? 'Yes' : 'No'}
+                  </p>
+                  <p>
+                    Workflow payout blocker:{' '}
+                    {adminLabel(rentalDetail.data.workflowCompliance.payoutBlocker ?? 'NONE')} ·
+                    Other financial holds and payout schedule still apply.
+                  </p>
+                </AdminSection>
+              )}
 
               <AdminSection
                 title="Rental lifecycle"
@@ -2027,6 +2195,13 @@ export function AdminConsole({
                   label="Category"
                   value={adminLabel(claimDetail.data.claim.category)}
                 />
+                {(claimDetail.data.claim.booking.handoverEvidenceWaivers?.length ?? 0) > 0 && (
+                  <AdminSummaryCard
+                    label="Evidence quality"
+                    value="Reduced handover evidence"
+                    detail="Inspection evidence waived. Review all available evidence; no automatic fault or liability decision."
+                  />
+                )}
                 <AdminSummaryCard
                   label="Severity"
                   value={<StatusBadge value={claimDetail.data.claim.severity} />}

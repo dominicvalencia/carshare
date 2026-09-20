@@ -10,11 +10,13 @@ export function DateTimeField({
   value,
   onChange,
   minimumDate,
+  maximumDate,
 }: {
   readonly label: string;
   readonly value: Date;
   readonly onChange: (value: Date) => void;
   readonly minimumDate?: Date;
+  readonly maximumDate?: Date;
 }) {
   const [open, setOpen] = useState(false);
   const [androidMode, setAndroidMode] = useState<'date' | 'time'>('date');
@@ -61,6 +63,7 @@ export function DateTimeField({
       {open && Platform.OS === 'android' && (
         <DateTimePicker
           {...(minimumDate ? { minimumDate } : {})}
+          {...(maximumDate ? { maximumDate } : {})}
           mode={androidMode}
           onChange={androidChange}
           value={draft}
@@ -79,6 +82,7 @@ export function DateTimeField({
             <Text style={styles.pickerLabel}>Date</Text>
             <DateTimePicker
               {...(minimumDate ? { minimumDate } : {})}
+              {...(maximumDate ? { maximumDate } : {})}
               display="spinner"
               mode="date"
               onChange={(_, selected) => {
@@ -92,6 +96,8 @@ export function DateTimeField({
             />
             <Text style={styles.pickerLabel}>Time</Text>
             <DateTimePicker
+              {...(minimumDate ? { minimumDate } : {})}
+              {...(maximumDate ? { maximumDate } : {})}
               display="spinner"
               mode="time"
               onChange={(_, selected) => {

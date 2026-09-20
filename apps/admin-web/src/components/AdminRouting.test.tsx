@@ -3,6 +3,31 @@ import { describe, expect, it } from 'vitest';
 import { adminRouteModules, resolveAdminDetailId, resolveAdminModule } from './admin-routing';
 
 describe('admin information architecture', () => {
+  it('shows server-derived overdue, prerequisites, custody and financial blockers without OTP data', () => {
+    const source = readFileSync('src/components/AdminConsole.tsx', 'utf8');
+    expect(source).toContain('rental.workflowCompliance?.start.overdue');
+    expect(source).toContain('rental.workflowCompliance?.return.overdue');
+    expect(source).toContain('workflowCompliance.start.outstandingStep');
+    expect(source).toContain('workflowCompliance.return.outstandingStep');
+    expect(source).toContain('workflowCompliance.start.custodyRecorded');
+    expect(source).toContain('workflowCompliance.return.custodyRecorded');
+    expect(source).toContain('workflowCompliance.payoutBlocker');
+    expect(source).toContain('Owner-reported physical handover');
+    expect(source).toContain('participant assertion, not the authoritative pickup timestamp');
+    expect(source).toContain('pickupHandoverReport.response.proposedPhysicalHandoverAt');
+    const complianceSection = source.slice(
+      source.indexOf('{rentalDetail.data.workflowCompliance && ('),
+      source.indexOf(
+        '<AdminSection',
+        source.indexOf(
+          '</AdminSection>',
+          source.indexOf('{rentalDetail.data.workflowCompliance && ('),
+        ),
+      ),
+    );
+    expect(complianceSection).not.toContain('challenge');
+    expect(complianceSection).not.toContain('codeHash');
+  });
   it('maps every primary route to one existing operational module', () => {
     expect(adminRouteModules).toMatchObject({
       dashboard: 'dashboard',

@@ -132,7 +132,15 @@ export function OwnerRentalsScreen({
                   <Text style={styles.cardTitle}>
                     {booking.vehicle.make} {booking.vehicle.model}
                   </Text>
-                  <StatusBadge label={bookingStatusLabel(booking.status)} />
+                  <StatusBadge
+                    label={
+                      booking.workflowCompliance?.start.overdue
+                        ? 'Handover overdue'
+                        : booking.workflowCompliance?.return.overdue
+                          ? 'Return process overdue'
+                          : bookingStatusLabel(booking.status)
+                    }
+                  />
                   <Text style={styles.body}>Pickup {dateTimeLabel(booking.rentalStart)}</Text>
                 </View>
               </Card>

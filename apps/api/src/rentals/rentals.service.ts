@@ -37,6 +37,11 @@ import {
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { AuditService } from '../audit/audit.service';
+import { workflowCompliance } from './workflow-compliance';
+import {
+  HANDOVER_WORKFLOW_VERSION_B4,
+  HANDOVER_EVIDENCE_WAIVER_ACKNOWLEDGEMENT_VERSION,
+} from '@carrental/api-contracts';
 
 const inspectionCorrectionAdminInclude = {
   createdBy: { select: { id: true, email: true, profile: { select: { displayName: true } } } },
@@ -84,6 +89,8 @@ import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata, RequestPrincipal } from '../security/security-context';
 import type {
   CreateClaimDto,
+  HandoverEvidenceWaiverDto,
+  ConfirmVehicleReceiptDto,
   AdminHandoverResolutionDto,
   CreateIncidentDto,
   IncidentStatusDto,
@@ -94,10 +101,13 @@ import type {
   PickupDiscrepancyResponseDto,
   PickupDiscrepancyResolutionReviewDto,
   PickupHandoverOperationsResolutionDto,
+  PickupHandoverResponseDto,
   SubmitInspectionDto,
   UpsertInspectionDraftMediaDto,
   RequestInspectionCorrectionDto,
   ReviewInspectionCorrectionDto,
+  OverdueHandoverRecoveryDto,
+  OverdueHandoverRecoveryResponseDto,
 } from './rentals.dto';
 import { calculateBookingUsage } from './usage-calculation';
 
@@ -111,6 +121,11 @@ const requiredPerspectives = [
 ] as const;
 
 const rentalInclude = {
+  handoverEvidenceWaivers: true,
+  handoverReturnReceipt: true,
+  pickupHandoverReport: { include: { response: true } },
+  pickupHandoverResponse: true,
+  overdueHandoverRecovery: { include: { response: true, acceptance: true } },
   cancellation: true,
   cancellationSettlement: { include: { refund: true } },
   fulfillmentSnapshot: true,
@@ -195,6 +210,7 @@ const rentalInclude = {
   usageSummary: true,
   vehicle: {
     select: {
+      operationalStatus: true,
       fuelType: true,
       id: true,
       make: true,
@@ -317,6 +333,7 @@ export class RentalsService {
         this.invalidState('Pickup evidence requires a booking ready for pickup.');
       }
       await this.validateEvidenceFiles(transaction, ownerUserId, [input.fileAssetId]);
+      await this.assertEvidenceNotWaived(transaction, booking.id, HandoverPhase.START);
       let draft = await transaction.inspection.findFirst({
         where: {
           bookingId: booking.id,
@@ -414,6 +431,11 @@ export class RentalsService {
         this.invalidState('Return inspection requires a return-pending booking.');
       }
       this.validatePowertrainMeasurements(booking.vehicle.powertrain, input);
+      await this.assertEvidenceNotWaived(
+        transaction,
+        booking.id,
+        type === InspectionType.PICKUP ? HandoverPhase.START : HandoverPhase.RETURN,
+      );
       await this.validateInspectionFiles(transaction, userId, input);
       this.validatePerspectives(input);
       if (type === InspectionType.PICKUP) this.validateConditionDisclosure(input);
@@ -1145,6 +1167,9 @@ export class RentalsService {
           );
         }
         const isStart = input.phase === HandoverPhase.START;
+        if (!isStart && booking.status !== BookingStatus.RETURN_PENDING) {
+          this.invalidState('The renter must start Return before collection travel can begin.');
+        }
         if (
           (isStart && snapshot.startMethod !== StartFulfillmentMethod.OWNER_DELIVERY) ||
           (!isStart && snapshot.endMethod !== EndFulfillmentMethod.OWNER_COLLECTION)
@@ -1229,6 +1254,609 @@ export class RentalsService {
     return this.ownerDetailById(ownerUserId, reference);
   }
 
+  async reportOverdueHandoverRecovery(
+    ownerUserId: string,
+    reference: string,
+    input: OverdueHandoverRecoveryDto,
+    metadata: RequestMetadata,
+  ) {
+    await this.database.client.$transaction(async (transaction) => {
+      await this.lockBooking(transaction, reference);
+      const booking = await transaction.booking.findUniqueOrThrow({
+        where: { publicReference: reference },
+        include: {
+          ownerProfile: true,
+          fulfillmentSnapshot: true,
+          overdueHandoverRecovery: true,
+          inspections: { where: { status: InspectionStatus.FINALIZED } },
+        },
+      });
+      if (
+        booking.ownerUserId !== ownerUserId ||
+        booking.ownerProfile.status !== OwnerProfileStatus.VERIFIED
+      )
+        this.denied();
+      if (booking.handoverWorkflowVersion !== HANDOVER_WORKFLOW_VERSION_B4)
+        this.invalidState('Overdue recovery is available only for supported B4 bookings.');
+      if (booking.operationalHold)
+        this.invalidState('Operations review is required before overdue recovery.');
+      if (!input.acknowledged || input.acknowledgementVersion !== 'OVERDUE_HANDOVER_RECOVERY_V1')
+        this.invalidState('Acknowledge the reduced-evidence warning before continuing.');
+      const now = new Date();
+      const startOverdue =
+        ['CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status) &&
+        !booking.actualPickupAt &&
+        Boolean(booking.pickupWindowEnd && now > booking.pickupWindowEnd);
+      const returnOverdue =
+        ['READY_FOR_PICKUP', 'ACTIVE', 'RETURN_PENDING'].includes(booking.status) &&
+        !booking.actualReturnAt &&
+        now.getTime() > booking.rentalEnd.getTime() + this.returnConfirmationGraceMinutes * 60_000;
+      const requiredScope =
+        startOverdue && returnOverdue
+          ? 'BOTH'
+          : startOverdue
+            ? 'START'
+            : returnOverdue
+              ? 'RETURN'
+              : null;
+      if (!requiredScope || input.scope !== requiredScope)
+        this.invalidState(
+          requiredScope === 'BOTH'
+            ? 'Pickup and Return are both overdue and must be reported together.'
+            : requiredScope
+              ? `Only the overdue ${requiredScope === 'START' ? 'Pickup' : 'Return'} may be reported.`
+              : 'The regular handover process is still required because no handover is overdue.',
+        );
+      if (booking.overdueHandoverRecovery) return;
+      const needsStart = input.scope === 'START' || input.scope === 'BOTH';
+      const needsReturn = input.scope === 'RETURN' || input.scope === 'BOTH';
+      if ((needsStart && !input.reportedPickupAt) || (needsReturn && !input.reportedReturnAt))
+        this.invalidState('Enter every physical handover date and time included in this report.');
+      if ((!needsStart && input.reportedPickupAt) || (!needsReturn && input.reportedReturnAt))
+        this.invalidState('Do not submit a handover time for a phase that is not being recovered.');
+      const pickupAt = input.reportedPickupAt ? new Date(input.reportedPickupAt) : null;
+      const returnAt = input.reportedReturnAt ? new Date(input.reportedReturnAt) : null;
+      const effectivePickupAt = pickupAt ?? booking.actualPickupAt;
+      if (
+        (pickupAt && (pickupAt < booking.rentalStart || pickupAt > now)) ||
+        (returnAt && (!effectivePickupAt || returnAt < effectivePickupAt || returnAt > now))
+      )
+        this.invalidState('Reported handover times are outside the allowed chronological window.');
+      if (
+        booking.inspections.some(
+          ({ type }) =>
+            (needsStart && type === InspectionType.PICKUP) ||
+            (needsReturn && type === InspectionType.RETURN),
+        )
+      )
+        this.invalidState('Finalized inspection evidence cannot be replaced by overdue recovery.');
+      const recovery = await transaction.bookingOverdueHandoverRecovery.create({
+        data: {
+          acknowledgementVersion: input.acknowledgementVersion,
+          bookingId: booking.id,
+          correlationId: metadata.correlationId ?? null,
+          reportedByUserId: ownerUserId,
+          reportedPickupAt: pickupAt,
+          reportedReturnAt: returnAt,
+          responseDeadlineAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+          scope: input.scope,
+        },
+      });
+      await this.history(
+        transaction,
+        booking.id,
+        booking.status,
+        booking.status,
+        BookingActorType.USER,
+        ownerUserId,
+        `OVERDUE_HANDOVER_RECOVERY_${input.scope}_REPORTED`,
+        metadata,
+      );
+      await this.outbox(transaction, booking.id, 'OVERDUE_HANDOVER_RECOVERY_REPORTED', {
+        bookingId: booking.id,
+        recoveryId: recovery.id,
+        responseDeadlineAt: recovery.responseDeadlineAt.toISOString(),
+        scope: input.scope,
+      });
+    });
+    return this.ownerDetailById(ownerUserId, reference);
+  }
+
+  async respondToOverdueHandoverRecovery(
+    renterUserId: string,
+    reference: string,
+    input: OverdueHandoverRecoveryResponseDto,
+    metadata: RequestMetadata,
+  ) {
+    await this.database.client.$transaction(async (transaction) => {
+      await this.lockBooking(transaction, reference);
+      const booking = await transaction.booking.findUniqueOrThrow({
+        where: { publicReference: reference },
+        include: {
+          overdueHandoverRecovery: { include: { response: true, acceptance: true } },
+        },
+      });
+      if (booking.renterUserId !== renterUserId) this.denied();
+      const recovery = booking.overdueHandoverRecovery;
+      if (!recovery) this.invalidState('There is no owner-reported overdue handover to review.');
+      if (recovery.acceptance)
+        this.invalidState('The 24-hour response window has closed and the report is accepted.');
+      if (new Date() >= recovery.responseDeadlineAt)
+        this.invalidState('The 24-hour response window has closed.');
+      if (input.decision === 'DISPUTED' && !input.reason?.trim())
+        this.invalidState('Explain why you disagree with the owner-reported handover.');
+      if (recovery.response) {
+        if (
+          recovery.response.decision !== input.decision ||
+          (recovery.response.reason ?? null) !== (input.reason?.trim() ?? null)
+        )
+          this.invalidState('Your overdue handover response cannot be changed.');
+        return;
+      }
+      await transaction.bookingOverdueHandoverRecoveryResponse.create({
+        data: {
+          bookingId: booking.id,
+          correlationId: metadata.correlationId ?? null,
+          decision: input.decision,
+          reason: input.reason?.trim() ?? null,
+          recoveryId: recovery.id,
+          respondedByUserId: renterUserId,
+        },
+      });
+      if (input.decision === 'DISPUTED') {
+        const incident = await transaction.rentalIncident.create({
+          data: {
+            blocksCompletion: true,
+            bookingId: booking.id,
+            category: RentalIncidentCategory.VEHICLE_ISSUE,
+            description: input.reason!.trim(),
+            id: randomUUID(),
+            reportedByUserId: renterUserId,
+            severity: RentalIncidentSeverity.CRITICAL,
+          },
+        });
+        const dispute = await transaction.dispute.create({
+          data: {
+            blocksCompletion: true,
+            bookingId: booking.id,
+            incidentId: incident.id,
+            openedByUserId: renterUserId,
+            originType: DisputeOriginType.INCIDENT,
+            reason: input.reason!.trim(),
+            status: DisputeStatus.EVIDENCE_COLLECTION,
+          },
+        });
+        await this.outbox(transaction, booking.id, 'DISPUTE_OPENED', {
+          bookingId: booking.id,
+          disputeId: dispute.id,
+          recoveryId: recovery.id,
+        });
+      } else {
+        await transaction.$queryRaw(
+          Prisma.sql`SELECT "accept_overdue_handover_recovery"(${recovery.id}::uuid, 'RENTER_CONFIRMED')`,
+        );
+      }
+      await this.history(
+        transaction,
+        booking.id,
+        booking.status,
+        booking.status,
+        BookingActorType.USER,
+        renterUserId,
+        `OVERDUE_HANDOVER_RECOVERY_${input.decision}`,
+        metadata,
+      );
+    });
+    return this.participantDetailById(renterUserId, reference);
+  }
+
+  async waiveEvidence(
+    userId: string,
+    reference: string,
+    phase: HandoverPhase,
+    input: HandoverEvidenceWaiverDto,
+    metadata: RequestMetadata,
+  ) {
+    await this.database.client.$transaction(async (transaction) => {
+      await this.lockBooking(transaction, reference);
+      let booking = await transaction.booking.findUniqueOrThrow({
+        include: { ownerProfile: true },
+        where: { publicReference: reference },
+      });
+      const fulfillment = await transaction.bookingFulfillmentSnapshot.findUnique({
+        where: { bookingId: booking.id },
+      });
+      const overdueReturnRecovery =
+        phase === HandoverPhase.RETURN &&
+        Date.now() > booking.rentalEnd.getTime() + this.returnConfirmationGraceMinutes * 60_000;
+      const ownerOverdueCollectionRecovery =
+        overdueReturnRecovery &&
+        fulfillment?.endMethod === EndFulfillmentMethod.OWNER_COLLECTION &&
+        userId === booking.ownerUserId;
+      const authorizedUserId =
+        phase === HandoverPhase.START
+          ? booking.ownerUserId
+          : overdueReturnRecovery &&
+              fulfillment?.endMethod === EndFulfillmentMethod.OWNER_COLLECTION
+            ? booking.ownerUserId
+            : booking.renterUserId;
+      if (userId !== authorizedUserId) this.denied();
+      if (booking.handoverWorkflowVersion !== HANDOVER_WORKFLOW_VERSION_B4)
+        this.invalidState('Evidence waiver is available only for supported B4 bookings.');
+      if (
+        !input.acknowledged ||
+        input.acknowledgementVersion !== HANDOVER_EVIDENCE_WAIVER_ACKNOWLEDGEMENT_VERSION
+      )
+        this.invalidState('Acknowledge the inspection evidence warning before continuing.');
+      const existing = await transaction.bookingHandoverEvidenceWaiver.findUnique({
+        where: { bookingId_phase: { bookingId: booking.id, phase } },
+      });
+      if (existing) {
+        if (
+          existing.waivedByUserId !== userId ||
+          existing.acknowledgementVersion !== input.acknowledgementVersion
+        )
+          this.invalidState('The evidence decision cannot be changed.');
+      }
+      if (!input.reportedPhysicalHandoverAt)
+        this.invalidState(
+          phase === HandoverPhase.START
+            ? 'Enter when the vehicle was physically handed to the renter.'
+            : 'Enter when the vehicle was physically returned to the owner.',
+        );
+      const reportedPhysicalHandoverAt = new Date(input.reportedPhysicalHandoverAt);
+      if (
+        existing &&
+        phase === HandoverPhase.RETURN &&
+        existing.reportedPhysicalHandoverAt?.getTime() !== reportedPhysicalHandoverAt.getTime()
+      )
+        this.invalidState('The reported physical Return time cannot be changed.');
+      if (phase === HandoverPhase.START) {
+        if (booking.ownerProfile.status !== OwnerProfileStatus.VERIFIED) this.denied();
+        booking = await this.ensureReady(transaction, booking);
+        this.assertPickupWindow(booking);
+        if (booking.status !== BookingStatus.READY_FOR_PICKUP || booking.actualPickupAt)
+          this.invalidState('Start evidence can only be waived before pickup custody transfer.');
+        await this.assertHandoverAvailable(transaction, booking.id);
+        await this.assertStartSafety(transaction, booking.vehicleId);
+        let earliestAllowed = booking.pickupWindowStart ?? booking.rentalStart;
+        if (fulfillment?.startMethod === StartFulfillmentMethod.OWNER_DELIVERY) {
+          const arrived = await transaction.bookingHandoverTravelEvent.findUnique({
+            where: {
+              bookingId_phase_status: {
+                bookingId: booking.id,
+                phase: HandoverPhase.START,
+                status: HandoverTravelStatus.ARRIVED,
+              },
+            },
+          });
+          if (!arrived) this.invalidState('Mark Delivery arrival before reporting handover.');
+          if (arrived.occurredAt > earliestAllowed) earliestAllowed = arrived.occurredAt;
+        }
+        const now = new Date();
+        if (
+          reportedPhysicalHandoverAt < earliestAllowed ||
+          reportedPhysicalHandoverAt > now ||
+          reportedPhysicalHandoverAt >= booking.rentalEnd
+        )
+          this.invalidState(
+            `Reported handover must be between ${earliestAllowed.toISOString()} and the current time.`,
+          );
+      } else {
+        if (
+          booking.status !== BookingStatus.RETURN_PENDING ||
+          !booking.actualPickupAt ||
+          booking.actualReturnAt
+        )
+          this.invalidState('Start return before choosing a Return evidence waiver.');
+        if (booking.operationalHold)
+          this.invalidState('Operations review is required before continuing.');
+        if (
+          reportedPhysicalHandoverAt < booking.actualPickupAt ||
+          reportedPhysicalHandoverAt > new Date()
+        )
+          this.invalidState(
+            `Reported Return must be between ${booking.actualPickupAt.toISOString()} and the current time.`,
+          );
+      }
+      if (!overdueReturnRecovery) await this.assertTravelArrived(transaction, booking.id, phase);
+      if (
+        await transaction.inspection.count({
+          where: {
+            bookingId: booking.id,
+            status: InspectionStatus.FINALIZED,
+            type: phase === HandoverPhase.START ? InspectionType.PICKUP : InspectionType.RETURN,
+          },
+        })
+      )
+        this.invalidState('Finalized inspection evidence cannot be replaced by a waiver.');
+      if (!existing)
+        await transaction.bookingHandoverEvidenceWaiver.create({
+          data: {
+            bookingId: booking.id,
+            phase,
+            waivedByUserId: userId,
+            acknowledgementVersion: input.acknowledgementVersion,
+            correlationId: metadata.correlationId ?? null,
+            ...(phase === HandoverPhase.RETURN ? { reportedPhysicalHandoverAt } : {}),
+          },
+        });
+      if (phase === HandoverPhase.START && reportedPhysicalHandoverAt) {
+        const existingReport = await transaction.bookingPickupHandoverReport.findUnique({
+          where: { bookingId: booking.id },
+        });
+        if (
+          existingReport &&
+          existingReport.reportedPhysicalHandoverAt.getTime() !==
+            reportedPhysicalHandoverAt.getTime()
+        )
+          this.invalidState('The reported physical handover time cannot be changed.');
+        if (!existingReport)
+          await transaction.bookingPickupHandoverReport.create({
+            data: {
+              bookingId: booking.id,
+              correlationId: metadata.correlationId ?? null,
+              reportedByUserId: userId,
+              reportedPhysicalHandoverAt,
+            },
+          });
+      }
+      if (existing) return;
+      const eventType =
+        phase === HandoverPhase.START
+          ? 'START_INSPECTION_EVIDENCE_WAIVED'
+          : ownerOverdueCollectionRecovery
+            ? 'OWNER_RETURN_INSPECTION_EVIDENCE_WAIVED'
+            : 'RETURN_INSPECTION_EVIDENCE_WAIVED';
+      await this.history(
+        transaction,
+        booking.id,
+        booking.status,
+        booking.status,
+        BookingActorType.USER,
+        userId,
+        eventType,
+        metadata,
+      );
+      await this.outbox(transaction, booking.id, eventType, { bookingId: booking.id });
+    });
+    return this.participantDetailById(userId, reference);
+  }
+
+  async respondToPickupHandoverReport(
+    renterUserId: string,
+    reference: string,
+    input: PickupHandoverResponseDto,
+    metadata: RequestMetadata,
+  ) {
+    await this.database.client.$transaction(async (transaction) => {
+      await this.lockBooking(transaction, reference);
+      const booking = await transaction.booking.findUniqueOrThrow({
+        where: { publicReference: reference },
+      });
+      if (booking.renterUserId !== renterUserId) this.denied();
+      if (
+        booking.handoverWorkflowVersion !== HANDOVER_WORKFLOW_VERSION_B4 ||
+        booking.status !== BookingStatus.READY_FOR_PICKUP ||
+        booking.actualPickupAt
+      )
+        this.invalidState('This handover report can no longer be reviewed.');
+      const report = await transaction.bookingPickupHandoverReport.findUnique({
+        where: { bookingId: booking.id },
+      });
+      if (!report) this.invalidState('The owner has not submitted a handover time.');
+      const existing = await transaction.bookingPickupHandoverResponse.findUnique({
+        where: { bookingId: booking.id },
+      });
+      const proposedPhysicalHandoverAt = input.proposedPhysicalHandoverAt
+        ? new Date(input.proposedPhysicalHandoverAt)
+        : null;
+      if (
+        (input.decision === 'DISPUTED') !== Boolean(proposedPhysicalHandoverAt) ||
+        (input.decision !== 'DISPUTED' && input.proposedPhysicalHandoverAt)
+      )
+        this.invalidState('A different handover time is required only when disputing the report.');
+      if (proposedPhysicalHandoverAt) {
+        let earliestAllowed = booking.pickupWindowStart ?? booking.rentalStart;
+        const fulfillment = await transaction.bookingFulfillmentSnapshot.findUnique({
+          where: { bookingId: booking.id },
+        });
+        if (fulfillment?.startMethod === StartFulfillmentMethod.OWNER_DELIVERY) {
+          const arrived = await transaction.bookingHandoverTravelEvent.findUnique({
+            where: {
+              bookingId_phase_status: {
+                bookingId: booking.id,
+                phase: HandoverPhase.START,
+                status: HandoverTravelStatus.ARRIVED,
+              },
+            },
+          });
+          if (!arrived) this.invalidState('Delivery arrival has not been recorded.');
+          if (arrived.occurredAt > earliestAllowed) earliestAllowed = arrived.occurredAt;
+        }
+        if (
+          proposedPhysicalHandoverAt < earliestAllowed ||
+          proposedPhysicalHandoverAt > new Date() ||
+          proposedPhysicalHandoverAt >= booking.rentalEnd
+        )
+          this.invalidState(
+            `Proposed handover must be between ${earliestAllowed.toISOString()} and the current time.`,
+          );
+      }
+      if (existing) {
+        if (
+          existing.decision !== input.decision ||
+          existing.proposedPhysicalHandoverAt?.getTime() !== proposedPhysicalHandoverAt?.getTime()
+        )
+          this.invalidState('Your handover response cannot be changed.');
+        return;
+      }
+      await transaction.bookingPickupHandoverResponse.create({
+        data: {
+          bookingId: booking.id,
+          correlationId: metadata.correlationId ?? null,
+          decision: input.decision,
+          proposedPhysicalHandoverAt,
+          reportId: report.id,
+          respondedByUserId: renterUserId,
+        },
+      });
+      const eventType = `PICKUP_HANDOVER_TIME_${input.decision}`;
+      await this.history(
+        transaction,
+        booking.id,
+        booking.status,
+        booking.status,
+        BookingActorType.USER,
+        renterUserId,
+        eventType,
+        metadata,
+      );
+      await this.outbox(transaction, booking.id, eventType, { bookingId: booking.id });
+    });
+    return this.participantDetailById(renterUserId, reference);
+  }
+
+  private async assertEvidenceNotWaived(
+    transaction: Prisma.TransactionClient,
+    bookingId: string,
+    phase: HandoverPhase,
+  ) {
+    if (
+      await transaction.bookingHandoverEvidenceWaiver.findUnique({
+        where: { bookingId_phase: { bookingId, phase } },
+      })
+    )
+      this.invalidState('Inspection evidence was waived. The evidence outcome cannot be changed.');
+  }
+
+  private async assertStartSafety(transaction: Prisma.TransactionClient, vehicleId: string) {
+    await transaction.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "vehicles" WHERE "id" = ${vehicleId}::uuid FOR UPDATE`,
+    );
+    const vehicle = await transaction.vehicle.findUniqueOrThrow({ where: { id: vehicleId } });
+    if (
+      vehicle.operationalStatus !== VehicleOperationalStatus.AVAILABLE ||
+      (await transaction.vehicleKnownIssue.count({
+        where: {
+          vehicleId,
+          status: VehicleKnownIssueStatus.ACTIVE,
+          classification: InspectionConditionClassification.SAFETY_CRITICAL,
+        },
+      }))
+    )
+      this.invalidState('A safety or vehicle availability blocker prevents handover.');
+  }
+
+  private async assertTravelArrived(
+    transaction: Prisma.TransactionClient,
+    bookingId: string,
+    phase: HandoverPhase,
+  ) {
+    const fulfillment = await transaction.bookingFulfillmentSnapshot.findUnique({
+      where: { bookingId },
+    });
+    if (
+      ((phase === HandoverPhase.START &&
+        fulfillment?.startMethod === StartFulfillmentMethod.OWNER_DELIVERY) ||
+        (phase === HandoverPhase.RETURN &&
+          fulfillment?.endMethod === EndFulfillmentMethod.OWNER_COLLECTION)) &&
+      !(await transaction.bookingHandoverTravelEvent.count({
+        where: { bookingId, phase, status: HandoverTravelStatus.ARRIVED },
+      }))
+    )
+      this.invalidState('Mark arrival at the contractual location before continuing handover.');
+  }
+
+  async confirmVehicleReceipt(
+    userId: string,
+    reference: string,
+    input: ConfirmVehicleReceiptDto,
+    metadata: RequestMetadata,
+  ) {
+    await this.database.client.$transaction(async (transaction) => {
+      await this.lockBooking(transaction, reference);
+      const booking = await transaction.booking.findUniqueOrThrow({
+        where: { publicReference: reference },
+        include: {
+          ownerProfile: true,
+          occupancy: true,
+          policySnapshot: true,
+          pricingSnapshot: true,
+          vehicle: true,
+        },
+      });
+      if (
+        booking.ownerUserId !== userId ||
+        booking.ownerProfile.status !== OwnerProfileStatus.VERIFIED
+      )
+        this.denied();
+      if (!input.vehicleReceived)
+        this.invalidState('Confirm that you physically received the vehicle.');
+      const receipt = await transaction.bookingHandoverReturnReceipt.findUnique({
+        where: { bookingId: booking.id },
+      });
+      if (
+        receipt &&
+        [BookingStatus.RETURNED, BookingStatus.COMPLETED].includes(
+          booking.status as 'RETURNED' | 'COMPLETED',
+        )
+      )
+        return;
+      if (
+        booking.handoverWorkflowVersion !== HANDOVER_WORKFLOW_VERSION_B4 ||
+        booking.status !== BookingStatus.RETURN_PENDING ||
+        !booking.actualPickupAt ||
+        booking.actualReturnAt ||
+        booking.operationalHold
+      )
+        this.invalidState('The booking is not available for waived Return receipt confirmation.');
+      if (
+        !(await transaction.bookingHandoverEvidenceWaiver.findUnique({
+          where: { bookingId_phase: { bookingId: booking.id, phase: HandoverPhase.RETURN } },
+        }))
+      )
+        this.invalidState('Complete the existing inspection review for a verified Return.');
+      const overdueReturnRecovery =
+        Date.now() > booking.rentalEnd.getTime() + this.returnConfirmationGraceMinutes * 60_000;
+      if (!overdueReturnRecovery)
+        await this.assertTravelArrived(transaction, booking.id, HandoverPhase.RETURN);
+      const recorded = await transaction.bookingHandoverReturnReceipt.create({
+        data: { bookingId: booking.id, confirmedByUserId: userId },
+      });
+      const now = recorded.confirmedAt;
+      if (!booking.policySnapshot) this.invalidState('The booking policy is unavailable.');
+      const claimDeadlineAt = new Date(
+        now.getTime() + booking.policySnapshot.claimWindowHours * 3600000,
+      );
+      await transaction.booking.update({
+        where: { id: booking.id },
+        data: { status: BookingStatus.RETURNED, actualReturnAt: now, claimDeadlineAt },
+      });
+      await this.extendOccupancyOrEscalate(transaction, booking, now);
+      await this.history(
+        transaction,
+        booking.id,
+        BookingStatus.RETURN_PENDING,
+        BookingStatus.RETURNED,
+        BookingActorType.USER,
+        userId,
+        'RETURN_CONFIRMED_WITHOUT_INSPECTION_EVIDENCE',
+        metadata,
+      );
+      await this.outbox(transaction, booking.id, 'RETURN_CONFIRMED', {
+        bookingId: booking.id,
+        actualReturnAt: now.toISOString(),
+      });
+      await this.outbox(transaction, booking.id, 'CLAIM_WINDOW_OPENED', {
+        bookingId: booking.id,
+        claimDeadlineAt: claimDeadlineAt.toISOString(),
+      });
+      await this.analytics(transaction, booking, 'RETURN_COMPLETED', metadata);
+    });
+    return this.ownerDetailById(userId, reference);
+  }
+
   async issuePickupCode(renterUserId: string, reference: string, metadata: RequestMetadata) {
     const code = this.crypto.randomOtp();
     const expiresAt = new Date(Date.now() + this.challengeTtlMinutes * 60_000);
@@ -1263,34 +1891,56 @@ export class RentalsService {
           type: InspectionType.PICKUP,
         },
       });
-      if (!inspection) {
-        throw new ApplicationException(
-          'PICKUP_INSPECTION_REQUIRED',
-          'Review the finalized pickup inspection before confirming handover.',
-          HttpStatus.CONFLICT,
-        );
+      const waiver = await transaction.bookingHandoverEvidenceWaiver.findUnique({
+        where: { bookingId_phase: { bookingId: booking.id, phase: HandoverPhase.START } },
+      });
+      if (waiver) {
+        const response = await transaction.bookingPickupHandoverResponse.findUnique({
+          where: { bookingId: booking.id },
+        });
+        if (response?.decision !== 'CONFIRMED')
+          throw new ApplicationException(
+            'PICKUP_HANDOVER_TIME_CONFIRMATION_REQUIRED',
+            response
+              ? 'The reported handover time is disputed and requires Operations review.'
+              : 'Confirm the owner-reported handover time before requesting a pickup code.',
+            HttpStatus.CONFLICT,
+          );
       }
-      this.assertNoSafetyCriticalCondition(inspection.conditionIssues);
-      const confirmation = inspection.confirmations.find(
-        ({ role }) => role === InspectionParticipantRole.RENTER,
-      );
-      if (!confirmation) {
-        throw new ApplicationException(
-          'PICKUP_INSPECTION_REVIEW_REQUIRED',
-          'Confirm the pickup inspection condition before requesting a pickup code.',
-          HttpStatus.CONFLICT,
+      if (!waiver) {
+        if (!inspection) {
+          throw new ApplicationException(
+            'PICKUP_INSPECTION_REQUIRED',
+            'Review the finalized pickup inspection before confirming handover.',
+            HttpStatus.CONFLICT,
+          );
+        }
+        this.assertNoSafetyCriticalCondition(inspection.conditionIssues);
+        const confirmation = inspection.confirmations.find(
+          ({ role }) => role === InspectionParticipantRole.RENTER,
         );
+        if (!confirmation) {
+          throw new ApplicationException(
+            'PICKUP_INSPECTION_REVIEW_REQUIRED',
+            'Confirm the pickup inspection condition before requesting a pickup code.',
+            HttpStatus.CONFLICT,
+          );
+        }
+        if (
+          confirmation.decision === InspectionConfirmationDecision.DISAGREED &&
+          !this.discrepancyAllowsHandover(
+            confirmation.discrepancyResponses.at(-1)?.resolutionReview,
+          )
+        ) {
+          throw new ApplicationException(
+            'PICKUP_INSPECTION_DISAGREED',
+            'Handover is paused while the reported condition issue is reviewed.',
+            HttpStatus.CONFLICT,
+          );
+        }
       }
-      if (
-        confirmation.decision === InspectionConfirmationDecision.DISAGREED &&
-        !this.discrepancyAllowsHandover(confirmation.discrepancyResponses.at(-1)?.resolutionReview)
-      ) {
-        throw new ApplicationException(
-          'PICKUP_INSPECTION_DISAGREED',
-          'Handover is paused while the reported condition issue is reviewed.',
-          HttpStatus.CONFLICT,
-        );
-      }
+      await this.assertStartSafety(transaction, booking.vehicleId);
+      await this.assertTravelArrived(transaction, booking.id, HandoverPhase.START);
       await this.assertHandoverAvailable(transaction, booking.id);
       await transaction.inspectionVerificationChallenge.updateMany({
         data: { supersededAt: new Date() },
@@ -1359,7 +2009,7 @@ export class RentalsService {
               : ('PICKUP_CODE_INVALID' as const),
         };
       }
-      const inspection = await transaction.inspection.findFirstOrThrow({
+      const inspection = await transaction.inspection.findFirst({
         include: {
           conditionIssues: { select: { classification: true } },
           confirmations: {
@@ -1379,33 +2029,50 @@ export class RentalsService {
           type: InspectionType.PICKUP,
         },
       });
-      this.assertNoSafetyCriticalCondition(inspection.conditionIssues);
+      const waiver = await transaction.bookingHandoverEvidenceWaiver.findUnique({
+        where: { bookingId_phase: { bookingId: booking.id, phase: HandoverPhase.START } },
+      });
+      if (
+        waiver &&
+        (
+          await transaction.bookingPickupHandoverResponse.findUnique({
+            where: { bookingId: booking.id },
+          })
+        )?.decision !== 'CONFIRMED'
+      )
+        this.invalidState('The renter must confirm the reported handover time first.');
+      await this.assertStartSafety(transaction, booking.vehicleId);
+      await this.assertTravelArrived(transaction, booking.id, HandoverPhase.START);
       await this.assertHandoverAvailable(transaction, booking.id);
-      const roles = new Set(inspection.confirmations.map(({ role }) => role));
-      if (
-        !roles.has(InspectionParticipantRole.OWNER) ||
-        !roles.has(InspectionParticipantRole.RENTER)
-      ) {
-        throw new ApplicationException(
-          'PICKUP_CONFIRMATIONS_REQUIRED',
-          'Both participants must confirm the pickup inspection.',
-          HttpStatus.CONFLICT,
-        );
-      }
-      const renterConfirmation = inspection.confirmations.find(
-        ({ role }) => role === InspectionParticipantRole.RENTER,
-      )!;
-      if (
-        renterConfirmation.decision === InspectionConfirmationDecision.DISAGREED &&
-        !this.discrepancyAllowsHandover(
-          renterConfirmation.discrepancyResponses.at(-1)?.resolutionReview,
-        )
-      ) {
-        throw new ApplicationException(
-          'PICKUP_INSPECTION_DISAGREED',
-          'Handover remains paused while the condition issue is unresolved.',
-          HttpStatus.CONFLICT,
-        );
+      if (!waiver) {
+        if (!inspection) this.invalidState('Pickup inspection is required.');
+        this.assertNoSafetyCriticalCondition(inspection.conditionIssues);
+        const roles = new Set(inspection.confirmations.map(({ role }) => role));
+        if (
+          !roles.has(InspectionParticipantRole.OWNER) ||
+          !roles.has(InspectionParticipantRole.RENTER)
+        ) {
+          throw new ApplicationException(
+            'PICKUP_CONFIRMATIONS_REQUIRED',
+            'Both participants must confirm the pickup inspection.',
+            HttpStatus.CONFLICT,
+          );
+        }
+        const renterConfirmation = inspection.confirmations.find(
+          ({ role }) => role === InspectionParticipantRole.RENTER,
+        )!;
+        if (
+          renterConfirmation.decision === InspectionConfirmationDecision.DISAGREED &&
+          !this.discrepancyAllowsHandover(
+            renterConfirmation.discrepancyResponses.at(-1)?.resolutionReview,
+          )
+        ) {
+          throw new ApplicationException(
+            'PICKUP_INSPECTION_DISAGREED',
+            'Handover remains paused while the condition issue is unresolved.',
+            HttpStatus.CONFLICT,
+          );
+        }
       }
       const now = new Date();
       await transaction.inspectionVerificationChallenge.update({
@@ -1423,7 +2090,7 @@ export class RentalsService {
         BookingStatus.ACTIVE,
         BookingActorType.USER,
         ownerUserId,
-        'PICKUP_CONFIRMED',
+        waiver ? 'PICKUP_CONFIRMED_WITHOUT_INSPECTION_EVIDENCE' : 'PICKUP_CONFIRMED',
         metadata,
       );
       await this.outbox(transaction, booking.id, 'RENTAL_STARTED', {
@@ -1536,7 +2203,7 @@ export class RentalsService {
       if (booking.status !== BookingStatus.RETURN_PENDING) {
         this.invalidState('Booking is not waiting for return confirmation.');
       }
-      const pickup = await transaction.inspection.findFirstOrThrow({
+      const pickup = await transaction.inspection.findFirst({
         include: {
           amendments: {
             orderBy: { reviewedAt: 'desc' },
@@ -1557,7 +2224,11 @@ export class RentalsService {
           type: InspectionType.RETURN,
         },
       });
-      const effectivePickup = this.effectiveInspection(pickup);
+      const startWaiver = await transaction.bookingHandoverEvidenceWaiver.findUnique({
+        where: { bookingId_phase: { bookingId: booking.id, phase: HandoverPhase.START } },
+      });
+      if (!pickup && !startWaiver) this.invalidState('Pickup evidence is unavailable.');
+      const effectivePickup = pickup ? this.effectiveInspection(pickup) : null;
       const existing = await transaction.inspectionConfirmation.findUnique({
         where: {
           inspectionId_role: { inspectionId: returned.id, role: participantRole },
@@ -1592,14 +2263,21 @@ export class RentalsService {
       ) {
         return;
       }
-      if (effectivePickup.odometerMeters === null || returned.odometerMeters === null) {
+      if (
+        effectivePickup &&
+        (effectivePickup.odometerMeters === null || returned.odometerMeters === null)
+      ) {
         throw new ApplicationException(
           'INSPECTION_MEASUREMENT_REQUIRED',
           'Both inspections require odometer measurements.',
           HttpStatus.CONFLICT,
         );
       }
-      if (returned.odometerMeters < effectivePickup.odometerMeters) {
+      if (
+        effectivePickup?.odometerMeters != null &&
+        returned.odometerMeters != null &&
+        returned.odometerMeters < effectivePickup.odometerMeters
+      ) {
         throw new ApplicationException(
           'RETURN_ODOMETER_INVALID',
           'Return odometer cannot be lower than pickup odometer.',
@@ -1614,26 +2292,33 @@ export class RentalsService {
         );
       }
       const now = new Date();
-      const usage = calculateBookingUsage({
-        actualReturnAt: now,
-        decision: input.decision,
-        pickup: {
-          batterySocBasisPoints: effectivePickup.batterySocBasisPoints,
-          fuelBasisPoints: effectivePickup.fuelBasisPoints,
-          odometerMeters: effectivePickup.odometerMeters,
-        },
-        policy: booking.policySnapshot,
-        pricing: booking.pricingSnapshot,
-        returned: {
-          batterySocBasisPoints: returned.batterySocBasisPoints,
-          fuelBasisPoints: returned.fuelBasisPoints,
-          odometerMeters: returned.odometerMeters,
-        },
-        scheduledReturnAt: booking.rentalEnd,
-      });
-      await transaction.bookingUsageSummary.create({
-        data: { bookingId: booking.id, id: randomUUID(), ...usage },
-      });
+      // No invented baseline measurements or deficiency amounts when Start was waived.
+      if (
+        effectivePickup &&
+        effectivePickup.odometerMeters !== null &&
+        returned.odometerMeters !== null
+      ) {
+        const usage = calculateBookingUsage({
+          actualReturnAt: now,
+          decision: input.decision,
+          pickup: {
+            batterySocBasisPoints: effectivePickup.batterySocBasisPoints,
+            fuelBasisPoints: effectivePickup.fuelBasisPoints,
+            odometerMeters: effectivePickup.odometerMeters,
+          },
+          policy: booking.policySnapshot,
+          pricing: booking.pricingSnapshot,
+          returned: {
+            batterySocBasisPoints: returned.batterySocBasisPoints,
+            fuelBasisPoints: returned.fuelBasisPoints,
+            odometerMeters: returned.odometerMeters,
+          },
+          scheduledReturnAt: booking.rentalEnd,
+        });
+        await transaction.bookingUsageSummary.create({
+          data: { bookingId: booking.id, id: randomUUID(), ...usage },
+        });
+      }
       if (input.decision === InspectionConfirmationDecision.DISAGREED) {
         const dispute = await transaction.dispute.create({
           data: {
@@ -1999,7 +2684,7 @@ export class RentalsService {
         },
       },
     });
-    return bookings.map((booking) => this.serialize(booking));
+    return Promise.all(bookings.map((booking) => this.serialize(booking)));
   }
 
   async adminDetail(reference: string) {
@@ -2018,7 +2703,7 @@ export class RentalsService {
       },
       where: { vehicleId: booking.vehicleId },
     });
-    return { ...this.serialize(booking), currentVehicleKnownIssues };
+    return { ...(await this.serialize(booking)), currentVehicleKnownIssues };
   }
 
   async resolvePickupHandover(
@@ -2475,13 +3160,8 @@ export class RentalsService {
         HttpStatus.CONFLICT,
       );
     }
-    if (now > booking.pickupWindowEnd.getTime()) {
-      throw new ApplicationException(
-        'PICKUP_WINDOW_CLOSED',
-        'The pickup grace period has ended. Report a no-show or contact operations.',
-        HttpStatus.CONFLICT,
-      );
-    }
+    // The end boundary governs overdue reminders, not workflow expiry. Lifecycle,
+    // travel, holds, review and challenge-expiry checks remain independently enforced.
   }
 
   private async extendOccupancyOrEscalate(
@@ -2822,7 +3502,10 @@ export class RentalsService {
     return this.serialize(booking);
   }
 
-  private serialize(booking: RentalRecord) {
+  private async serialize(booking: RentalRecord) {
+    const [compliance] = await this.database.client.$queryRaw<{ blocker: string | null }[]>(
+      Prisma.sql`SELECT "booking_workflow_compliance_blocker"(${booking.id}::uuid) AS blocker`,
+    );
     const fulfillment = booking.fulfillmentSnapshot;
     const location = (prefix: 'start' | 'end') =>
       fulfillment
@@ -2858,6 +3541,11 @@ export class RentalsService {
     }));
     return this.toSerializable({
       ...booking,
+      workflowCompliance: workflowCompliance(
+        booking,
+        this.returnConfirmationGraceMinutes,
+        compliance?.blocker ?? null,
+      ),
       inspections,
       rentalIncidents,
       fulfillment: fulfillment
@@ -2913,8 +3601,12 @@ export class RentalsService {
 
   private toSerializable<T>(value: T): T {
     return JSON.parse(
-      JSON.stringify(value, (_key, item: unknown) =>
-        typeof item === 'bigint' ? item.toString() : item,
+      JSON.stringify(value, (key, item: unknown) =>
+        key === 'handoverWorkflowVersion'
+          ? undefined
+          : typeof item === 'bigint'
+            ? item.toString()
+            : item,
       ),
     ) as T;
   }

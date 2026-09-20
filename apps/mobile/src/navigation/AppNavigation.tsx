@@ -227,6 +227,7 @@ export function AppNavigation(properties: AppNavigationProperties) {
             Support: 'support/:ticketId',
             Conversation: 'messages/:conversationId',
             Booking: 'bookings/:bookingId',
+            BookingRecovery: 'bookings/:bookingId/handover-recovery',
             Claim: 'claims/:claimId',
             OwnerEarnings: 'earnings',
             Payout: 'payouts/:payoutId',
@@ -348,6 +349,15 @@ export function AppNavigation(properties: AppNavigationProperties) {
               />
             )
           }
+        </Stack.Screen>
+        <Stack.Screen name="BookingRecovery" options={{ headerShown: false }}>
+          {({ navigation, route }) => (
+            <MyBookingsScreen
+              focusRecovery
+              initialBookingReference={route.params.bookingId}
+              onClose={() => closeToMarketplace(navigation)}
+            />
+          )}
         </Stack.Screen>
         <Stack.Screen name="Claim" options={{ headerShown: false }}>
           {({ navigation, route }) => (

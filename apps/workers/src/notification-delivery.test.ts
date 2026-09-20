@@ -4,6 +4,141 @@ import { consumeDomainEvent, workerPushProvider } from './notification-delivery'
 import type { WorkerEnvironment } from '@carrental/config';
 
 describe('booking request notification delivery', () => {
+  it('creates one renter recovery notification with a safe focused deep link', async () => {
+    const bookingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const renterUserId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const creates: Record<string, unknown>[] = [];
+    const database = {
+      booking: {
+        findUnique: vi.fn(async ({ select }: { select: Record<string, unknown> }) =>
+          'publicReference' in select
+            ? { publicReference: 'DEMO-OVERDUE-RETURN' }
+            : { ownerUserId, renterUserId },
+        ),
+      },
+      devicePushToken: { findMany: vi.fn(async () => []) },
+      notificationPreference: { findUnique: vi.fn(async () => null) },
+      notification: {
+        upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+          creates.push(create);
+          return { id: bookingId };
+        }),
+      },
+    } as unknown as PrismaClient;
+    await consumeDomainEvent(
+      database,
+      'OVERDUE_HANDOVER_RECOVERY_REPORTED',
+      {
+        bookingId,
+        scope: 'RETURN',
+        responseDeadlineAt: '2026-09-21T12:00:00.000Z',
+        reportedReturnAt: 'private',
+      },
+      'outbox-1',
+    );
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toMatchObject({
+      deepLink: 'carrental://bookings/DEMO-OVERDUE-RETURN/handover-recovery',
+      userId: renterUserId,
+      variables: {
+        reference: 'DEMO-OVERDUE-RETURN',
+        responseDeadlineAt: '2026-09-21T12:00:00.000Z',
+        scope: 'RETURN',
+      },
+    });
+    expect(JSON.stringify(creates[0])).not.toContain('reportedReturnAt');
+  });
+
+  it('notifies only the waiver counterpart once per phase with safe reference routing', async () => {
+    const bookingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const renterUserId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const creates = new Map<string, Record<string, unknown>>();
+    const database = {
+      booking: {
+        findUnique: vi.fn(async ({ select }: { select: Record<string, unknown> }) =>
+          'publicReference' in select
+            ? { publicReference: 'CR-2026-WAIVER' }
+            : { ownerUserId, renterUserId },
+        ),
+      },
+      devicePushToken: { findMany: vi.fn(async () => []) },
+      notificationPreference: { findUnique: vi.fn(async () => null) },
+      notification: {
+        upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+          creates.set(String(create.stableKey), create);
+          return { id: bookingId };
+        }),
+      },
+    } as unknown as PrismaClient;
+    for (const event of [
+      'START_INSPECTION_EVIDENCE_WAIVED',
+      'RETURN_INSPECTION_EVIDENCE_WAIVED',
+      'OWNER_RETURN_INSPECTION_EVIDENCE_WAIVED',
+    ]) {
+      await consumeDomainEvent(
+        database,
+        event,
+        { bookingId, code: '123456', address: 'private', mediaUrl: 'private' },
+        bookingId,
+      );
+      await consumeDomainEvent(database, event, { bookingId }, bookingId);
+    }
+    expect(creates.size).toBe(3);
+    expect([...creates.values()].map((n) => n.userId)).toEqual([
+      renterUserId,
+      ownerUserId,
+      renterUserId,
+    ]);
+    for (const n of creates.values()) {
+      expect(n.variables).toEqual({ reference: 'CR-2026-WAIVER' });
+      expect(n.deepLink).toBe('carrental://bookings/CR-2026-WAIVER');
+    }
+  });
+  it('delivers role-specific overdue reminders idempotently without private evidence', async () => {
+    const bookingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const renterUserId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const creates = new Map<string, Record<string, unknown>>();
+    const database = {
+      booking: {
+        findUnique: vi.fn(async ({ select }: { select: Record<string, unknown> }) =>
+          'publicReference' in select
+            ? { publicReference: 'CR-2026-OVERDUE' }
+            : { ownerUserId, renterUserId },
+        ),
+      },
+      devicePushToken: { findMany: vi.fn(async () => []) },
+      notification: {
+        upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+          creates.set(String(create.stableKey), create);
+          return { id: bookingId };
+        }),
+      },
+      notificationPreference: { findUnique: vi.fn(async () => null) },
+    } as unknown as PrismaClient;
+    for (const event of ['PICKUP_HANDOVER_OVERDUE', 'RETURN_CONFIRMATION_OVERDUE']) {
+      await consumeDomainEvent(
+        database,
+        event,
+        { bookingId, code: '123456', privateAddress: 'private' },
+        bookingId,
+      );
+      await consumeDomainEvent(database, event, { bookingId }, bookingId);
+    }
+    expect(creates.size).toBe(4);
+    expect([...creates.values()].map((item) => item.templateKey)).toEqual([
+      'rental.handover-overdue.renter',
+      'rental.handover-overdue.owner',
+      'rental.return-overdue.renter',
+      'rental.return-overdue.owner',
+    ]);
+    for (const notification of creates.values()) {
+      expect(notification.deepLink).toBe('carrental://bookings/CR-2026-OVERDUE');
+      expect(notification.variables).toEqual({ reference: 'CR-2026-OVERDUE' });
+    }
+  });
   it('fails closed when external push delivery is disabled', () => {
     expect(
       workerPushProvider({ PUSH_ENABLED: false, PUSH_PROVIDER: 'expo' } as WorkerEnvironment),

@@ -1,7 +1,11 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { BookingErrorCode, DiscoveryErrorCode } from '@carrental/api-contracts';
+import {
+  BookingErrorCode,
+  DiscoveryErrorCode,
+  HANDOVER_WORKFLOW_VERSION_B4,
+} from '@carrental/api-contracts';
 import type { ApiEnvironment } from '@carrental/config';
 import {
   BookingActorType,
@@ -221,6 +225,7 @@ export class BookingsService {
           );
           await transaction.booking.create({
             data: {
+              handoverWorkflowVersion: HANDOVER_WORKFLOW_VERSION_B4,
               holdExpiresAt,
               id: bookingId,
               ownerProfileId: vehicle.ownerProfile.id,

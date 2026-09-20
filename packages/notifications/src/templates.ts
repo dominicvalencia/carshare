@@ -11,7 +11,67 @@ export function renderNotification(
   variables: Readonly<Record<string, unknown>>,
 ): NotificationContent {
   const reference = text(variables.reference, 'your booking');
+  const scope = text(variables.scope, 'BOTH');
   const templates: Readonly<Record<string, NotificationContent>> = {
+    'rental.overdue-recovery-reported': {
+      title:
+        scope === 'START'
+          ? 'Action required: Confirm Pickup handover'
+          : scope === 'RETURN'
+            ? 'Action required: Confirm Return handover'
+            : 'Action required: Confirm Pickup and Return',
+      body:
+        scope === 'START'
+          ? "Review the Owner's overdue Pickup report before the response deadline."
+          : scope === 'RETURN'
+            ? "Review the Owner's overdue Return report before the response deadline."
+            : "Review the Owner's overdue Pickup and Return report before the response deadline.",
+    },
+    'rental.overdue-recovery-accepted': {
+      title: 'Overdue handover report accepted',
+      body: 'The owner-reported handover was accepted after confirmation or the 24-hour response window. Reduced-evidence warnings still apply.',
+    },
+    'rental.overdue-recovery-midpoint': {
+      title: 'Action required: Confirm your handover',
+      body:
+        scope === 'START'
+          ? "Review the Owner's Pickup/Delivery report before the response deadline."
+          : scope === 'RETURN'
+            ? "Review the Owner's Return/Collection report before the response deadline."
+            : "Review the Owner's Pickup and Return report before the response deadline.",
+    },
+    'rental.overdue-recovery-final': {
+      title: 'Final reminder: Handover confirmation',
+      body: "Review the Owner's handover report before the response deadline.",
+    },
+    'rental.start-evidence-waived': {
+      title: 'Handover inspection skipped',
+      body: 'The owner chose to continue without a full CarShare inspection record. Pickup verification is still required.',
+    },
+    'rental.return-evidence-waived': {
+      title: 'Return inspection skipped',
+      body: 'The renter chose to continue without a full CarShare return inspection record. Confirm vehicle receipt to complete the return.',
+    },
+    'rental.owner-return-evidence-waived': {
+      title: 'Owner completed Return without inspection',
+      body: 'The owner reported receiving the vehicle without the normal CarShare Return inspection. Open the booking to report a disagreement or issue.',
+    },
+    'rental.handover-overdue.owner': {
+      title: 'Handover overdue',
+      body: 'Complete the CarShare handover process to keep your booking and payout workflow up to date.',
+    },
+    'rental.handover-overdue.renter': {
+      title: 'Handover overdue',
+      body: 'Complete the vehicle handover in CarShare to preserve your inspection and condition record.',
+    },
+    'rental.return-overdue.owner': {
+      title: 'Return process overdue',
+      body: 'Complete the required return process so CarShare can verify the end of the rental and continue payout processing.',
+    },
+    'rental.return-overdue.renter': {
+      title: 'Return process overdue',
+      body: 'Complete the return inspection to preserve your vehicle condition evidence.',
+    },
     'booking.requested': {
       title: 'New booking request',
       body: `Please review booking ${reference}.`,

@@ -9,6 +9,13 @@ const source = readFileSync(
 );
 
 describe('Owner Dashboard availability summary', () => {
+  it('reuses existing rental counters to flag server-derived overdue bookings', () => {
+    expect(source).toContain('workflowCompliance?.start.overdue');
+    expect(source).toContain('workflowCompliance?.return.overdue');
+    expect(source).toContain('attention={startNeedsAttention}');
+    expect(source).toContain('attention={returnNeedsAttention}');
+    expect(source).toContain("['ACTIVE', 'RETURN_PENDING'].includes(item.status)");
+  });
   it('uses a server-authoritative Owner-blocked-today count with a stable zero state', () => {
     expect(source).toContain("queryKey: ['owner-vehicle-dashboard-summary']");
     expect(source).toContain("'/owner/vehicles/dashboard-summary'");

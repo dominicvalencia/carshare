@@ -3,8 +3,46 @@ import { ConfigService } from '@nestjs/config';
 import type { ApiEnvironment } from '@carrental/config';
 import { FileAssetStatus, FileClassification, Prisma } from '@carrental/database';
 import { FilesService } from '../files/files.service';
+import { workflowCompliance } from '../rentals/workflow-compliance';
 
 export const bookingInclude = {
+  overdueHandoverRecovery: {
+    include: {
+      acceptance: true,
+      response: true,
+      reminders: {
+        orderBy: [{ scheduledAt: 'asc' }, { channel: 'asc' }],
+        select: {
+          channel: true,
+          failureCategory: true,
+          safeFailureMessage: true,
+          scheduledAt: true,
+          stage: true,
+          status: true,
+          submittedAt: true,
+          deliveredAt: true,
+        },
+      },
+    },
+  },
+  handoverEvidenceWaivers: true,
+  handoverTravelEvents: true,
+  inspections: {
+    where: { status: 'FINALIZED' as const },
+    include: {
+      confirmations: {
+        include: {
+          discrepancyResponses: {
+            include: { resolutionReview: { include: { operationsResolution: true } } },
+            orderBy: { roundNumber: 'asc' as const },
+          },
+        },
+      },
+    },
+    orderBy: { version: 'asc' as const },
+  },
+  rentalIncidents: true,
+  disputes: true,
   fulfillmentSnapshot: true,
   conversation: { select: { id: true } },
   cancellation: true,
@@ -67,6 +105,7 @@ export const bookingInclude = {
   statusHistory: { orderBy: { occurredAt: 'asc' as const } },
   vehicle: {
     select: {
+      operationalStatus: true,
       category: { select: { name: true } },
       fuelType: true,
       id: true,
@@ -99,6 +138,20 @@ export class BookingProjectionService {
 
   renter(booking: BookingRecord) {
     return {
+      workflowCompliance: workflowCompliance(
+        {
+          ...booking,
+          pickupWindowEnd:
+            booking.pickupWindowEnd ??
+            new Date(
+              booking.rentalStart.getTime() +
+                this.configuration.getOrThrow('PICKUP_WINDOW_GRACE_MINUTES', { infer: true }) *
+                  60_000,
+            ),
+        },
+        this.configuration.getOrThrow('RETURN_CONFIRMATION_GRACE_MINUTES', { infer: true }),
+        null,
+      ),
       cancellation: booking.cancellation
         ? {
             createdAt: booking.cancellation.createdAt,
@@ -122,6 +175,29 @@ export class BookingProjectionService {
         verified: true,
       },
       ownerResponseDeadlineAt: booking.ownerResponseDeadlineAt,
+      overdueHandoverRecovery: booking.overdueHandoverRecovery
+        ? {
+            acceptance: booking.overdueHandoverRecovery.acceptance
+              ? {
+                  acceptedAt: booking.overdueHandoverRecovery.acceptance.acceptedAt,
+                  acceptanceSource: booking.overdueHandoverRecovery.acceptance.acceptanceSource,
+                }
+              : null,
+            reportedAt: booking.overdueHandoverRecovery.reportedAt,
+            reportedPickupAt: booking.overdueHandoverRecovery.reportedPickupAt,
+            reportedReturnAt: booking.overdueHandoverRecovery.reportedReturnAt,
+            response: booking.overdueHandoverRecovery.response
+              ? {
+                  decision: booking.overdueHandoverRecovery.response.decision,
+                  reason: booking.overdueHandoverRecovery.response.reason,
+                  respondedAt: booking.overdueHandoverRecovery.response.respondedAt,
+                }
+              : null,
+            responseDeadlineAt: booking.overdueHandoverRecovery.responseDeadlineAt,
+            reminders: booking.overdueHandoverRecovery.reminders,
+            scope: booking.overdueHandoverRecovery.scope,
+          }
+        : null,
       pickupWindow: {
         closesAt: new Date(
           booking.rentalStart.getTime() +

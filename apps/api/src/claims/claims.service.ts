@@ -80,6 +80,7 @@ const claimInclude = {
   adjudications: { include: { calculation: true }, orderBy: { version: 'asc' as const } },
   booking: {
     include: {
+      handoverEvidenceWaivers: true,
       inspections: { include: { media: true }, orderBy: { createdAt: 'asc' as const } },
       ownerEarning: { include: { holds: true } },
       payments: { include: { refunds: true } },
@@ -114,6 +115,7 @@ export class ClaimsService {
       const booking = await transaction.booking.findFirst({
         include: {
           inspections: true,
+          handoverEvidenceWaivers: true,
           ownerEarning: true,
           policySnapshot: true,
           pricingSnapshot: true,
@@ -134,7 +136,13 @@ export class ClaimsService {
           HttpStatus.CONFLICT,
         );
       }
-      if (!booking.policySnapshot || !booking.pricingSnapshot || !booking.usageSummary) {
+      const reducedEvidence =
+        booking.handoverWorkflowVersion === 1 && booking.handoverEvidenceWaivers.length > 0;
+      if (
+        !booking.policySnapshot ||
+        !booking.pricingSnapshot ||
+        (!booking.usageSummary && !reducedEvidence)
+      ) {
         this.invalid('Authoritative booking policy, pricing, and usage snapshots are required.');
       }
       const evidence = input.evidence ?? [];
@@ -142,7 +150,8 @@ export class ClaimsService {
         (input.category === PostReturnClaimCategory.CLEANING ||
           input.category === PostReturnClaimCategory.DAMAGE) &&
         (evidence.length === 0 ||
-          booking.inspections.filter((item) => item.status === 'FINALIZED').length < 2)
+          (!reducedEvidence &&
+            booking.inspections.filter((item) => item.status === 'FINALIZED').length < 2))
       ) {
         this.fail(
           ClaimErrorCode.CLAIM_EVIDENCE_REQUIRED,
@@ -206,10 +215,10 @@ export class ClaimsService {
         });
       }
       if (booking.ownerEarning) {
+        // Match the existing DB hold exposure authority. FULL blocks the whole
+        // earning, including fulfillment fees, regardless of this monetary base.
         const exposure =
           booking.ownerEarning.netEarningAmountMinor +
-          booking.ownerEarning.deliveryEarningMinor +
-          booking.ownerEarning.collectionEarningMinor +
           booking.ownerEarning.additionalCompensationMinor +
           booking.ownerEarning.adjustmentAmountMinor;
         if (exposure > 0n) {
@@ -1139,6 +1148,8 @@ export class ClaimsService {
   private calculateClaim(
     category: PostReturnClaimCategory,
     booking: {
+      rentalEnd: Date;
+      actualReturnAt: Date | null;
       policySnapshot: { policyVersionId: string } | null;
       pricingSnapshot: {
         chargeableDays: number;
@@ -1159,9 +1170,13 @@ export class ClaimsService {
       lateGraceMinutes: number | null;
     },
   ) {
-    const usage = booking.usageSummary!;
+    const usage = booking.usageSummary;
     const pricing = booking.pricingSnapshot!;
     if (category === PostReturnClaimCategory.EXCESS_MILEAGE) {
+      if (!usage)
+        this.formulaNotApplicable(
+          'Inspection evidence was waived; excess mileage cannot be calculated from missing measurements.',
+        );
       if (pricing.unlimitedMileage)
         this.formulaNotApplicable('This booking has an immutable unlimited-mileage policy.');
       const rate = BigInt(pricing.excessKilometerRateMinor ?? 0);
@@ -1182,7 +1197,15 @@ export class ClaimsService {
     }
     if (category === PostReturnClaimCategory.LATE_RETURN) {
       const graceSeconds = (policy.lateGraceMinutes ?? 30) * 60;
-      const billableSeconds = Math.max(0, usage.lateDurationSeconds - graceSeconds);
+      const lateDurationSeconds =
+        usage?.lateDurationSeconds ??
+        (booking.actualReturnAt
+          ? Math.max(
+              0,
+              Math.floor((booking.actualReturnAt.getTime() - booking.rentalEnd.getTime()) / 1000),
+            )
+          : 0);
+      const billableSeconds = Math.max(0, lateDurationSeconds - graceSeconds);
       if (!billableSeconds)
         this.formulaNotApplicable('The measured late return is within the platform grace period.');
       const hours = Math.ceil(billableSeconds / 3600);
@@ -1196,7 +1219,7 @@ export class ClaimsService {
           billableSeconds,
           dailyRateMinor: Number(dailyRate),
           graceSeconds,
-          lateDurationSeconds: usage.lateDurationSeconds,
+          lateDurationSeconds,
         } as Prisma.InputJsonValue,
         quantity: hours,
         roundingRule: 'CEIL_TO_HOUR_DAILY_RATE_CAP',
@@ -1206,9 +1229,9 @@ export class ClaimsService {
     }
     const deficiency =
       category === PostReturnClaimCategory.FUEL_DEFICIENCY
-        ? usage.fuelDeficiencyBasisPoints
+        ? usage?.fuelDeficiencyBasisPoints
         : category === PostReturnClaimCategory.EV_BATTERY_DEFICIENCY
-          ? usage.socDeficiencyBasisPoints
+          ? usage?.socDeficiencyBasisPoints
           : null;
     if (formulaCategories.has(category)) {
       if (!deficiency) this.formulaNotApplicable('No billable return deficiency was measured.');

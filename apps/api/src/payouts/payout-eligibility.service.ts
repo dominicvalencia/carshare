@@ -72,8 +72,21 @@ export class PayoutEligibilityService {
       orderBy: [{ availableAt: 'asc' }, { createdAt: 'asc' }],
       where: { ownerProfileId },
     });
+    const workflow = await this.database.client.$queryRaw<
+      { bookingId: string; blocker: string | null }[]
+    >(Prisma.sql`SELECT b."id" AS "bookingId", "booking_workflow_compliance_blocker"(b."id") AS blocker
+      FROM "bookings" b WHERE b."owner_profile_id" = ${ownerProfileId}::uuid`);
+    const workflowBlockers = new Map(workflow.map((item) => [item.bookingId, item.blocker]));
     return earnings.map((earning) => {
       const blockers: string[] = [];
+      // Never reinterpret paid history; submitted allocations continue reconciliation.
+      const workflowBlocker = workflowBlockers.get(earning.bookingId);
+      if (
+        earning.status !== OwnerEarningStatus.PAID &&
+        !earning.payoutItems.length &&
+        workflowBlocker
+      )
+        blockers.push(workflowBlocker);
       if (earning.status !== OwnerEarningStatus.AVAILABLE)
         blockers.push(`EARNING_${earning.status}`);
       if (earning.holds.length) blockers.push('ACTIVE_EARNING_HOLD');
@@ -146,6 +159,7 @@ export class PayoutEligibilityService {
       FROM "owner_earnings" e
       WHERE (${ownerProfileId ?? null}::uuid IS NULL OR e."owner_profile_id" = ${ownerProfileId ?? null}::uuid)
         AND e."status" = 'AVAILABLE'
+        AND "booking_workflow_compliance_blocker"(e."booking_id") IS NULL
         AND (${ownerProfileId ?? null}::uuid IS NOT NULL OR EXISTS (
           SELECT 1
           FROM "owner_profiles" op
@@ -160,7 +174,7 @@ export class PayoutEligibilityService {
             AND u."status" = 'ACTIVE'
         ))
         AND (${maximumAmountMinor ?? null}::bigint IS NULL OR
-          e."net_earning_amount_minor" + e."additional_compensation_minor" + e."adjustment_amount_minor" <= ${maximumAmountMinor ?? null}::bigint)
+          e."net_earning_amount_minor" + e."delivery_earning_minor" + e."collection_earning_minor" + e."additional_compensation_minor" + e."adjustment_amount_minor" <= ${maximumAmountMinor ?? null}::bigint)
         AND NOT EXISTS (SELECT 1 FROM "earning_holds" h WHERE h."owner_earning_id" = e."id" AND h."status" = 'ACTIVE')
         AND NOT EXISTS (SELECT 1 FROM "payout_items" pi WHERE pi."owner_earning_id" = e."id" AND pi."active_allocation")
         AND NOT EXISTS (SELECT 1 FROM "post_return_claims" c WHERE c."booking_id" = e."booking_id" AND c."status" NOT IN ('WITHDRAWN', 'RESOLVED'))

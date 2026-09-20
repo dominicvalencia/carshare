@@ -6,7 +6,8 @@ import { Logger } from 'nestjs-pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { API_PREFIX } from '@carrental/api-contracts';
-import { OwnerProfileStatus, RoleCode } from '@carrental/database';
+import { OwnerProfileStatus, RoleCode, Prisma } from '@carrental/database';
+import { PayoutEligibilityService } from '../src/payouts/payout-eligibility.service';
 import { type FakePayoutProvider } from '@carrental/payouts';
 import { AppModule } from '../src/app.module';
 import { TokenService } from '../src/auth/token.service';
@@ -57,6 +58,106 @@ describe.sequential('Phase 9 owner payout settlement', () => {
 
   afterAll(async () => {
     await app.close();
+  });
+
+  it('preserves legacy eligibility and fails closed for incomplete B4 and unknown versions', async () => {
+    const actor = await createOwner('workflow-safety');
+    await addAccount(actor, '09171234567', 'PH_GCASH', 'E_WALLET');
+    const legacy = await createAvailableEarning(actor, 'Legacy');
+    const b4 = await createAvailableEarning(actor, 'B4Incomplete', 1);
+    const future = await createAvailableEarning(actor, 'FutureWorkflow', 2);
+    for (const earning of [legacy, future]) {
+      const booking = await database.client.booking.findUniqueOrThrow({
+        where: { id: earning.bookingId },
+      });
+      await request(app.getHttpServer())
+        .post(`/api/v1/owner/bookings/${booking.publicReference}/rental/pickup/evidence-waiver`)
+        .set('Authorization', `Bearer ${actor.token}`)
+        .send({ acknowledged: true, acknowledgementVersion: 'HANDOVER_EVIDENCE_WAIVER_V1' })
+        .expect(409);
+      await expect(
+        database.client.bookingHandoverEvidenceWaiver.create({
+          data: {
+            bookingId: booking.id,
+            phase: 'START',
+            waivedByUserId: actor.userId,
+            acknowledgementVersion: 'HANDOVER_EVIDENCE_WAIVER_V1',
+          },
+        }),
+      ).rejects.toThrow();
+    }
+    for (const earning of [legacy, b4, future])
+      await database.client.ownerEarning.update({
+        where: { id: earning.id },
+        data: { status: 'PENDING' },
+      });
+    await database.client.$queryRaw(Prisma.sql`SELECT "release_due_owner_earnings"()`);
+    expect(
+      (await database.client.ownerEarning.findUniqueOrThrow({ where: { id: legacy.id } })).status,
+    ).toBe('AVAILABLE');
+    expect(
+      (await database.client.ownerEarning.findUniqueOrThrow({ where: { id: b4.id } })).status,
+    ).toBe('PENDING');
+    expect(
+      (await database.client.ownerEarning.findUniqueOrThrow({ where: { id: future.id } })).status,
+    ).toBe('PENDING');
+    // Even a stale AVAILABLE row must not bypass selection/allocation authority.
+    await database.client.ownerEarning.update({
+      where: { id: b4.id },
+      data: { status: 'AVAILABLE' },
+    });
+    const diagnostics = await app
+      .get(PayoutEligibilityService)
+      .earningDiagnostics(actor.ownerProfileId);
+    expect(diagnostics.find((item) => item.earning.id === legacy.id)?.eligible).toBe(true);
+    expect(diagnostics.find((item) => item.earning.id === b4.id)?.blockers).toContain(
+      'OWNER_INSPECTION_REQUIRED',
+    );
+    expect(diagnostics.find((item) => item.earning.id === future.id)?.blockers).toContain(
+      'UNSUPPORTED_HANDOVER_WORKFLOW',
+    );
+    const selected = await request(app.getHttpServer())
+      .post('/api/v1/admin/payouts')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ ownerProfileId: actor.ownerProfileId })
+      .expect(201);
+    const payoutId = selected.body.data.id as string;
+    const items = await database.client.payoutItem.findMany({ where: { payoutId } });
+    expect(items.map((item) => item.ownerEarningId)).toEqual([legacy.id]);
+    await expect(
+      database.client.payoutItem.create({
+        data: {
+          payoutId,
+          ownerEarningId: b4.id,
+          amountMinor: b4.netEarningAmountMinor,
+          currency: 'PHP',
+        },
+      }),
+    ).rejects.toThrow('workflow incomplete');
+  });
+
+  it('preserves full fulfillment earnings and the maximum-selection bound', async () => {
+    const actor = await createOwner('fulfillment-allocation');
+    await addAccount(actor, '09171234567', 'PH_GCASH', 'E_WALLET');
+    await createAvailableEarning(actor, 'FulfillmentAllocation', null, {
+      deliveryEarningMinor: 5000n,
+      collectionEarningMinor: 3000n,
+    });
+    const eligibility = app.get(PayoutEligibilityService);
+    expect(
+      await database.client.$queryRaw(
+        eligibility.eligibleSelectionSql(actor.ownerProfileId, 90000n),
+      ),
+    ).toEqual([]);
+    const selected = await request(app.getHttpServer())
+      .post('/api/v1/admin/payouts')
+      .set('Authorization', `Bearer ${admin.token}`)
+      .send({ ownerProfileId: actor.ownerProfileId })
+      .expect(201);
+    const item = await database.client.payoutItem.findFirstOrThrow({
+      where: { payoutId: selected.body.data.id },
+    });
+    expect(item.amountMinor).toBe(93000n);
   });
 
   it('protects destinations and settles exactly once under create, submit, and webhook races', async () => {
@@ -391,7 +492,15 @@ describe.sequential('Phase 9 owner payout settlement', () => {
     return { token: await tokens.signAccessToken(userId, sessionId, roles), userId };
   }
 
-  async function createAvailableEarning(actor: OwnerActor, model: string) {
+  async function createAvailableEarning(
+    actor: OwnerActor,
+    model: string,
+    handoverWorkflowVersion: number | null = null,
+    fulfillmentEarnings: { deliveryEarningMinor: bigint; collectionEarningMinor: bigint } = {
+      deliveryEarningMinor: 0n,
+      collectionEarningMinor: 0n,
+    },
+  ) {
     const category = await database.client.vehicleCategory.findFirstOrThrow({
       where: { active: true },
     });
@@ -453,6 +562,7 @@ describe.sequential('Phase 9 owner payout settlement', () => {
     });
     const booking = await database.client.booking.create({
       data: {
+        handoverWorkflowVersion,
         ownerProfileId: actor.ownerProfileId,
         ownerUserId: actor.userId,
         publicReference: `P9-${randomUUID().slice(0, 12)}`,
@@ -482,6 +592,7 @@ describe.sequential('Phase 9 owner payout settlement', () => {
     });
     return database.client.ownerEarning.create({
       data: {
+        ...fulfillmentEarnings,
         availableAt: new Date(Date.now() - 1_000),
         bookingId: booking.id,
         commissionAmountMinor: 15_000n,

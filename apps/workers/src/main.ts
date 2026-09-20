@@ -20,6 +20,7 @@ import {
   workerPushProvider,
 } from './notification-delivery';
 import { publishDueReviews } from './review-publication';
+import { processDueRecoveryReminders, recoveryReminderProviders } from './recovery-reminders';
 import { initializeWorkerSentry } from './sentry';
 
 loadEnvironment({ path: resolve(__dirname, '../../../.env'), quiet: true });
@@ -40,6 +41,7 @@ async function bootstrap(): Promise<void> {
   const paymentProvider = workerPaymentProvider(environment);
   const payoutProvider = workerPayoutProvider(environment);
   const pushProvider = workerPushProvider(environment);
+  const reminderProviders = recoveryReminderProviders(environment);
   await database.$connect();
 
   const lifecycleQueue = new Queue(LIFECYCLE_QUEUE, { connection });
@@ -83,6 +85,11 @@ async function bootstrap(): Promise<void> {
     'review-publication-sweep',
     { every: 60_000 },
     { data: {}, name: 'publish-due-reviews' },
+  );
+  await lifecycleQueue.upsertJobScheduler(
+    'recovery-reminder-sweep',
+    { every: 60_000 },
+    { data: {}, name: 'deliver-recovery-reminders' },
   );
 
   const worker = new Worker(
@@ -164,6 +171,7 @@ async function bootstrap(): Promise<void> {
             claimNotifications: number;
             completed: number;
             earningsAvailable: number;
+            overdueRecoveriesAccepted: number;
             notifications: number;
             ready: number;
           }>
@@ -177,6 +185,7 @@ async function bootstrap(): Promise<void> {
               ${environment.RETURN_CONFIRMATION_GRACE_MINUTES}
             ) AS "notifications",
             "emit_claim_financial_notifications"() AS "claimNotifications",
+            "accept_due_overdue_handover_recoveries"() AS "overdueRecoveriesAccepted",
             "complete_due_returned_bookings"() AS "completed",
             "release_due_owner_earnings"() AS "earningsAvailable"
         `);
@@ -185,6 +194,7 @@ async function bootstrap(): Promise<void> {
           completed: 0,
           earningsAvailable: 0,
           notifications: 0,
+          overdueRecoveriesAccepted: 0,
           ready: 0,
         };
         if (
@@ -192,7 +202,8 @@ async function bootstrap(): Promise<void> {
           result.notifications ||
           result.claimNotifications ||
           result.completed ||
-          result.earningsAvailable
+          result.earningsAvailable ||
+          result.overdueRecoveriesAccepted
         ) {
           logger.info(result, 'Rental operations sweep completed');
         }
@@ -200,6 +211,14 @@ async function bootstrap(): Promise<void> {
       if (job.name === 'deliver-notifications') {
         const delivered = await deliverPendingNotifications(database, pushProvider);
         if (delivered) logger.info({ delivered }, 'Notification delivery sweep completed');
+      }
+      if (job.name === 'deliver-recovery-reminders') {
+        const handled = await processDueRecoveryReminders(
+          database,
+          reminderProviders,
+          environment.APP_ENV,
+        );
+        if (handled) logger.info({ handled }, 'Recovery reminder sweep completed');
       }
       if (job.name === 'reconcile-push-receipts') {
         const reconciled = await reconcilePushReceipts(

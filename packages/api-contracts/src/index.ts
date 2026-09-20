@@ -122,6 +122,8 @@ export interface VehicleMapSearchMetadata {
   readonly resultLimit: number;
 }
 
+export const HANDOVER_EVIDENCE_WAIVER_ACKNOWLEDGEMENT_VERSION = 'HANDOVER_EVIDENCE_WAIVER_V1';
+
 export const BookingErrorCode = {
   BOOKING_ALREADY_CANCELLED: 'BOOKING_ALREADY_CANCELLED',
   BOOKING_CONFLICT: 'BOOKING_CONFLICT',
@@ -195,3 +197,5 @@ export const ClaimErrorCode = {
 export type ClaimErrorCode = (typeof ClaimErrorCode)[keyof typeof ClaimErrorCode];
 
 export type SystemErrorCode = (typeof SystemErrorCode)[keyof typeof SystemErrorCode];
+/** Immutable booking policy metadata. Null denotes legacy/unclassified; never custody evidence. */
+export const HANDOVER_WORKFLOW_VERSION_B4 = 1 as const;

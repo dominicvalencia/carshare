@@ -16,6 +16,7 @@ interface VehicleSummary {
 }
 interface BookingSummary {
   readonly status: string;
+  readonly workflowCompliance?: { start: { overdue: boolean }; return: { overdue: boolean } };
 }
 interface OwnerVehicleDashboardSummary {
   readonly ownerBlockedVehiclesToday: number;
@@ -83,7 +84,12 @@ export function OwnerDashboardScreen({
   const upcoming =
     bookings.data?.filter((item) => ['CONFIRMED', 'READY_FOR_PICKUP'].includes(item.status))
       .length ?? 0;
-  const active = bookings.data?.filter((item) => item.status === 'ACTIVE').length ?? 0;
+  const active =
+    bookings.data?.filter((item) => ['ACTIVE', 'RETURN_PENDING'].includes(item.status)).length ?? 0;
+  const startNeedsAttention =
+    bookings.data?.some((item) => item.workflowCompliance?.start.overdue) ?? false;
+  const returnNeedsAttention =
+    bookings.data?.some((item) => item.workflowCompliance?.return.overdue) ?? false;
   return (
     <Screen
       eyebrow="Owner mode"
@@ -121,8 +127,18 @@ export function OwnerDashboardScreen({
           value={requests}
           attention={requests > 0}
         />
-        <Metric icon="key-outline" label="Active rentals" value={active} />
-        <Metric icon="calendar-outline" label="Upcoming rentals" value={upcoming} />
+        <Metric
+          icon="key-outline"
+          label="Active rentals"
+          value={active}
+          attention={returnNeedsAttention}
+        />
+        <Metric
+          icon="calendar-outline"
+          label="Upcoming rentals"
+          value={upcoming}
+          attention={startNeedsAttention}
+        />
         <Metric icon="create-outline" label="Drafts" value={counts.DRAFT ?? 0} />
         <Metric
           icon="pause-circle-outline"

@@ -43,7 +43,7 @@ import {
   StateView,
   StatusBadge,
 } from '../../ui/primitives';
-import type { BookingView } from '../bookings/MyBookingsScreen';
+import { PendingHandoverRecoveryBanner, type BookingView } from '../bookings/MyBookingsScreen';
 import { invalidateRenterVerification } from '../../query/verification-invalidation';
 import { LocationPicker } from '../../location/LocationPicker';
 import {
@@ -226,7 +226,7 @@ export function DiscoveryScreen({
   readonly initialVehicleId?: string | undefined;
   readonly onExit?: (() => void) | undefined;
 }) {
-  const navigation = useNavigation<NavigationProp<RenterTabParamList>>();
+  const navigation = useNavigation<NavigationProp<RenterTabParamList & RootStackParamList>>();
   const client = useQueryClient();
   const [mode, setMode] = useState<ViewMode>(initialVehicleId ? 'detail' : initialMode);
   const detailOrigin = useRef<ViewMode>(initialMode === 'favorites' ? 'favorites' : 'results');
@@ -297,6 +297,12 @@ export function DiscoveryScreen({
         `/vehicles/search?${queryString}${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ''}`,
       ),
     getNextPageParam: (lastPage) => lastPage.pageInfo.nextCursor ?? undefined,
+  });
+  const renterBookings = useQuery({
+    enabled: home,
+    queryKey: ['bookings'],
+    queryFn: () => apiClient.request<BookingView[]>('/bookings'),
+    refetchInterval: home ? 10_000 : false,
   });
   const searchItems = useMemo(
     () => search.data?.pages.flatMap((page) => page.items) ?? [],
@@ -666,6 +672,12 @@ export function DiscoveryScreen({
         />
       }
     >
+      {home && (
+        <PendingHandoverRecoveryBanner
+          bookings={renterBookings.data ?? []}
+          onReview={(reference) => navigation.navigate('BookingRecovery', { bookingId: reference })}
+        />
+      )}
       <Card style={styles.searchCard}>
         <Pressable
           accessibilityRole="button"

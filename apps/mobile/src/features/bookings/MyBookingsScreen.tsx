@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -39,6 +39,10 @@ interface ContentGrant {
 }
 
 export interface BookingView {
+  readonly workflowCompliance?: {
+    readonly start: { readonly overdue: boolean };
+    readonly return: { readonly overdue: boolean };
+  };
   readonly publicReference: string;
   readonly conversationId: string | null;
   readonly status: string;
@@ -46,6 +50,12 @@ export interface BookingView {
   readonly rentalEnd: string;
   readonly holdExpiresAt: string | null;
   readonly ownerResponseDeadlineAt: string | null;
+  readonly overdueHandoverRecovery: {
+    readonly scope: 'START' | 'RETURN' | 'BOTH';
+    readonly responseDeadlineAt: string;
+    readonly response: { readonly decision: 'CONFIRMED' | 'DISPUTED' } | null;
+    readonly acceptance: { readonly acceptanceSource: string } | null;
+  } | null;
   readonly cancellation: {
     readonly reasonCode: string | null;
     readonly reasonText: string | null;
@@ -102,10 +112,98 @@ export interface BookingView {
     reasonCode: string | null;
   }[];
 }
+
+export function PendingHandoverRecoveryBanner({
+  bookings,
+  onReview,
+}: {
+  readonly bookings: readonly BookingView[];
+  readonly onReview: (reference: string) => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  const actionable = bookings
+    .filter(
+      (booking) =>
+        booking.overdueHandoverRecovery &&
+        !booking.overdueHandoverRecovery.acceptance &&
+        (!booking.overdueHandoverRecovery.response ||
+          booking.overdueHandoverRecovery.response.decision === 'DISPUTED') &&
+        !['CANCELLED', 'COMPLETED', 'EXPIRED'].includes(booking.status),
+    )
+    .sort(
+      (left, right) =>
+        new Date(left.overdueHandoverRecovery!.responseDeadlineAt).getTime() -
+        new Date(right.overdueHandoverRecovery!.responseDeadlineAt).getTime(),
+    );
+  if (!actionable.length) return null;
+  const pendingCount = actionable.filter(
+    (booking) => !booking.overdueHandoverRecovery?.response,
+  ).length;
+  return (
+    <View>
+      {pendingCount > 1 && (
+        <Text accessibilityRole="header" style={styles.vehicle}>
+          Action required: {pendingCount} handover reports need your response
+        </Text>
+      )}
+      {actionable.map((booking) => {
+        const recovery = booking.overdueHandoverRecovery!;
+        const scopeLabel =
+          recovery.scope === 'START'
+            ? 'Pickup handover'
+            : recovery.scope === 'RETURN'
+              ? 'Return handover'
+              : 'Pickup and Return';
+        const description =
+          recovery.scope === 'START'
+            ? 'The Owner reported an overdue Pickup without inspection. Review the reported handover details before the response deadline.'
+            : recovery.scope === 'RETURN'
+              ? 'The Owner reported an overdue Return without inspection. Review the reported handover details before the response deadline.'
+              : 'The Owner reported both overdue handovers. Review the reported times before the response deadline.';
+        const remainingMs = Math.max(0, new Date(recovery.responseDeadlineAt).getTime() - now);
+        const remainingHours = Math.floor(remainingMs / 3_600_000);
+        const remainingMinutes = Math.floor((remainingMs % 3_600_000) / 60_000);
+        const disputed = recovery.response?.decision === 'DISPUTED';
+        return (
+          <Card key={booking.publicReference} style={styles.notice}>
+            <Text accessibilityRole="header" style={styles.vehicle}>
+              {disputed ? 'Under Operations review' : `Action required: Confirm ${scopeLabel}`}
+            </Text>
+            <Text style={styles.body}>
+              {disputed
+                ? `Your disagreement about the ${scopeLabel} report was sent to CarShare Operations.`
+                : description}
+            </Text>
+            {!disputed && (
+              <>
+                <Text style={styles.body}>
+                  Response due: {dateTimeLabel(recovery.responseDeadlineAt)}
+                </Text>
+                <Text accessibilityLiveRegion="polite" style={styles.body}>
+                  {remainingHours > 0
+                    ? `${remainingHours}h ${remainingMinutes}m remaining`
+                    : `${remainingMinutes}m remaining`}
+                </Text>
+                <Button label="Review handover" onPress={() => onReview(booking.publicReference)} />
+              </>
+            )}
+          </Card>
+        );
+      })}
+    </View>
+  );
+}
+
 export function MyBookingsScreen({
+  focusRecovery = false,
   initialBookingReference,
   onClose,
 }: {
+  readonly focusRecovery?: boolean;
   readonly initialBookingReference?: string;
   readonly onClose?: () => void;
 } = {}) {
@@ -163,6 +261,7 @@ export function MyBookingsScreen({
     return (
       <BookingDetail
         booking={detail.data}
+        focusRecovery={focusRecovery}
         loading={detail.isPending}
         error={detail.error}
         onBack={() => {
@@ -189,6 +288,10 @@ export function MyBookingsScreen({
       title="Bookings"
       subtitle="Everything you need before pickup, during your rental, and after return."
     >
+      <PendingHandoverRecoveryBanner
+        bookings={bookings.data ?? []}
+        onReview={(reference) => navigation.navigate('BookingRecovery', { bookingId: reference })}
+      />
       <BookingFilter
         group={group}
         open={filterOpen}
@@ -245,7 +348,13 @@ export function MyBookingsScreen({
                   {dateLabel(booking.rentalStart)} – {dateLabel(booking.rentalEnd)}
                 </Text>
                 <StatusBadge
-                  label={bookingStatusLabel(booking.status)}
+                  label={
+                    booking.workflowCompliance?.start.overdue
+                      ? 'Handover overdue'
+                      : booking.workflowCompliance?.return.overdue
+                        ? 'Return process overdue'
+                        : bookingStatusLabel(booking.status)
+                  }
                   tone={statusTone(booking.status)}
                 />
                 <Text style={styles.reference}>{booking.publicReference}</Text>
@@ -331,6 +440,7 @@ function BookingFilter({
 
 function BookingDetail({
   booking,
+  focusRecovery,
   loading,
   error,
   onBack,
@@ -340,6 +450,7 @@ function BookingDetail({
   refreshPayment,
 }: {
   readonly booking?: BookingView | undefined;
+  readonly focusRecovery: boolean;
   readonly loading: boolean;
   readonly error: Error | null;
   readonly onBack: () => void;
@@ -351,6 +462,16 @@ function BookingDetail({
   const scrollRef = useRef<ScrollView>(null);
   const scrollOffsetY = useRef(0);
   const scrollToCancelledSummaryAfterLayout = useRef(false);
+  const [now, setNow] = useState(0);
+  const [bookingDetailsOpen, setBookingDetailsOpen] = useState(false);
+  useEffect(() => {
+    const initialize = setTimeout(() => setNow(Date.now()), 0);
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => {
+      clearTimeout(initialize);
+      clearInterval(timer);
+    };
+  }, []);
   if (loading)
     return (
       <Screen leading={<BackControl label="All bookings" onPress={onBack} />} title="Booking">
@@ -379,6 +500,26 @@ function BookingDetail({
     'RETURNED',
     'COMPLETED',
   ].includes(booking.status);
+  const pickupHasBegun =
+    operational && now >= new Date(booking.pickupWindow?.opensAt ?? booking.rentalStart).getTime();
+  const rentalOperations = operational ? (
+    <RenterRentalPanel
+      focusOverdueRecovery={focusRecovery}
+      onCancellationCompleted={() => {
+        scrollToCancelledSummaryAfterLayout.current = true;
+      }}
+      {...(booking.conversationId
+        ? { onContinueResolving: () => onMessage(booking.conversationId!) }
+        : {})}
+      reference={booking.publicReference}
+      scrollResolutionFormBy={(delta) =>
+        scrollRef.current?.scrollTo({ animated: true, y: scrollOffsetY.current + delta })
+      }
+      scrollToCancellationForm={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
+      scrollToPickupCode={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
+      scrollToRecoveryResponse={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
+    />
+  ) : null;
   return (
     <Screen
       onScroll={({ nativeEvent }) => {
@@ -394,146 +535,285 @@ function BookingDetail({
       }
       subtitle={`Reference ${booking.publicReference}`}
     >
-      <VehicleImage
-        contentPath={booking.vehicle.coverPhoto?.contentPath}
-        accessibilityLabel={`${booking.vehicle.make ?? ''} ${booking.vehicle.model ?? 'vehicle'}`.trim()}
-        style={styles.hero}
-      />
-      <View style={styles.summaryRow}>
-        <StatusBadge label={bookingStatusLabel(booking.status)} tone={statusTone(booking.status)} />
-        <Text style={styles.total}>
-          {money(booking.pricing.totalMinor, booking.pricing.currency)}
-        </Text>
-      </View>
-      <Card>
-        <Detail label="Pickup" value={dateTimeLabel(booking.rentalStart)} icon="calendar-outline" />
-        <Detail
-          label="Return"
-          value={dateTimeLabel(booking.rentalEnd)}
-          icon="return-down-back-outline"
-        />
-        <Detail
-          label="Payment"
-          value={rentalPayment ? paymentLabel(rentalPayment.status) : 'No payment yet'}
-          icon="card-outline"
-        />
-        {booking.vehicle.location && (
-          <Detail
-            label="Pickup area"
-            value={`${booking.vehicle.location.city}, ${booking.vehicle.location.province}`}
-            icon="location-outline"
+      {pickupHasBegun && rentalOperations}
+      {pickupHasBegun && (
+        <>
+          <Button
+            icon="information-circle-outline"
+            label="View booking details"
+            onPress={() => setBookingDetailsOpen(true)}
+            variant="secondary"
           />
-        )}
-      </Card>
-      {booking.status === 'CANCELLED' && booking.cancellationSettlement ? (
-        <View
-          onLayout={({ nativeEvent }) => {
-            if (scrollToCancelledSummaryAfterLayout.current) {
-              scrollToCancelledSummaryAfterLayout.current = false;
-              scrollRef.current?.scrollTo({
-                animated: true,
-                y: Math.max(0, nativeEvent.layout.y - spacing.md),
-              });
-            }
-          }}
-        >
-          <Card style={styles.notice}>
-            <Text style={styles.vehicle}>Booking cancelled</Text>
-            <Text style={styles.body}>
-              Your rental did not start and custody was not transferred.
-            </Text>
-            <Detail
-              label="Refund"
-              value={money(
-                Number(booking.cancellationSettlement.refundAmountMinor),
-                booking.cancellationSettlement.currency,
+          <Modal
+            animationType="slide"
+            onRequestClose={() => setBookingDetailsOpen(false)}
+            presentationStyle="pageSheet"
+            visible={bookingDetailsOpen}
+          >
+            <Screen
+              action={
+                <Pressable
+                  accessibilityLabel="Close booking details"
+                  accessibilityRole="button"
+                  hitSlop={spacing.md}
+                  onPress={() => setBookingDetailsOpen(false)}
+                >
+                  <Icon color={colors.primary} name="close" size={28} />
+                </Pressable>
+              }
+              eyebrow="Booking details"
+              title={
+                booking.vehicle.make && booking.vehicle.model
+                  ? `${booking.vehicle.make} ${booking.vehicle.model}`
+                  : booking.publicReference
+              }
+              subtitle={`Reference ${booking.publicReference}`}
+            >
+              <Card>
+                <Detail
+                  label="Pickup"
+                  value={dateTimeLabel(booking.rentalStart)}
+                  icon="calendar-outline"
+                />
+                <Detail
+                  label="Return"
+                  value={dateTimeLabel(booking.rentalEnd)}
+                  icon="return-down-back-outline"
+                />
+                <Detail
+                  label="Payment"
+                  value={rentalPayment ? paymentLabel(rentalPayment.status) : 'No payment yet'}
+                  icon="card-outline"
+                />
+                {booking.vehicle.location && (
+                  <Detail
+                    label="Pickup area"
+                    value={`${booking.vehicle.location.city}, ${booking.vehicle.location.province}`}
+                    icon="location-outline"
+                  />
+                )}
+              </Card>
+              <Card>
+                <Text style={styles.vehicle}>Contractual handover</Text>
+                <Detail
+                  label="How you'll receive the car"
+                  value={
+                    booking.fulfillment.startMethod === 'OWNER_DELIVERY'
+                      ? 'Owner Delivery'
+                      : 'Pick up the car'
+                  }
+                  icon="navigate-outline"
+                />
+                {booking.fulfillment.startLocation && (
+                  <Detail
+                    label="Start location"
+                    value={fulfillmentLocation(booking.fulfillment.startLocation)}
+                    icon="location-outline"
+                  />
+                )}
+                {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
+                  <Detail
+                    label="Delivery fee"
+                    value={money(booking.fulfillment.deliveryFeeMinor, booking.pricing.currency)}
+                    icon="cash-outline"
+                  />
+                )}
+                <Detail
+                  label="How you'll return the car"
+                  value={
+                    booking.fulfillment.endMethod === 'OWNER_COLLECTION'
+                      ? 'Owner Collection'
+                      : 'Return it yourself'
+                  }
+                  icon="return-down-back-outline"
+                />
+                {booking.fulfillment.endLocation && (
+                  <Detail
+                    label="End location"
+                    value={fulfillmentLocation(booking.fulfillment.endLocation)}
+                    icon="location-outline"
+                  />
+                )}
+                {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
+                  <Detail
+                    label="Collection fee"
+                    value={money(booking.fulfillment.collectionFeeMinor, booking.pricing.currency)}
+                    icon="cash-outline"
+                  />
+                )}
+              </Card>
+              {booking.conversationId && (
+                <Button
+                  icon="chatbubble-outline"
+                  label="Message owner"
+                  onPress={() => {
+                    setBookingDetailsOpen(false);
+                    onMessage(booking.conversationId!);
+                  }}
+                  variant="secondary"
+                />
               )}
+            </Screen>
+          </Modal>
+        </>
+      )}
+      {!pickupHasBegun && (
+        <>
+          <VehicleImage
+            contentPath={booking.vehicle.coverPhoto?.contentPath}
+            accessibilityLabel={`${booking.vehicle.make ?? ''} ${booking.vehicle.model ?? 'vehicle'}`.trim()}
+            style={styles.hero}
+          />
+          <View style={styles.summaryRow}>
+            <StatusBadge
+              label={
+                booking.workflowCompliance?.start.overdue
+                  ? 'Handover overdue'
+                  : booking.workflowCompliance?.return.overdue
+                    ? 'Return process overdue'
+                    : bookingStatusLabel(booking.status)
+              }
+              tone={statusTone(booking.status)}
+            />
+            <Text style={styles.total}>
+              {money(booking.pricing.totalMinor, booking.pricing.currency)}
+            </Text>
+          </View>
+          <Card>
+            <Detail
+              label="Pickup"
+              value={dateTimeLabel(booking.rentalStart)}
+              icon="calendar-outline"
+            />
+            <Detail
+              label="Return"
+              value={dateTimeLabel(booking.rentalEnd)}
               icon="return-down-back-outline"
             />
             <Detail
-              label="CarShare commission retained"
-              value={money(
-                Number(booking.cancellationSettlement.commissionRetainedMinor),
-                booking.cancellationSettlement.currency,
-              )}
-              icon="receipt-outline"
+              label="Payment"
+              value={rentalPayment ? paymentLabel(rentalPayment.status) : 'No payment yet'}
+              icon="card-outline"
             />
+            {booking.vehicle.location && (
+              <Detail
+                label="Pickup area"
+                value={`${booking.vehicle.location.city}, ${booking.vehicle.location.province}`}
+                icon="location-outline"
+              />
+            )}
+          </Card>
+          {booking.status === 'CANCELLED' && booking.cancellationSettlement ? (
+            <View
+              onLayout={({ nativeEvent }) => {
+                if (scrollToCancelledSummaryAfterLayout.current) {
+                  scrollToCancelledSummaryAfterLayout.current = false;
+                  scrollRef.current?.scrollTo({
+                    animated: true,
+                    y: Math.max(0, nativeEvent.layout.y - spacing.md),
+                  });
+                }
+              }}
+            >
+              <Card style={styles.notice}>
+                <Text style={styles.vehicle}>Booking cancelled</Text>
+                <Text style={styles.body}>
+                  Your rental did not start and custody was not transferred.
+                </Text>
+                <Detail
+                  label="Refund"
+                  value={money(
+                    Number(booking.cancellationSettlement.refundAmountMinor),
+                    booking.cancellationSettlement.currency,
+                  )}
+                  icon="return-down-back-outline"
+                />
+                <Detail
+                  label="CarShare commission retained"
+                  value={money(
+                    Number(booking.cancellationSettlement.commissionRetainedMinor),
+                    booking.cancellationSettlement.currency,
+                  )}
+                  icon="receipt-outline"
+                />
+                <Detail
+                  label="Delivery retained / refunded"
+                  value={`${money(Number(booking.cancellationSettlement.deliveryRetainedMinor), booking.cancellationSettlement.currency)} / ${money(Number(booking.cancellationSettlement.deliveryRefundedMinor), booking.cancellationSettlement.currency)}`}
+                  icon="navigate-outline"
+                />
+                <Detail
+                  label="Collection refunded"
+                  value={money(
+                    Number(booking.cancellationSettlement.collectionRefundedMinor),
+                    booking.cancellationSettlement.currency,
+                  )}
+                  icon="return-down-back-outline"
+                />
+                <Text style={styles.body}>
+                  Refund status:{' '}
+                  {titleCase(booking.cancellationSettlement.refundStatus ?? 'processing')}
+                </Text>
+              </Card>
+            </View>
+          ) : null}
+          <Card>
+            <Text style={styles.vehicle}>Contractual handover</Text>
             <Detail
-              label="Delivery retained / refunded"
-              value={`${money(Number(booking.cancellationSettlement.deliveryRetainedMinor), booking.cancellationSettlement.currency)} / ${money(Number(booking.cancellationSettlement.deliveryRefundedMinor), booking.cancellationSettlement.currency)}`}
+              label="How you'll receive the car"
+              value={
+                booking.fulfillment.startMethod === 'OWNER_DELIVERY'
+                  ? 'Owner Delivery'
+                  : 'Pick up the car'
+              }
               icon="navigate-outline"
             />
+            {booking.fulfillment.startLocation && (
+              <Detail
+                label="Start location"
+                value={fulfillmentLocation(booking.fulfillment.startLocation)}
+                icon="location-outline"
+              />
+            )}
+            {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
+              <Detail
+                label="Delivery fee"
+                value={money(booking.fulfillment.deliveryFeeMinor, booking.pricing.currency)}
+                icon="cash-outline"
+              />
+            )}
             <Detail
-              label="Collection refunded"
-              value={money(
-                Number(booking.cancellationSettlement.collectionRefundedMinor),
-                booking.cancellationSettlement.currency,
-              )}
+              label="How you'll return the car"
+              value={
+                booking.fulfillment.endMethod === 'OWNER_COLLECTION'
+                  ? 'Owner Collection'
+                  : 'Return it yourself'
+              }
               icon="return-down-back-outline"
             />
-            <Text style={styles.body}>
-              Refund status:{' '}
-              {titleCase(booking.cancellationSettlement.refundStatus ?? 'processing')}
-            </Text>
+            {booking.fulfillment.endLocation && (
+              <Detail
+                label="End location"
+                value={fulfillmentLocation(booking.fulfillment.endLocation)}
+                icon="location-outline"
+              />
+            )}
+            {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
+              <Detail
+                label="Collection fee"
+                value={money(booking.fulfillment.collectionFeeMinor, booking.pricing.currency)}
+                icon="cash-outline"
+              />
+            )}
           </Card>
-        </View>
-      ) : null}
-      <Card>
-        <Text style={styles.vehicle}>Contractual handover</Text>
-        <Detail
-          label="How you'll receive the car"
-          value={
-            booking.fulfillment.startMethod === 'OWNER_DELIVERY'
-              ? 'Owner Delivery'
-              : 'Pick up the car'
-          }
-          icon="navigate-outline"
-        />
-        {booking.fulfillment.startLocation && (
-          <Detail
-            label="Start location"
-            value={fulfillmentLocation(booking.fulfillment.startLocation)}
-            icon="location-outline"
-          />
-        )}
-        {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
-          <Detail
-            label="Delivery fee"
-            value={money(booking.fulfillment.deliveryFeeMinor, booking.pricing.currency)}
-            icon="cash-outline"
-          />
-        )}
-        <Detail
-          label="How you'll return the car"
-          value={
-            booking.fulfillment.endMethod === 'OWNER_COLLECTION'
-              ? 'Owner Collection'
-              : 'Return it yourself'
-          }
-          icon="return-down-back-outline"
-        />
-        {booking.fulfillment.endLocation && (
-          <Detail
-            label="End location"
-            value={fulfillmentLocation(booking.fulfillment.endLocation)}
-            icon="location-outline"
-          />
-        )}
-        {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
-          <Detail
-            label="Collection fee"
-            value={money(booking.fulfillment.collectionFeeMinor, booking.pricing.currency)}
-            icon="cash-outline"
-          />
-        )}
-      </Card>
-      {booking.conversationId && (
-        <Button
-          icon="chatbubble-outline"
-          label="Message owner"
-          onPress={() => onMessage(booking.conversationId!)}
-          variant="secondary"
-        />
+          {booking.conversationId && (
+            <Button
+              icon="chatbubble-outline"
+              label="Message owner"
+              onPress={() => onMessage(booking.conversationId!)}
+              variant="secondary"
+            />
+          )}
+        </>
       )}
       {(booking.status === 'HOLD' || booking.status === 'AWAITING_PAYMENT') && (
         <Card style={styles.notice}>
@@ -581,22 +861,7 @@ function BookingDetail({
           onAction={onBack}
         />
       )}
-      {operational && (
-        <RenterRentalPanel
-          onCancellationCompleted={() => {
-            scrollToCancelledSummaryAfterLayout.current = true;
-          }}
-          {...(booking.conversationId
-            ? { onContinueResolving: () => onMessage(booking.conversationId!) }
-            : {})}
-          reference={booking.publicReference}
-          scrollResolutionFormBy={(delta) =>
-            scrollRef.current?.scrollTo({ animated: true, y: scrollOffsetY.current + delta })
-          }
-          scrollToCancellationForm={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
-          scrollToPickupCode={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
-        />
-      )}
+      {!pickupHasBegun && rentalOperations}
       <RenterClaimsPanel bookingReference={booking.publicReference} />
       {booking.status === 'COMPLETED' && <ReviewPanel bookingReference={booking.publicReference} />}
       <SectionHeader title="Trip timeline" />
@@ -608,7 +873,35 @@ function BookingDetail({
               {index < booking.statusHistory.length - 1 && <View style={styles.timelineLine} />}
             </View>
             <View style={styles.flex}>
-              <Text style={styles.vehicle}>{bookingStatusLabel(entry.toStatus)}</Text>
+              <Text style={styles.vehicle}>
+                {entry.reasonCode === 'START_INSPECTION_EVIDENCE_WAIVED'
+                  ? 'Start inspection evidence waived'
+                  : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_START_REPORTED'
+                    ? 'Owner reported Pickup without inspection'
+                    : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_RETURN_REPORTED'
+                      ? 'Owner reported Return without inspection'
+                      : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_BOTH_REPORTED'
+                        ? 'Owner reported Pickup and Return without inspections'
+                        : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_CONFIRMED'
+                          ? 'Overdue handover report confirmed'
+                          : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_DISPUTED'
+                            ? 'Overdue handover report disputed'
+                            : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_ACCEPTED'
+                              ? 'Overdue handover report accepted'
+                              : entry.reasonCode === 'RETURN_INSPECTION_EVIDENCE_WAIVED'
+                                ? 'Return inspection evidence waived'
+                                : entry.reasonCode ===
+                                    'RETURN_CONFIRMED_WITHOUT_INSPECTION_EVIDENCE'
+                                  ? 'Return completed without inspection evidence'
+                                  : entry.reasonCode ===
+                                      'PICKUP_CONFIRMED_WITHOUT_INSPECTION_EVIDENCE'
+                                    ? 'Handover completed without inspection evidence'
+                                    : entry.reasonCode === 'PICKUP_CONFIRMED'
+                                      ? 'Verified handover'
+                                      : entry.reasonCode === 'RETURN_CONFIRMED'
+                                        ? 'Verified return'
+                                        : bookingStatusLabel(entry.toStatus)}
+              </Text>
               <Text style={styles.body}>{dateTimeLabel(entry.occurredAt)}</Text>
             </View>
           </View>

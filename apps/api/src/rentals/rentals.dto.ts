@@ -189,6 +189,49 @@ export class ReturnConfirmationDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(3) @MaxLength(1000) reason?: string;
 }
 
+export class HandoverEvidenceWaiverDto {
+  @ApiProperty() @IsIn(['HANDOVER_EVIDENCE_WAIVER_V1']) acknowledgementVersion!: string;
+  @ApiProperty() @IsIn([true]) acknowledged!: boolean;
+  @ApiPropertyOptional({
+    description: 'Required participant-reported physical handover or Return time.',
+  })
+  @IsOptional()
+  @IsDateString()
+  reportedPhysicalHandoverAt?: string;
+}
+
+export class PickupHandoverResponseDto {
+  @ApiProperty({ enum: ['CONFIRMED', 'DISPUTED', 'NOT_RECEIVED'] })
+  @IsIn(['CONFIRMED', 'DISPUTED', 'NOT_RECEIVED'])
+  decision!: 'CONFIRMED' | 'DISPUTED' | 'NOT_RECEIVED';
+
+  @ApiPropertyOptional({ description: 'Required only when proposing a different handover time.' })
+  @IsOptional()
+  @IsDateString()
+  proposedPhysicalHandoverAt?: string;
+}
+
+export class ConfirmVehicleReceiptDto {
+  @ApiProperty() @IsIn([true]) vehicleReceived!: boolean;
+}
+
+export class OverdueHandoverRecoveryDto {
+  @ApiProperty({ enum: ['START', 'RETURN', 'BOTH'] })
+  @IsIn(['START', 'RETURN', 'BOTH'])
+  scope!: 'START' | 'RETURN' | 'BOTH';
+  @ApiPropertyOptional() @IsOptional() @IsDateString() reportedPickupAt?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() reportedReturnAt?: string;
+  @ApiProperty() @IsIn(['OVERDUE_HANDOVER_RECOVERY_V1']) acknowledgementVersion!: string;
+  @ApiProperty() @IsIn([true]) acknowledged!: boolean;
+}
+
+export class OverdueHandoverRecoveryResponseDto {
+  @ApiProperty({ enum: ['CONFIRMED', 'DISPUTED'] })
+  @IsIn(['CONFIRMED', 'DISPUTED'])
+  decision!: 'CONFIRMED' | 'DISPUTED';
+  @ApiPropertyOptional() @IsOptional() @IsString() @MinLength(3) @MaxLength(1000) reason?: string;
+}
+
 export class CreateClaimDto {
   @ApiProperty({ enum: PostReturnClaimCategory })
   @IsEnum(PostReturnClaimCategory)

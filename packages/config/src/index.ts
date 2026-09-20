@@ -226,6 +226,22 @@ const workerEnvironmentSchema = commonSchema
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.url(),
     OWNER_RESPONSE_TTL_MINUTES: z.coerce.number().int().min(5).max(240).default(60),
+    EMAIL_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    EMAIL_PROVIDER: z.enum(['disabled', 'development', 'postmark']).default('disabled'),
+    POSTMARK_SERVER_TOKEN: z.string().min(1).optional(),
+    POSTMARK_FROM_EMAIL: z.string().email().optional(),
+    POSTMARK_MESSAGE_STREAM: z.string().min(1).default('outbound'),
+    SMS_TRANSACTIONAL_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    SMS_PROVIDER: z.enum(['disabled', 'development', 'semaphore']).default('disabled'),
+    SEMAPHORE_API_KEY: z.string().min(1).optional(),
+    SEMAPHORE_SENDER_NAME: z.string().min(1).max(11).optional(),
+    SEMAPHORE_API_URL: z.url().default('https://api.semaphore.co/api/v4/messages'),
     SENTRY_ENABLED: z
       .enum(['true', 'false'])
       .default('false')

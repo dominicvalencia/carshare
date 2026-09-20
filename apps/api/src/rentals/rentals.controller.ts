@@ -14,6 +14,8 @@ import type { RequestPrincipal } from '../security/security-context';
 import { ClaimsService } from '../claims/claims.service';
 import {
   CreateClaimDto,
+  HandoverEvidenceWaiverDto,
+  ConfirmVehicleReceiptDto,
   AdminHandoverResolutionDto,
   AdminInspectionCorrectionQueryDto,
   CreateIncidentDto,
@@ -27,6 +29,9 @@ import {
   PickupDiscrepancyResponseDto,
   PickupDiscrepancyResolutionReviewDto,
   PickupHandoverOperationsResolutionDto,
+  PickupHandoverResponseDto,
+  OverdueHandoverRecoveryDto,
+  OverdueHandoverRecoveryResponseDto,
   SubmitInspectionDto,
   UpsertInspectionDraftMediaDto,
   VerifyPickupDto,
@@ -41,6 +46,37 @@ import { RentalsService } from './rentals.service';
 export class RenterRentalsController {
   constructor(private readonly rentals: RentalsService) {}
 
+  @Post('overdue-handover-recovery/respond')
+  respondToOverdueRecovery(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: OverdueHandoverRecoveryResponseDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.respondToOverdueHandoverRecovery(
+      principal.userId,
+      reference,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post('return/evidence-waiver')
+  waiveReturn(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: HandoverEvidenceWaiverDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.waiveEvidence(
+      principal.userId,
+      reference,
+      'RETURN',
+      input,
+      requestMetadata(request),
+    );
+  }
+
   @Get()
   detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('reference') reference: string) {
     return this.rentals.participantDetail(principal, reference);
@@ -53,6 +89,21 @@ export class RenterRentalsController {
     @Req() request: Request,
   ) {
     return this.rentals.issuePickupCode(principal.userId, reference, requestMetadata(request));
+  }
+
+  @Post('pickup/handover-report/respond')
+  respondToPickupHandoverReport(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: PickupHandoverResponseDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.respondToPickupHandoverReport(
+      principal.userId,
+      reference,
+      input,
+      requestMetadata(request),
+    );
   }
 
   @Post('pickup/inspection/review')
@@ -159,6 +210,68 @@ export class OwnerRentalsController {
     private readonly rentals: RentalsService,
     private readonly claims: ClaimsService,
   ) {}
+
+  @Post('overdue-handover-recovery')
+  overdueHandoverRecovery(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: OverdueHandoverRecoveryDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.reportOverdueHandoverRecovery(
+      principal.userId,
+      reference,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post('pickup/evidence-waiver')
+  waiveStart(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: HandoverEvidenceWaiverDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.waiveEvidence(
+      principal.userId,
+      reference,
+      'START',
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post('return/evidence-waiver')
+  waiveOverdueCollectionReturn(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: HandoverEvidenceWaiverDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.waiveEvidence(
+      principal.userId,
+      reference,
+      'RETURN',
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post('return/receipt')
+  receipt(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: ConfirmVehicleReceiptDto,
+    @Req() request: Request,
+  ) {
+    return this.rentals.confirmVehicleReceipt(
+      principal.userId,
+      reference,
+      input,
+      requestMetadata(request),
+    );
+  }
 
   @Get()
   detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('reference') reference: string) {

@@ -22,7 +22,7 @@ export function withDeepLinkParent(state: ParsedState, mode: MobileMode): Parsed
 
 export function parentTabFor(destination: string, mode: MobileMode): string {
   if (destination === 'Conversation' || destination === 'Notifications') return 'Messages';
-  if (destination === 'Booking' || destination === 'Claim')
+  if (destination === 'Booking' || destination === 'BookingRecovery' || destination === 'Claim')
     return mode === 'owner' ? 'Requests' : 'Bookings';
   if (destination === 'OwnerEarnings' || destination === 'Payout') return 'More';
   if (['VehicleDetails', 'HostProfile', 'PublicReviews', 'Favorites'].includes(destination))

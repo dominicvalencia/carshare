@@ -741,6 +741,20 @@ export class PayoutsService {
       });
       if (!locked) this.notFound('Payout was not found.');
       if (locked.status !== PayoutStatus.APPROVED) return { claimed: false, payout: locked };
+      if (!locked.submittedAt && !locked.providerPayoutId) {
+        const workflow = await transaction.$queryRaw<{ blocker: string | null }[]>(Prisma.sql`
+          SELECT "booking_workflow_compliance_blocker"(e."booking_id") AS blocker
+          FROM "payout_items" p JOIN "owner_earnings" e ON e."id" = p."owner_earning_id"
+          WHERE p."payout_id" = ${payoutId}::uuid AND p."active_allocation"
+          FOR UPDATE OF e
+        `);
+        const blocker = workflow.find((item) => item.blocker)?.blocker;
+        if (blocker)
+          this.conflict(
+            'PAYOUT_WORKFLOW_INCOMPLETE',
+            `Required rental workflow is incomplete: ${blocker}.`,
+          );
+      }
       const payout = await transaction.payout.update({
         data: {
           operations: {

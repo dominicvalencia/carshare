@@ -21,6 +21,22 @@ const bookingsSource = readFileSync(
 );
 
 describe('inspection correction mobile synchronization', () => {
+  it('uses explicit consequential acknowledgement, independent waiver states and receipt confirmation', () => {
+    for (const copy of [
+      'Complete without inspection',
+      'Go back and complete inspection',
+      'Continue without inspection',
+      'Pickup verification required',
+      'Waiting for the owner to confirm vehicle receipt.',
+      'Return completed without inspection evidence',
+    ])
+      expect(source).toContain(copy);
+    expect(source).toContain('acknowledged: true');
+    expect(source).toContain('HANDOVER_EVIDENCE_WAIVER_ACKNOWLEDGEMENT_VERSION');
+    expect(source).toContain('vehicleReceived: true');
+    expect(source).toContain('accessibilityRole="button"');
+    expect(source).not.toContain('CarShare cannot help');
+  });
   it('clamps the active-rental scroll offset when dynamic content becomes shorter', () => {
     expect(ownerRentalsSource).toContain('<NestedScreen\n      constrainOverscroll');
     expect(ownerRentalsSource).toContain('onContentSizeChange={(_width, height) =>');
@@ -44,10 +60,13 @@ describe('inspection correction mobile synchronization', () => {
     expect(source.indexOf('{pickupOverdue && (')).toBeLessThan(
       source.indexOf("detail.fulfillment.startMethod === 'OWNER_DELIVERY'"),
     );
-    expect(source.indexOf('Handover confirmation overdue')).toBeLessThan(
+    expect(source.indexOf('Handover overdue')).toBeLessThan(
       source.indexOf('Your car is being delivered'),
     );
-    expect(source).toContain('label="Report handover issue"');
+    expect(source).toContain('label="Complete handover"');
+    expect(source).toContain('detail.workflowCompliance?.start.overdue');
+    expect(source).toContain('pendingAttachment.current');
+    expect(source).toContain('label="Retry"');
     expect(source.lastIndexOf('{pickupOverdue && (')).toBeLessThan(
       source.lastIndexOf("detail.fulfillment.startMethod === 'OWNER_DELIVERY'"),
     );
@@ -158,11 +177,119 @@ describe('inspection correction mobile synchronization', () => {
     expect(source).toContain("detail.handoverTravel.startStatus === 'ARRIVED'");
     expect(source).toContain("detail.handoverTravel.returnStatus === 'ARRIVED'");
     expect(source).toContain('needsInspection && !handoverStarted && pickupHandoverReady');
-    expect(source).toContain('!returned && returnHandoverReady');
+    expect(source).toContain('!returned &&');
+    expect(source).toContain('!returnWaived &&');
+    expect(source).toContain('const returnRecoveryReady = returnHandoverReady || returnOverdue;');
+    expect(source).toContain('!returnOverdue &&');
+    expect(source).toContain("'OWNER_COLLECTION_ARRIVAL_REQUIRED'");
+    expect(source).toContain('ownerInitiatedReturn');
+    expect(source).toContain('Vehicle already received?');
+    expect(source).toContain('CarShare will have limited evidence available');
+    expect(source).toContain('!returnInspectionStarted && (');
+    expect(source).toContain('returnInspectionStarted && (');
+    expect(source).toContain('label="Start return handover"');
+    expect(source).toContain('{!returnOverdue && (\n            <Action label="Start return"');
+    expect(source.match(/returnRecoveryReady &&\n\s*!returnOverdue &&/g)).toHaveLength(2);
+    expect(source).toContain(
+      'Waiting for the owner to report the overdue Return without inspection.',
+    );
+    expect(source).toContain('const bothPhasesOverdue = pickupOverdue && returnOverdue;');
+    expect(source).toContain(
+      'const returnOverdue = returnWorkflowOverdue || returnRecoveryOverdue;',
+    );
+    expect(source).toContain("? 'Pickup and Return overdue'");
+    expect(source).toContain(
+      "detail.pickupWindowStart && detail.status === 'READY_FOR_PICKUP' && !pickupOverdue",
+    );
+    expect(source).toContain('!startWaived && !pickupOverdue && (');
+    expect(source).toContain('Pickup and Return are overdue');
+    expect(source).toContain('Waiting for the owner to report both handovers without inspections.');
+    expect(source).toContain('have 24 hours to confirm or disagree');
+    expect(source).toContain('!returnOverdue &&');
+    expect(source).toContain('!pickupOverdue &&');
+    expect(source).not.toContain('label="Complete return inspection"');
+    expect(source).not.toContain('scrollToReturnInspectionAfterLayout');
     expect(source).toContain('Waiting for the owner to arrive');
     expect(source).toContain("actionsEnabled={detail.status === 'RETURN_PENDING'}");
     expect(source).toContain('actionsEnabled && next');
     expect(source).not.toContain('/owner/bookings/${reference}/rental/return/inspection');
+  });
+
+  it('offers the owner one recovery action for exactly the overdue phases', () => {
+    expect(source).toContain("const overdueRecoveryScope: 'START' | 'RETURN' | 'BOTH' | null =");
+    expect(source).toContain('pickupOverdue && returnRecoveryOverdue');
+    expect(source).toContain("? 'BOTH'");
+    expect(source).toContain('{overdueRecoveryScope && !detail.overdueHandoverRecovery && (');
+    expect(source).toContain('<OwnerOverdueRecoveryAction');
+    expect(source).toContain('scope={overdueRecoveryScope}');
+    expect(source).toContain('{pickupOverdue && !startWaived && !overdueRecoveryScope && (');
+    expect(source).toContain(
+      "detail.fulfillment.startMethod === 'OWNER_DELIVERY' &&\n        !pickupOverdue &&",
+    );
+    expect(
+      source.match(
+        /detail\.fulfillment\.startMethod === 'OWNER_DELIVERY' &&\n\s*!pickupOverdue &&/g,
+      ),
+    ).toHaveLength(2);
+    expect(source).toContain(
+      'needsInspection && !handoverStarted && !pickupHandoverReady && !pickupOverdue',
+    );
+    expect(source).toContain('Waiting for renter response');
+    expect(source).toContain('No response accepts the report automatically.');
+    expect(source).toContain('Complete booking without inspections');
+    expect(source).toContain("? 'Pickup and Return overdue'");
+    expect(source).toContain("? 'Pickup overdue'");
+    expect(source).toContain("? 'Return overdue'");
+    expect(source).toContain('Return scheduled: {dateTimeLabel(detail.rentalEnd)}');
+    expect(source).toContain("detail.status === 'ACTIVE' && !returnRecoveryOverdue && (");
+    expect(source).toContain(
+      "detail.workflowCompliance?.return.evidenceOutcome !== 'WAIVED' &&\n        !overdueRecoveryScope",
+    );
+    expect(source).toContain(
+      'detail.workflowCompliance?.return.overdue && !returnWaived && !overdueRecoveryScope',
+    );
+    expect(source).toContain(
+      "{scope !== 'START' && <Text style={styles.cardTitle}>Your payout remains pending</Text>}",
+    );
+    expect(source).toContain('Vehicle given to renter');
+    expect(source).toContain('Vehicle returned to owner');
+    expect(source).toContain('The renter will be notified and has 24 hours to disagree.');
+    expect(source).toContain('both reported handover times are accepted automatically.');
+    expect(source).toContain('the reported pickup time is accepted automatically.');
+    expect(source).toContain('the reported Return time is accepted automatically.');
+    expect(source).toContain('Complete without inspections?');
+    expect(source).toContain("? 'Report handover'");
+    expect(source).toContain("? 'Report return'");
+    expect(source).toContain(": 'Report both handovers'");
+    expect(source).not.toContain('Notify renter and start 24-hour review');
+    expect(source).toContain('/rental/overdue-handover-recovery');
+    expect(source).toContain("label={`Confirm ${recovery.scope === 'START'");
+    expect(source).toContain('Owner reported Return without inspection');
+    expect(source).toContain('report awaiting your response`');
+    expect(source).toContain("? 'Pickup completed'");
+    expect(source).not.toContain('The reported times are correct');
+    expect(source).toContain('Send disagreement to Operations');
+    expect(source).toContain('CarShare will have limited evidence to help');
+    expect(source).toContain('{!startWaived && (');
+    expect(source).toContain('Pickup odometer: {odometerLabel(pickup?.odometerMeters)}');
+    expect(bookingsSource).toContain(
+      'operational && now >= new Date(booking.pickupWindow?.opensAt ?? booking.rentalStart).getTime();',
+    );
+    expect(bookingsSource).toContain('{pickupHasBegun && rentalOperations}');
+    expect(bookingsSource).toContain('{!pickupHasBegun && rentalOperations}');
+    expect(bookingsSource).toContain('label="View booking details"');
+    expect(bookingsSource).toContain("'OVERDUE_HANDOVER_RECOVERY_RETURN_REPORTED'");
+    expect(bookingsSource).toContain("'Owner reported Return without inspection'");
+    expect(bookingsSource).toContain('`Action required: Confirm ${scopeLabel}`');
+    expect(bookingsSource).toContain('Response due: {dateTimeLabel(recovery.responseDeadlineAt)}');
+    expect(bookingsSource).toContain('handover reports need your response');
+    expect(bookingsSource).toContain('Under Operations review');
+    expect(bookingsSource).toContain('label="Review handover"');
+    expect(source).toContain('scrollToRecoveryResponse?.(');
+    expect(bookingsSource).toContain('presentationStyle="pageSheet"');
+    expect(bookingsSource).toContain('visible={bookingDetailsOpen}');
+    expect(bookingsSource).toContain('accessibilityLabel="Close booking details"');
+    expect(bookingsSource).toContain('{!pickupHasBegun && (');
   });
 
   it('preloads active vehicle issues and snapshots newly discovered issues once', () => {

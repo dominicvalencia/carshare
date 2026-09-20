@@ -38,6 +38,7 @@ export type RootStackParamList = {
   OwnerRentals: undefined;
   OwnerEarnings: undefined;
   Booking: { bookingId: string };
+  BookingRecovery: { bookingId: string };
   Claim: { claimId: string };
   Payout: { payoutId: string };
   HostProfile: { hostReference: string };

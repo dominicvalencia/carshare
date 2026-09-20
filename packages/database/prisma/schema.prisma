@@ -764,6 +764,7 @@ enum NotificationDeliveryStatus {
   RETRYABLE_FAILURE
   PERMANENT_FAILURE
   SKIPPED
+  UNKNOWN
 }
 
 enum PushProviderCode {
@@ -855,79 +856,86 @@ model User {
   createdAt              DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt              DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  profile                     UserProfile?
-  roles                       UserRole[]
-  sessions                    Session[]
-  authTokens                  AuthToken[]
-  otpChallenges               OtpChallenge[]
-  ownerProfile                OwnerProfile?
-  verifications               Verification[]                       @relation("VerificationSubject")
-  reviewedVerifications       Verification[]                       @relation("VerificationReviewer")
-  addressAssessments          Verification[]                       @relation("VerificationAddressAssessor")
-  uploadedFiles               FileAsset[]
-  securityEvents              SecurityEvent[]
-  auditLogs                   AuditLog[]                           @relation("AuditActor")
-  ownedVehicles               Vehicle[]                            @relation("VehicleOwnerUser")
-  vehiclePolicyVersions       VehiclePolicyVersion[]               @relation("VehiclePolicyCreator")
-  vehicleBlocksCreated        VehicleBlockedPeriod[]               @relation("VehicleBlockCreator")
-  vehicleStatusChanges        VehicleStatusHistory[]               @relation("VehicleStatusActor")
-  vehicleDocumentsReviewed    VehicleDocument[]                    @relation("VehicleDocumentReviewer")
-  favorites                   UserFavorite[]
-  pricingQuotes               PricingQuote[]                       @relation("QuoteRenter")
-  analyticsEvents             AnalyticsEvent[]
-  renterBookings              Booking[]                            @relation("BookingRenter")
-  ownerBookings               Booking[]                            @relation("BookingOwner")
-  bookingStatusActions        BookingStatusHistory[]               @relation("BookingStatusActor")
-  bookingCancellations        BookingCancellation[]                @relation("BookingCancellationActor")
-  bookingOwnerDecisions       BookingOwnerDecision[]               @relation("BookingOwnerDecisionActor")
-  bookingIdempotency          BookingIdempotencyRecord[]
-  commissionRulesCreated      CommissionRule[]                     @relation("CommissionRuleCreator")
-  inspectionsSubmitted        Inspection[]                         @relation("InspectionSubmitter")
-  inspectionMediaSubmitted    InspectionMedia[]                    @relation("InspectionMediaSubmitter")
-  inspectionConfirmations     InspectionConfirmation[]
-  pickupChallengesIssued      InspectionVerificationChallenge[]    @relation("PickupChallengeIssuer")
-  pickupChallengesConsumed    InspectionVerificationChallenge[]    @relation("PickupChallengeConsumer")
-  handoverTravelEvents        BookingHandoverTravelEvent[]         @relation("HandoverTravelActor")
-  inspectionAmendments        InspectionAmendment[]                @relation("InspectionAmendmentCreator")
-  inspectionAmendmentReviews  InspectionAmendment[]                @relation("InspectionAmendmentReviewer")
-  inspectionConditionIssues   InspectionConditionIssue[]           @relation("InspectionConditionIssueCreator")
-  vehicleKnownIssuesCreated   VehicleKnownIssue[]                  @relation("VehicleKnownIssueCreator")
-  vehicleKnownIssuesResolved  VehicleKnownIssue[]                  @relation("VehicleKnownIssueResolver")
-  vehicleKnownIssueEvidence   VehicleKnownIssueEvidence[]          @relation("VehicleKnownIssueEvidenceUploader")
-  pickupDiscrepancyResponses  PickupDiscrepancyResponse[]          @relation("PickupDiscrepancyResponder")
-  pickupResolutionReviews     PickupDiscrepancyResolutionReview[]  @relation("PickupDiscrepancyReviewer")
-  pickupOperationsResolutions PickupHandoverOperationsResolution[] @relation("PickupHandoverOperationsResolver")
-  postReturnClaims            PostReturnClaim[]                    @relation("PostReturnClaimSubmitter")
-  claimLateOverrides          PostReturnClaim[]                    @relation("ClaimLateOverride")
-  claimEvidenceSubmitted      PostReturnClaimEvidence[]            @relation("ClaimEvidenceSubmitter")
-  claimResponses              ClaimResponse[]                      @relation("ClaimResponseRenter")
-  claimAdjudications          ClaimAdjudication[]                  @relation("ClaimAdjudicator")
-  disputesOpened              Dispute[]                            @relation("DisputeOpener")
-  disputesResolved            Dispute[]                            @relation("DisputeResolver")
-  disputeEvidenceSubmitted    DisputeEvidence[]                    @relation("DisputeEvidenceSubmitter")
-  earningHoldsCreated         EarningHold[]                        @relation("EarningHoldCreator")
-  earningHoldsReleased        EarningHold[]                        @relation("EarningHoldReleaser")
-  rentalIncidents             RentalIncident[]                     @relation("RentalIncidentReporter")
-  payoutAccountsCreated       OwnerPayoutAccount[]                 @relation("PayoutAccountCreator")
-  payoutEligibilitiesSet      PayoutEligibility[]                  @relation("PayoutEligibilityActor")
-  payoutBatchesCreated        PayoutBatch[]                        @relation("PayoutBatchCreator")
-  payoutsCreated              Payout[]                             @relation("PayoutCreator")
-  payoutsApproved             Payout[]                             @relation("PayoutApprover")
-  payoutOperations            PayoutOperation[]                    @relation("PayoutOperationActor")
-  conversationParticipants    ConversationParticipant[]
-  sentMessages                Message[]                            @relation("MessageSender")
-  notifications               Notification[]
-  notificationPreferences     NotificationPreference[]
-  devicePushTokens            DevicePushToken[]
-  authoredReviews             Review[]                             @relation("ReviewAuthor")
-  subjectReviews              Review[]                             @relation("ReviewSubjectUser")
-  supportTicketsCreated       SupportTicket[]                      @relation("SupportTicketCreator")
-  supportTicketsAssigned      SupportTicket[]                      @relation("SupportTicketAssignee")
-  supportMessages             SupportTicketMessage[]
-  moderationReportsCreated    ModerationReport[]                   @relation("ModerationReporter")
-  moderationReportsAgainst    ModerationReport[]                   @relation("ModerationReportedUser")
-  moderationReportsResolved   ModerationReport[]                   @relation("ModerationResolver")
-  adminIdentity               AdminUser?                           @relation("AdminCredential")
+  profile                           UserProfile?
+  roles                             UserRole[]
+  sessions                          Session[]
+  authTokens                        AuthToken[]
+  otpChallenges                     OtpChallenge[]
+  ownerProfile                      OwnerProfile?
+  verifications                     Verification[]                           @relation("VerificationSubject")
+  reviewedVerifications             Verification[]                           @relation("VerificationReviewer")
+  addressAssessments                Verification[]                           @relation("VerificationAddressAssessor")
+  uploadedFiles                     FileAsset[]
+  securityEvents                    SecurityEvent[]
+  auditLogs                         AuditLog[]                               @relation("AuditActor")
+  ownedVehicles                     Vehicle[]                                @relation("VehicleOwnerUser")
+  vehiclePolicyVersions             VehiclePolicyVersion[]                   @relation("VehiclePolicyCreator")
+  vehicleBlocksCreated              VehicleBlockedPeriod[]                   @relation("VehicleBlockCreator")
+  vehicleStatusChanges              VehicleStatusHistory[]                   @relation("VehicleStatusActor")
+  vehicleDocumentsReviewed          VehicleDocument[]                        @relation("VehicleDocumentReviewer")
+  favorites                         UserFavorite[]
+  pricingQuotes                     PricingQuote[]                           @relation("QuoteRenter")
+  analyticsEvents                   AnalyticsEvent[]
+  renterBookings                    Booking[]                                @relation("BookingRenter")
+  ownerBookings                     Booking[]                                @relation("BookingOwner")
+  bookingStatusActions              BookingStatusHistory[]                   @relation("BookingStatusActor")
+  bookingCancellations              BookingCancellation[]                    @relation("BookingCancellationActor")
+  bookingOwnerDecisions             BookingOwnerDecision[]                   @relation("BookingOwnerDecisionActor")
+  bookingIdempotency                BookingIdempotencyRecord[]
+  commissionRulesCreated            CommissionRule[]                         @relation("CommissionRuleCreator")
+  inspectionsSubmitted              Inspection[]                             @relation("InspectionSubmitter")
+  inspectionMediaSubmitted          InspectionMedia[]                        @relation("InspectionMediaSubmitter")
+  inspectionConfirmations           InspectionConfirmation[]
+  pickupChallengesIssued            InspectionVerificationChallenge[]        @relation("PickupChallengeIssuer")
+  pickupChallengesConsumed          InspectionVerificationChallenge[]        @relation("PickupChallengeConsumer")
+  handoverTravelEvents              BookingHandoverTravelEvent[]             @relation("HandoverTravelActor")
+  handoverEvidenceWaivers           BookingHandoverEvidenceWaiver[]
+  handoverReturnReceipts            BookingHandoverReturnReceipt[]
+  pickupHandoverReports             BookingPickupHandoverReport[]            @relation("PickupHandoverReporter")
+  pickupHandoverResponses           BookingPickupHandoverResponse[]          @relation("PickupHandoverResponder")
+  overdueHandoverRecoveriesReported BookingOverdueHandoverRecovery[]         @relation("OverdueHandoverRecoveryReporter")
+  overdueHandoverRecoveryResponses  BookingOverdueHandoverRecoveryResponse[] @relation("OverdueHandoverRecoveryResponder")
+  overdueHandoverRecoveryReminders  BookingOverdueHandoverRecoveryReminder[]
+  inspectionAmendments              InspectionAmendment[]                    @relation("InspectionAmendmentCreator")
+  inspectionAmendmentReviews        InspectionAmendment[]                    @relation("InspectionAmendmentReviewer")
+  inspectionConditionIssues         InspectionConditionIssue[]               @relation("InspectionConditionIssueCreator")
+  vehicleKnownIssuesCreated         VehicleKnownIssue[]                      @relation("VehicleKnownIssueCreator")
+  vehicleKnownIssuesResolved        VehicleKnownIssue[]                      @relation("VehicleKnownIssueResolver")
+  vehicleKnownIssueEvidence         VehicleKnownIssueEvidence[]              @relation("VehicleKnownIssueEvidenceUploader")
+  pickupDiscrepancyResponses        PickupDiscrepancyResponse[]              @relation("PickupDiscrepancyResponder")
+  pickupResolutionReviews           PickupDiscrepancyResolutionReview[]      @relation("PickupDiscrepancyReviewer")
+  pickupOperationsResolutions       PickupHandoverOperationsResolution[]     @relation("PickupHandoverOperationsResolver")
+  postReturnClaims                  PostReturnClaim[]                        @relation("PostReturnClaimSubmitter")
+  claimLateOverrides                PostReturnClaim[]                        @relation("ClaimLateOverride")
+  claimEvidenceSubmitted            PostReturnClaimEvidence[]                @relation("ClaimEvidenceSubmitter")
+  claimResponses                    ClaimResponse[]                          @relation("ClaimResponseRenter")
+  claimAdjudications                ClaimAdjudication[]                      @relation("ClaimAdjudicator")
+  disputesOpened                    Dispute[]                                @relation("DisputeOpener")
+  disputesResolved                  Dispute[]                                @relation("DisputeResolver")
+  disputeEvidenceSubmitted          DisputeEvidence[]                        @relation("DisputeEvidenceSubmitter")
+  earningHoldsCreated               EarningHold[]                            @relation("EarningHoldCreator")
+  earningHoldsReleased              EarningHold[]                            @relation("EarningHoldReleaser")
+  rentalIncidents                   RentalIncident[]                         @relation("RentalIncidentReporter")
+  payoutAccountsCreated             OwnerPayoutAccount[]                     @relation("PayoutAccountCreator")
+  payoutEligibilitiesSet            PayoutEligibility[]                      @relation("PayoutEligibilityActor")
+  payoutBatchesCreated              PayoutBatch[]                            @relation("PayoutBatchCreator")
+  payoutsCreated                    Payout[]                                 @relation("PayoutCreator")
+  payoutsApproved                   Payout[]                                 @relation("PayoutApprover")
+  payoutOperations                  PayoutOperation[]                        @relation("PayoutOperationActor")
+  conversationParticipants          ConversationParticipant[]
+  sentMessages                      Message[]                                @relation("MessageSender")
+  notifications                     Notification[]
+  notificationPreferences           NotificationPreference[]
+  devicePushTokens                  DevicePushToken[]
+  authoredReviews                   Review[]                                 @relation("ReviewAuthor")
+  subjectReviews                    Review[]                                 @relation("ReviewSubjectUser")
+  supportTicketsCreated             SupportTicket[]                          @relation("SupportTicketCreator")
+  supportTicketsAssigned            SupportTicket[]                          @relation("SupportTicketAssignee")
+  supportMessages                   SupportTicketMessage[]
+  moderationReportsCreated          ModerationReport[]                       @relation("ModerationReporter")
+  moderationReportsAgainst          ModerationReport[]                       @relation("ModerationReportedUser")
+  moderationReportsResolved         ModerationReport[]                       @relation("ModerationResolver")
+  adminIdentity                     AdminUser?                               @relation("AdminCredential")
 
   @@index([status])
   @@map("users")
@@ -1888,6 +1896,7 @@ model Booking {
   vehicleId               String        @map("vehicle_id") @db.Uuid
   quoteId                 String        @unique @map("quote_id") @db.Uuid
   status                  BookingStatus @default(HOLD)
+  handoverWorkflowVersion Int?          @map("handover_workflow_version")
   rentalStart             DateTime      @map("rental_start") @db.Timestamptz(3)
   rentalEnd               DateTime      @map("rental_end") @db.Timestamptz(3)
   holdExpiresAt           DateTime?     @map("hold_expires_at") @db.Timestamptz(3)
@@ -1895,43 +1904,50 @@ model Booking {
   createdAt               DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt               DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  renter                      User                                 @relation("BookingRenter", fields: [renterUserId], references: [id], onDelete: Restrict)
-  owner                       User                                 @relation("BookingOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  ownerProfile                OwnerProfile                         @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
-  vehicle                     Vehicle                              @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  quote                       PricingQuote                         @relation(fields: [quoteId], references: [id], onDelete: Restrict)
-  occupancy                   VehicleOccupancy?
-  pricingSnapshot             BookingPricingSnapshot?
-  policySnapshot              BookingPolicySnapshot?
-  fulfillmentSnapshot         BookingFulfillmentSnapshot?
-  statusHistory               BookingStatusHistory[]
-  cancellation                BookingCancellation?
-  cancellationSettlement      BookingCancellationSettlement?
-  ownerDecision               BookingOwnerDecision?
-  idempotencyRecord           BookingIdempotencyRecord?
-  analyticsEvents             AnalyticsEvent[]
-  payments                    Payment[]
-  commissionSnapshot          CommissionSnapshot?
-  ownerEarning                OwnerEarning?
-  securityDeposit             SecurityDepositAuthorization?
-  inspections                 Inspection[]
-  usageSummary                BookingUsageSummary?
-  pickupChallenges            InspectionVerificationChallenge[]
-  postReturnClaims            PostReturnClaim[]
-  rentalIncidents             RentalIncident[]
-  disputes                    Dispute[]
-  additionalCharges           AdditionalCharge[]
-  pickupWindowStart           DateTime?                            @map("pickup_window_start") @db.Timestamptz(3)
-  pickupWindowEnd             DateTime?                            @map("pickup_window_end") @db.Timestamptz(3)
-  actualPickupAt              DateTime?                            @map("actual_pickup_at") @db.Timestamptz(3)
-  actualReturnAt              DateTime?                            @map("actual_return_at") @db.Timestamptz(3)
-  claimDeadlineAt             DateTime?                            @map("claim_deadline_at") @db.Timestamptz(3)
-  operationalHold             Boolean                              @default(false) @map("operational_hold")
-  conversation                Conversation?
-  reviews                     Review[]
-  supportTickets              SupportTicket[]
-  handoverTravelEvents        BookingHandoverTravelEvent[]
-  pickupOperationsResolutions PickupHandoverOperationsResolution[]
+  renter                            User                                      @relation("BookingRenter", fields: [renterUserId], references: [id], onDelete: Restrict)
+  owner                             User                                      @relation("BookingOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  ownerProfile                      OwnerProfile                              @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  vehicle                           Vehicle                                   @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  quote                             PricingQuote                              @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  occupancy                         VehicleOccupancy?
+  pricingSnapshot                   BookingPricingSnapshot?
+  policySnapshot                    BookingPolicySnapshot?
+  fulfillmentSnapshot               BookingFulfillmentSnapshot?
+  statusHistory                     BookingStatusHistory[]
+  cancellation                      BookingCancellation?
+  cancellationSettlement            BookingCancellationSettlement?
+  ownerDecision                     BookingOwnerDecision?
+  idempotencyRecord                 BookingIdempotencyRecord?
+  analyticsEvents                   AnalyticsEvent[]
+  payments                          Payment[]
+  commissionSnapshot                CommissionSnapshot?
+  ownerEarning                      OwnerEarning?
+  securityDeposit                   SecurityDepositAuthorization?
+  inspections                       Inspection[]
+  usageSummary                      BookingUsageSummary?
+  pickupChallenges                  InspectionVerificationChallenge[]
+  postReturnClaims                  PostReturnClaim[]
+  rentalIncidents                   RentalIncident[]
+  disputes                          Dispute[]
+  additionalCharges                 AdditionalCharge[]
+  pickupWindowStart                 DateTime?                                 @map("pickup_window_start") @db.Timestamptz(3)
+  pickupWindowEnd                   DateTime?                                 @map("pickup_window_end") @db.Timestamptz(3)
+  actualPickupAt                    DateTime?                                 @map("actual_pickup_at") @db.Timestamptz(3)
+  actualReturnAt                    DateTime?                                 @map("actual_return_at") @db.Timestamptz(3)
+  claimDeadlineAt                   DateTime?                                 @map("claim_deadline_at") @db.Timestamptz(3)
+  operationalHold                   Boolean                                   @default(false) @map("operational_hold")
+  conversation                      Conversation?
+  reviews                           Review[]
+  supportTickets                    SupportTicket[]
+  handoverTravelEvents              BookingHandoverTravelEvent[]
+  handoverEvidenceWaivers           BookingHandoverEvidenceWaiver[]
+  handoverReturnReceipt             BookingHandoverReturnReceipt?
+  pickupHandoverReport              BookingPickupHandoverReport?
+  pickupHandoverResponse            BookingPickupHandoverResponse?
+  overdueHandoverRecovery           BookingOverdueHandoverRecovery?
+  overdueHandoverRecoveryResponse   BookingOverdueHandoverRecoveryResponse?
+  overdueHandoverRecoveryAcceptance BookingOverdueHandoverRecoveryAcceptance?
+  pickupOperationsResolutions       PickupHandoverOperationsResolution[]
 
   @@index([renterUserId, createdAt])
   @@index([ownerUserId, status, createdAt])
@@ -1958,6 +1974,147 @@ model BookingHandoverTravelEvent {
   @@index([bookingId, phase, occurredAt])
   @@index([actorUserId, occurredAt])
   @@map("booking_handover_travel_events")
+}
+
+model BookingHandoverEvidenceWaiver {
+  id                         String        @id @default(uuid()) @db.Uuid
+  bookingId                  String        @map("booking_id") @db.Uuid
+  phase                      HandoverPhase
+  waivedByUserId             String        @map("waived_by_user_id") @db.Uuid
+  acknowledgementVersion     String        @map("acknowledgement_version") @db.VarChar(100)
+  decidedAt                  DateTime      @default(now()) @map("decided_at") @db.Timestamptz(3)
+  reportedPhysicalHandoverAt DateTime?     @map("reported_physical_handover_at") @db.Timestamptz(3)
+  correlationId              String?       @map("correlation_id") @db.VarChar(100)
+
+  booking  Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  waivedBy User    @relation(fields: [waivedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([bookingId, phase])
+  @@map("booking_handover_evidence_waivers")
+}
+
+model BookingHandoverReturnReceipt {
+  id                String   @id @default(uuid()) @db.Uuid
+  bookingId         String   @unique @map("booking_id") @db.Uuid
+  confirmedByUserId String   @map("confirmed_by_user_id") @db.Uuid
+  confirmedAt       DateTime @default(now()) @map("confirmed_at") @db.Timestamptz(3)
+
+  booking     Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  confirmedBy User    @relation(fields: [confirmedByUserId], references: [id], onDelete: Restrict)
+
+  @@map("booking_handover_return_receipts")
+}
+
+model BookingPickupHandoverReport {
+  id                         String   @id @default(uuid()) @db.Uuid
+  bookingId                  String   @unique @map("booking_id") @db.Uuid
+  reportedByUserId           String   @map("reported_by_user_id") @db.Uuid
+  reportedPhysicalHandoverAt DateTime @map("reported_physical_handover_at") @db.Timestamptz(3)
+  reportedAt                 DateTime @default(now()) @map("reported_at") @db.Timestamptz(3)
+  correlationId              String?  @map("correlation_id") @db.VarChar(100)
+
+  booking    Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  reportedBy User                           @relation("PickupHandoverReporter", fields: [reportedByUserId], references: [id], onDelete: Restrict)
+  response   BookingPickupHandoverResponse?
+
+  @@map("booking_pickup_handover_reports")
+}
+
+model BookingPickupHandoverResponse {
+  id                         String    @id @default(uuid()) @db.Uuid
+  reportId                   String    @unique @map("report_id") @db.Uuid
+  bookingId                  String    @unique @map("booking_id") @db.Uuid
+  respondedByUserId          String    @map("responded_by_user_id") @db.Uuid
+  decision                   String    @db.VarChar(30)
+  proposedPhysicalHandoverAt DateTime? @map("proposed_physical_handover_at") @db.Timestamptz(3)
+  respondedAt                DateTime  @default(now()) @map("responded_at") @db.Timestamptz(3)
+  correlationId              String?   @map("correlation_id") @db.VarChar(100)
+
+  report      BookingPickupHandoverReport @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  booking     Booking                     @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  respondedBy User                        @relation("PickupHandoverResponder", fields: [respondedByUserId], references: [id], onDelete: Restrict)
+
+  @@map("booking_pickup_handover_responses")
+}
+
+model BookingOverdueHandoverRecovery {
+  id                     String    @id @default(uuid()) @db.Uuid
+  bookingId              String    @unique @map("booking_id") @db.Uuid
+  reportedByUserId       String    @map("reported_by_user_id") @db.Uuid
+  scope                  String    @db.VarChar(20)
+  reportedPickupAt       DateTime? @map("reported_pickup_at") @db.Timestamptz(3)
+  reportedReturnAt       DateTime? @map("reported_return_at") @db.Timestamptz(3)
+  acknowledgementVersion String    @map("acknowledgement_version") @db.VarChar(100)
+  reportedAt             DateTime  @default(now()) @map("reported_at") @db.Timestamptz(3)
+  responseDeadlineAt     DateTime  @map("response_deadline_at") @db.Timestamptz(3)
+  correlationId          String?   @map("correlation_id") @db.VarChar(100)
+
+  booking    Booking                                   @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  reportedBy User                                      @relation("OverdueHandoverRecoveryReporter", fields: [reportedByUserId], references: [id], onDelete: Restrict)
+  response   BookingOverdueHandoverRecoveryResponse?
+  acceptance BookingOverdueHandoverRecoveryAcceptance?
+  reminders  BookingOverdueHandoverRecoveryReminder[]
+
+  @@index([responseDeadlineAt, reportedAt])
+  @@map("booking_overdue_handover_recoveries")
+}
+
+model BookingOverdueHandoverRecoveryReminder {
+  id                 String                     @id @default(uuid()) @db.Uuid
+  recoveryId         String                     @map("recovery_id") @db.Uuid
+  recipientUserId    String                     @map("recipient_user_id") @db.Uuid
+  stage              String                     @db.VarChar(20)
+  channel            NotificationChannel
+  scheduledAt        DateTime                   @map("scheduled_at") @db.Timestamptz(3)
+  status             NotificationDeliveryStatus @default(PENDING)
+  attemptCount       Int                        @default(0) @map("attempt_count")
+  provider           String?                    @db.VarChar(50)
+  providerReference  String?                    @map("provider_reference") @db.VarChar(255)
+  failureCategory    String?                    @map("failure_category") @db.VarChar(100)
+  safeFailureMessage String?                    @map("safe_failure_message") @db.VarChar(500)
+  nextAttemptAt      DateTime?                  @map("next_attempt_at") @db.Timestamptz(3)
+  submittedAt        DateTime?                  @map("submitted_at") @db.Timestamptz(3)
+  deliveredAt        DateTime?                  @map("delivered_at") @db.Timestamptz(3)
+  stableKey          String                     @unique @map("stable_key") @db.Char(64)
+  createdAt          DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  recovery  BookingOverdueHandoverRecovery @relation(fields: [recoveryId], references: [id], onDelete: Restrict)
+  recipient User                           @relation(fields: [recipientUserId], references: [id], onDelete: Restrict)
+
+  @@unique([recoveryId, recipientUserId, stage, channel])
+  @@index([status, scheduledAt, nextAttemptAt])
+  @@map("booking_overdue_handover_recovery_reminders")
+}
+
+model BookingOverdueHandoverRecoveryResponse {
+  id                String   @id @default(uuid()) @db.Uuid
+  recoveryId        String   @unique @map("recovery_id") @db.Uuid
+  bookingId         String   @unique @map("booking_id") @db.Uuid
+  respondedByUserId String   @map("responded_by_user_id") @db.Uuid
+  decision          String   @db.VarChar(20)
+  reason            String?  @db.VarChar(1000)
+  respondedAt       DateTime @default(now()) @map("responded_at") @db.Timestamptz(3)
+  correlationId     String?  @map("correlation_id") @db.VarChar(100)
+
+  recovery    BookingOverdueHandoverRecovery @relation(fields: [recoveryId], references: [id], onDelete: Restrict)
+  booking     Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  respondedBy User                           @relation("OverdueHandoverRecoveryResponder", fields: [respondedByUserId], references: [id], onDelete: Restrict)
+
+  @@map("booking_overdue_handover_recovery_responses")
+}
+
+model BookingOverdueHandoverRecoveryAcceptance {
+  id               String   @id @default(uuid()) @db.Uuid
+  recoveryId       String   @unique @map("recovery_id") @db.Uuid
+  bookingId        String   @unique @map("booking_id") @db.Uuid
+  acceptedAt       DateTime @default(now()) @map("accepted_at") @db.Timestamptz(3)
+  acceptanceSource String   @map("acceptance_source") @db.VarChar(30)
+
+  recovery BookingOverdueHandoverRecovery @relation(fields: [recoveryId], references: [id], onDelete: Restrict)
+  booking  Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@map("booking_overdue_handover_recovery_acceptances")
 }
 
 model Inspection {
@@ -2019,8 +2176,8 @@ model InspectionConfirmation {
   reason       String?                        @db.VarChar(1000)
   confirmedAt  DateTime                       @default(now()) @map("confirmed_at") @db.Timestamptz(3)
 
-  inspection          Inspection                 @relation(fields: [inspectionId], references: [id], onDelete: Restrict)
-  user                User                       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  inspection           Inspection                  @relation(fields: [inspectionId], references: [id], onDelete: Restrict)
+  user                 User                        @relation(fields: [userId], references: [id], onDelete: Restrict)
   discrepancyResponses PickupDiscrepancyResponse[]
 
   @@unique([inspectionId, role])
@@ -2105,8 +2262,8 @@ model PickupDiscrepancyResponse {
   id                           String                        @id @default(uuid()) @db.Uuid
   originalConfirmationId       String                        @map("original_confirmation_id") @db.Uuid
   incidentId                   String                        @map("incident_id") @db.Uuid
-  roundNumber                 Int                           @map("round_number")
-  previousResponseId          String?                       @map("previous_response_id") @db.Uuid
+  roundNumber                  Int                           @map("round_number")
+  previousResponseId           String?                       @map("previous_response_id") @db.Uuid
   responseType                 PickupDiscrepancyResponseType @map("response_type")
   responseText                 String                        @map("response_text") @db.VarChar(1000)
   acknowledgedConditionIssueId String?                       @map("acknowledged_condition_issue_id") @db.Uuid
@@ -2120,8 +2277,8 @@ model PickupDiscrepancyResponse {
   referencedInspectionMedia  InspectionMedia?                   @relation("PickupDiscrepancyReferencedMedia", fields: [referencedInspectionMediaId], references: [id], onDelete: Restrict)
   respondedBy                User                               @relation("PickupDiscrepancyResponder", fields: [respondedByUserId], references: [id], onDelete: Restrict)
   resolutionReview           PickupDiscrepancyResolutionReview?
-  previousResponse           PickupDiscrepancyResponse?          @relation("PickupDiscrepancyResponseRounds", fields: [previousResponseId], references: [id], onDelete: Restrict)
-  nextResponses              PickupDiscrepancyResponse[]         @relation("PickupDiscrepancyResponseRounds")
+  previousResponse           PickupDiscrepancyResponse?         @relation("PickupDiscrepancyResponseRounds", fields: [previousResponseId], references: [id], onDelete: Restrict)
+  nextResponses              PickupDiscrepancyResponse[]        @relation("PickupDiscrepancyResponseRounds")
 
   @@unique([incidentId, roundNumber])
   @@unique([incidentId, previousResponseId])
@@ -2641,34 +2798,34 @@ model BookingCancellation {
   correlationId String?          @map("correlation_id") @db.VarChar(100)
   createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  actorUser User?   @relation("BookingCancellationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  booking    Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  actorUser  User?                          @relation("BookingCancellationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
   settlement BookingCancellationSettlement?
 
   @@map("booking_cancellations")
 }
 
 model BookingCancellationSettlement {
-  id                         String   @id @default(uuid()) @db.Uuid
-  bookingId                  String   @unique @map("booking_id") @db.Uuid
-  bookingCancellationId      String   @unique @map("booking_cancellation_id") @db.Uuid
-  paymentId                  String   @unique @map("payment_id") @db.Uuid
-  commissionSnapshotId       String   @unique @map("commission_snapshot_id") @db.Uuid
-  refundId                   String?  @unique @map("refund_id") @db.Uuid
-  rentalComponentMinor       BigInt   @map("rental_component_minor")
-  commissionRetainedMinor    BigInt   @map("commission_retained_minor")
-  deliveryFeeMinor           BigInt   @map("delivery_fee_minor")
-  deliveryRetainedMinor      BigInt   @map("delivery_retained_minor")
-  deliveryRefundedMinor      BigInt   @map("delivery_refunded_minor")
-  collectionFeeMinor         BigInt   @map("collection_fee_minor")
-  collectionRefundedMinor    BigInt   @map("collection_refunded_minor")
-  capturedAmountMinor        BigInt   @map("captured_amount_minor")
-  refundAmountMinor          BigInt   @map("refund_amount_minor")
-  currency                   String   @db.Char(3)
-  deliveryCompleted          Boolean  @map("delivery_completed")
-  deliveryCompletionBasis    String   @map("delivery_completion_basis") @db.VarChar(100)
-  calculationVersion         String   @map("calculation_version") @db.VarChar(100)
-  createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  id                      String   @id @default(uuid()) @db.Uuid
+  bookingId               String   @unique @map("booking_id") @db.Uuid
+  bookingCancellationId   String   @unique @map("booking_cancellation_id") @db.Uuid
+  paymentId               String   @unique @map("payment_id") @db.Uuid
+  commissionSnapshotId    String   @unique @map("commission_snapshot_id") @db.Uuid
+  refundId                String?  @unique @map("refund_id") @db.Uuid
+  rentalComponentMinor    BigInt   @map("rental_component_minor")
+  commissionRetainedMinor BigInt   @map("commission_retained_minor")
+  deliveryFeeMinor        BigInt   @map("delivery_fee_minor")
+  deliveryRetainedMinor   BigInt   @map("delivery_retained_minor")
+  deliveryRefundedMinor   BigInt   @map("delivery_refunded_minor")
+  collectionFeeMinor      BigInt   @map("collection_fee_minor")
+  collectionRefundedMinor BigInt   @map("collection_refunded_minor")
+  capturedAmountMinor     BigInt   @map("captured_amount_minor")
+  refundAmountMinor       BigInt   @map("refund_amount_minor")
+  currency                String   @db.Char(3)
+  deliveryCompleted       Boolean  @map("delivery_completed")
+  deliveryCompletionBasis String   @map("delivery_completion_basis") @db.VarChar(100)
+  calculationVersion      String   @map("calculation_version") @db.VarChar(100)
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   booking             Booking             @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   bookingCancellation BookingCancellation @relation(fields: [bookingCancellationId], references: [id], onDelete: Restrict)
@@ -3030,14 +3187,14 @@ model Payment {
   createdAt                DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt                DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  booking          Booking                       @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  operations       PaymentOperation[]
-  webhookEvents    PaymentWebhookEvent[]
-  refunds          Refund[]
-  commission       CommissionSnapshot?
-  ownerEarning     OwnerEarning?
-  securityDeposit  SecurityDepositAuthorization?
-  additionalCharge AdditionalCharge?             @relation(fields: [additionalChargeId], references: [id], onDelete: Restrict)
+  booking                Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  operations             PaymentOperation[]
+  webhookEvents          PaymentWebhookEvent[]
+  refunds                Refund[]
+  commission             CommissionSnapshot?
+  ownerEarning           OwnerEarning?
+  securityDeposit        SecurityDepositAuthorization?
+  additionalCharge       AdditionalCharge?              @relation(fields: [additionalChargeId], references: [id], onDelete: Restrict)
   cancellationSettlement BookingCancellationSettlement?
 
   @@unique([provider, externalPaymentId])
@@ -3146,9 +3303,9 @@ model CommissionSnapshot {
   calculationVersion        String          @map("calculation_version") @db.VarChar(100)
   createdAt                 DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  booking Booking        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  payment Payment        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  rule    CommissionRule @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+  booking                Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  payment                Payment                        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  rule                   CommissionRule                 @relation(fields: [ruleId], references: [id], onDelete: Restrict)
   cancellationSettlement BookingCancellationSettlement?
 
   @@map("commission_snapshots")
@@ -3331,9 +3488,9 @@ model Refund {
   updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
   completedAt      DateTime?    @map("completed_at") @db.Timestamptz(3)
 
-  payment   Payment           @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  operation PaymentOperation? @relation(fields: [operationId], references: [id], onDelete: Restrict)
-  disputes  Dispute[]
+  payment                Payment                        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  operation              PaymentOperation?              @relation(fields: [operationId], references: [id], onDelete: Restrict)
+  disputes               Dispute[]
   cancellationSettlement BookingCancellationSettlement?
 
   @@index([paymentId, status])

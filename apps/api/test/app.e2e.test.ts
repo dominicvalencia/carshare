@@ -23,6 +23,7 @@ describe('API foundation', () => {
     app.useLogger(app.get(Logger));
     app.setGlobalPrefix(API_PREFIX);
     await app.init();
+    await app.listen(0, '127.0.0.1');
   });
 
   afterAll(async () => {

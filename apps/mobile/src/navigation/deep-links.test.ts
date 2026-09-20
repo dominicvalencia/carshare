@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { internalDestination } from './deep-links';
+import { internalDestination, isSafeRecoveryDeepLink } from './deep-links';
 
 describe('notification deep-link routing', () => {
   it.each([
     ['carrental://bookings/booking-ref', { name: 'Booking', params: { bookingId: 'booking-ref' } }],
+    [
+      'carrental://bookings/DEMO-OVERDUE-RETURN/handover-recovery',
+      { name: 'BookingRecovery', params: { bookingId: 'DEMO-OVERDUE-RETURN' } },
+    ],
     [
       'carrental://messages/conversation-id',
       { name: 'Conversation', params: { conversationId: 'conversation-id' } },
@@ -14,6 +18,20 @@ describe('notification deep-link routing', () => {
     ['carrental://payouts/payout-id', { name: 'Payout', params: { payoutId: 'payout-id' } }],
   ])('maps %s to an in-app destination', (link, expected) => {
     expect(internalDestination(link)).toEqual(expected);
+  });
+
+  it('allowlists only public-reference recovery routes without query secrets', () => {
+    expect(
+      isSafeRecoveryDeepLink('carrental://bookings/DEMO-OVERDUE-RETURN/handover-recovery'),
+    ).toBe(true);
+    expect(
+      isSafeRecoveryDeepLink(
+        'carrental://bookings/DEMO-OVERDUE-RETURN/handover-recovery?token=secret',
+      ),
+    ).toBe(false);
+    expect(isSafeRecoveryDeepLink('https://example.com/bookings/DEMO/handover-recovery')).toBe(
+      false,
+    );
   });
 
   it('rejects invalid or unsupported links without exposing a raw OS error', () => {

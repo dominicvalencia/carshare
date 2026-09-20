@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from './src/auth/AuthProvider';
 import { apiClient } from './src/auth/api-client';
@@ -29,6 +29,9 @@ import {
   ownerOnboardingStorage,
 } from './src/onboarding/owner-onboarding-storage';
 import { resolvePersonaMode, shouldPresentOwnerFirstEntry } from './src/navigation/persona-mode';
+import { isSafeRecoveryDeepLink } from './src/navigation/deep-links';
+import { pendingRecoveryDeepLinkStorage } from './src/navigation/pending-deep-link-storage';
+import Constants from 'expo-constants';
 
 const OnboardingStack = createNativeStackNavigator();
 
@@ -71,6 +74,28 @@ function AppContent() {
     readonly firstEntryIntent: boolean;
     readonly userId: string;
   } | null>(null);
+  const appScheme = Constants.expoConfig?.extra?.appScheme ?? 'carrental';
+  useEffect(() => {
+    const retain = (url: string | null) => {
+      if (!auth.user && url && isSafeRecoveryDeepLink(url, appScheme))
+        void pendingRecoveryDeepLinkStorage.set(url);
+    };
+    void Linking.getInitialURL().then(retain);
+    const subscription = Linking.addEventListener('url', ({ url }) => retain(url));
+    return () => subscription.remove();
+  }, [appScheme, auth.user]);
+  useEffect(() => {
+    if (!auth.user) return;
+    let active = true;
+    void pendingRecoveryDeepLinkStorage.get().then(async (url) => {
+      if (!active || !url || !isSafeRecoveryDeepLink(url, appScheme)) return;
+      await pendingRecoveryDeepLinkStorage.clear();
+      setTimeout(() => void Linking.openURL(url), 0);
+    });
+    return () => {
+      active = false;
+    };
+  }, [appScheme, auth.user]);
   const roles = auth.user?.roles ?? [];
   const renterCapable = roles.includes('RENTER');
   const ownerRole = roles.includes('OWNER');

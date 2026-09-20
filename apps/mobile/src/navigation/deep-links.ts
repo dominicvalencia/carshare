@@ -15,7 +15,9 @@ export function internalDestination(
   const [path] = link.slice(prefix.length).split(/[?#]/, 1);
   const [resource, identifier] = path?.split('/').filter(Boolean) ?? [];
   if (resource === 'bookings' && identifier)
-    return { name: 'Booking', params: { bookingId: identifier } };
+    return path?.endsWith('/handover-recovery')
+      ? { name: 'BookingRecovery', params: { bookingId: identifier } }
+      : { name: 'Booking', params: { bookingId: identifier } };
   if (resource === 'messages' && identifier)
     return { name: 'Conversation', params: { conversationId: identifier } };
   if (resource === 'claims' && identifier)
@@ -27,4 +29,24 @@ export function internalDestination(
     return { name: 'Payout', params: { payoutId: identifier } };
   if (resource === 'notifications') return { name: 'Notifications' };
   return null;
+}
+
+export function isSafeRecoveryDeepLink(link: string, scheme = 'carrental'): boolean {
+  try {
+    const parsed = new URL(link);
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    return (
+      parsed.protocol === `${scheme}:` &&
+      parsed.hostname === 'bookings' &&
+      segments.length === 2 &&
+      segments[1] === 'handover-recovery' &&
+      /^[A-Z0-9-]{6,100}$/u.test(segments[0] ?? '') &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.search &&
+      !parsed.hash
+    );
+  } catch {
+    return false;
+  }
 }

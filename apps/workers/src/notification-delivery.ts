@@ -69,12 +69,24 @@ export async function consumeDomainEvent(
         userId,
         audience,
         category: policy.category,
-        templateKey: policy.templateKey,
+        templateKey: ['PICKUP_HANDOVER_OVERDUE', 'RETURN_CONFIRMATION_OVERDUE'].includes(eventType)
+          ? `${policy.templateKey}.${audience.toLowerCase()}`
+          : policy.templateKey,
         sourceEventType: eventType,
         sourceType: sourceType(eventType),
         sourceId,
         stableKey,
-        variables: (reference ? { reference } : {}) as Prisma.InputJsonValue,
+        variables: {
+          ...(reference ? { reference } : {}),
+          ...(eventType.startsWith('OVERDUE_HANDOVER_RECOVERY_') &&
+          typeof payload.scope === 'string'
+            ? { scope: payload.scope }
+            : {}),
+          ...(eventType.startsWith('OVERDUE_HANDOVER_RECOVERY_') &&
+          typeof payload.responseDeadlineAt === 'string'
+            ? { responseDeadlineAt: payload.responseDeadlineAt }
+            : {}),
+        } as Prisma.InputJsonValue,
         deepLink: deepLink(policy, eventType, payload, reference, applicationEnvironment),
       },
       update: {},
@@ -258,6 +270,58 @@ async function applyResult(
 }
 
 function policyFor(eventType: string): EventPolicy | null {
+  if (eventType === 'OVERDUE_HANDOVER_RECOVERY_MIDPOINT_REMINDER')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'rental.overdue-recovery-midpoint',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'OVERDUE_HANDOVER_RECOVERY_FINAL_REMINDER')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'rental.overdue-recovery-final',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'OVERDUE_HANDOVER_RECOVERY_REPORTED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'rental.overdue-recovery-reported',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'OVERDUE_HANDOVER_RECOVERY_ACCEPTED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'rental.overdue-recovery-accepted',
+      recipients: 'BOTH',
+    };
+  if (
+    eventType === 'START_INSPECTION_EVIDENCE_WAIVED' ||
+    eventType === 'RETURN_INSPECTION_EVIDENCE_WAIVED' ||
+    eventType === 'OWNER_RETURN_INSPECTION_EVIDENCE_WAIVED'
+  )
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey:
+        eventType === 'START_INSPECTION_EVIDENCE_WAIVED'
+          ? 'rental.start-evidence-waived'
+          : eventType === 'OWNER_RETURN_INSPECTION_EVIDENCE_WAIVED'
+            ? 'rental.owner-return-evidence-waived'
+            : 'rental.return-evidence-waived',
+      recipients:
+        eventType === 'START_INSPECTION_EVIDENCE_WAIVED' ||
+        eventType === 'OWNER_RETURN_INSPECTION_EVIDENCE_WAIVED'
+          ? 'RENTER'
+          : 'OWNER',
+    };
+  if (eventType === 'PICKUP_HANDOVER_OVERDUE' || eventType === 'RETURN_CONFIRMATION_OVERDUE')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey:
+        eventType === 'PICKUP_HANDOVER_OVERDUE'
+          ? 'rental.handover-overdue'
+          : 'rental.return-overdue',
+      recipients: 'BOTH',
+    };
   if (eventType === 'NEW_MESSAGE')
     return {
       category: NotificationCategory.MESSAGES,
@@ -526,6 +590,8 @@ function deepLink(
   const payoutId =
     uuid(payload.payoutId) ?? (eventType.startsWith('PAYOUT_') ? uuid(payload.aggregateId) : null);
   if (payoutId) return `${scheme}://payouts/${payoutId}`;
+  if (eventType.startsWith('OVERDUE_HANDOVER_RECOVERY_') && bookingPublicReference)
+    return `${scheme}://bookings/${bookingPublicReference}/handover-recovery`;
   if (!id) return eventType.startsWith('EARNING_') ? `${scheme}://earnings` : null;
   return policy.category === NotificationCategory.MESSAGES
     ? `${scheme}://messages/${id}`
