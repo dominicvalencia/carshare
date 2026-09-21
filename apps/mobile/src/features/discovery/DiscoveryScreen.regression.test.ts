@@ -7,16 +7,32 @@ const source = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), 'DiscoveryScreen.tsx'),
   'utf8',
 );
+const primitivesSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../ui/primitives.tsx'),
+  'utf8',
+);
 
 describe('vehicle-detail responsive regression', () => {
-  it('keeps recovery first and opens the Where experience from Explore', () => {
-    const banner = source.indexOf('<PendingHandoverRecoveryBanner');
+  it('keeps search first, then a compact recovery alert and the Where experience', () => {
     const startSearch = source.indexOf('accessibilityLabel="Start your search"');
+    const alert = source.indexOf('style={({ pressed }) => [styles.recoveryAlert');
     const categories = source.indexOf('accessibilityLabel="Vehicle discovery categories"');
     const section = source.indexOf('<ExploreVehicleSection');
     const searchCard = source.indexOf('<Card style={styles.searchCard}>');
-    expect(banner).toBeGreaterThan(-1);
-    expect(startSearch).toBeGreaterThan(banner);
+    expect(startSearch).toBeGreaterThan(-1);
+    expect(alert).toBeGreaterThan(startSearch);
+    expect(categories).toBeGreaterThan(alert);
+    expect(source).not.toContain('<PendingHandoverRecoveryBanner');
+    expect(source).toContain("title={home ? undefined : 'Search cars'}");
+    expect(source).toMatch(/action=\{\s*home \? undefined : \(/);
+    expect(source).toContain('visible={recoveryActionsOpen && pendingRecoveryActions.length > 0}');
+    expect(source).toContain('onPress={() => setRecoveryActionsOpen(true)}');
+    expect(source).toMatch(
+      /<Button\s+compact\s+label="Not now"\s+onPress=\{closeRecoveryActions\}/,
+    );
+    expect(source).toContain(
+      "navigation.navigate('BookingRecovery', { bookingId: action.reference })",
+    );
     expect(categories).toBeGreaterThan(startSearch);
     expect(section).toBeGreaterThan(categories);
     expect(searchCard).toBeGreaterThan(startSearch);
@@ -26,6 +42,30 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toMatch(/function openExploreSearch\(\) \{\s*setLocationOpen\(true\)/);
     expect(source).toContain('function openLegacySearch(draft?: SearchDraft)');
     expect(source).toContain('setExploreSearchOpen(true)');
+  });
+
+  it('keeps the category row and content-width chips compact without stretch', () => {
+    expect(source).toContain('paddingHorizontal: spacing.sm,\n    paddingVertical: spacing.xs,');
+    expect(source).toMatch(/<Button\s+compact\s+label="Not now"/);
+    expect(source).toMatch(/exploreCategoryContent:\s*\{\s*alignItems: 'center'/);
+    expect(source).toContain('exploreCategoryRow: { flexGrow: 0, height: 48');
+    expect(primitivesSource).toMatch(
+      /chipCompact:\s*\{\s*alignSelf: 'center',\s*flexGrow: 0,\s*flexShrink: 0,\s*minHeight: 44/,
+    );
+    expect(primitivesSource).toContain('selected && styles.chipSelected');
+    expect(primitivesSource).toContain('chipSelected: { backgroundColor: colors.primary');
+    expect(primitivesSource).toContain('chipTextSelected: { color: colors.onPrimary }');
+    const categories = source.slice(
+      source.indexOf('accessibilityLabel="Vehicle discovery categories"'),
+      source.indexOf(
+        '</ScrollView>',
+        source.indexOf('accessibilityLabel="Vehicle discovery categories"'),
+      ),
+    );
+    expect(categories.match(/<Chip\s+compact/g)).toHaveLength(5);
+    expect(categories).toContain('horizontal');
+    expect(categories).toContain("selected={exploreShortcut === 'ALL'}");
+    expect(categories).toContain('onPress={() => selectExploreShortcut');
   });
 
   it('uses the existing stale-safe Places provider for the Where step', () => {

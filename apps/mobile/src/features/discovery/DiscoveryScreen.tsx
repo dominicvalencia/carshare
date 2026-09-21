@@ -16,7 +16,9 @@ import Reanimated, {
   withTiming,
 } from 'react-native-reanimated';
 import {
+  AccessibilityInfo,
   type FlatList,
+  findNodeHandle,
   Keyboard,
   Linking,
   Modal,
@@ -55,7 +57,7 @@ import {
   StateView,
   StatusBadge,
 } from '../../ui/primitives';
-import { PendingHandoverRecoveryBanner, type BookingView } from '../bookings/MyBookingsScreen';
+import type { BookingView } from '../bookings/MyBookingsScreen';
 import { invalidateRenterVerification } from '../../query/verification-invalidation';
 import { LocationPicker } from '../../location/LocationPicker';
 import {
@@ -75,6 +77,12 @@ import { DiscoveryMap, type MapSearchArea } from './DiscoveryMap';
 import { TripDateCalendar } from './TripDateCalendar';
 import { tripDateSummary } from './trip-date-policy';
 import { formatResultSummary, uniqueVehicleCount } from './result-summary';
+import {
+  pendingExploreRecoveryActions,
+  recoveryActionCountLabel,
+  recoveryActionScopeLabel,
+  unseenRecoveryActions,
+} from './explore-recovery-actions';
 import {
   eligibleForwardRemainder,
   eligibleReverseRemainder,
@@ -286,6 +294,11 @@ export function DiscoveryScreen({
   const [handover, setHandover] = useState('ANY');
   const [locationError, setLocationError] = useState('');
   const [exploreSearchOpen, setExploreSearchOpen] = useState(false);
+  const [recoveryActionsOpen, setRecoveryActionsOpen] = useState(false);
+  const [recoveryClock, setRecoveryClock] = useState(() => Date.now());
+  const seenRecoveryActionKeys = useRef(new Set<string>());
+  const recoveryAlertRef = useRef<View>(null);
+  const recoveryTitleRef = useRef<Text>(null);
   const [exploreShortcut, setExploreShortcut] = useState<ExploreShortcut>('ALL');
   const [discoveryLocationEstablished, setDiscoveryLocationEstablished] = useState(false);
   const [tripDatesEstablished, setTripDatesEstablished] = useState(false);
@@ -383,6 +396,36 @@ export function DiscoveryScreen({
     queryFn: () => apiClient.request<BookingView[]>('/bookings'),
     refetchInterval: home ? 10_000 : false,
   });
+  const pendingRecoveryActions = useMemo(
+    () => pendingExploreRecoveryActions(renterBookings.data ?? []),
+    [renterBookings.data],
+  );
+  useEffect(() => {
+    if (!home || mode !== 'form') return;
+    if (!pendingRecoveryActions.length) {
+      const timer = setTimeout(() => setRecoveryActionsOpen(false), 0);
+      return () => clearTimeout(timer);
+    }
+    if (unseenRecoveryActions(pendingRecoveryActions, seenRecoveryActionKeys.current)) {
+      const timer = setTimeout(() => {
+        pendingRecoveryActions.forEach((action) => seenRecoveryActionKeys.current.add(action.key));
+        setRecoveryActionsOpen(true);
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [home, mode, pendingRecoveryActions]);
+  useEffect(() => {
+    if (!recoveryActionsOpen) return;
+    const timer = setInterval(() => setRecoveryClock(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [recoveryActionsOpen]);
+  function closeRecoveryActions() {
+    setRecoveryActionsOpen(false);
+    requestAnimationFrame(() => {
+      const target = findNodeHandle(recoveryAlertRef.current);
+      if (target) AccessibilityInfo.setAccessibilityFocus(target);
+    });
+  }
   const searchItems = useMemo(
     () => listSearch.data?.pages.flatMap((page) => page.items) ?? [],
     [listSearch.data?.pages],
@@ -1475,22 +1518,18 @@ export function DiscoveryScreen({
     <Screen
       {...(home ? { scrollRef: exploreScrollRef } : {})}
       eyebrow={home ? undefined : 'Find a car'}
-      title={home ? 'Explore' : 'Search cars'}
+      title={home ? undefined : 'Search cars'}
       subtitle={home ? undefined : 'Book verified cars from local owners across the Philippines.'}
       action={
-        <IconButton
-          icon="heart-outline"
-          label="Open Wishlist"
-          onPress={() => setMode('favorites')}
-        />
+        home ? undefined : (
+          <IconButton
+            icon="heart-outline"
+            label="Open Wishlist"
+            onPress={() => setMode('favorites')}
+          />
+        )
       }
     >
-      {home && (
-        <PendingHandoverRecoveryBanner
-          bookings={renterBookings.data ?? []}
-          onReview={(reference) => navigation.navigate('BookingRecovery', { bookingId: reference })}
-        />
-      )}
       {home && (
         <Pressable
           accessibilityLabel="Start your search"
@@ -1515,6 +1554,89 @@ export function DiscoveryScreen({
           </View>
           <Icon color={colors.subtleText} name="chevron-forward" size={19} />
         </Pressable>
+      )}
+      {home && pendingRecoveryActions.length > 0 && (
+        <Pressable
+          ref={recoveryAlertRef}
+          accessibilityHint="Opens required handover actions"
+          accessibilityLabel={recoveryActionCountLabel(pendingRecoveryActions.length)}
+          accessibilityRole="button"
+          onPress={() => setRecoveryActionsOpen(true)}
+          style={({ pressed }) => [styles.recoveryAlert, pressed && styles.explorePressed]}
+        >
+          <Icon color={colors.warning} name="warning-outline" size={18} />
+          <Text style={styles.recoveryAlertText}>
+            {recoveryActionCountLabel(pendingRecoveryActions.length)}
+          </Text>
+          <Icon color={colors.warning} name="chevron-forward" size={18} />
+        </Pressable>
+      )}
+      {home && (
+        <Modal
+          animationType="fade"
+          onRequestClose={closeRecoveryActions}
+          onShow={() => {
+            const target = findNodeHandle(recoveryTitleRef.current);
+            if (target) AccessibilityInfo.setAccessibilityFocus(target);
+          }}
+          transparent
+          visible={recoveryActionsOpen && pendingRecoveryActions.length > 0}
+        >
+          <View style={styles.recoveryModalBackdrop}>
+            <View accessibilityViewIsModal style={styles.recoveryModalSheet}>
+              <ScrollView
+                contentContainerStyle={[
+                  styles.recoveryModalContent,
+                  { paddingBottom: Math.max(spacing.lg, bottomSafeArea + spacing.sm) },
+                ]}
+              >
+                <Text
+                  ref={recoveryTitleRef}
+                  accessibilityRole="header"
+                  style={styles.recoveryTitle}
+                >
+                  Action required
+                </Text>
+                <Text style={styles.recoverySubtitle}>
+                  {recoveryActionCountLabel(pendingRecoveryActions.length)}
+                </Text>
+                {pendingRecoveryActions.map((action) => (
+                  <View key={action.key} style={styles.recoveryAction}>
+                    <View style={styles.recoveryActionCopy}>
+                      <Text style={styles.recoveryActionTitle}>
+                        {recoveryActionScopeLabel(action.scope)}
+                      </Text>
+                      <Text style={styles.recoveryDeadline}>
+                        {new Date(action.responseDeadlineAt).getTime() <= recoveryClock
+                          ? 'Response overdue'
+                          : 'Response due'}
+                        : {dateTimeLabel(action.responseDeadlineAt)}
+                      </Text>
+                    </View>
+                    <Pressable
+                      accessibilityLabel={`Review ${recoveryActionScopeLabel(action.scope)} for booking ${action.reference}`}
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setRecoveryActionsOpen(false);
+                        navigation.navigate('BookingRecovery', { bookingId: action.reference });
+                      }}
+                      style={styles.recoveryReview}
+                    >
+                      <Text style={styles.recoveryReviewText}>Review</Text>
+                      <Icon color={colors.primary} name="chevron-forward" size={16} />
+                    </Pressable>
+                  </View>
+                ))}
+                <Button
+                  compact
+                  label="Not now"
+                  onPress={closeRecoveryActions}
+                  variant="secondary"
+                />
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
       )}
       {(!home || exploreSearchOpen) && (
         <View onLayout={(event) => (searchFormOffset.current = event.nativeEvent.layout.y)}>
@@ -1598,11 +1720,13 @@ export function DiscoveryScreen({
             style={styles.exploreCategoryRow}
           >
             <Chip
+              compact
               label="All"
               selected={exploreShortcut === 'ALL'}
               onPress={() => selectExploreShortcut('ALL')}
             />
             <Chip
+              compact
               icon="navigate-outline"
               label="Nearby"
               selected={exploreShortcut === 'NEARBY'}
@@ -1612,6 +1736,7 @@ export function DiscoveryScreen({
               const shortcut = `CATEGORY:${category.id}` as const;
               return (
                 <Chip
+                  compact
                   key={category.id}
                   label={category.label}
                   selected={exploreShortcut === shortcut}
@@ -1620,12 +1745,14 @@ export function DiscoveryScreen({
               );
             })}
             <Chip
+              compact
               icon="flash-outline"
               label="EV"
               selected={exploreShortcut === 'EV'}
               onPress={() => selectExploreShortcut('EV')}
             />
             <Chip
+              compact
               icon="people-outline"
               label="7+ seats"
               selected={exploreShortcut === 'SEVEN_PLUS'}
@@ -3312,6 +3439,47 @@ function noticeLabel(minutes: number) {
 }
 
 const styles = StyleSheet.create({
+  recoveryAlert: {
+    alignItems: 'center',
+    backgroundColor: colors.warningSoft,
+    borderRadius: radius.md,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  recoveryAlertText: { color: colors.ink, flex: 1, fontSize: 14, fontWeight: '700' },
+  recoveryModalBackdrop: {
+    backgroundColor: '#0008',
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  recoveryModalSheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    maxHeight: '85%',
+  },
+  recoveryModalContent: { gap: spacing.md, padding: spacing.lg },
+  recoveryTitle: { color: colors.ink, fontSize: 24, fontWeight: '900' },
+  recoverySubtitle: { color: colors.subtleText, fontSize: 15 },
+  recoveryAction: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  recoveryActionCopy: { flexGrow: 1, flexShrink: 1, gap: spacing.xxs },
+  recoveryActionTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
+  recoveryDeadline: { color: colors.subtleText, fontSize: 13 },
+  recoveryReview: { alignItems: 'center', flexDirection: 'row', gap: 2, minHeight: 44 },
+  recoveryReviewText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
   addressFields: { gap: spacing.sm },
   body: { color: colors.subtleText, lineHeight: 21 },
   cardTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
@@ -3378,8 +3546,12 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     padding: spacing.xs,
   },
-  exploreCategoryContent: { gap: spacing.xs, paddingHorizontal: spacing.lg },
-  exploreCategoryRow: { marginHorizontal: -spacing.lg },
+  exploreCategoryContent: {
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.lg,
+  },
+  exploreCategoryRow: { flexGrow: 0, height: 48, marginHorizontal: -spacing.lg },
   exploreFavorite: { position: 'absolute', right: spacing.sm, top: spacing.sm },
   exploreLoadingCard: {
     backgroundColor: colors.surface,

@@ -247,12 +247,14 @@ export function Button({
   icon,
   variant = 'primary',
   disabled = false,
+  compact = false,
 }: {
   readonly label: string;
   readonly onPress: () => void;
   readonly icon?: IconName | undefined;
   readonly variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | undefined;
   readonly disabled?: boolean | undefined;
+  readonly compact?: boolean | undefined;
 }) {
   return (
     <Pressable
@@ -261,6 +263,7 @@ export function Button({
       onPress={onPress}
       style={({ pressed }) => [
         styles.button,
+        compact && styles.buttonCompact,
         styles[`button_${variant}`],
         (disabled || pressed) && styles.pressed,
       ]}
@@ -412,12 +415,14 @@ export function Chip({
   selected = false,
   onPress,
   icon,
+  compact = false,
 }: {
   readonly label: string;
   readonly accessibilityLabel?: string | undefined;
   readonly selected?: boolean | undefined;
   readonly onPress?: (() => void) | undefined;
   readonly icon?: IconName | undefined;
+  readonly compact?: boolean | undefined;
 }) {
   const content = (
     <>
@@ -430,13 +435,16 @@ export function Chip({
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       accessibilityState={{ selected }}
+      hitSlop={compact ? { bottom: 7, top: 7 } : undefined}
       onPress={onPress}
-      style={[styles.chip, selected && styles.chipSelected]}
+      style={[styles.chip, compact && styles.chipCompact, selected && styles.chipSelected]}
     >
       {content}
     </Pressable>
   ) : (
-    <View style={[styles.chip, selected && styles.chipSelected]}>{content}</View>
+    <View style={[styles.chip, compact && styles.chipCompact, selected && styles.chipSelected]}>
+      {content}
+    </View>
   );
 }
 
@@ -538,6 +546,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
+  buttonCompact: { minHeight: 44, paddingVertical: spacing.xs },
   button_danger: { backgroundColor: colors.danger },
   button_ghost: { backgroundColor: 'transparent' },
   button_primary: { backgroundColor: colors.primary },
@@ -570,6 +579,13 @@ const styles = StyleSheet.create({
     minHeight: 36,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
+  },
+  chipCompact: {
+    alignSelf: 'center',
+    flexGrow: 0,
+    flexShrink: 0,
+    minHeight: 44,
+    paddingVertical: 2,
   },
   chipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipText: { color: colors.ink, fontSize: 13, fontWeight: '600' },
