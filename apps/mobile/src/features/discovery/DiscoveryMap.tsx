@@ -45,30 +45,44 @@ export function DiscoveryMap({
   initialRegion,
   loading,
   error,
+  recenterKey,
   selectedId,
   onSearchArea,
   onSelect,
   onOpen,
   onRetry,
+  transientUiDismissKey,
 }: {
   readonly items: readonly VehicleCardView[];
   readonly initialRegion: Region;
   readonly loading: boolean;
   readonly error: Error | null;
+  readonly recenterKey: string;
   readonly selectedId: string | null;
   readonly onSearchArea: (area: MapSearchArea) => void;
   readonly onSelect: (id: string | null) => void;
   readonly onOpen: (id: string) => void;
   readonly onRetry: () => void;
+  readonly transientUiDismissKey: number;
 }) {
   const map = useRef<MapView>(null);
   const userMoved = useRef(false);
   const programmaticMove = useRef(false);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSearched = useRef<MapSearchArea | null>(null);
+  const authoritativeRegionKey = useRef(recenterKey);
   const [region, setRegion] = useState(initialRegion);
   const [searchPending, setSearchPending] = useState(false);
-  const [selectedCluster, setSelectedCluster] = useState<readonly MapItem[] | null>(null);
+  const [selectedCluster, setSelectedCluster] = useState<{
+    readonly items: readonly MapItem[];
+    readonly dismissKey: number;
+  } | null>(null);
+  const {
+    latitude: initialLatitude,
+    latitudeDelta: initialLatitudeDelta,
+    longitude: initialLongitude,
+    longitudeDelta: initialLongitudeDelta,
+  } = initialRegion;
   const mapItems = useMemo(() => items.filter(hasMapPosition), [items]);
   const clusters = useMemo(() => clusterMapItems(mapItems), [mapItems]);
   const selected = mapItems.find(({ vehicleId }) => vehicleId === selectedId) ?? null;
@@ -78,7 +92,19 @@ export function DiscoveryMap({
     },
     [],
   );
-
+  useEffect(() => {
+    if (authoritativeRegionKey.current === recenterKey) return;
+    const nextRegion = {
+      latitude: initialLatitude,
+      latitudeDelta: initialLatitudeDelta,
+      longitude: initialLongitude,
+      longitudeDelta: initialLongitudeDelta,
+    };
+    authoritativeRegionKey.current = recenterKey;
+    programmaticMove.current = true;
+    setRegion(nextRegion);
+    map.current?.animateToRegion(nextRegion);
+  }, [initialLatitude, initialLatitudeDelta, initialLongitude, initialLongitudeDelta, recenterKey]);
   return (
     <View style={styles.root}>
       <MapView
@@ -142,7 +168,7 @@ export function DiscoveryMap({
                     latitudeDelta: Math.max(region.latitudeDelta / 2, 0.01),
                     longitudeDelta: Math.max(region.longitudeDelta / 2, 0.01),
                   });
-                  setSelectedCluster(cluster);
+                  setSelectedCluster({ items: cluster, dismissKey: transientUiDismissKey });
                 }}
               >
                 <View style={styles.cluster}>
@@ -223,14 +249,16 @@ export function DiscoveryMap({
           </View>
         </Pressable>
       ) : null}
-      {selectedCluster && selectedCluster.length > 1 ? (
+      {selectedCluster &&
+      selectedCluster.dismissKey === transientUiDismissKey &&
+      selectedCluster.items.length > 1 ? (
         <View
-          accessibilityLabel={`${selectedCluster.length} cars in this area`}
+          accessibilityLabel={`${selectedCluster.items.length} cars in this area`}
           style={styles.clusterBrowser}
         >
-          <Text style={styles.clusterTitle}>{selectedCluster.length} cars in this area</Text>
+          <Text style={styles.clusterTitle}>{selectedCluster.items.length} cars in this area</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            {selectedCluster.map((vehicle) => (
+            {selectedCluster.items.map((vehicle) => (
               <Pressable
                 accessibilityLabel={`Select ${vehicle.year} ${vehicle.make} ${vehicle.model}`}
                 accessibilityRole="button"
@@ -341,7 +369,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: 5,
   },
-  root: { flex: 1, minHeight: 360, overflow: 'hidden' },
+  root: { flex: 1, minHeight: 0, overflow: 'hidden' },
   searching: {
     alignSelf: 'center',
     backgroundColor: colors.surface,

@@ -1,6 +1,6 @@
 export type MobileMode = 'renter' | 'owner';
 
-export const renterTabs = ['Home', 'Search', 'Bookings', 'Messages', 'Profile'] as const;
+export const renterTabs = ['Home', 'Wishlist', 'Bookings', 'Messages', 'Profile'] as const;
 export const ownerTabs = ['Dashboard', 'Vehicles', 'Requests', 'Messages', 'More'] as const;
 
 export type RenterTab = (typeof renterTabs)[number];
@@ -8,7 +8,7 @@ export type OwnerTab = (typeof ownerTabs)[number];
 
 export type RenterTabParamList = {
   Home: undefined;
-  Search: undefined;
+  Wishlist: undefined;
   Bookings: { bookingId?: string | undefined } | undefined;
   Messages: { conversationId?: string | undefined } | undefined;
   Profile: { ticketId?: string | undefined } | undefined;

@@ -17,6 +17,7 @@ describe('deep-link parent state', () => {
     ['Claim', 'Bookings'],
     ['VehicleDetails', 'Home'],
     ['HostProfile', 'Home'],
+    ['Favorites', 'Home'],
     ['Support', 'Profile'],
   ])('selects %s over its normal renter parent %s', (destination, parent) => {
     expect(parentTabFor(destination, 'renter')).toBe(parent);

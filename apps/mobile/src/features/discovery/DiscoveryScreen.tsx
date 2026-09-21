@@ -3,8 +3,20 @@ import type { NavigationProp } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Location from 'expo-location';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Reanimated, {
+  cancelAnimation,
+  runOnJS,
+  scrollTo,
+  useAnimatedRef,
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import {
-  FlatList,
+  type FlatList,
   Keyboard,
   Linking,
   Modal,
@@ -60,6 +72,17 @@ import {
   type PublicDurationDiscount,
 } from './duration-discount-presentation';
 import { DiscoveryMap, type MapSearchArea } from './DiscoveryMap';
+import { TripDateCalendar } from './TripDateCalendar';
+import { tripDateSummary } from './trip-date-policy';
+import { formatResultSummary, uniqueVehicleCount } from './result-summary';
+import {
+  eligibleForwardRemainder,
+  eligibleReverseRemainder,
+  forwardSyntheticTarget,
+  normalizedDownwardTravel,
+  normalizedUpwardTravel,
+  reverseCollapseProgress,
+} from './results-forward-handoff';
 
 interface Grant {
   readonly contentPath: string;
@@ -202,6 +225,16 @@ interface PaymentSetupResult {
 }
 type SearchLocation = LocationSuggestion;
 type ViewMode = 'form' | 'results' | 'detail' | 'favorites' | 'quote';
+type ExploreShortcut = 'ALL' | 'NEARBY' | 'EV' | 'SEVEN_PLUS' | `CATEGORY:${string}` | 'CUSTOM';
+type VehicleReferenceData = {
+  readonly categories: readonly ReferenceOption[];
+  readonly makes: readonly ReferenceOption[];
+};
+type SearchDraft = {
+  readonly place: SearchLocation;
+  readonly start: Date;
+  readonly end: Date;
+};
 
 const locations = developmentLocationSuggestions;
 const sessionRecentlyViewed: string[] = [];
@@ -220,13 +253,16 @@ export function DiscoveryScreen({
   initialMode = 'form',
   initialVehicleId,
   onExit,
+  onFullMapChange,
 }: {
   readonly home?: boolean;
   readonly initialMode?: 'form' | 'favorites';
   readonly initialVehicleId?: string | undefined;
   readonly onExit?: (() => void) | undefined;
+  readonly onFullMapChange?: ((active: boolean) => void) | undefined;
 }) {
   const navigation = useNavigation<NavigationProp<RenterTabParamList & RootStackParamList>>();
+  const { bottom: bottomSafeArea } = useSafeAreaInsets();
   const client = useQueryClient();
   const [mode, setMode] = useState<ViewMode>(initialVehicleId ? 'detail' : initialMode);
   const detailOrigin = useRef<ViewMode>(initialMode === 'favorites' ? 'favorites' : 'results');
@@ -237,7 +273,6 @@ export function DiscoveryScreen({
   const [returnAt, setReturnAt] = useState(futureDate(2));
   const [radiusKm, setRadiusKm] = useState(25);
   const [activeRadiusKm, setActiveRadiusKm] = useState(25);
-  const [presentationMode, setPresentationMode] = useState<'list' | 'map'>('list');
   const [selectedMapVehicleId, setSelectedMapVehicleId] = useState<string | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
@@ -250,8 +285,46 @@ export function DiscoveryScreen({
   const [maxPrice, setMaxPrice] = useState('');
   const [handover, setHandover] = useState('ANY');
   const [locationError, setLocationError] = useState('');
+  const [exploreSearchOpen, setExploreSearchOpen] = useState(false);
+  const [exploreShortcut, setExploreShortcut] = useState<ExploreShortcut>('ALL');
+  const [discoveryLocationEstablished, setDiscoveryLocationEstablished] = useState(false);
+  const [tripDatesEstablished, setTripDatesEstablished] = useState(false);
+  const { height: viewportHeight, width: viewportWidth } = useWindowDimensions();
+  const initialResultsMapHeight = Math.max(220, Math.min(340, Math.round(viewportHeight * 0.34)));
+  const mapCollapseDistance = Math.max(190, Math.min(280, initialResultsMapHeight * 0.85));
+  const mapTransientUiDismissOffset = Math.min(32, mapCollapseDistance * 0.15);
+  const fullMapGestureThreshold = 72;
+  const fullMapPeekHeight = Math.max(92, Math.min(124, 96 + bottomSafeArea));
   const validDates = returnAt.getTime() > pickup.getTime();
-  const queryString = useMemo(() => {
+  const reference = useQuery({
+    enabled: home || filtersOpen,
+    queryKey: ['vehicle-reference-data'],
+    queryFn: () => apiClient.request<VehicleReferenceData>('/vehicles/reference-data'),
+  });
+  const categoryShortcuts = useMemo(
+    () =>
+      ['SUV', 'SEDAN'].flatMap((target) => {
+        const category = reference.data?.categories.find(
+          ({ code, name }) =>
+            code.trim().toUpperCase() === target || name.trim().toUpperCase() === target,
+        );
+        return category ? [{ ...category, label: target === 'SUV' ? 'SUV' : 'Sedan' }] : [];
+      }),
+    [reference.data?.categories],
+  );
+  const resultsFilterCount = activeFilterCount({
+    categoryId,
+    handover: handover === 'ANY' ? '' : handover,
+    make,
+    maxPrice,
+    minPrice,
+    powertrain,
+    seats,
+    transmission,
+  });
+  const deliveryFilterActive =
+    handover === 'DELIVERY_AVAILABLE' || handover === 'PICKUP_AND_DELIVERY';
+  const activeCriteriaQueryString = useMemo(() => {
     const query = new URLSearchParams({
       latitude: String(activePlace.latitude),
       longitude: String(activePlace.longitude),
@@ -259,8 +332,6 @@ export function DiscoveryScreen({
       sort: 'RECOMMENDED',
       start: pickup.toISOString(),
       end: returnAt.toISOString(),
-      limit: presentationMode === 'map' ? '50' : '10',
-      mode: presentationMode === 'map' ? 'MAP' : 'LIST',
     });
     if (make.trim()) query.set('make', make.trim());
     if (categoryId) query.set('categoryId', categoryId);
@@ -280,23 +351,31 @@ export function DiscoveryScreen({
     activePlace,
     activeRadiusKm,
     powertrain,
-    presentationMode,
     returnAt,
     seats,
     transmission,
     handover,
   ]);
-  const search = useInfiniteQuery({
+  const listQueryString = `${activeCriteriaQueryString}&limit=10&mode=LIST`;
+  const mapQueryString = `${activeCriteriaQueryString}&limit=50&mode=MAP`;
+  const listSearch = useInfiniteQuery({
     enabled: mode === 'results' || home,
     refetchInterval: mode === 'results' || home ? 5_000 : false,
     refetchOnMount: 'always',
-    queryKey: ['public-search', queryString],
+    queryKey: ['public-search', 'LIST', listQueryString],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
       apiClient.request<SearchResponse>(
-        `/vehicles/search?${queryString}${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ''}`,
+        `/vehicles/search?${listQueryString}${pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ''}`,
       ),
     getNextPageParam: (lastPage) => lastPage.pageInfo.nextCursor ?? undefined,
+  });
+  const mapSearch = useQuery({
+    enabled: mode === 'results',
+    refetchInterval: mode === 'results' ? 5_000 : false,
+    refetchOnMount: 'always',
+    queryKey: ['public-search', 'MAP', mapQueryString],
+    queryFn: () => apiClient.request<SearchResponse>(`/vehicles/search?${mapQueryString}`),
   });
   const renterBookings = useQuery({
     enabled: home,
@@ -305,13 +384,354 @@ export function DiscoveryScreen({
     refetchInterval: home ? 10_000 : false,
   });
   const searchItems = useMemo(
-    () => search.data?.pages.flatMap((page) => page.items) ?? [],
-    [search.data?.pages],
+    () => listSearch.data?.pages.flatMap((page) => page.items) ?? [],
+    [listSearch.data?.pages],
   );
-  const nextPageError = search.isFetchNextPageError ? search.error : null;
-  const fetchNextSearchPage = search.fetchNextPage;
-  const resultListRef = useRef<FlatList<VehicleCardView>>(null);
+  const mapItems = mapSearch.data?.items ?? [];
+  const nextPageError = listSearch.isFetchNextPageError ? listSearch.error : null;
+  const fetchNextSearchPage = listSearch.fetchNextPage;
+  const resultListRef = useAnimatedRef<FlatList<VehicleCardView>>();
   const resultScrollOffset = useRef(0);
+  const collapseProgress = useSharedValue(0);
+  const fullMapProgress = useSharedValue(0);
+  const fullMapPresentationOnUi = useSharedValue(false);
+  const listFullMapEntryAllowed = useSharedValue(false);
+  const observedListOffset = useSharedValue(0);
+  const listContentHeight = useSharedValue(0);
+  const listViewportHeight = useSharedValue(0);
+  const syntheticForwardActive = useSharedValue(false);
+  const handoffTravel = useSharedValue(-1);
+  const handoffStartOffset = useSharedValue(0);
+  const topReachedTravel = useSharedValue(-1);
+  const reverseRestorationActive = useSharedValue(false);
+  const mapButtonShownOnUi = useSharedValue(false);
+  const mapFullyCollapsedRef = useRef(false);
+  const [mapFullyCollapsed, setMapFullyCollapsed] = useState(false);
+  const mapTransientUiDismissedRef = useRef(false);
+  const [mapTransientUiDismissKey, setMapTransientUiDismissKey] = useState(0);
+  const mapButtonVisibleRef = useRef(false);
+  const [mapButtonVisible, setMapButtonVisible] = useState(false);
+  const mapRestoreInProgress = useRef(false);
+  const [fullMap, setFullMap] = useState(false);
+  const [resultsCompositionHeight, setResultsCompositionHeight] = useState(0);
+  const splitResultsHeight = Math.max(
+    fullMapPeekHeight,
+    resultsCompositionHeight - initialResultsMapHeight,
+  );
+  const fullMapHeight = Math.max(
+    initialResultsMapHeight,
+    resultsCompositionHeight - fullMapPeekHeight - spacing.sm,
+  );
+  const fullMapExpansionDistance = Math.max(180, fullMapHeight - initialResultsMapHeight);
+  const fullMapHandleRegionHeight = spacing.xs + 28 + StyleSheet.hairlineWidth * 2;
+  const fullMapPeekBodyHeight = Math.max(0, fullMapPeekHeight - fullMapHandleRegionHeight);
+  const fullMapGestureStartY = useRef<number | null>(null);
+  const fullMapGestureDistance = useRef(0);
+  const onResultsScroll = useAnimatedScrollHandler({
+    onScroll: (event) => {
+      observedListOffset.value = Math.max(0, event.contentOffset.y);
+    },
+    onEndDrag: () => runOnJS(syncObservedListOffset)(observedListOffset.value),
+    onMomentumEnd: () => runOnJS(syncObservedListOffset)(observedListOffset.value),
+  });
+
+  function syncObservedListOffset(offset: number) {
+    const normalizedOffset = Math.max(0, offset);
+    resultScrollOffset.current = normalizedOffset;
+    const transientUiDismissed = normalizedOffset >= mapTransientUiDismissOffset;
+    if (transientUiDismissed !== mapTransientUiDismissedRef.current) {
+      mapTransientUiDismissedRef.current = transientUiDismissed;
+      if (transientUiDismissed) {
+        setMapTransientUiDismissKey((key) => key + 1);
+        setSelectedMapVehicleId(null);
+      }
+    }
+  }
+
+  function setCollapseMapButtonVisible(visible: boolean) {
+    if (visible === mapButtonVisibleRef.current) return;
+    mapButtonVisibleRef.current = visible;
+    if (!visible) mapRestoreInProgress.current = false;
+    setMapButtonVisible(visible);
+  }
+
+  function commitForwardPresentation(collapsed: boolean, actualOffset: number) {
+    syncObservedListOffset(actualOffset);
+    mapFullyCollapsedRef.current = collapsed;
+    setMapFullyCollapsed(collapsed);
+    setCollapseMapButtonVisible(collapsed);
+  }
+
+  function commitReversePresentation(collapsed: boolean) {
+    observedListOffset.value = 0;
+    resultScrollOffset.current = 0;
+    mapFullyCollapsedRef.current = collapsed;
+    setMapFullyCollapsed(collapsed);
+    setCollapseMapButtonVisible(collapsed);
+    if (!collapsed) {
+      cancelAnimation(fullMapProgress);
+      fullMapProgress.value = 0;
+      fullMapPresentationOnUi.value = false;
+    }
+  }
+
+  const nativeResultListGesture = useMemo(() => Gesture.Native(), []);
+  const forwardResultsGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(!fullMap && !mapFullyCollapsed)
+        .activeOffsetY(-8)
+        .failOffsetX([-14, 14])
+        .blocksExternalGesture(nativeResultListGesture)
+        .onBegin(() => {
+          syntheticForwardActive.value = false;
+          handoffTravel.value = -1;
+          handoffStartOffset.value = 0;
+        })
+        .onUpdate((event) => {
+          const upwardTravel = normalizedUpwardTravel(event.translationY);
+          const nextProgress = Math.max(0, Math.min(1, upwardTravel / mapCollapseDistance));
+          collapseProgress.value = nextProgress;
+          const shouldShowMapButton = mapButtonShownOnUi.value
+            ? nextProgress > 0.65
+            : nextProgress >= 0.8;
+          if (shouldShowMapButton !== mapButtonShownOnUi.value) {
+            mapButtonShownOnUi.value = shouldShowMapButton;
+            runOnJS(setCollapseMapButtonVisible)(shouldShowMapButton);
+          }
+          if (nextProgress < 1) return;
+          if (handoffTravel.value < 0) {
+            handoffTravel.value = upwardTravel;
+            handoffStartOffset.value = observedListOffset.value;
+            syntheticForwardActive.value = true;
+          }
+          const remainder = eligibleForwardRemainder(upwardTravel, handoffTravel.value);
+          const maxOffset = Math.max(0, listContentHeight.value - listViewportHeight.value);
+          const target = forwardSyntheticTarget(handoffStartOffset.value, remainder, maxOffset);
+          scrollTo(resultListRef, 0, target, false);
+        })
+        .onFinalize(() => {
+          const target = collapseProgress.value >= 0.5 ? 1 : 0;
+          syntheticForwardActive.value = false;
+          handoffTravel.value = -1;
+          handoffStartOffset.value = 0;
+          runOnJS(commitForwardPresentation)(target === 1, observedListOffset.value);
+          collapseProgress.value = withTiming(target, { duration: 180 });
+        }),
+    // Gesture worklets intentionally close over shared values and discrete JS bridge callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      collapseProgress,
+      fullMap,
+      handoffStartOffset,
+      handoffTravel,
+      listContentHeight,
+      listViewportHeight,
+      mapCollapseDistance,
+      mapButtonShownOnUi,
+      mapFullyCollapsed,
+      nativeResultListGesture,
+      observedListOffset,
+      resultListRef,
+      syntheticForwardActive,
+    ],
+  );
+  const reverseResultsGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(!fullMap && mapFullyCollapsed)
+        .activeOffsetY(8)
+        .failOffsetX([-14, 14])
+        .simultaneousWithExternalGesture(nativeResultListGesture)
+        .onBegin(() => {
+          topReachedTravel.value = -1;
+          reverseRestorationActive.value = false;
+        })
+        .onUpdate((event) => {
+          const downwardTravel = normalizedDownwardTravel(event.translationY);
+          if (observedListOffset.value > 1) {
+            collapseProgress.value = 1;
+            topReachedTravel.value = -1;
+            reverseRestorationActive.value = false;
+            return;
+          }
+          if (topReachedTravel.value < 0) {
+            topReachedTravel.value = downwardTravel;
+            reverseRestorationActive.value = true;
+          }
+          const eligibleRestore = eligibleReverseRemainder(downwardTravel, topReachedTravel.value);
+          const nextProgress = reverseCollapseProgress(eligibleRestore, mapCollapseDistance);
+          collapseProgress.value = nextProgress;
+          const shouldShowMapButton = mapButtonShownOnUi.value
+            ? nextProgress > 0.65
+            : nextProgress >= 0.8;
+          if (shouldShowMapButton !== mapButtonShownOnUi.value) {
+            mapButtonShownOnUi.value = shouldShowMapButton;
+            runOnJS(setCollapseMapButtonVisible)(shouldShowMapButton);
+          }
+        })
+        .onFinalize(() => {
+          const target = reverseRestorationActive.value && collapseProgress.value <= 0.5 ? 0 : 1;
+          topReachedTravel.value = -1;
+          reverseRestorationActive.value = false;
+          runOnJS(commitReversePresentation)(target === 1);
+          collapseProgress.value = withTiming(target, { duration: 180 });
+        }),
+    // Reverse worklets intentionally close over shared values and discrete JS bridge callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      collapseProgress,
+      fullMap,
+      mapButtonShownOnUi,
+      mapCollapseDistance,
+      mapFullyCollapsed,
+      nativeResultListGesture,
+      observedListOffset,
+      reverseRestorationActive,
+      topReachedTravel,
+    ],
+  );
+  const listFullMapEntryGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(!fullMap && !mapFullyCollapsed)
+        .activeOffsetY(2)
+        .failOffsetX([-14, 14])
+        .simultaneousWithExternalGesture(nativeResultListGesture)
+        .onStart(() => {
+          // A new pull may expand the map only from settled SPLIT at the list top.
+          // A FULL_LIST reverse pull begins with this gesture disabled, so it still pins at SPLIT.
+          const allowed = observedListOffset.value <= 1 && collapseProgress.value <= 0.01;
+          listFullMapEntryAllowed.value = allowed;
+          if (!allowed) return;
+          cancelAnimation(fullMapProgress);
+          fullMapProgress.value = 0;
+          fullMapPresentationOnUi.value = true;
+          runOnJS(beginFullMapGesture)();
+        })
+        .onUpdate((event) => {
+          if (!listFullMapEntryAllowed.value) return;
+          fullMapProgress.value = Math.min(
+            1,
+            Math.max(0, event.translationY) / fullMapExpansionDistance,
+          );
+        })
+        .onFinalize((event) => {
+          if (!listFullMapEntryAllowed.value) return;
+          listFullMapEntryAllowed.value = false;
+          runOnJS(finishFullMapEntryGesture)(event.translationY);
+        }),
+    // Gesture worklets intentionally close over shared values and discrete JS bridge callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      collapseProgress,
+      fullMap,
+      fullMapExpansionDistance,
+      fullMapPresentationOnUi,
+      fullMapProgress,
+      listFullMapEntryAllowed,
+      mapFullyCollapsed,
+      nativeResultListGesture,
+      observedListOffset,
+    ],
+  );
+  const resultsGesture = useMemo(
+    () =>
+      Gesture.Simultaneous(
+        Gesture.Race(forwardResultsGesture, reverseResultsGesture),
+        listFullMapEntryGesture,
+      ),
+    [forwardResultsGesture, listFullMapEntryGesture, reverseResultsGesture],
+  );
+  const handleFullMapEntryGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(!fullMap && !mapFullyCollapsed)
+        .activeOffsetY(2)
+        .simultaneousWithExternalGesture(forwardResultsGesture, reverseResultsGesture)
+        .onStart(() => {
+          cancelAnimation(fullMapProgress);
+          fullMapProgress.value = 0;
+          fullMapPresentationOnUi.value = true;
+          runOnJS(beginFullMapGesture)();
+        })
+        .onUpdate((event) => {
+          fullMapProgress.value = Math.min(
+            1,
+            Math.max(0, event.translationY) / fullMapExpansionDistance,
+          );
+        })
+        .onFinalize((event) => runOnJS(finishFullMapEntryGesture)(event.translationY)),
+    // The handle owns a new SPLIT pull independently of the native result list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      forwardResultsGesture,
+      fullMap,
+      fullMapProgress,
+      fullMapPresentationOnUi,
+      fullMapExpansionDistance,
+      mapFullyCollapsed,
+      reverseResultsGesture,
+    ],
+  );
+  const collapsedMapStyle = useAnimatedStyle(() => ({
+    height: fullMapPresentationOnUi.value
+      ? initialResultsMapHeight + (fullMapHeight - initialResultsMapHeight) * fullMapProgress.value
+      : Math.max(0, initialResultsMapHeight * (1 - collapseProgress.value)),
+    marginTop: fullMapPresentationOnUi.value
+      ? spacing.sm
+      : spacing.sm * (1 - collapseProgress.value),
+    opacity: fullMapPresentationOnUi.value
+      ? 1
+      : collapseProgress.value <= 0.72
+        ? 1 - collapseProgress.value * (0.28 / 0.72)
+        : 0.72 * ((1 - collapseProgress.value) / 0.28),
+  }));
+  const fullMapSheetStyle = useAnimatedStyle(() => ({
+    height:
+      !mapFullyCollapsed || fullMapPresentationOnUi.value
+        ? splitResultsHeight + (fullMapPeekHeight - splitResultsHeight) * fullMapProgress.value
+        : undefined,
+  }));
+  const fullMapListViewportStyle = useAnimatedStyle(() => ({
+    height:
+      !mapFullyCollapsed || fullMapPresentationOnUi.value
+        ? Math.max(0, splitResultsHeight - fullMapHandleRegionHeight) * (1 - fullMapProgress.value)
+        : undefined,
+  }));
+  const fullMapContentStyle = useAnimatedStyle(() => ({
+    opacity:
+      fullMapProgress.value <= 0.6
+        ? 1
+        : fullMapProgress.value >= 0.78
+          ? 0
+          : 1 - (fullMapProgress.value - 0.6) / 0.18,
+  }));
+  const fullMapPeekStyle = useAnimatedStyle(() => ({
+    height: fullMapPeekBodyHeight * fullMapProgress.value,
+    opacity:
+      fullMapProgress.value <= 0.78
+        ? 0
+        : fullMapProgress.value >= 0.9
+          ? 1
+          : (fullMapProgress.value - 0.78) / 0.12,
+  }));
+  const collapseHandleStyle = useAnimatedStyle(() => ({
+    opacity: 1 - collapseProgress.value,
+  }));
+  useEffect(() => {
+    onFullMapChange?.(mode === 'results' && fullMap);
+  }, [fullMap, mode, onFullMapChange]);
+  useEffect(() => () => onFullMapChange?.(false), [onFullMapChange]);
+  useEffect(() => {
+    if (!fullMap || !listSearch.isError || !mapSearch.isError) return;
+    const timer = setTimeout(settleFullMapExit, 0);
+    return () => clearTimeout(timer);
+    // The exit settlement is intentionally shared with gesture, tap, and accessibility exits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullMap, fullMapProgress, listSearch.isError, mapSearch.isError]);
+  const exploreScrollRef = useRef<ScrollView>(null);
+  const searchFormOffset = useRef(0);
   const detail = useQuery({
     enabled: Boolean(vehicleId) && (mode === 'detail' || mode === 'quote'),
     queryKey: ['public-vehicle', vehicleId],
@@ -377,7 +797,10 @@ export function DiscoveryScreen({
       void invalidateRenterVerification(client);
       return;
     }
-    if (mode === 'results' || home) void search.refetch();
+    if (mode === 'results') {
+      void listSearch.refetch();
+      void mapSearch.refetch();
+    } else if (home) void listSearch.refetch();
   });
 
   function openVehicle(id: string) {
@@ -392,57 +815,275 @@ export function DiscoveryScreen({
     setVehicleId(id);
     setMode('detail');
   }
-  function performSearch() {
-    if (!validDates) return;
-    setActivePlace(place);
+  function performSearch(draft?: SearchDraft) {
+    const nextPlace = draft?.place ?? place;
+    const nextStart = draft?.start ?? pickup;
+    const nextEnd = draft?.end ?? returnAt;
+    if (nextEnd.getTime() <= nextStart.getTime()) return;
+    Keyboard.dismiss();
+    setPlace(nextPlace);
+    setActivePlace(nextPlace);
+    setPickup(nextStart);
+    setReturnAt(nextEnd);
     setActiveRadiusKm(radiusKm);
-    setSelectedMapVehicleId(null);
+    setDiscoveryLocationEstablished(true);
+    setTripDatesEstablished(true);
+    resetResultsViewport();
     setMode('results');
   }
   function searchMapArea(area: MapSearchArea) {
-    setActivePlace({
-      city: 'Map area',
-      detail: 'Area selected from the map',
-      label: 'Map area',
+    setActivePlace((current) => ({
+      ...current,
       latitude: area.latitude,
       longitude: area.longitude,
-      province: '',
-    });
-    setPlace({
-      city: 'Map area',
-      detail: 'Area selected from the map',
-      label: 'Map area',
-      latitude: area.latitude,
-      longitude: area.longitude,
-      province: '',
-    });
+    }));
     setRadiusKm(area.radiusKm);
     setActiveRadiusKm(area.radiusKm);
+    resetResultsViewport({ preserveFullMap: fullMap });
   }
-  async function selectCurrentLocation() {
+  async function resolveCurrentLocation(): Promise<SearchLocation | null> {
     setLocationError('');
     const permission = await Location.requestForegroundPermissionsAsync();
     if (!permission.granted) {
       setLocationError('Location access was not granted. Choose a city instead.');
-      return;
+      return null;
     }
     try {
       const current = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
-      setPlace({
+      const currentArea = {
         label: 'Current area',
         detail: 'Based on your device location',
         city: 'Current area',
         province: '',
         latitude: current.coords.latitude,
         longitude: current.coords.longitude,
-      });
-      setLocationOpen(false);
+      };
+      return currentArea;
     } catch {
       setLocationError('We could not get your location. Choose a city instead.');
+      return null;
     }
   }
+
+  async function selectCurrentLocation(activateSearch = false): Promise<boolean> {
+    const currentArea = await resolveCurrentLocation();
+    if (!currentArea) return false;
+    setPlace(currentArea);
+    if (activateSearch) {
+      setActivePlace(currentArea);
+      setDiscoveryLocationEstablished(true);
+    }
+    return true;
+  }
+
+  function openExploreSearch() {
+    setLocationOpen(true);
+  }
+
+  function openLegacySearch(draft?: SearchDraft) {
+    if (draft) {
+      setPlace(draft.place);
+      setPickup(draft.start);
+      setReturnAt(draft.end);
+    }
+    setLocationOpen(false);
+    setExploreSearchOpen(true);
+    setMode('form');
+    setTimeout(
+      () => exploreScrollRef.current?.scrollTo({ animated: true, y: searchFormOffset.current }),
+      0,
+    );
+  }
+
+  function selectExploreShortcut(shortcut: ExploreShortcut) {
+    setExploreShortcut(shortcut);
+    setCategoryId('');
+    setPowertrain('');
+    setSeats('');
+    if (shortcut.startsWith('CATEGORY:')) setCategoryId(shortcut.slice('CATEGORY:'.length));
+    if (shortcut === 'EV') setPowertrain('BATTERY_ELECTRIC');
+    if (shortcut === 'SEVEN_PLUS') setSeats('7');
+    if (shortcut === 'NEARBY') void selectCurrentLocation(true);
+  }
+
+  function prepareResultsFilterChange() {
+    resetResultsViewport();
+  }
+
+  function resetResultsViewport({ preserveFullMap = false } = {}) {
+    resultScrollOffset.current = 0;
+    observedListOffset.value = 0;
+    collapseProgress.value = 0;
+    mapButtonShownOnUi.value = false;
+    topReachedTravel.value = -1;
+    reverseRestorationActive.value = false;
+    resultListRef.current?.scrollToOffset({ animated: false, offset: 0 });
+    mapFullyCollapsedRef.current = false;
+    setMapFullyCollapsed(false);
+    mapTransientUiDismissedRef.current = false;
+    setSelectedMapVehicleId(null);
+    mapButtonVisibleRef.current = false;
+    mapRestoreInProgress.current = false;
+    setMapButtonVisible(false);
+    if (!preserveFullMap) {
+      cancelAnimation(fullMapProgress);
+      fullMapProgress.value = 0;
+      fullMapPresentationOnUi.value = false;
+      setFullMap(false);
+    }
+  }
+
+  function restoreResultsMap() {
+    if (mapRestoreInProgress.current) return;
+    mapRestoreInProgress.current = true;
+    resultListRef.current?.scrollToOffset({ animated: true, offset: 0 });
+    observedListOffset.value = 0;
+    topReachedTravel.value = -1;
+    reverseRestorationActive.value = false;
+    collapseProgress.value = withTiming(0, { duration: 180 }, (finished) => {
+      if (finished) runOnJS(commitForwardPresentation)(false, 0);
+    });
+    mapButtonShownOnUi.value = false;
+  }
+
+  function settleFullMap(target: 0 | 1, onComplete?: () => void) {
+    cancelAnimation(fullMapProgress);
+    fullMapProgress.value = withTiming(target, { duration: 180 }, (finished) => {
+      if (finished && onComplete) runOnJS(onComplete)();
+    });
+  }
+
+  function commitFullMapExit() {
+    observedListOffset.value = 0;
+    resultScrollOffset.current = 0;
+    collapseProgress.value = 0;
+    mapFullyCollapsedRef.current = false;
+    setMapFullyCollapsed(false);
+    mapButtonShownOnUi.value = false;
+    setCollapseMapButtonVisible(false);
+    resultListRef.current?.scrollToOffset({ animated: false, offset: 0 });
+    setFullMap(false);
+    fullMapPresentationOnUi.value = false;
+  }
+
+  function settleFullMapExit() {
+    settleFullMap(0, commitFullMapExit);
+  }
+
+  function beginFullMapGesture() {
+    if (
+      fullMap ||
+      mapFullyCollapsedRef.current ||
+      resultScrollOffset.current > 0 ||
+      collapseProgress.value > 0
+    ) {
+      fullMapPresentationOnUi.value = false;
+      return;
+    }
+    fullMapGestureStartY.current = 0;
+    fullMapGestureDistance.current = 0;
+  }
+
+  function finishFullMapEntryGesture(translationY: number) {
+    if (fullMapGestureStartY.current == null) return;
+    fullMapGestureStartY.current = null;
+    fullMapGestureDistance.current = Math.max(0, translationY);
+    if (
+      fullMapGestureDistance.current >= fullMapGestureThreshold &&
+      !(listSearch.isError && mapSearch.isError)
+    ) {
+      setFullMap(true);
+      settleFullMap(1);
+    } else
+      settleFullMap(0, () => {
+        fullMapPresentationOnUi.value = false;
+      });
+    fullMapGestureDistance.current = 0;
+  }
+
+  function beginFullMapExitGesture(pageY: number) {
+    if (!fullMap) return;
+    cancelAnimation(fullMapProgress);
+    fullMapGestureStartY.current = pageY;
+    fullMapGestureDistance.current = 0;
+  }
+
+  function updateFullMapExitGesture(pageY: number) {
+    if (!fullMap || fullMapGestureStartY.current == null) return;
+    const distance = Math.max(0, fullMapGestureStartY.current - pageY);
+    fullMapGestureDistance.current = distance;
+    const progress = Math.max(0, 1 - distance / fullMapGestureThreshold);
+    fullMapProgress.value = progress;
+  }
+
+  function finishFullMapExitGesture(force = false) {
+    if (!force && fullMapGestureStartY.current == null) return;
+    fullMapGestureStartY.current = null;
+    if (
+      force ||
+      fullMapGestureDistance.current < 6 ||
+      fullMapGestureDistance.current >= fullMapGestureThreshold
+    )
+      settleFullMapExit();
+    else settleFullMap(1);
+    fullMapGestureDistance.current = 0;
+  }
+
+  function syncExploreShortcut(nextCategory: string, nextPowertrain: string, nextSeats: string) {
+    const category = categoryShortcuts.find(({ id }) => id === nextCategory);
+    if (category) setExploreShortcut(`CATEGORY:${category.id}`);
+    else if (nextPowertrain === 'BATTERY_ELECTRIC') setExploreShortcut('EV');
+    else if (nextSeats === '7') setExploreShortcut('SEVEN_PLUS');
+    else setExploreShortcut('ALL');
+  }
+
+  function toggleResultsCategory(id: string) {
+    const nextCategory = categoryId === id ? '' : id;
+    prepareResultsFilterChange();
+    setCategoryId(nextCategory);
+    syncExploreShortcut(nextCategory, powertrain, seats);
+  }
+
+  function toggleResultsPowertrain() {
+    const nextPowertrain = powertrain === 'BATTERY_ELECTRIC' ? '' : 'BATTERY_ELECTRIC';
+    prepareResultsFilterChange();
+    setPowertrain(nextPowertrain);
+    syncExploreShortcut(categoryId, nextPowertrain, seats);
+  }
+
+  function toggleResultsSeats() {
+    const nextSeats = seats === '7' ? '' : '7';
+    prepareResultsFilterChange();
+    setSeats(nextSeats);
+    syncExploreShortcut(categoryId, powertrain, nextSeats);
+  }
+
+  function toggleResultsDelivery() {
+    prepareResultsFilterChange();
+    setHandover(deliveryFilterActive ? 'ANY' : 'DELIVERY_AVAILABLE');
+  }
+
+  const searchEditor = (
+    <LocationSheet
+      appliedEnd={returnAt}
+      appliedStart={pickup}
+      datesEstablished={tripDatesEstablished}
+      error={locationError}
+      locationEstablished={discoveryLocationEstablished}
+      onClose={() => setLocationOpen(false)}
+      onClearError={() => setLocationError('')}
+      onContinue={openLegacySearch}
+      onCurrent={resolveCurrentLocation}
+      onSearch={(draft) => {
+        setLocationOpen(false);
+        performSearch(draft);
+      }}
+      open={locationOpen}
+      selected={discoveryLocationEstablished ? activePlace : place}
+    />
+  );
 
   if (mode === 'favorites')
     return (
@@ -453,6 +1094,7 @@ export function DiscoveryScreen({
         onBack={onExit ?? (() => setMode('form'))}
         onOpen={openVehicle}
         onRemove={(id) => favorite.mutate({ id, active: true })}
+        onRetry={() => void favorites.refetch()}
       />
     );
   if ((mode === 'detail' || mode === 'quote') && vehicleId)
@@ -478,157 +1120,323 @@ export function DiscoveryScreen({
         searchLocation={place}
       />
     );
-  if (mode === 'results')
+  if (mode === 'results') {
+    const resultSummary = formatResultSummary({
+      hasNextPage: listSearch.hasNextPage === true,
+      initialError: listSearch.isError && !listSearch.data,
+      initialLoading: listSearch.isPending && !listSearch.data,
+      loadedCount: uniqueVehicleCount(searchItems),
+    });
     return (
-      <Screen
-        scroll={false}
-        leading={<BackControl label="Edit search" onPress={() => setMode('form')} />}
-        eyebrow="Available cars"
-        title={`${searchItems.length} cars loaded near ${activePlace.label}`}
-        action={
-          <IconButton
-            icon="options-outline"
-            label="Open filters"
+      <Screen scroll={false}>
+        <View style={styles.resultsHeader}>
+          <Pressable
+            accessibilityLabel="Back to Explore"
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={() => setMode('form')}
+            style={styles.resultsHeaderButton}
+          >
+            <Icon color={colors.primary} name="arrow-back" size={21} />
+          </Pressable>
+          <Pressable
+            accessibilityHint="Edit search"
+            accessibilityLabel={`${activePlace.label}, ${tripDateSummary(pickup, returnAt)}`}
+            accessibilityRole="button"
+            onPress={() => setLocationOpen(true)}
+            style={styles.resultsSearchSummary}
+          >
+            <Icon color={colors.primary} name="search" size={18} />
+            <View style={styles.flex}>
+              <Text numberOfLines={1} style={styles.resultSearchLocation}>
+                {activePlace.label}
+              </Text>
+              <Text numberOfLines={1} style={styles.dateSummaryText}>
+                {tripDateSummary(pickup, returnAt)}
+              </Text>
+            </View>
+          </Pressable>
+          <Pressable
+            accessibilityLabel={
+              resultsFilterCount > 0
+                ? `Filters, ${resultsFilterCount} active`
+                : 'Filters, none active'
+            }
+            accessibilityRole="button"
             onPress={() => setFiltersOpen(true)}
-          />
-        }
-      >
-        <View style={styles.dateSummary}>
-          <Icon color={colors.primary} name="calendar-outline" size={18} />
-          <Text numberOfLines={1} style={styles.dateSummaryText}>
-            {dateTimeLabel(pickup)} → {dateTimeLabel(returnAt)}
-          </Text>
-        </View>
-        <View accessibilityLabel="Search result view" style={styles.viewToggle}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: presentationMode === 'list' }}
-            onPress={() => {
-              setPresentationMode('list');
-              setSelectedMapVehicleId(null);
-            }}
             style={[
-              styles.viewToggleButton,
-              presentationMode === 'list' && styles.viewToggleSelected,
+              styles.resultsHeaderButton,
+              resultsFilterCount > 0 && styles.resultsHeaderButtonActive,
             ]}
           >
-            <Text
-              style={
-                presentationMode === 'list' ? styles.viewToggleSelectedText : styles.viewToggleText
-              }
-            >
-              List
-            </Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: presentationMode === 'map' }}
-            onPress={() => setPresentationMode('map')}
-            style={[
-              styles.viewToggleButton,
-              presentationMode === 'map' && styles.viewToggleSelected,
-            ]}
-          >
-            <Text
-              style={
-                presentationMode === 'map' ? styles.viewToggleSelectedText : styles.viewToggleText
-              }
-            >
-              Map
-            </Text>
+            <Icon color={colors.primary} name="options-outline" size={21} />
+            {resultsFilterCount > 0 ? (
+              <Text style={styles.filterCount}>{resultsFilterCount}</Text>
+            ) : null}
           </Pressable>
         </View>
-        {search.isPending && presentationMode === 'list' ? (
-          <StateView
-            loading
-            title="Finding cars…"
-            message="Checking availability for your dates."
+        <ScrollView
+          accessibilityLabel="Search result quick filters"
+          horizontal
+          contentContainerStyle={styles.resultsQuickFilters}
+          showsHorizontalScrollIndicator={false}
+          style={styles.resultsQuickFilterScroller}
+        >
+          <Chip
+            accessibilityLabel={`Delivery filter, ${deliveryFilterActive ? 'selected' : 'not selected'}`}
+            label="Delivery"
+            onPress={toggleResultsDelivery}
+            selected={deliveryFilterActive}
           />
-        ) : search.isError && !search.data && presentationMode === 'list' ? (
-          <StateView
-            icon="cloud-offline-outline"
-            title="Search unavailable"
-            message={search.error.message}
-            actionLabel="Retry"
-            onAction={() => void search.refetch()}
+          {categoryShortcuts.map((category) => (
+            <Chip
+              accessibilityLabel={`${category.label} category filter, ${categoryId === category.id ? 'selected' : 'not selected'}`}
+              key={category.id}
+              label={category.label}
+              onPress={() => toggleResultsCategory(category.id)}
+              selected={categoryId === category.id}
+            />
+          ))}
+          <Chip
+            accessibilityLabel={`Electric vehicle filter, ${powertrain === 'BATTERY_ELECTRIC' ? 'selected' : 'not selected'}`}
+            label="EV"
+            onPress={toggleResultsPowertrain}
+            selected={powertrain === 'BATTERY_ELECTRIC'}
           />
-        ) : presentationMode === 'map' ? (
-          <DiscoveryMap
-            error={search.isError ? search.error : null}
-            initialRegion={{
-              latitude: activePlace.latitude,
-              longitude: activePlace.longitude,
-              latitudeDelta: Math.max(0.03, activeRadiusKm / 55.5),
-              longitudeDelta: Math.max(0.03, activeRadiusKm / 55.5),
-            }}
-            items={searchItems}
-            loading={search.isFetching}
-            onOpen={openVehicle}
-            onRetry={() => void search.refetch()}
-            onSearchArea={searchMapArea}
-            onSelect={setSelectedMapVehicleId}
-            selectedId={selectedMapVehicleId}
+          <Chip
+            accessibilityLabel={`Seven or more seats filter, ${seats === '7' ? 'selected' : 'not selected'}`}
+            label="7+ seats"
+            onPress={toggleResultsSeats}
+            selected={seats === '7'}
           />
-        ) : (
-          <FlatList
-            ref={resultListRef}
-            data={searchItems}
-            keyExtractor={(item) => item.vehicleId}
-            contentContainerStyle={styles.resultList}
-            onContentSizeChange={() => {
-              if (resultScrollOffset.current > 0)
-                resultListRef.current?.scrollToOffset({
-                  animated: false,
-                  offset: resultScrollOffset.current,
-                });
-            }}
-            onEndReached={() => {
-              if (search.hasNextPage && !search.isFetchingNextPage) void search.fetchNextPage();
-            }}
-            onEndReachedThreshold={0.25}
-            onScroll={(event) => {
-              resultScrollOffset.current = event.nativeEvent.contentOffset.y;
-            }}
-            scrollEventThrottle={100}
-            renderItem={({ item }) => (
-              <VehicleCard
-                vehicle={item}
-                onOpen={() => openVehicle(item.vehicleId)}
-                onFavorite={() => favorite.mutate({ id: item.vehicleId, active: item.favorite })}
+          <Chip
+            accessibilityLabel={`Price filter, ${minPrice || maxPrice ? 'selected' : 'not selected'}`}
+            label="Price"
+            onPress={() => setFiltersOpen(true)}
+            selected={Boolean(minPrice || maxPrice)}
+          />
+        </ScrollView>
+        <View
+          onLayout={({ nativeEvent }) => setResultsCompositionHeight(nativeEvent.layout.height)}
+          style={styles.resultsComposition}
+        >
+          <Reanimated.View
+            accessibilityLabel="Approximate vehicle map region"
+            accessibilityElementsHidden={mapFullyCollapsed}
+            importantForAccessibility={mapFullyCollapsed ? 'no-hide-descendants' : 'auto'}
+            pointerEvents={mapFullyCollapsed ? 'none' : 'auto'}
+            style={[styles.resultsMapClip, collapsedMapStyle]}
+          >
+            <View style={[styles.resultsMapContainer, styles.flex]}>
+              <DiscoveryMap
+                error={mapSearch.isError ? mapSearch.error : null}
+                initialRegion={{
+                  latitude: activePlace.latitude,
+                  longitude: activePlace.longitude,
+                  latitudeDelta: Math.max(0.03, activeRadiusKm / 55.5),
+                  longitudeDelta: Math.max(0.03, activeRadiusKm / 55.5),
+                }}
+                items={mapItems}
+                loading={mapSearch.isPending}
+                onOpen={openVehicle}
+                onRetry={() => void mapSearch.refetch()}
+                onSearchArea={searchMapArea}
+                onSelect={setSelectedMapVehicleId}
+                recenterKey={`${place.latitude}:${place.longitude}`}
+                selectedId={selectedMapVehicleId}
+                transientUiDismissKey={mapTransientUiDismissKey}
               />
-            )}
-            ListEmptyComponent={
-              <StateView
-                icon="search-outline"
-                title="No cars found"
-                message={
-                  handover === 'ANY'
-                    ? 'Try a nearby city, wider radius, or different dates.'
-                    : 'No cars match this handover option. Try another handover option or expand your search.'
-                }
-                actionLabel="Change search"
-                onAction={() => setMode('form')}
-              />
+            </View>
+          </Reanimated.View>
+          <Reanimated.View
+            accessible={fullMap}
+            accessibilityHint={fullMap ? 'Activates vehicle results.' : undefined}
+            accessibilityLabel={
+              fullMap ? `${resultSummary}. Show vehicle results.` : 'Cars available results sheet'
             }
-            ListFooterComponent={
-              search.isFetchingNextPage ? (
-                <StateView loading title="Loading more cars…" />
-              ) : nextPageError ? (
-                <StateView
-                  icon="cloud-offline-outline"
-                  title="Couldn’t load more cars"
-                  message={nextPageError.message}
-                  actionLabel="Retry"
-                  onAction={() => void fetchNextSearchPage()}
-                />
-              ) : searchItems.length > 0 && !search.hasNextPage ? (
-                <Text style={styles.endOfResults}>You’ve reached the end of these results.</Text>
-              ) : null
-            }
-          />
-        )}
+            accessibilityRole={fullMap ? 'button' : undefined}
+            onAccessibilityTap={() => finishFullMapExitGesture(true)}
+            onTouchEnd={() => {
+              if (fullMap) finishFullMapExitGesture();
+            }}
+            onTouchMove={({ nativeEvent }) => updateFullMapExitGesture(nativeEvent.pageY)}
+            onTouchStart={({ nativeEvent }) => {
+              beginFullMapExitGesture(nativeEvent.pageY);
+            }}
+            style={[
+              styles.resultsSheet,
+              mapFullyCollapsed && styles.resultsSheetCollapsed,
+              !mapFullyCollapsed && styles.resultsSheetFullMap,
+              fullMapSheetStyle,
+            ]}
+          >
+            <GestureDetector gesture={handleFullMapEntryGesture}>
+              <Reanimated.View
+                accessible={false}
+                importantForAccessibility="no"
+                style={styles.resultsSheetDragTarget}
+              >
+                <Reanimated.View style={[styles.resultsSheetHandle, collapseHandleStyle]} />
+              </Reanimated.View>
+            </GestureDetector>
+            <Reanimated.View
+              accessibilityElementsHidden={!fullMap}
+              importantForAccessibility={fullMap ? 'auto' : 'no-hide-descendants'}
+              style={[styles.fullMapPeekBody, fullMapPeekStyle]}
+            >
+              <View style={styles.fullMapPeekSummaryArea}>
+                <Text accessible={false} style={styles.fullMapPeekSummary}>
+                  {resultSummary}
+                </Text>
+              </View>
+              <View style={{ height: bottomSafeArea }} />
+            </Reanimated.View>
+            <GestureDetector gesture={resultsGesture}>
+              <Reanimated.View
+                accessibilityElementsHidden={fullMap}
+                importantForAccessibility={fullMap ? 'no-hide-descendants' : 'auto'}
+                pointerEvents={fullMap ? 'none' : 'auto'}
+                style={[
+                  styles.flex,
+                  !mapFullyCollapsed && styles.fullMapListViewport,
+                  fullMapListViewportStyle,
+                ]}
+              >
+                <Reanimated.View style={[styles.flex, fullMapContentStyle]}>
+                  {listSearch.isPending ? (
+                    <StateView
+                      loading
+                      title="Finding cars…"
+                      message="Checking availability for your dates."
+                    />
+                  ) : listSearch.isError && !listSearch.data ? (
+                    <StateView
+                      icon="cloud-offline-outline"
+                      title="Search unavailable"
+                      message={listSearch.error.message}
+                      actionLabel="Retry"
+                      onAction={() => void listSearch.refetch()}
+                    />
+                  ) : (
+                    <GestureDetector gesture={nativeResultListGesture}>
+                      <Reanimated.FlatList
+                        accessibilityLabel="Cars available vehicle list"
+                        bounces={false}
+                        ref={resultListRef}
+                        style={styles.flex}
+                        data={searchItems}
+                        keyExtractor={(item) => item.vehicleId}
+                        ListHeaderComponent={<NormalResultsSummary summary={resultSummary} />}
+                        contentContainerStyle={[
+                          styles.resultList,
+                          { paddingBottom: Math.max(100, bottomSafeArea + 88) },
+                        ]}
+                        onContentSizeChange={(_width, height) => {
+                          listContentHeight.value = height;
+                          if (resultScrollOffset.current > 0)
+                            resultListRef.current?.scrollToOffset({
+                              animated: false,
+                              offset: resultScrollOffset.current,
+                            });
+                        }}
+                        onLayout={({ nativeEvent }) => {
+                          listViewportHeight.value = nativeEvent.layout.height;
+                        }}
+                        onEndReached={() => {
+                          if (listSearch.hasNextPage && !listSearch.isFetchingNextPage)
+                            void listSearch.fetchNextPage();
+                        }}
+                        onEndReachedThreshold={0.25}
+                        onMomentumScrollEnd={() => {
+                          mapRestoreInProgress.current = false;
+                        }}
+                        onScroll={onResultsScroll}
+                        onScrollBeginDrag={() => {
+                          mapRestoreInProgress.current = false;
+                        }}
+                        scrollEventThrottle={16}
+                        renderItem={({ item }) => (
+                          <SearchResultVehicleCard
+                            vehicle={item}
+                            onOpen={() => openVehicle(item.vehicleId)}
+                            onFavorite={() =>
+                              favorite.mutate({ id: item.vehicleId, active: item.favorite })
+                            }
+                          />
+                        )}
+                        ListEmptyComponent={
+                          <StateView
+                            icon="search-outline"
+                            title="Adjust your search"
+                            message={
+                              handover === 'ANY'
+                                ? 'Try a nearby city, wider radius, or different dates.'
+                                : 'No cars match this handover option. Try another handover option or expand your search.'
+                            }
+                            actionLabel="Change search"
+                            onAction={() => setMode('form')}
+                          />
+                        }
+                        ListFooterComponent={
+                          listSearch.isFetchingNextPage ? (
+                            <StateView loading title="Loading more cars…" />
+                          ) : nextPageError ? (
+                            <StateView
+                              icon="cloud-offline-outline"
+                              title="Couldn’t load more cars"
+                              message={nextPageError.message}
+                              actionLabel="Retry"
+                              onAction={() => void fetchNextSearchPage()}
+                            />
+                          ) : searchItems.length > 0 && !listSearch.hasNextPage ? (
+                            <Text style={styles.endOfResults}>
+                              You’ve reached the end of these results.
+                            </Text>
+                          ) : null
+                        }
+                      />
+                    </GestureDetector>
+                  )}
+                </Reanimated.View>
+              </Reanimated.View>
+            </GestureDetector>
+          </Reanimated.View>
+          {mapButtonVisible &&
+          !fullMap &&
+          !locationOpen &&
+          !filtersOpen &&
+          !(listSearch.isError && mapSearch.isError) &&
+          (searchItems.length > 0 || listSearch.isError) ? (
+            <View
+              pointerEvents="box-none"
+              style={[
+                styles.mapRestoreLayer,
+                { bottom: Math.max(spacing.md, bottomSafeArea + spacing.xs) },
+              ]}
+            >
+              <Pressable
+                accessibilityHint="Scrolls results to reveal the map."
+                accessibilityLabel="Show map"
+                accessibilityRole="button"
+                hitSlop={8}
+                onPress={restoreResultsMap}
+                style={({ pressed }) => [
+                  styles.mapRestoreButton,
+                  pressed && styles.mapRestoreButtonPressed,
+                ]}
+              >
+                <Text maxFontSizeMultiplier={1.4} style={styles.mapRestoreLabel}>
+                  Map
+                </Text>
+                <Icon color={colors.onPrimary} name="map-outline" size={18} />
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+        {searchEditor}
         {filtersOpen && (
           <FilterSheet
+            referenceData={reference.data}
             {...{
               filtersOpen,
               setFiltersOpen,
@@ -652,22 +1460,27 @@ export function DiscoveryScreen({
               setHandover,
             }}
             onApply={() => {
+              prepareResultsFilterChange();
+              setActiveRadiusKm(radiusKm);
+              syncExploreShortcut(categoryId, powertrain, seats);
               setFiltersOpen(false);
             }}
           />
         )}
       </Screen>
     );
+  }
 
   return (
     <Screen
-      eyebrow={home ? 'Good day' : 'Find a car'}
-      title={home ? 'Where do you need a car?' : 'Search cars'}
-      subtitle="Book verified cars from local owners across the Philippines."
+      {...(home ? { scrollRef: exploreScrollRef } : {})}
+      eyebrow={home ? undefined : 'Find a car'}
+      title={home ? 'Explore' : 'Search cars'}
+      subtitle={home ? undefined : 'Book verified cars from local owners across the Philippines.'}
       action={
         <IconButton
           icon="heart-outline"
-          label="Open favorites"
+          label="Open Wishlist"
           onPress={() => setMode('favorites')}
         />
       }
@@ -678,114 +1491,181 @@ export function DiscoveryScreen({
           onReview={(reference) => navigation.navigate('BookingRecovery', { bookingId: reference })}
         />
       )}
-      <Card style={styles.searchCard}>
+      {home && (
         <Pressable
+          accessibilityLabel="Start your search"
           accessibilityRole="button"
-          onPress={() => setLocationOpen(true)}
-          style={styles.searchRow}
+          onPress={openExploreSearch}
+          style={({ pressed }) => [styles.exploreSearchPill, pressed && styles.explorePressed]}
         >
-          <View style={styles.searchIcon}>
-            <Icon color={colors.primary} name="location-outline" />
+          <View style={styles.exploreSearchIcon}>
+            <Icon color={colors.primary} name="search" size={22} />
           </View>
           <View style={styles.flex}>
-            <Text style={styles.smallLabel}>Pickup area</Text>
-            <Text style={styles.searchValue}>{place.label}</Text>
-            <Text numberOfLines={1} style={styles.searchDetail}>
-              {place.detail}
+            <Text style={styles.exploreSearchTitle}>
+              {discoveryLocationEstablished ? activePlace.label : 'Start your search'}
+            </Text>
+            <Text numberOfLines={1} style={styles.exploreSearchSummary}>
+              {discoveryLocationEstablished
+                ? tripDatesEstablished
+                  ? tripDateSummary(pickup, returnAt)
+                  : 'Add trip dates'
+                : 'Search destinations, cities or places'}
             </Text>
           </View>
-          <Icon color={colors.subtleText} name="chevron-down" size={18} />
+          <Icon color={colors.subtleText} name="chevron-forward" size={19} />
         </Pressable>
-        <View style={styles.divider} />
-        <View style={styles.dateGrid}>
-          <DateTimeField
-            label="Pickup"
-            value={pickup}
-            minimumDate={new Date()}
-            onChange={setPickup}
+      )}
+      {(!home || exploreSearchOpen) && (
+        <View onLayout={(event) => (searchFormOffset.current = event.nativeEvent.layout.y)}>
+          <Card style={styles.searchCard}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setLocationOpen(true)}
+              style={styles.searchRow}
+            >
+              <View style={styles.searchIcon}>
+                <Icon color={colors.primary} name="location-outline" />
+              </View>
+              <View style={styles.flex}>
+                <Text style={styles.smallLabel}>Pickup area</Text>
+                <Text style={styles.searchValue}>{place.label}</Text>
+                <Text numberOfLines={1} style={styles.searchDetail}>
+                  {place.detail}
+                </Text>
+              </View>
+              <Icon color={colors.subtleText} name="chevron-down" size={18} />
+            </Pressable>
+            <View style={styles.divider} />
+            <View style={styles.dateGrid}>
+              <DateTimeField
+                label="Pickup"
+                value={pickup}
+                minimumDate={new Date()}
+                onChange={setPickup}
+              />
+              <DateTimeField
+                label="Return"
+                value={returnAt}
+                minimumDate={pickup}
+                onChange={setReturnAt}
+              />
+            </View>
+            {!validDates && <Text style={styles.error}>Return must be after pickup.</Text>}
+            <Button
+              disabled={!validDates}
+              icon="search"
+              label="Search cars"
+              onPress={performSearch}
+            />
+          </Card>
+        </View>
+      )}
+      {(!home || exploreSearchOpen) && (
+        <View style={styles.quickRow}>
+          <Chip
+            icon="options-outline"
+            label={
+              activeFilterCount({
+                make,
+                categoryId,
+                seats,
+                transmission,
+                powertrain,
+                minPrice,
+                maxPrice,
+                handover: handover === 'ANY' ? '' : handover,
+              })
+                ? `${activeFilterCount({ make, categoryId, seats, transmission, powertrain, minPrice, maxPrice, handover: handover === 'ANY' ? '' : handover })} filters`
+                : 'Filters'
+            }
+            onPress={() => setFiltersOpen(true)}
           />
-          <DateTimeField
-            label="Return"
-            value={returnAt}
-            minimumDate={pickup}
-            onChange={setReturnAt}
+          <Chip
+            icon="navigate-outline"
+            label={`${radiusKm} km radius`}
+            onPress={() => setFiltersOpen(true)}
           />
         </View>
-        {!validDates && <Text style={styles.error}>Return must be after pickup.</Text>}
-        <Button disabled={!validDates} icon="search" label="Search cars" onPress={performSearch} />
-      </Card>
-      <View style={styles.quickRow}>
-        <Chip
-          icon="options-outline"
-          label={
-            activeFilterCount({
-              make,
-              categoryId,
-              seats,
-              transmission,
-              powertrain,
-              minPrice,
-              maxPrice,
-              handover: handover === 'ANY' ? '' : handover,
-            })
-              ? `${activeFilterCount({ make, categoryId, seats, transmission, powertrain, minPrice, maxPrice, handover: handover === 'ANY' ? '' : handover })} filters`
-              : 'Filters'
-          }
-          onPress={() => setFiltersOpen(true)}
-        />
-        <Chip
-          icon="navigate-outline"
-          label={`${radiusKm} km radius`}
-          onPress={() => setFiltersOpen(true)}
-        />
-      </View>
+      )}
       {home && (
         <>
-          <SectionHeader title="Popular near you" />
-          <Text style={styles.sectionCopy}>
-            Available for your selected dates. Final price is confirmed before you reserve.
-          </Text>
-          {search.isPending && <StateView loading title="Loading nearby cars…" />}
-          {search.isError && (
-            <StateView
-              icon="cloud-offline-outline"
-              title="Couldn’t load nearby cars"
-              message={search.error.message}
-              actionLabel="Retry"
-              onAction={() => void search.refetch()}
+          <ScrollView
+            accessibilityLabel="Vehicle discovery categories"
+            contentContainerStyle={styles.exploreCategoryContent}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.exploreCategoryRow}
+          >
+            <Chip
+              label="All"
+              selected={exploreShortcut === 'ALL'}
+              onPress={() => selectExploreShortcut('ALL')}
             />
-          )}
-          {searchItems.slice(0, 4).map((vehicle) => (
-            <VehicleCard
-              key={vehicle.vehicleId}
-              vehicle={vehicle}
-              onOpen={() => openVehicle(vehicle.vehicleId)}
-              onFavorite={() =>
-                favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
-              }
+            <Chip
+              icon="navigate-outline"
+              label="Nearby"
+              selected={exploreShortcut === 'NEARBY'}
+              onPress={() => selectExploreShortcut('NEARBY')}
             />
-          ))}
-          {searchItems.length === 0 && (
-            <StateView
-              icon="car-outline"
-              title="No cars nearby yet"
-              message="Try another city or widen your search radius."
+            {categoryShortcuts.map((category) => {
+              const shortcut = `CATEGORY:${category.id}` as const;
+              return (
+                <Chip
+                  key={category.id}
+                  label={category.label}
+                  selected={exploreShortcut === shortcut}
+                  onPress={() => selectExploreShortcut(shortcut)}
+                />
+              );
+            })}
+            <Chip
+              icon="flash-outline"
+              label="EV"
+              selected={exploreShortcut === 'EV'}
+              onPress={() => selectExploreShortcut('EV')}
             />
-          )}
+            <Chip
+              icon="people-outline"
+              label="7+ seats"
+              selected={exploreShortcut === 'SEVEN_PLUS'}
+              onPress={() => selectExploreShortcut('SEVEN_PLUS')}
+            />
+          </ScrollView>
+          {locationError ? (
+            <Text accessibilityRole="alert" style={styles.error}>
+              {locationError}
+            </Text>
+          ) : null}
+          <ExploreVehicleSection
+            cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
+            error={listSearch.isError ? listSearch.error : null}
+            items={searchItems.slice(0, 6)}
+            loading={listSearch.isPending}
+            onAdjustSearch={openExploreSearch}
+            onFavorite={(vehicle) =>
+              favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
+            }
+            onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
+            onRetry={() => void listSearch.refetch()}
+            subtitle="Available for your selected times. Final price is confirmed before you reserve."
+            title={
+              discoveryLocationEstablished
+                ? `Cars near ${activePlace.label}`
+                : exploreShortcut === 'EV'
+                  ? 'Electric vehicles'
+                  : exploreShortcut === 'SEVEN_PLUS'
+                    ? 'Cars with 7+ seats'
+                    : categoryShortcuts.some(({ id }) => exploreShortcut === `CATEGORY:${id}`)
+                      ? `${categoryShortcuts.find(({ id }) => exploreShortcut === `CATEGORY:${id}`)?.label} cars`
+                      : 'Explore cars'
+            }
+          />
         </>
       )}
-      <LocationSheet
-        open={locationOpen}
-        selected={place}
-        onClose={() => setLocationOpen(false)}
-        onSelect={(next) => {
-          setPlace(next);
-          setLocationOpen(false);
-        }}
-        onCurrent={() => void selectCurrentLocation()}
-        error={locationError}
-      />
+      {searchEditor}
       <FilterSheet
+        referenceData={reference.data}
         {...{
           filtersOpen,
           setFiltersOpen,
@@ -808,13 +1688,26 @@ export function DiscoveryScreen({
           handover,
           setHandover,
         }}
-        onApply={() => setFiltersOpen(false)}
+        onApply={() => {
+          setExploreShortcut('CUSTOM');
+          setFiltersOpen(false);
+        }}
       />
     </Screen>
   );
 }
 
-function VehicleCard({
+function NormalResultsSummary({ summary }: { readonly summary: string }) {
+  return (
+    <View style={styles.normalResultsSummary}>
+      <Text accessibilityRole="header" style={styles.resultsHeading}>
+        {summary}
+      </Text>
+    </View>
+  );
+}
+
+function SearchResultVehicleCard({
   vehicle,
   onOpen,
   onFavorite,
@@ -823,71 +1716,235 @@ function VehicleCard({
   readonly onOpen: () => void;
   readonly onFavorite: () => void;
 }) {
+  const identity = `${vehicle.year ?? ''} ${vehicle.make ?? ''} ${vehicle.model ?? ''}`
+    .replace(/\s+/g, ' ')
+    .trim();
+  const location = [vehicle.approximateLocation.city, vehicle.approximateLocation.province]
+    .filter(Boolean)
+    .join(', ');
+  const hasRating = Boolean(vehicle.rating?.averageRating && vehicle.rating.reviewCount > 0);
+  const visibleRating = hasRating
+    ? `${vehicle.rating!.averageRating} (${vehicle.rating!.reviewCount})`
+    : 'New';
+  const ratingAccessibility = hasRating
+    ? `Rated ${vehicle.rating!.averageRating} out of 5 from ${vehicle.rating!.reviewCount} reviews`
+    : 'New, no reviews yet';
+  const attributes = [
+    typeof vehicle.seats === 'number' ? `${vehicle.seats} seats` : null,
+    vehicle.transmission ? domainLabel(vehicle.transmission) : null,
+    vehicle.category?.name,
+  ].filter((value): value is string => Boolean(value));
+  const fulfillmentLabel =
+    vehicle.fulfillment.deliveryToSearchLocation === true
+      ? 'Delivery to your location'
+      : vehicle.fulfillment.ownerDeliveryAvailable
+        ? 'Delivery available'
+        : vehicle.fulfillment.renterPickupAvailable
+          ? 'Pickup available'
+          : null;
+  const accessibilityLabel = [
+    identity,
+    location,
+    `about ${vehicle.distanceKm.toFixed(1)} kilometers away`,
+    ratingAccessibility,
+    attributes.join(', '),
+    `${money(vehicle.displayPrice.amountMinor, vehicle.currency)} per day`,
+    fulfillmentLabel,
+  ]
+    .filter(Boolean)
+    .join('. ');
   return (
-    <Pressable accessibilityRole="button" onPress={onOpen} style={styles.vehicleCard}>
+    <View style={styles.vehicleCard}>
+      <Pressable
+        accessibilityLabel={accessibilityLabel}
+        accessibilityRole="button"
+        onPress={onOpen}
+        style={({ pressed }) => [styles.vehicleCardOpen, pressed && styles.vehicleCardPressed]}
+      >
+        <View style={styles.vehicleImageFrame}>
+          <VehicleImage
+            accessible={false}
+            contentPath={vehicle.coverPhoto?.contentPath}
+            style={styles.cardImage}
+          />
+        </View>
+        <View style={styles.vehicleContent}>
+          <Text numberOfLines={2} style={styles.vehicleTitle}>
+            {identity || 'Vehicle'}
+          </Text>
+          <View style={styles.vehicleLocationRatingRow}>
+            <Text numberOfLines={1} style={styles.vehicleLocation}>
+              {location} · about {vehicle.distanceKm.toFixed(1)} km away
+            </Text>
+            <Text accessibilityLabel={ratingAccessibility} style={styles.vehicleRating}>
+              ★ {visibleRating}
+            </Text>
+          </View>
+          {attributes.length > 0 ? (
+            <Text numberOfLines={2} style={styles.vehicleAttributes}>
+              {attributes.slice(0, 3).join(' · ')}
+            </Text>
+          ) : null}
+          <View style={styles.vehiclePriceFulfillmentRow}>
+            <Text numberOfLines={1} style={styles.vehiclePrice}>
+              {money(vehicle.displayPrice.amountMinor, vehicle.currency)}{' '}
+              <Text style={styles.vehiclePriceUnit}>/ day</Text>
+            </Text>
+            {fulfillmentLabel ? <StatusBadge label={fulfillmentLabel} /> : null}
+          </View>
+          {vehicle.fulfillment.deliveryToSearchLocationReason === 'INSUFFICIENT_NOTICE' &&
+            typeof vehicle.fulfillment.fulfillmentMinimumNoticeMinutes === 'number' && (
+              <Text style={styles.vehicleNotice}>
+                Delivery requires {noticeLabel(vehicle.fulfillment.fulfillmentMinimumNoticeMinutes)}{' '}
+                notice.
+              </Text>
+            )}
+        </View>
+      </Pressable>
+      <View style={styles.favorite}>
+        <IconButton
+          active={vehicle.favorite}
+          icon={vehicle.favorite ? 'heart' : 'heart-outline'}
+          label={`${vehicle.favorite ? 'Remove' : 'Save'} ${identity || 'vehicle'} ${vehicle.favorite ? 'from' : 'to'} Wishlist`}
+          onPress={onFavorite}
+        />
+      </View>
+    </View>
+  );
+}
+
+function ExploreVehicleSection({
+  title,
+  subtitle,
+  items,
+  cardWidth,
+  loading,
+  error,
+  onOpen,
+  onFavorite,
+  onRetry,
+  onAdjustSearch,
+}: {
+  readonly title: string;
+  readonly subtitle: string;
+  readonly items: readonly VehicleCardView[];
+  readonly cardWidth: number;
+  readonly loading: boolean;
+  readonly error: Error | null;
+  readonly onOpen: (vehicle: VehicleCardView) => void;
+  readonly onFavorite: (vehicle: VehicleCardView) => void;
+  readonly onRetry: () => void;
+  readonly onAdjustSearch: () => void;
+}) {
+  return (
+    <View accessibilityLabel={`${title} vehicle section`} style={styles.exploreSection}>
+      <Text accessibilityRole="header" style={styles.exploreSectionTitle}>
+        {title}
+      </Text>
+      <Text style={styles.exploreSectionSubtitle}>{subtitle}</Text>
+      {loading ? (
+        <View style={[styles.exploreLoadingCard, { width: cardWidth }]}>
+          <StateView loading title="Loading cars…" />
+        </View>
+      ) : error ? (
+        <StateView
+          icon="cloud-offline-outline"
+          title="Couldn’t load cars"
+          message={error.message}
+          actionLabel="Retry"
+          onAction={onRetry}
+        />
+      ) : items.length === 0 ? (
+        <StateView
+          icon="car-outline"
+          title="No cars match this search"
+          message="Try another location, category, or search filter."
+          actionLabel="Adjust search"
+          onAction={onAdjustSearch}
+        />
+      ) : (
+        <ScrollView
+          accessibilityLabel={`${title} vehicles`}
+          contentContainerStyle={styles.exploreRailContent}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.exploreRail}
+        >
+          {items.map((vehicle) => (
+            <ExploreVehicleCard
+              key={vehicle.vehicleId}
+              cardWidth={cardWidth}
+              vehicle={vehicle}
+              onFavorite={() => onFavorite(vehicle)}
+              onOpen={() => onOpen(vehicle)}
+            />
+          ))}
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
+function ExploreVehicleCard({
+  vehicle,
+  cardWidth,
+  onOpen,
+  onFavorite,
+}: {
+  readonly vehicle: VehicleCardView;
+  readonly cardWidth: number;
+  readonly onOpen: () => void;
+  readonly onFavorite: () => void;
+}) {
+  const identity = `${vehicle.year ?? ''} ${vehicle.make ?? ''} ${vehicle.model ?? ''}`.trim();
+  const rating = vehicle.rating?.averageRating
+    ? `Rated ${vehicle.rating.averageRating} from ${vehicle.rating.reviewCount} reviews`
+    : 'New listing';
+  return (
+    <Pressable
+      accessibilityLabel={`${identity}, ${rating}, ${money(vehicle.displayPrice.amountMinor, vehicle.currency)} per day, ${vehicle.approximateLocation.city}`}
+      accessibilityRole="button"
+      onPress={onOpen}
+      style={({ pressed }) => [
+        styles.exploreVehicleCard,
+        { width: cardWidth },
+        pressed && styles.explorePressed,
+      ]}
+    >
       <View>
-        <VehicleImage contentPath={vehicle.coverPhoto?.contentPath} style={styles.cardImage} />
-        <View style={styles.favorite}>
+        <VehicleImage
+          accessibilityLabel={`${identity} cover photo`}
+          contentPath={vehicle.coverPhoto?.contentPath}
+          style={styles.exploreVehicleImage}
+        />
+        <View style={styles.exploreFavorite}>
           <IconButton
             active={vehicle.favorite}
             icon={vehicle.favorite ? 'heart' : 'heart-outline'}
-            label={vehicle.favorite ? 'Remove from favorites' : 'Save to favorites'}
+            label={
+              vehicle.favorite ? `Remove ${identity} from Wishlist` : `Save ${identity} to Wishlist`
+            }
             onPress={onFavorite}
           />
         </View>
       </View>
-      <View style={styles.vehicleContent}>
-        <View style={styles.titleRow}>
-          <View style={styles.flex}>
-            <Text numberOfLines={1} style={styles.vehicleTitle}>
-              {vehicle.year} {vehicle.make} {vehicle.model}
-            </Text>
-            <Text numberOfLines={1} style={styles.location}>
-              {vehicle.approximateLocation.city}, {vehicle.approximateLocation.province} ·{' '}
-              {vehicle.distanceKm.toFixed(1)} km
-            </Text>
-          </View>
-          <View style={styles.priceBox}>
-            <Text adjustsFontSizeToFit numberOfLines={1} style={styles.cardPrice}>
-              {money(vehicle.displayPrice.amountMinor, vehicle.currency)}
-            </Text>
-            <Text style={styles.perDay}>/ day</Text>
-          </View>
-        </View>
-        <View style={styles.metaRow}>
-          {vehicle.rating && (
-            <Text style={styles.meta}>
-              ★ {vehicle.rating.averageRating ?? 'New'}{' '}
-              {vehicle.rating.reviewCount > 0 ? `(${vehicle.rating.reviewCount})` : ''}
-            </Text>
-          )}
-          <Text style={styles.meta}>
-            {vehicle.category?.name ?? 'Vehicle'} · {domainLabel(vehicle.transmission)} ·{' '}
-            {vehicle.seats ?? '—'} seats
+      <View style={styles.exploreVehicleBody}>
+        <Text numberOfLines={1} style={styles.exploreVehicleTitle}>
+          {identity}
+        </Text>
+        <Text numberOfLines={1} style={styles.exploreVehicleLocation}>
+          {vehicle.approximateLocation.city}, {vehicle.approximateLocation.province}
+        </Text>
+        <View style={styles.exploreVehicleMeta}>
+          <Text accessibilityLabel={rating} style={styles.exploreRating}>
+            {vehicle.rating?.averageRating
+              ? `★ ${vehicle.rating.averageRating}${vehicle.rating.reviewCount ? ` (${vehicle.rating.reviewCount})` : ''}`
+              : 'New'}
+          </Text>
+          <Text accessibilityLabel="Server-projected daily price" style={styles.explorePrice}>
+            {money(vehicle.displayPrice.amountMinor, vehicle.currency)} / day
           </Text>
         </View>
-        <View accessibilityLabel="Available handover options" style={styles.quickRow}>
-          {vehicle.fulfillment.renterPickupAvailable && <StatusBadge label="Pickup" />}
-          {vehicle.fulfillment.deliveryToSearchLocation === true ? (
-            <StatusBadge label="Delivery to your location" />
-          ) : (
-            vehicle.fulfillment.ownerDeliveryAvailable && <StatusBadge label="Delivery" />
-          )}
-        </View>
-        {vehicle.fulfillment.deliveryToSearchLocationReason === 'INSUFFICIENT_NOTICE' &&
-          typeof vehicle.fulfillment.fulfillmentMinimumNoticeMinutes === 'number' && (
-            <Text style={styles.note}>
-              Delivery requires {noticeLabel(vehicle.fulfillment.fulfillmentMinimumNoticeMinutes)}{' '}
-              notice.
-            </Text>
-          )}
-        {vehicle.estimatedRentalTotal && (
-          <Text style={styles.estimate}>
-            Estimated total {money(vehicle.estimatedRentalTotal.amountMinor, vehicle.currency)} for{' '}
-            {vehicle.estimatedRentalTotal.chargeableDays} day
-            {vehicle.estimatedRentalTotal.chargeableDays === 1 ? '' : 's'}
-          </Text>
-        )}
       </View>
     </Pressable>
   );
@@ -1002,7 +2059,7 @@ function VehicleView(properties: {
         <IconButton
           active={vehicle.favorite}
           icon={vehicle.favorite ? 'heart' : 'heart-outline'}
-          label="Favorite"
+          label={vehicle.favorite ? 'Remove from Wishlist' : 'Save to Wishlist'}
           onPress={properties.onFavorite}
         />
       }
@@ -1647,6 +2704,7 @@ function FavoritesView({
   onBack,
   onOpen,
   onRemove,
+  onRetry,
 }: {
   readonly data?:
     { items: readonly { vehicle: VehicleDetail }[]; unavailableCount: number } | undefined;
@@ -1655,20 +2713,23 @@ function FavoritesView({
   readonly onBack: () => void;
   readonly onOpen: (id: string) => void;
   readonly onRemove: (id: string) => void;
+  readonly onRetry: () => void;
 }) {
   return (
     <Screen
       leading={<BackControl label="Back" onPress={onBack} />}
       eyebrow="Saved cars"
-      title="Favorites"
+      title="Wishlist"
       subtitle="Cars you save will appear here."
     >
       {loading && <StateView loading title="Loading saved cars…" />}
       {error && (
         <StateView
           icon="cloud-offline-outline"
-          title="Favorites unavailable"
+          title="Wishlist unavailable"
           message={error.message}
+          actionLabel="Retry"
+          onAction={onRetry}
         />
       )}
       {data?.unavailableCount ? (
@@ -1679,8 +2740,8 @@ function FavoritesView({
       {data?.items.length === 0 && (
         <StateView
           icon="heart-outline"
-          title="No favorites yet"
-          message="Tap the heart on a car to save it for later."
+          title="No saved cars yet"
+          message="Tap the heart on a vehicle to save it here."
         />
       )}
       {data?.items.map(({ vehicle }) => (
@@ -1707,7 +2768,7 @@ function FavoritesView({
           <IconButton
             active
             icon="heart"
-            label="Remove from favorites"
+            label="Remove from Wishlist"
             onPress={() => onRemove(vehicle.vehicleId)}
           />
         </Card>
@@ -1719,30 +2780,69 @@ function FavoritesView({
 function LocationSheet({
   open,
   selected,
+  appliedStart,
+  appliedEnd,
+  locationEstablished,
+  datesEstablished,
   onClose,
-  onSelect,
+  onClearError,
   onCurrent,
+  onSearch,
+  onContinue,
   error,
 }: {
   readonly open: boolean;
   readonly selected: SearchLocation;
+  readonly appliedStart: Date;
+  readonly appliedEnd: Date;
+  readonly locationEstablished: boolean;
+  readonly datesEstablished: boolean;
   readonly onClose: () => void;
-  readonly onSelect: (value: SearchLocation) => void;
-  readonly onCurrent: () => void;
+  readonly onClearError: () => void;
+  readonly onCurrent: () => Promise<SearchLocation | null>;
+  readonly onSearch: (draft: SearchDraft) => void;
+  readonly onContinue: (draft: SearchDraft) => void;
   readonly error: string;
 }) {
+  const [whereExpanded, setWhereExpanded] = useState(true);
+  const [whenExpanded, setWhenExpanded] = useState(false);
+  const [draftSelected, setDraftSelected] = useState(selected);
+  const [draftWhereEstablished, setDraftWhereEstablished] = useState(locationEstablished);
+  const [draftStart, setDraftStart] = useState(appliedStart);
+  const [draftEnd, setDraftEnd] = useState(appliedEnd);
+  const [draftDatesEstablished, setDraftDatesEstablished] = useState(datesEstablished);
+  const [draftDatesCleared, setDraftDatesCleared] = useState(false);
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState<
     readonly { providerReference: string; displayName: string; secondaryText: string }[]
   >([]);
   const [providerError, setProviderError] = useState('');
   const [pending, setPending] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
   const session = useRef(searchLocationSession());
   const request = useRef(0);
+  function resetForOpen() {
+    request.current += 1;
+    session.current = searchLocationSession();
+    setDraftSelected(selected);
+    setDraftWhereEstablished(locationEstablished);
+    setDraftStart(appliedStart);
+    setDraftEnd(appliedEnd);
+    setDraftDatesEstablished(datesEstablished);
+    setDraftDatesCleared(false);
+    setWhereExpanded(!locationEstablished);
+    setWhenExpanded(locationEstablished && !datesEstablished);
+    setQuery('');
+    setSuggestions([]);
+    setProviderError('');
+    setPending(false);
+  }
   useEffect(() => {
-    if (!open || query.trim().length < 3) {
+    if (!open) {
+      request.current += 1;
       return;
     }
+    if (query.trim().length < 3) return;
     const id = ++request.current;
     const timer = setTimeout(() => {
       setPending(true);
@@ -1763,7 +2863,7 @@ function LocationSheet({
         });
     }, 350);
     return () => clearTimeout(timer);
-  }, [open, query]);
+  }, [open, query, retryNonce]);
   async function selectSuggestion(providerReference: string) {
     const id = ++request.current;
     setPending(true);
@@ -1773,7 +2873,8 @@ function LocationSheet({
       const value = await bookingLocationProvider.resolvePlace(providerReference, session.current);
       if (id !== request.current) return;
       session.current = searchLocationSession();
-      onSelect({
+      onClearError();
+      setDraftSelected({
         city: value.city,
         detail: [value.addressLine1, value.city, value.province].filter(Boolean).join(', '),
         label: value.displayName,
@@ -1781,6 +2882,11 @@ function LocationSheet({
         longitude: value.longitude,
         province: value.province,
       });
+      setDraftWhereEstablished(true);
+      setQuery('');
+      setSuggestions([]);
+      setWhereExpanded(false);
+      setWhenExpanded(true);
     } catch {
       if (id === request.current)
         setProviderError('This place could not be selected. Try another result.');
@@ -1788,81 +2894,241 @@ function LocationSheet({
       if (id === request.current) setPending(false);
     }
   }
+  async function selectNearby() {
+    setPending(true);
+    setProviderError('');
+    const selectedCurrentArea = await onCurrent();
+    setPending(false);
+    if (selectedCurrentArea) {
+      setDraftSelected(selectedCurrentArea);
+      setDraftWhereEstablished(true);
+      setQuery('');
+      setSuggestions([]);
+      setWhereExpanded(false);
+      setWhenExpanded(true);
+    }
+  }
+  function close() {
+    Keyboard.dismiss();
+    onClose();
+  }
   return (
     <Modal
       animationType="slide"
-      onRequestClose={onClose}
+      onShow={resetForOpen}
+      onRequestClose={close}
       presentationStyle="pageSheet"
       visible={open}
     >
       <Screen
-        title="Choose pickup area"
-        subtitle="Search uses your area internally. Exact vehicle locations stay private."
+        leading={<BackControl label="Close search" onPress={close} />}
+        title="Search cars"
+        subtitle="Choose a discovery area. Pickup, Delivery, Return, and Collection locations are confirmed later."
       >
-        <View style={styles.placeSearch}>
-          <Icon name="search" size={18} />
-          <TextInput
-            accessibilityLabel="Search city, area, landmark, or address"
-            onChangeText={(value) => {
-              setQuery(value);
-              if (value.trim().length < 3) setSuggestions([]);
-            }}
-            placeholder="Search city, landmark, or address"
-            placeholderTextColor={colors.placeholder}
-            style={styles.placeSearchInput}
-            value={query}
-          />
-        </View>
-        {pending ? <Text style={styles.note}>Searching places…</Text> : null}
-        {providerError ? <Text style={styles.error}>{providerError}</Text> : null}
-        {suggestions.map((item) => (
+        {whereExpanded ? (
+          <Card style={styles.whereCardActive}>
+            <Text accessibilityRole="header" style={styles.whereTitle}>
+              Where?
+            </Text>
+            <Text style={styles.whereCopy}>Search destinations, cities or places</Text>
+            <View style={styles.placeSearch}>
+              <Icon name="search" size={18} />
+              <TextInput
+                accessibilityLabel="Search destinations, cities or places"
+                autoFocus
+                onChangeText={(value) => {
+                  setQuery(value);
+                  setProviderError('');
+                  if (value.trim().length < 3) {
+                    request.current += 1;
+                    setSuggestions([]);
+                    setPending(false);
+                  }
+                }}
+                placeholder="Search destinations, cities or places"
+                placeholderTextColor={colors.placeholder}
+                returnKeyType="search"
+                style={styles.placeSearchInput}
+                value={query}
+              />
+              {query.length > 0 ? (
+                <IconButton
+                  icon="close-circle"
+                  label="Clear location search"
+                  onPress={() => {
+                    request.current += 1;
+                    setQuery('');
+                    setSuggestions([]);
+                    setProviderError('');
+                    setPending(false);
+                  }}
+                />
+              ) : null}
+            </View>
+            {pending ? (
+              <Text accessibilityLiveRegion="polite" style={styles.note}>
+                Searching places…
+              </Text>
+            ) : null}
+            {providerError ? (
+              <View style={styles.whereError}>
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {providerError}
+                </Text>
+                {query.trim().length >= 3 ? (
+                  <Button
+                    label="Retry place search"
+                    onPress={() => setRetryNonce((value) => value + 1)}
+                    variant="secondary"
+                  />
+                ) : null}
+              </View>
+            ) : null}
+            {suggestions.map((item) => (
+              <Pressable
+                accessibilityLabel={[item.displayName, item.secondaryText]
+                  .filter(Boolean)
+                  .join(', ')}
+                accessibilityRole="button"
+                key={item.providerReference}
+                onPress={() => void selectSuggestion(item.providerReference)}
+                style={styles.locationOption}
+              >
+                <View style={styles.searchIcon}>
+                  <Icon color={colors.primary} name="location-outline" />
+                </View>
+                <View style={styles.flex}>
+                  <Text style={styles.cardTitle}>{item.displayName}</Text>
+                  <Text style={styles.body}>{item.secondaryText}</Text>
+                </View>
+              </Pressable>
+            ))}
+            <Pressable
+              accessibilityLabel="Nearby, find cars around your current area"
+              accessibilityRole="button"
+              disabled={pending}
+              onPress={() => void selectNearby()}
+              style={styles.nearbyOption}
+            >
+              <View style={styles.nearbyIcon}>
+                <Icon color={colors.primary} name="navigate" size={22} />
+              </View>
+              <View style={styles.flex}>
+                <Text style={styles.cardTitle}>Nearby</Text>
+                <Text style={styles.body}>Find cars around your current area</Text>
+              </View>
+            </Pressable>
+            {error ? (
+              <Text accessibilityRole="alert" style={styles.error}>
+                {error}
+              </Text>
+            ) : null}
+            <Text style={styles.whereSelectionNote}>
+              Current selection: {draftSelected.label}. It stays selected until a replacement is
+              confirmed.
+            </Text>
+          </Card>
+        ) : (
           <Pressable
+            accessibilityLabel={`Where, ${draftSelected.label}. Edit discovery location`}
             accessibilityRole="button"
-            key={item.providerReference}
-            onPress={() => void selectSuggestion(item.providerReference)}
-            style={styles.locationOption}
+            onPress={() => {
+              setWhenExpanded(false);
+              setWhereExpanded(true);
+            }}
+            style={styles.searchCollapsedCard}
           >
-            <View style={styles.searchIcon}>
-              <Icon color={colors.primary} name="location-outline" />
+            <View>
+              <Text style={styles.searchCollapsedLabel}>Where</Text>
+              <Text numberOfLines={1} style={styles.searchCollapsedValue}>
+                {draftSelected.label}
+              </Text>
             </View>
-            <View style={styles.flex}>
-              <Text style={styles.cardTitle}>{item.displayName}</Text>
-              <Text style={styles.body}>{item.secondaryText}</Text>
-            </View>
+            <Text style={styles.searchEdit}>Edit</Text>
           </Pressable>
-        ))}
-        <Button
-          icon="navigate-outline"
-          label="Use current location"
-          onPress={onCurrent}
-          variant="secondary"
-        />
-        {error && <Text style={styles.error}>{error}</Text>}
-        {locations.map((location) => (
+        )}
+        {whenExpanded ? (
+          <Card style={styles.whenCardActive}>
+            <Text accessibilityRole="header" style={styles.whereTitle}>
+              When?
+            </Text>
+            <Text style={styles.whereCopy}>Select your trip dates</Text>
+            <TripDateCalendar
+              appliedEnd={draftEnd}
+              appliedStart={draftStart}
+              preselect={!draftDatesCleared}
+              onApply={(start, end) => {
+                setDraftStart(start);
+                setDraftEnd(end);
+                setDraftDatesEstablished(true);
+                setDraftDatesCleared(false);
+                setWhenExpanded(false);
+              }}
+              onClear={() => {
+                setDraftDatesEstablished(false);
+                setDraftDatesCleared(true);
+              }}
+            />
+            <Text style={styles.whereSelectionNote}>
+              Discovery uses 9:00 AM search assumptions for both dates. Final handover times are
+              confirmed later.
+            </Text>
+            <Button
+              label="Continue with exact times"
+              onPress={() => onContinue({ end: draftEnd, place: draftSelected, start: draftStart })}
+              variant="ghost"
+            />
+          </Card>
+        ) : !whereExpanded && draftDatesEstablished ? (
           <Pressable
-            key={location.label}
-            onPress={() => onSelect(location)}
-            style={styles.locationOption}
+            accessibilityLabel={`When, ${tripDateSummary(draftStart, draftEnd)}. Edit trip dates`}
+            accessibilityRole="button"
+            onPress={() => setWhenExpanded(true)}
+            style={styles.searchCollapsedCard}
           >
-            <View style={styles.searchIcon}>
-              <Icon color={colors.primary} name="location-outline" />
+            <View>
+              <Text style={styles.searchCollapsedLabel}>When</Text>
+              <Text style={styles.searchCollapsedValue}>
+                {tripDateSummary(draftStart, draftEnd)}
+              </Text>
             </View>
-            <View style={styles.flex}>
-              <Text style={styles.cardTitle}>{location.label}</Text>
-              <Text style={styles.body}>{location.detail}</Text>
-            </View>
-            {selected.label === location.label && (
-              <Icon color={colors.primary} name="checkmark-circle" />
-            )}
+            <Text style={styles.searchEdit}>Edit</Text>
           </Pressable>
-        ))}
-        <Button label="Cancel" onPress={onClose} variant="ghost" />
+        ) : (
+          <Card style={styles.whenCardCollapsed}>
+            <Text accessibilityRole="header" style={styles.searchCollapsedLabel}>
+              When
+            </Text>
+            <Text style={styles.searchCollapsedValue}>Add trip dates</Text>
+          </Card>
+        )}
+        {!whereExpanded && !whenExpanded ? (
+          <>
+            <Button
+              disabled={!draftWhereEstablished || !draftDatesEstablished}
+              icon="search"
+              label="Search"
+              onPress={() => onSearch({ end: draftEnd, place: draftSelected, start: draftStart })}
+            />
+            {!draftWhereEstablished || !draftDatesEstablished ? (
+              <Text accessibilityLiveRegion="polite" style={styles.whereSelectionNote}>
+                Select and apply trip dates to search.
+              </Text>
+            ) : null}
+            <Button
+              label="Continue with exact times"
+              onPress={() => onContinue({ end: draftEnd, place: draftSelected, start: draftStart })}
+              variant="ghost"
+            />
+          </>
+        ) : null}
       </Screen>
     </Modal>
   );
 }
 
 type FilterProperties = {
+  readonly referenceData?: VehicleReferenceData | undefined;
   readonly filtersOpen: boolean;
   readonly setFiltersOpen: (value: boolean) => void;
   readonly radiusKm: number;
@@ -1886,13 +3152,6 @@ type FilterProperties = {
   readonly onApply: () => void;
 };
 function FilterSheet(properties: FilterProperties) {
-  const reference = useQuery({
-    queryKey: ['vehicle-reference-data'],
-    queryFn: () =>
-      apiClient.request<{ categories: ReferenceOption[]; makes: ReferenceOption[] }>(
-        '/vehicles/reference-data',
-      ),
-  });
   const clear = () => {
     properties.setMake('');
     properties.setCategoryId('');
@@ -1930,7 +3189,10 @@ function FilterSheet(properties: FilterProperties) {
           allowAny
           anyLabel="Any make"
           label="Make"
-          options={(reference.data?.makes ?? []).map((item) => ({ ...item, id: item.name }))}
+          options={(properties.referenceData?.makes ?? []).map((item) => ({
+            ...item,
+            id: item.name,
+          }))}
           value={properties.make}
           onChange={properties.setMake}
         />
@@ -1938,7 +3200,7 @@ function FilterSheet(properties: FilterProperties) {
           allowAny
           anyLabel="Any vehicle type"
           label="Vehicle type"
-          options={reference.data?.categories ?? []}
+          options={properties.referenceData?.categories ?? []}
           value={properties.categoryId}
           onChange={properties.setCategoryId}
         />
@@ -2053,7 +3315,7 @@ const styles = StyleSheet.create({
   addressFields: { gap: spacing.sm },
   body: { color: colors.subtleText, lineHeight: 21 },
   cardTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
-  cardImage: { height: 190, width: '100%' },
+  cardImage: { height: '100%', width: '100%' },
   cardPrice: { color: colors.ink, fontSize: 17, fontWeight: '900' },
   dateGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   dateSummary: {
@@ -2116,12 +3378,88 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     padding: spacing.xs,
   },
+  exploreCategoryContent: { gap: spacing.xs, paddingHorizontal: spacing.lg },
+  exploreCategoryRow: { marginHorizontal: -spacing.lg },
+  exploreFavorite: { position: 'absolute', right: spacing.sm, top: spacing.sm },
+  exploreLoadingCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    minHeight: 270,
+    padding: spacing.md,
+  },
+  explorePressed: { opacity: 0.78 },
+  explorePrice: { color: colors.ink, fontSize: 15, fontWeight: '900' },
+  exploreRail: { marginHorizontal: -spacing.lg },
+  exploreRailContent: { gap: spacing.md, paddingHorizontal: spacing.lg },
+  exploreRating: { color: colors.ink, fontSize: 13, fontWeight: '700' },
+  exploreSearchIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  exploreSearchPill: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    elevation: 3,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minHeight: 68,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    shadowColor: colors.ink,
+    shadowOffset: { height: 2, width: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+  },
+  exploreSearchSummary: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
+  exploreSearchTitle: { color: colors.ink, fontSize: 16, fontWeight: '900' },
+  exploreSection: { gap: spacing.xs },
+  exploreSectionSubtitle: { color: colors.subtleText, lineHeight: 20, marginBottom: spacing.xs },
+  exploreSectionTitle: { color: colors.ink, fontSize: 22, fontWeight: '900' },
+  exploreVehicleBody: { gap: spacing.xxs, padding: spacing.sm },
+  exploreVehicleCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+  },
+  exploreVehicleImage: { height: 180, width: '100%' },
+  exploreVehicleLocation: { color: colors.subtleText, fontSize: 13 },
+  exploreVehicleMeta: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    marginTop: spacing.xxs,
+  },
+  exploreVehicleTitle: { color: colors.ink, fontSize: 16, fontWeight: '900' },
   savings: {
     color: colors.primary,
     fontWeight: '800',
     marginTop: spacing.sm,
   },
-  favorite: { position: 'absolute', right: spacing.sm, top: spacing.sm },
+  favorite: {
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    borderRadius: radius.pill,
+    elevation: 3,
+    position: 'absolute',
+    right: spacing.sm,
+    shadowColor: colors.ink,
+    shadowOffset: { height: 1, width: 0 },
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    top: spacing.sm,
+  },
   favoriteCard: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
   favoriteOpen: {
     alignItems: 'center',
@@ -2131,7 +3469,44 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   favoriteImage: { borderRadius: radius.md, height: 88, width: 110 },
+  filterCount: {
+    backgroundColor: colors.primary,
+    borderRadius: radius.pill,
+    color: colors.onPrimary,
+    fontSize: 10,
+    fontWeight: '900',
+    minWidth: 18,
+    overflow: 'hidden',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    position: 'absolute',
+    right: -3,
+    textAlign: 'center',
+    top: -3,
+  },
   flex: { flex: 1, minWidth: 0 },
+  fullMapListViewport: { flex: 0, overflow: 'hidden' },
+  fullMapPeekBody: {
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    overflow: 'hidden',
+    width: '100%',
+  },
+  fullMapPeekSummary: {
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: '900',
+    textAlign: 'center',
+    width: '100%',
+  },
+  fullMapPeekSummaryArea: {
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+    width: '100%',
+  },
   gallery: { marginHorizontal: -spacing.lg },
   galleryIndicator: { alignItems: 'center', marginTop: -42, paddingBottom: spacing.sm },
   galleryIndicatorText: {
@@ -2171,6 +3546,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     minHeight: 72,
+    padding: spacing.sm,
+  },
+  nearbyIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  nearbyOption: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minHeight: 68,
     padding: spacing.sm,
   },
   meta: { color: colors.subtleText, fontSize: 12, fontWeight: '600' },
@@ -2213,7 +3606,111 @@ const styles = StyleSheet.create({
   priceLine: { alignItems: 'baseline', flexDirection: 'row' },
   quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   quoteCard: { gap: spacing.sm },
-  resultList: { gap: spacing.md, paddingBottom: 100 },
+  resultList: { gap: spacing.md, paddingBottom: 100, paddingHorizontal: spacing.md },
+  resultsComposition: { flex: 1 },
+  resultsHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    paddingBottom: spacing.sm,
+  },
+  resultsHeaderButton: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    height: 46,
+    justifyContent: 'center',
+    position: 'relative',
+    width: 46,
+  },
+  resultsHeaderButtonActive: { backgroundColor: colors.primarySoft, borderColor: colors.primary },
+  resultsHeading: { color: colors.ink, fontSize: 16, fontWeight: '900' },
+  normalResultsSummary: { paddingTop: spacing.xs },
+  mapRestoreButton: {
+    alignItems: 'center',
+    backgroundColor: colors.ink,
+    borderRadius: radius.pill,
+    elevation: 6,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    justifyContent: 'center',
+    minHeight: 48,
+    paddingHorizontal: spacing.lg,
+    shadowColor: colors.ink,
+    shadowOffset: { height: 3, width: 0 },
+    shadowOpacity: 0.2,
+    shadowRadius: 7,
+  },
+  mapRestoreButtonPressed: { opacity: 0.82 },
+  mapRestoreLabel: { color: colors.onPrimary, fontSize: 15, fontWeight: '900' },
+  mapRestoreLayer: {
+    alignItems: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    zIndex: 10,
+  },
+  resultsMapContainer: {
+    borderColor: colors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginHorizontal: -spacing.lg,
+    overflow: 'hidden',
+  },
+  resultsMapClip: { overflow: 'hidden' },
+  resultsQuickFilterScroller: { flexGrow: 0, height: 48 },
+  resultsQuickFilters: { gap: spacing.xs, paddingRight: spacing.lg },
+  resultsSheet: {
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 4,
+    flex: 1,
+    marginHorizontal: -spacing.lg,
+    marginTop: -spacing.sm,
+    overflow: 'hidden',
+    paddingTop: spacing.xs,
+    shadowColor: colors.ink,
+    shadowOffset: { height: -2, width: 0 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+  },
+  resultsSheetCollapsed: {
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    elevation: 0,
+    marginTop: 0,
+    shadowOpacity: 0,
+  },
+  resultsSheetFullMap: { flex: 0, marginTop: -spacing.sm },
+  resultsSheetDragTarget: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 28,
+    width: '100%',
+  },
+  resultsSheetHandle: {
+    backgroundColor: colors.border,
+    borderRadius: radius.pill,
+    height: 4,
+    width: 42,
+  },
+  resultsSearchSummary: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minHeight: 52,
+    minWidth: 0,
+    paddingHorizontal: spacing.md,
+  },
+  resultSearchLocation: { color: colors.ink, fontSize: 15, fontWeight: '900' },
   row: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
   searchCard: { gap: spacing.md },
   searchDetail: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
@@ -2235,23 +3732,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   titleRow: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
-  viewToggle: {
-    alignSelf: 'center',
-    backgroundColor: colors.muted,
-    borderRadius: radius.pill,
-    flexDirection: 'row',
-    marginBottom: spacing.sm,
-    padding: 3,
-  },
-  viewToggleButton: {
-    borderRadius: radius.pill,
-    minWidth: 84,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  viewToggleSelected: { backgroundColor: colors.primary },
-  viewToggleSelectedText: { color: colors.surface, fontWeight: '800', textAlign: 'center' },
-  viewToggleText: { color: colors.ink, fontWeight: '700', textAlign: 'center' },
   placeSearch: {
     alignItems: 'center',
     borderColor: colors.border,
@@ -2262,6 +3742,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   placeSearchInput: { color: colors.ink, flex: 1, minHeight: 48 },
+  searchCollapsedCard: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 74,
+    padding: spacing.md,
+  },
+  searchCollapsedLabel: {
+    color: colors.subtleText,
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  searchCollapsedValue: { color: colors.ink, fontSize: 17, fontWeight: '900', marginTop: 3 },
+  searchEdit: { color: colors.primary, fontSize: 14, fontWeight: '800' },
   tripCard: { gap: spacing.sm },
   total: { color: colors.ink, fontSize: 24, fontWeight: '900' },
   totalLabel: { color: colors.ink, fontSize: 17, fontWeight: '800' },
@@ -2275,12 +3774,53 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
   },
   vehicleCard: {
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: 'hidden',
+    gap: spacing.sm,
+    position: 'relative',
   },
-  vehicleContent: { padding: spacing.md },
-  vehicleTitle: { color: colors.ink, fontSize: 17, fontWeight: '800' },
+  vehicleAttributes: { color: colors.subtleText, fontSize: 14, lineHeight: 20 },
+  vehicleCardOpen: { gap: spacing.sm },
+  vehicleCardPressed: { opacity: 0.84 },
+  vehicleContent: { gap: spacing.xs, paddingHorizontal: spacing.xxs },
+  vehicleImageFrame: {
+    aspectRatio: 1.6,
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.lg,
+    maxHeight: 240,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  vehicleLocation: { color: colors.subtleText, flex: 1, fontSize: 13 },
+  vehicleLocationRatingRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  vehicleNotice: { color: colors.subtleText, fontSize: 12, lineHeight: 18 },
+  vehiclePrice: { color: colors.ink, flexShrink: 0, fontSize: 18, fontWeight: '900' },
+  vehiclePriceFulfillmentRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  vehiclePriceUnit: { color: colors.subtleText, fontSize: 13, fontWeight: '600' },
+  vehicleRating: { color: colors.ink, flexShrink: 0, fontSize: 13, fontWeight: '800' },
+  vehicleTitle: { color: colors.ink, fontSize: 18, fontWeight: '900', lineHeight: 23 },
+  whenCardActive: {
+    borderColor: colors.primary,
+    borderWidth: 1,
+    gap: spacing.sm,
+  },
+  whenCardCollapsed: { gap: spacing.xxs, opacity: 0.72 },
+  whereCardActive: {
+    borderColor: colors.primary,
+    borderWidth: 1,
+    gap: spacing.sm,
+  },
+  whereCopy: { color: colors.subtleText, lineHeight: 20 },
+  whereError: { gap: spacing.xs },
+  whereSelectionNote: { color: colors.subtleText, fontSize: 12, lineHeight: 18 },
+  whereTitle: { color: colors.ink, fontSize: 26, fontWeight: '900' },
 });

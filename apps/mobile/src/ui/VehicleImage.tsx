@@ -5,11 +5,13 @@ import { apiClient } from '../auth/api-client';
 import demoImage from '../../assets/demo-vehicle.png';
 
 export function VehicleImage({
+  accessible = true,
   contentPath,
   style,
   accessibilityLabel = 'Vehicle photo',
   resizeMode = 'cover',
 }: {
+  readonly accessible?: boolean;
   readonly contentPath?: string | null | undefined;
   readonly style: StyleProp<ImageStyle>;
   readonly accessibilityLabel?: string | undefined;
@@ -19,6 +21,7 @@ export function VehicleImage({
   const failed = Boolean(contentPath && failedPath === contentPath);
   return (
     <Image
+      accessible={accessible}
       accessibilityLabel={accessibilityLabel}
       contentFit={resizeMode}
       onError={() => contentPath && setFailedPath(contentPath)}

@@ -9,15 +9,196 @@ const source = readFileSync(
 );
 
 describe('vehicle-detail responsive regression', () => {
+  it('keeps recovery first and opens the Where experience from Explore', () => {
+    const banner = source.indexOf('<PendingHandoverRecoveryBanner');
+    const startSearch = source.indexOf('accessibilityLabel="Start your search"');
+    const categories = source.indexOf('accessibilityLabel="Vehicle discovery categories"');
+    const section = source.indexOf('<ExploreVehicleSection');
+    const searchCard = source.indexOf('<Card style={styles.searchCard}>');
+    expect(banner).toBeGreaterThan(-1);
+    expect(startSearch).toBeGreaterThan(banner);
+    expect(categories).toBeGreaterThan(startSearch);
+    expect(section).toBeGreaterThan(categories);
+    expect(searchCard).toBeGreaterThan(startSearch);
+    expect(source).toContain('const [exploreSearchOpen, setExploreSearchOpen] = useState(false)');
+    expect(source).toContain('{(!home || exploreSearchOpen) && (');
+    expect(source).toContain('function openExploreSearch()');
+    expect(source).toMatch(/function openExploreSearch\(\) \{\s*setLocationOpen\(true\)/);
+    expect(source).toContain('function openLegacySearch(draft?: SearchDraft)');
+    expect(source).toContain('setExploreSearchOpen(true)');
+  });
+
+  it('uses the existing stale-safe Places provider for the Where step', () => {
+    expect(source).toContain('title="Search cars"');
+    expect(source).toContain('Where?');
+    expect(source).toContain('Search destinations, cities or places');
+    expect(source).toMatch(
+      /bookingLocationProvider\s*\.searchPlaces\(query\.trim\(\), session\.current\)/,
+    );
+    expect(source).toMatch(
+      /bookingLocationProvider\.resolvePlace\(\s*providerReference,\s*session\.current,?\s*\)/,
+    );
+    expect(source).toContain('const timer = setTimeout(() =>');
+    expect(source).toContain('}, 350)');
+    expect(source).toContain('const id = ++request.current');
+    expect(source).toContain('if (id === request.current) setSuggestions(items)');
+    expect(source).toMatch(/if \(value\.trim\(\)\.length < 3\) \{\s*request\.current \+= 1/);
+    expect(source).toContain('session.current = searchLocationSession()');
+    expect(source).toContain('label="Clear location search"');
+  });
+
+  it('keeps Nearby permission user-initiated and advances only after success', () => {
+    expect(source).toContain('accessibilityLabel="Nearby, find cars around your current area"');
+    expect(source).toContain('onPress={() => void selectNearby()}');
+    expect(source).toContain('const selectedCurrentArea = await onCurrent()');
+    expect(source).toContain('if (selectedCurrentArea)');
+    expect(source).toContain("label: 'Current area'");
+    expect(source).toContain('Location.requestForegroundPermissionsAsync()');
+  });
+
+  it('collapses a valid Where selection into the Task 5 placeholder', () => {
+    expect(source).toContain('setWhereExpanded(false)');
+    expect(source).toContain('Edit discovery location');
+    expect(source).toContain('When');
+    expect(source).toContain('Add trip dates');
+    expect(source).toContain('label="Continue with exact times"');
+    expect(source).toMatch(/It stays selected until a replacement is\s*confirmed\./);
+  });
+
+  it('uses the shared exact Date authority for the When range calendar', () => {
+    expect(source).toContain('<TripDateCalendar');
+    expect(source).toContain('appliedStart={pickup}');
+    expect(source).toContain('appliedEnd={returnAt}');
+    expect(source).toContain('setDraftStart(start)');
+    expect(source).toContain('setDraftEnd(end)');
+    expect(source).toContain('setPickup(nextStart)');
+    expect(source).toContain('setReturnAt(nextEnd)');
+    expect(source).toContain('setTripDatesEstablished(true)');
+    expect(source).toContain('tripDateSummary(pickup, returnAt)');
+    expect(source).toContain('label="Search"');
+    expect(source).toContain('Select and apply trip dates to search.');
+    expect(source).toContain('start: pickup.toISOString()');
+    expect(source).toContain('end: returnAt.toISOString()');
+  });
+
+  it('keeps sheet edits draft-only until the existing search authority applies them', () => {
+    expect(source).toContain('type SearchDraft =');
+    expect(source).toContain('const [draftSelected, setDraftSelected] = useState(selected)');
+    expect(source).toContain('const [draftStart, setDraftStart] = useState(appliedStart)');
+    expect(source).toContain('const [draftEnd, setDraftEnd] = useState(appliedEnd)');
+    expect(source).toContain('function performSearch(draft?: SearchDraft)');
+    expect(source).toContain('const nextPlace = draft?.place ?? place');
+    expect(source).toContain('setActivePlace(nextPlace)');
+    expect(source).toContain('resultScrollOffset.current = 0');
+    expect(source).toContain('Keyboard.dismiss()');
+    expect(source).toContain("setMode('results')");
+  });
+
+  it('edits active criteria from Results without routing through the old form', () => {
+    expect(source).toContain('accessibilityLabel="Back to Explore"');
+    expect(source).toContain('accessibilityHint="Edit search"');
+    expect(source).toContain(
+      'accessibilityLabel={`${activePlace.label}, ${tripDateSummary(pickup, returnAt)}`}',
+    );
+    expect(source).toContain('onPress={() => setLocationOpen(true)}');
+    expect(source).toContain('{searchEditor}');
+    expect(source).toContain('selected={discoveryLocationEstablished ? activePlace : place}');
+    expect(source).toContain('tripDateSummary(pickup, returnAt)');
+  });
+
+  it('keeps compact fixed Results controls with a truthful list-owned summary', () => {
+    expect(source).toContain('style={styles.resultsHeader}');
+    expect(source).toContain('const resultsFilterCount = activeFilterCount({');
+    expect(source).toContain('`Filters, ${resultsFilterCount} active`');
+    expect(source).toContain("'Filters, none active'");
+    expect(source).toContain('const resultSummary = formatResultSummary({');
+    expect(source).toContain('loadedCount: uniqueVehicleCount(searchItems)');
+    expect(source).toContain(
+      'ListHeaderComponent={<NormalResultsSummary summary={resultSummary} />}',
+    );
+  });
+
+  it('maps quick filters to the existing authoritative filter fields', () => {
+    expect(source).toContain('accessibilityLabel="Search result quick filters"');
+    expect(source).toContain(
+      "handover === 'DELIVERY_AVAILABLE' || handover === 'PICKUP_AND_DELIVERY'",
+    );
+    expect(source).toContain("setHandover(deliveryFilterActive ? 'ANY' : 'DELIVERY_AVAILABLE')");
+    expect(source).toContain("const nextCategory = categoryId === id ? '' : id");
+    expect(source).toContain('setCategoryId(nextCategory)');
+    expect(source).toContain(
+      "const nextPowertrain = powertrain === 'BATTERY_ELECTRIC' ? '' : 'BATTERY_ELECTRIC'",
+    );
+    expect(source).toContain('setPowertrain(nextPowertrain)');
+    expect(source).toContain("const nextSeats = seats === '7' ? '' : '7'");
+    expect(source).toContain('setSeats(nextSeats)');
+    expect(source).toContain('selected={Boolean(minPrice || maxPrice)}');
+
+    const quickFilterStart = source.indexOf('accessibilityLabel="Search result quick filters"');
+    const quickFilterEnd = source.indexOf('</ScrollView>', quickFilterStart);
+    const quickFilters = source.slice(quickFilterStart, quickFilterEnd);
+    expect(quickFilters).not.toContain('label="All"');
+    expect(quickFilters).not.toContain('label="Nearby"');
+    expect(quickFilters).not.toContain('Highly rated');
+  });
+
+  it('starts a fresh result page after a quick-filter change', () => {
+    expect(source).toMatch(/function prepareResultsFilterChange\(\) \{\s*resetResultsViewport\(\)/);
+    expect(source).toMatch(
+      /function resetResultsViewport\(\{ preserveFullMap = false \} = \{\}\) \{\s*resultScrollOffset\.current = 0;\s*observedListOffset\.value = 0;\s*collapseProgress\.value = 0/,
+    );
+    expect(source).toMatch(
+      /function toggleResultsDelivery\(\) \{\s*prepareResultsFilterChange\(\)/,
+    );
+    expect(source).toContain("queryKey: ['public-search', 'LIST', listQueryString]");
+    expect(source).toContain("queryKey: ['public-search', 'MAP', mapQueryString]");
+  });
+
+  it('maps one active category shortcut onto existing search authority', () => {
+    expect(source).toContain('type ExploreShortcut =');
+    expect(source).toContain('label="All"');
+    expect(source).toContain('label="Nearby"');
+    expect(source).toContain("['SUV', 'SEDAN'].flatMap");
+    expect(source).toContain("setPowertrain('BATTERY_ELECTRIC')");
+    expect(source).toContain("setSeats('7')");
+    expect(source).toContain("if (shortcut.startsWith('CATEGORY:'))");
+    expect(source).toContain("if (shortcut === 'NEARBY') void selectCurrentLocation(true)");
+    expect(source).toContain('async function selectCurrentLocation(activateSearch = false)');
+    expect(source).toContain('const activeCriteriaQueryString = useMemo(() =>');
+  });
+
+  it('renders a responsive, privacy-safe single-image Explore rail', () => {
+    expect(source).toContain('function ExploreVehicleSection');
+    expect(source).toContain('function ExploreVehicleCard');
+    expect(source).toContain('Math.min(320, Math.max(250, viewportWidth - 72))');
+    expect(source).toContain('contentPath={vehicle.coverPhoto?.contentPath}');
+    expect(source).toContain('vehicle.approximateLocation.city');
+    expect(source).toContain('vehicle.approximateLocation.province');
+    expect(source).toContain('vehicle.displayPrice.amountMinor');
+    expect(source).not.toContain('vehicle.location.latitude');
+    expect(source).toContain('title="No cars match this search"');
+    expect(source).toContain('title="Couldn’t load cars"');
+  });
+
+  it('presents existing persistent favorites as the Wishlist', () => {
+    expect(source).toContain('title="Wishlist"');
+    expect(source).toContain('title="No saved cars yet"');
+    expect(source).toContain('message="Tap the heart on a vehicle to save it here."');
+    expect(source).toContain('apiClient.request(`/favorites/${id}`');
+    expect(source).toContain('title="Wishlist unavailable"');
+    expect(source).toContain('onRetry={() => void favorites.refetch()}');
+  });
+
   it('refreshes dated results so newly occupied vehicles are removed', () => {
     expect(source).toContain("refetchInterval: mode === 'results' || home ? 5_000 : false");
     expect(source).toContain("refetchOnMount: 'always'");
-    expect(source).toContain("if (mode === 'results' || home) void search.refetch()");
+    expect(source).toContain('void listSearch.refetch()');
+    expect(source).toContain('void mapSearch.refetch()');
   });
 
   it('sizes the hero gallery from the viewport instead of a device-specific width', () => {
     expect(source).toContain('useWindowDimensions');
-    expect(source).toContain('{ width: viewportWidth }');
+    expect(source).toContain('{ height: viewportHeight, width: viewportWidth }');
     expect(source).not.toMatch(/heroImage:\s*\{[^}]*width:\s*390/);
   });
 
@@ -31,7 +212,7 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('useInfiniteQuery');
     expect(source).toContain('getNextPageParam');
     expect(source).toContain('onEndReachedThreshold={0.25}');
-    expect(source).toContain('search.fetchNextPage()');
+    expect(source).toContain('listSearch.fetchNextPage()');
     expect(source).toContain('resultScrollOffset.current');
   });
 
@@ -72,5 +253,105 @@ describe('fulfillment discovery presentation', () => {
     expect(source).toContain('This notice period only applies to owner delivery or collection.');
     expect(source).toContain("'No minimum notice.'");
     expect(source).not.toContain('Owner Payable Liability');
+  });
+});
+
+describe('vertical Search Result vehicle card', () => {
+  const cardStart = source.indexOf('function SearchResultVehicleCard(');
+  const cardEnd = source.indexOf('function ExploreVehicleSection(', cardStart);
+  const card = source.slice(cardStart, cardEnd);
+
+  it('keeps a focused component boundary without owning search or map state', () => {
+    expect(cardStart).toBeGreaterThan(-1);
+    expect(cardEnd).toBeGreaterThan(cardStart);
+    expect(source).toContain('<SearchResultVehicleCard');
+    expect(card).toContain('readonly vehicle: VehicleCardView');
+    expect(card).toContain('readonly onOpen: () => void');
+    expect(card).toContain('readonly onFavorite: () => void');
+    expect(card).not.toContain('useState(');
+    expect(card).not.toContain('performSearch');
+    expect(card).not.toContain('mapSearch');
+    expect(card).not.toContain('listSearch');
+  });
+
+  it('uses one projected cover image with a stable responsive frame', () => {
+    expect(card).toContain('contentPath={vehicle.coverPhoto?.contentPath}');
+    expect(card).toContain('style={styles.vehicleImageFrame}');
+    expect(card).toContain('style={styles.cardImage}');
+    expect(card).toContain('accessible={false}');
+    expect(card).not.toContain('vehicle.photos');
+    expect(card).not.toContain('gallery');
+    expect(card).not.toContain('useQuery');
+    expect(source).toMatch(/vehicleImageFrame:\s*\{[\s\S]*?aspectRatio:\s*1\.6/);
+  });
+
+  it('uses only authoritative projected price, rating, location, and distance', () => {
+    expect(card).toContain('vehicle.displayPrice.amountMinor');
+    expect(card).toContain('vehicle.currency');
+    expect(card).toContain('<Text style={styles.vehiclePriceUnit}>/ day</Text>');
+    expect(card).toContain('vehicle.rating?.averageRating');
+    expect(card).toContain('vehicle.rating.reviewCount > 0');
+    expect(card).toContain("'New, no reviews yet'");
+    expect(card).toContain('vehicle.approximateLocation.city');
+    expect(card).toContain('vehicle.approximateLocation.province');
+    expect(card).toContain('vehicle.distanceKm.toFixed(1)');
+    expect(card).not.toContain('estimatedRentalTotal');
+    expect(card).not.toContain('latitude');
+    expect(card).not.toContain('longitude');
+    expect(card).not.toContain('address');
+  });
+
+  it('limits normal metadata to three useful attributes and one fulfillment label', () => {
+    expect(card).toContain('`${vehicle.seats} seats`');
+    expect(card).toContain('domainLabel(vehicle.transmission)');
+    expect(card).toContain('vehicle.category?.name');
+    expect(card).not.toContain('vehicle.powertrain');
+    expect(card).toContain("attributes.slice(0, 3).join(' · ')");
+    expect(card).toContain('const fulfillmentLabel =');
+    expect(card).toContain("'Delivery to your location'");
+    expect(card).toContain("'Delivery available'");
+    expect(card).toContain("'Pickup available'");
+    expect(card.match(/<StatusBadge/g)).toHaveLength(1);
+  });
+
+  it('retains the search-specific insufficient-notice warning', () => {
+    expect(card).toContain(
+      "vehicle.fulfillment.deliveryToSearchLocationReason === 'INSUFFICIENT_NOTICE'",
+    );
+    expect(card).toContain('vehicle.fulfillment.fulfillmentMinimumNoticeMinutes');
+    expect(card).toContain('Delivery requires');
+    expect(card).toContain('noticeLabel(');
+  });
+
+  it('keeps card navigation and Wishlist as separate actions', () => {
+    const openPressable = card.indexOf('<Pressable');
+    const openPressableEnd = card.indexOf('</Pressable>', openPressable);
+    const heart = card.indexOf('<IconButton', openPressableEnd);
+    expect(openPressable).toBeGreaterThan(-1);
+    expect(openPressableEnd).toBeGreaterThan(openPressable);
+    expect(heart).toBeGreaterThan(openPressableEnd);
+    expect(card.slice(openPressable, openPressableEnd)).toContain('onPress={onOpen}');
+    expect(card.slice(heart)).toContain('onPress={onFavorite}');
+    expect(card).toContain("vehicle.favorite ? 'Remove' : 'Save'");
+    expect(card).toContain("vehicle.favorite ? 'from' : 'to'");
+  });
+
+  it('keeps long content controlled without hiding the full price', () => {
+    expect(card).toContain('<Text numberOfLines={2} style={styles.vehicleTitle}>');
+    expect(card).toContain('<Text numberOfLines={1} style={styles.vehicleLocation}>');
+    expect(card).toContain('<Text numberOfLines={2} style={styles.vehicleAttributes}>');
+    expect(card).toContain('<Text numberOfLines={1} style={styles.vehiclePrice}>');
+    expect(source).toMatch(/vehiclePrice:\s*\{[^}]*flexShrink:\s*0/);
+    expect(source).toMatch(/vehicleLocation:\s*\{[^}]*flex:\s*1/);
+  });
+
+  it('preserves stable FlatList identity and the existing result interaction architecture', () => {
+    expect(source).toContain('keyExtractor={(item) => item.vehicleId}');
+    expect(source).toContain('<Reanimated.FlatList');
+    expect(source).toContain('onEndReachedThreshold={0.25}');
+    expect(source).toContain('listSearch.fetchNextPage()');
+    expect(source).toContain('paddingBottom: Math.max(100, bottomSafeArea + 88)');
+    expect(source).toContain('<DiscoveryMap');
+    expect(source).not.toContain('presentationMode');
   });
 });

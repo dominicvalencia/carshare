@@ -274,7 +274,7 @@ export function AccountScreen({
       <MenuSection title="Renting">
         <MenuRow
           icon="heart-outline"
-          label="Favorites"
+          label="Wishlist"
           onPress={() => navigation.navigate('Favorites')}
         />
         <MenuRow

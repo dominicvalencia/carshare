@@ -4,7 +4,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { getStateFromPath, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, type ComponentProps } from 'react';
+import { useEffect, useState, type ComponentProps } from 'react';
 import { Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiClient } from '../auth/api-client';
@@ -71,9 +71,9 @@ interface AppNavigationProperties {
 const renterIcons: Readonly<
   Record<keyof RenterTabParamList, { active: IconName; idle: IconName }>
 > = {
-  Home: { active: 'home', idle: 'home-outline' },
-  Search: { active: 'search', idle: 'search-outline' },
-  Bookings: { active: 'calendar', idle: 'calendar-outline' },
+  Home: { active: 'compass', idle: 'compass-outline' },
+  Wishlist: { active: 'heart', idle: 'heart-outline' },
+  Bookings: { active: 'briefcase', idle: 'briefcase-outline' },
   Messages: { active: 'chatbubble', idle: 'chatbubble-outline' },
   Profile: { active: 'person', idle: 'person-outline' },
 };
@@ -135,13 +135,38 @@ function RenterNavigation({
 }: Pick<AppNavigationProperties, 'onModeChange' | 'ownerCapable' | 'ownerStatus'>) {
   const badges = useBadges('renter');
   const insets = useSafeAreaInsets();
+  const [fullMap, setFullMap] = useState(false);
   return (
     <RenterTabs.Navigator
-      screenOptions={({ route }) => tabOptions(renterIcons[route.name], insets.bottom)}
+      screenOptions={({ route }) => {
+        const options = tabOptions(renterIcons[route.name], insets.bottom);
+        if (route.name !== 'Home') return options;
+        const homeTabBarStyle = { ...options.tabBarStyle, position: 'absolute' as const };
+        return {
+          ...options,
+          tabBarStyle: fullMap ? { ...homeTabBarStyle, display: 'none' as const } : homeTabBarStyle,
+        };
+      }}
     >
-      <RenterTabs.Screen name="Home">{() => <DiscoveryScreen home />}</RenterTabs.Screen>
-      <RenterTabs.Screen name="Search">{() => <DiscoveryScreen />}</RenterTabs.Screen>
-      <RenterTabs.Screen name="Bookings" component={MyBookingsScreen} />
+      <RenterTabs.Screen
+        name="Home"
+        options={{ tabBarAccessibilityLabel: 'Explore tab', tabBarLabel: 'Explore' }}
+      >
+        {() => <DiscoveryScreen home onFullMapChange={setFullMap} />}
+      </RenterTabs.Screen>
+      <RenterTabs.Screen
+        name="Wishlist"
+        options={{ tabBarAccessibilityLabel: 'Wishlist tab', tabBarLabel: 'Wishlist' }}
+      >
+        {({ navigation }) => (
+          <DiscoveryScreen initialMode="favorites" onExit={() => navigation.navigate('Home')} />
+        )}
+      </RenterTabs.Screen>
+      <RenterTabs.Screen
+        name="Bookings"
+        component={MyBookingsScreen}
+        options={{ tabBarAccessibilityLabel: 'Trips tab', tabBarLabel: 'Trips' }}
+      />
       <RenterTabs.Screen
         name="Messages"
         options={badges.messages ? { tabBarBadge: badges.messages } : {}}

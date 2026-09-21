@@ -3,6 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider, useAuth } from './src/auth/AuthProvider';
 import { apiClient } from './src/auth/api-client';
 import type { OwnerStatus } from './src/auth/auth.types';
@@ -37,11 +38,13 @@ const OnboardingStack = createNativeStackNavigator();
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <SessionApplication />
-      </AuthProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={styles.container}>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <SessionApplication />
+        </AuthProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

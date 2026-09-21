@@ -408,11 +408,13 @@ export function PasscodeInput({
 
 export function Chip({
   label,
+  accessibilityLabel,
   selected = false,
   onPress,
   icon,
 }: {
   readonly label: string;
+  readonly accessibilityLabel?: string | undefined;
   readonly selected?: boolean | undefined;
   readonly onPress?: (() => void) | undefined;
   readonly icon?: IconName | undefined;
@@ -425,7 +427,9 @@ export function Chip({
   );
   return onPress ? (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
+      accessibilityState={{ selected }}
       onPress={onPress}
       style={[styles.chip, selected && styles.chipSelected]}
     >
