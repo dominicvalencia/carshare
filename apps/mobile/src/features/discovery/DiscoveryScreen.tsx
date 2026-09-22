@@ -77,6 +77,7 @@ import { DiscoveryMap, type MapSearchArea } from './DiscoveryMap';
 import { TripDateCalendar } from './TripDateCalendar';
 import { tripDateSummary } from './trip-date-policy';
 import { formatResultSummary, uniqueVehicleCount } from './result-summary';
+import { areaRailTitle, exploreRailQuery, showTripRail, uniqueRailVehicles } from './explore-rails';
 import {
   pendingExploreRecoveryActions,
   recoveryActionCountLabel,
@@ -231,7 +232,7 @@ interface PaymentSetupResult {
   readonly booking: BookingView;
   readonly customerActionUrl: string | null;
 }
-type SearchLocation = LocationSuggestion;
+type SearchLocation = LocationSuggestion & { readonly source?: 'DEVICE' | undefined };
 type ViewMode = 'form' | 'results' | 'detail' | 'favorites' | 'quote';
 type ExploreShortcut = 'ALL' | 'NEARBY' | 'EV' | 'SEVEN_PLUS' | `CATEGORY:${string}` | 'CUSTOM';
 type VehicleReferenceData = {
@@ -302,6 +303,7 @@ export function DiscoveryScreen({
   const [exploreShortcut, setExploreShortcut] = useState<ExploreShortcut>('ALL');
   const [discoveryLocationEstablished, setDiscoveryLocationEstablished] = useState(false);
   const [tripDatesEstablished, setTripDatesEstablished] = useState(false);
+  const [railFavoriteOverrides, setRailFavoriteOverrides] = useState<Record<string, boolean>>({});
   const { height: viewportHeight, width: viewportWidth } = useWindowDimensions();
   const initialResultsMapHeight = Math.max(220, Math.min(340, Math.round(viewportHeight * 0.34)));
   const mapCollapseDistance = Math.max(190, Math.min(280, initialResultsMapHeight * 0.85));
@@ -371,9 +373,29 @@ export function DiscoveryScreen({
   ]);
   const listQueryString = `${activeCriteriaQueryString}&limit=10&mode=LIST`;
   const mapQueryString = `${activeCriteriaQueryString}&limit=50&mode=MAP`;
+  const tripRailEligible = showTripRail(tripDatesEstablished, pickup, returnAt);
+  const areaRailQueryString = exploreRailQuery(activePlace, activeRadiusKm, 'AREA', {
+    categoryId,
+    handover,
+    powertrain,
+    seats,
+  });
+  const electricRailQueryString = exploreRailQuery(activePlace, activeRadiusKm, 'ELECTRIC');
+  const areaRailSearch = useQuery({
+    enabled: home && mode === 'form',
+    queryKey: ['public-search', 'rail', areaRailQueryString],
+    queryFn: () => apiClient.request<SearchResponse>(`/vehicles/search?${areaRailQueryString}`),
+    staleTime: 30_000,
+  });
+  const electricRailSearch = useQuery({
+    enabled: home && mode === 'form',
+    queryKey: ['public-search', 'rail', electricRailQueryString],
+    queryFn: () => apiClient.request<SearchResponse>(`/vehicles/search?${electricRailQueryString}`),
+    staleTime: 30_000,
+  });
   const listSearch = useInfiniteQuery({
-    enabled: mode === 'results' || home,
-    refetchInterval: mode === 'results' || home ? 5_000 : false,
+    enabled: mode === 'results' || (home && tripRailEligible),
+    refetchInterval: mode === 'results' || (home && tripRailEligible) ? 5_000 : false,
     refetchOnMount: 'always',
     queryKey: ['public-search', 'LIST', listQueryString],
     initialPageParam: null as string | null,
@@ -430,6 +452,14 @@ export function DiscoveryScreen({
     () => listSearch.data?.pages.flatMap((page) => page.items) ?? [],
     [listSearch.data?.pages],
   );
+  const railVehicles = (vehicles: readonly VehicleCardView[]) =>
+    uniqueRailVehicles(vehicles).map((vehicle) => ({
+      ...vehicle,
+      favorite: railFavoriteOverrides[vehicle.vehicleId] ?? vehicle.favorite,
+    }));
+  const areaRailItems = railVehicles(areaRailSearch.data?.items ?? []);
+  const electricRailItems = railVehicles(electricRailSearch.data?.items ?? []);
+  const tripRailItems = tripRailEligible ? railVehicles(searchItems).slice(0, 6) : [];
   const mapItems = mapSearch.data?.items ?? [];
   const nextPageError = listSearch.isFetchNextPageError ? listSearch.error : null;
   const fetchNextSearchPage = listSearch.fetchNextPage;
@@ -791,7 +821,8 @@ export function DiscoveryScreen({
   const favorite = useMutation({
     mutationFn: ({ id, active }: { id: string; active: boolean }) =>
       apiClient.request(`/favorites/${id}`, { method: active ? 'DELETE' : 'PUT' }),
-    onSuccess: () => {
+    onSuccess: (_, { id, active }) => {
+      setRailFavoriteOverrides((current) => ({ ...current, [id]: !active }));
       void client.invalidateQueries({ queryKey: ['favorites'] });
       void client.invalidateQueries({ queryKey: ['public-search'] });
       void client.invalidateQueries({ queryKey: ['public-vehicle'] });
@@ -843,7 +874,11 @@ export function DiscoveryScreen({
     if (mode === 'results') {
       void listSearch.refetch();
       void mapSearch.refetch();
-    } else if (home) void listSearch.refetch();
+    } else if (home) {
+      if (tripRailEligible) void listSearch.refetch();
+      void areaRailSearch.refetch();
+      void electricRailSearch.refetch();
+    }
   });
 
   function openVehicle(id: string) {
@@ -877,6 +912,7 @@ export function DiscoveryScreen({
   function searchMapArea(area: MapSearchArea) {
     setActivePlace((current) => ({
       ...current,
+      source: undefined,
       latitude: area.latitude,
       longitude: area.longitude,
     }));
@@ -902,6 +938,7 @@ export function DiscoveryScreen({
         province: '',
         latitude: current.coords.latitude,
         longitude: current.coords.longitude,
+        source: 'DEVICE' as const,
       };
       return currentArea;
     } catch {
@@ -1766,27 +1803,35 @@ export function DiscoveryScreen({
           ) : null}
           <ExploreVehicleSection
             cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
-            error={listSearch.isError ? listSearch.error : null}
-            items={searchItems.slice(0, 6)}
-            loading={listSearch.isPending}
-            onAdjustSearch={openExploreSearch}
+            items={areaRailItems}
             onFavorite={(vehicle) =>
               favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
             }
             onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
-            onRetry={() => void listSearch.refetch()}
-            subtitle="Available for your selected times. Final price is confirmed before you reserve."
-            title={
-              discoveryLocationEstablished
-                ? `Cars near ${activePlace.label}`
-                : exploreShortcut === 'EV'
-                  ? 'Electric vehicles'
-                  : exploreShortcut === 'SEVEN_PLUS'
-                    ? 'Cars with 7+ seats'
-                    : categoryShortcuts.some(({ id }) => exploreShortcut === `CATEGORY:${id}`)
-                      ? `${categoryShortcuts.find(({ id }) => exploreShortcut === `CATEGORY:${id}`)?.label} cars`
-                      : 'Explore cars'
+            title={areaRailTitle(discoveryLocationEstablished, activePlace)}
+          />
+          <ExploreVehicleSection
+            cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
+            items={electricRailItems}
+            onFavorite={(vehicle) =>
+              favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
             }
+            onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
+            title="Electric cars"
+          />
+          <ExploreVehicleSection
+            cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
+            items={tripRailItems}
+            onFavorite={(vehicle) =>
+              favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
+            }
+            onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
+            onSeeAll={() => {
+              resetResultsViewport();
+              setMode('results');
+            }}
+            subtitle="Availability is rechecked before booking."
+            title="Available for your trip"
           />
         </>
       )}
@@ -1945,69 +1990,54 @@ function ExploreVehicleSection({
   subtitle,
   items,
   cardWidth,
-  loading,
-  error,
   onOpen,
   onFavorite,
-  onRetry,
-  onAdjustSearch,
+  onSeeAll,
 }: {
   readonly title: string;
-  readonly subtitle: string;
+  readonly subtitle?: string;
   readonly items: readonly VehicleCardView[];
   readonly cardWidth: number;
-  readonly loading: boolean;
-  readonly error: Error | null;
   readonly onOpen: (vehicle: VehicleCardView) => void;
   readonly onFavorite: (vehicle: VehicleCardView) => void;
-  readonly onRetry: () => void;
-  readonly onAdjustSearch: () => void;
+  readonly onSeeAll?: () => void;
 }) {
+  if (items.length === 0) return null;
   return (
     <View accessibilityLabel={`${title} vehicle section`} style={styles.exploreSection}>
-      <Text accessibilityRole="header" style={styles.exploreSectionTitle}>
-        {title}
-      </Text>
-      <Text style={styles.exploreSectionSubtitle}>{subtitle}</Text>
-      {loading ? (
-        <View style={[styles.exploreLoadingCard, { width: cardWidth }]}>
-          <StateView loading title="Loading cars…" />
-        </View>
-      ) : error ? (
-        <StateView
-          icon="cloud-offline-outline"
-          title="Couldn’t load cars"
-          message={error.message}
-          actionLabel="Retry"
-          onAction={onRetry}
-        />
-      ) : items.length === 0 ? (
-        <StateView
-          icon="car-outline"
-          title="No cars match this search"
-          message="Try another location, category, or search filter."
-          actionLabel="Adjust search"
-          onAction={onAdjustSearch}
-        />
-      ) : (
-        <ScrollView
-          accessibilityLabel={`${title} vehicles`}
-          contentContainerStyle={styles.exploreRailContent}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.exploreRail}
-        >
-          {items.map((vehicle) => (
-            <ExploreVehicleCard
-              key={vehicle.vehicleId}
-              cardWidth={cardWidth}
-              vehicle={vehicle}
-              onFavorite={() => onFavorite(vehicle)}
-              onOpen={() => onOpen(vehicle)}
-            />
-          ))}
-        </ScrollView>
-      )}
+      <View style={styles.exploreSectionHeader}>
+        <Text accessibilityRole="header" style={styles.exploreSectionTitle}>
+          {title}
+        </Text>
+        {onSeeAll ? (
+          <Pressable
+            accessibilityLabel={`See all ${title}`}
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={onSeeAll}
+          >
+            <Icon color={colors.primary} name="chevron-forward" size={24} />
+          </Pressable>
+        ) : null}
+      </View>
+      {subtitle ? <Text style={styles.exploreSectionSubtitle}>{subtitle}</Text> : null}
+      <ScrollView
+        accessibilityLabel={`${title} vehicles`}
+        contentContainerStyle={styles.exploreRailContent}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.exploreRail}
+      >
+        {items.map((vehicle) => (
+          <ExploreVehicleCard
+            key={vehicle.vehicleId}
+            cardWidth={cardWidth}
+            vehicle={vehicle}
+            onFavorite={() => onFavorite(vehicle)}
+            onOpen={() => onOpen(vehicle)}
+          />
+        ))}
+      </ScrollView>
     </View>
   );
 }
@@ -3553,14 +3583,6 @@ const styles = StyleSheet.create({
   },
   exploreCategoryRow: { flexGrow: 0, height: 48, marginHorizontal: -spacing.lg },
   exploreFavorite: { position: 'absolute', right: spacing.sm, top: spacing.sm },
-  exploreLoadingCard: {
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    minHeight: 270,
-    padding: spacing.md,
-  },
   explorePressed: { opacity: 0.78 },
   explorePrice: { color: colors.ink, fontSize: 15, fontWeight: '900' },
   exploreRail: { marginHorizontal: -spacing.lg },
@@ -3594,6 +3616,11 @@ const styles = StyleSheet.create({
   exploreSearchSummary: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
   exploreSearchTitle: { color: colors.ink, fontSize: 16, fontWeight: '900' },
   exploreSection: { gap: spacing.xs },
+  exploreSectionHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
   exploreSectionSubtitle: { color: colors.subtleText, lineHeight: 20, marginBottom: spacing.xs },
   exploreSectionTitle: { color: colors.ink, fontSize: 22, fontWeight: '900' },
   exploreVehicleBody: { gap: spacing.xxs, padding: spacing.sm },

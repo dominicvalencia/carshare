@@ -207,7 +207,7 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('const activeCriteriaQueryString = useMemo(() =>');
   });
 
-  it('renders a responsive, privacy-safe single-image Explore rail', () => {
+  it('renders responsive, privacy-safe single-image Explore rails', () => {
     expect(source).toContain('function ExploreVehicleSection');
     expect(source).toContain('function ExploreVehicleCard');
     expect(source).toContain('Math.min(320, Math.max(250, viewportWidth - 72))');
@@ -216,8 +216,26 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('vehicle.approximateLocation.province');
     expect(source).toContain('vehicle.displayPrice.amountMinor');
     expect(source).not.toContain('vehicle.location.latitude');
-    expect(source).toContain('title="No cars match this search"');
-    expect(source).toContain('title="Couldn’t load cars"');
+    expect(source).toContain('if (items.length === 0) return null;');
+    expect(source).toContain('title="Electric cars"');
+    expect(source).toContain('title="Available for your trip"');
+  });
+
+  it('keeps rail queries independent, hearts shared, and trip See all faithful to Results', () => {
+    expect(source).toContain("exploreRailQuery(activePlace, activeRadiusKm, 'AREA', {");
+    expect(source).toContain("exploreRailQuery(activePlace, activeRadiusKm, 'ELECTRIC')");
+    expect(source).toContain("queryKey: ['public-search', 'rail', areaRailQueryString]");
+    expect(source).toContain("queryKey: ['public-search', 'rail', electricRailQueryString]");
+    expect(source).toContain(
+      'const tripRailEligible = showTripRail(tripDatesEstablished, pickup, returnAt)',
+    );
+    expect(source).toContain('railFavoriteOverrides[vehicle.vehicleId] ?? vehicle.favorite');
+    expect(source).toContain('setRailFavoriteOverrides((current) =>');
+    expect(source).toContain('onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}');
+    expect(source).toMatch(
+      /onSeeAll=\{\(\) => \{\s*resetResultsViewport\(\);\s*setMode\('results'\)/,
+    );
+    expect(source).toContain('{onSeeAll ? (');
   });
 
   it('presents existing persistent favorites as the Wishlist', () => {
@@ -230,7 +248,9 @@ describe('vehicle-detail responsive regression', () => {
   });
 
   it('refreshes dated results so newly occupied vehicles are removed', () => {
-    expect(source).toContain("refetchInterval: mode === 'results' || home ? 5_000 : false");
+    expect(source).toContain(
+      "refetchInterval: mode === 'results' || (home && tripRailEligible) ? 5_000 : false",
+    );
     expect(source).toContain("refetchOnMount: 'always'");
     expect(source).toContain('void listSearch.refetch()');
     expect(source).toContain('void mapSearch.refetch()');
