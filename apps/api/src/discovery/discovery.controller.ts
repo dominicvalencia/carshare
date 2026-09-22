@@ -25,10 +25,16 @@ import {
 import { OptionalAccessTokenGuard } from '../authorization/optional-access-token.guard';
 import { PolicyGuard } from '../authorization/policy.guard';
 import type { RequestPrincipal } from '../security/security-context';
-import { AvailabilityQueryDto, CreatePricingQuoteDto, SearchVehiclesDto } from './discovery.dto';
+import {
+  AvailabilityQueryDto,
+  CreatePricingQuoteDto,
+  RecordRenterSearchDto,
+  SearchVehiclesDto,
+} from './discovery.dto';
 import { FavoritesService } from './favorites.service';
 import { PricingQuotesService } from './pricing-quotes.service';
 import { PublicVehiclesService } from './public-vehicles.service';
+import { RenterHistoryService } from './renter-history.service';
 
 @ApiTags('Public vehicle discovery')
 @Controller('vehicles')
@@ -124,6 +130,33 @@ export class FavoritesController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@CurrentPrincipal() principal: RequestPrincipal, @Param('vehicleId') vehicleId: string) {
     return this.favorites.remove(principal.userId, vehicleId);
+  }
+}
+
+@ApiBearerAuth()
+@ApiTags('Renter discovery history')
+@Controller('me/discovery-history')
+@RequireRoles(RoleCode.RENTER)
+@UseGuards(AccessTokenGuard, PolicyGuard)
+export class RenterHistoryController {
+  constructor(private readonly history: RenterHistoryService) {}
+
+  @Post('searches')
+  recordSearch(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Body() input: RecordRenterSearchDto,
+  ) {
+    return this.history.recordSearch(principal.userId, input);
+  }
+
+  @Get('searches')
+  listSearches(@CurrentPrincipal() principal: RequestPrincipal) {
+    return this.history.listSearches(principal.userId);
+  }
+
+  @Get('vehicles')
+  listVehicleViews(@CurrentPrincipal() principal: RequestPrincipal) {
+    return this.history.listVehicleViews(principal.userId);
   }
 }
 

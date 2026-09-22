@@ -113,7 +113,8 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('setDraftEnd(end)');
     expect(source).toContain('setPickup(nextStart)');
     expect(source).toContain('setReturnAt(nextEnd)');
-    expect(source).toContain('setTripDatesEstablished(true)');
+    expect(source).toContain('datesExplicit: draftDatesEstablished');
+    expect(source).toContain('setTripDatesEstablished(datesExplicit)');
     expect(source).toContain('tripDateSummary(pickup, returnAt)');
     expect(source).toContain('label="Search"');
     expect(source).toContain('Select and apply trip dates to search.');
@@ -236,6 +237,18 @@ describe('vehicle-detail responsive regression', () => {
       /onSeeAll=\{\(\) => \{\s*resetResultsViewport\(\);\s*setMode\('results'\)/,
     );
     expect(source).toContain('{onSeeAll ? (');
+  });
+
+  it('records only committed renter searches, not place autocomplete or guest browsing', () => {
+    const commit = source.slice(
+      source.indexOf('function performSearch('),
+      source.indexOf('function searchMapArea('),
+    );
+    const autocomplete = source.slice(source.indexOf('function LocationSheet('));
+    expect(commit).toContain("user?.roles.includes('RENTER')");
+    expect(commit).toContain(".request('/me/discovery-history/searches'");
+    expect(commit).toContain('datesExplicit');
+    expect(autocomplete).not.toContain(".request('/me/discovery-history/searches'");
   });
 
   it('presents existing persistent favorites as the Wishlist', () => {

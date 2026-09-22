@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import {
   Prisma,
+  RoleCode,
   ReviewModerationStatus,
   ReviewPublicationStatus,
   ReviewType,
@@ -21,6 +22,7 @@ import {
   type PublicVehicleRecord,
 } from './public-eligibility.service';
 import { PublicProjectionService } from './public-projection.service';
+import { RenterHistoryService } from './renter-history.service';
 
 interface SpatialCandidate {
   readonly id: string;
@@ -45,6 +47,7 @@ export class PublicVehiclesService {
     private readonly duration: RentalDurationService,
     private readonly projection: PublicProjectionService,
     private readonly analytics: DiscoveryAnalyticsService,
+    private readonly history: RenterHistoryService,
   ) {}
 
   async referenceData() {
@@ -199,6 +202,9 @@ export class PublicVehiclesService {
 
   async detail(id: string, principal?: RequestPrincipal, correlationId?: string) {
     const vehicle = await this.publicVehicle(id, principal?.userId);
+    if (principal?.roles.includes(RoleCode.RENTER)) {
+      await this.history.recordVehicleView(principal.userId, id).catch(() => undefined);
+    }
     const favorite = principal
       ? Boolean(
           await this.database.client.userFavorite.findUnique({

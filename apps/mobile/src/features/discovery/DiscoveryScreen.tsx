@@ -31,6 +31,7 @@ import {
   View,
 } from 'react-native';
 import { ApiError, apiClient } from '../../auth/api-client';
+import { useAuth } from '../../auth/AuthProvider';
 import {
   developmentLocationSuggestions,
   type LocationSuggestion,
@@ -78,6 +79,7 @@ import { TripDateCalendar } from './TripDateCalendar';
 import { tripDateSummary } from './trip-date-policy';
 import { formatResultSummary, uniqueVehicleCount } from './result-summary';
 import { areaRailTitle, exploreRailQuery, showTripRail, uniqueRailVehicles } from './explore-rails';
+import { committedSearchPayload } from './committed-search-history';
 import {
   pendingExploreRecoveryActions,
   recoveryActionCountLabel,
@@ -243,6 +245,7 @@ type SearchDraft = {
   readonly place: SearchLocation;
   readonly start: Date;
   readonly end: Date;
+  readonly datesExplicit: boolean;
 };
 
 const locations = developmentLocationSuggestions;
@@ -273,6 +276,7 @@ export function DiscoveryScreen({
   const navigation = useNavigation<NavigationProp<RenterTabParamList & RootStackParamList>>();
   const { bottom: bottomSafeArea } = useSafeAreaInsets();
   const client = useQueryClient();
+  const { user } = useAuth();
   const [mode, setMode] = useState<ViewMode>(initialVehicleId ? 'detail' : initialMode);
   const detailOrigin = useRef<ViewMode>(initialMode === 'favorites' ? 'favorites' : 'results');
   const [vehicleId, setVehicleId] = useState<string | null>(initialVehicleId ?? null);
@@ -303,6 +307,7 @@ export function DiscoveryScreen({
   const [exploreShortcut, setExploreShortcut] = useState<ExploreShortcut>('ALL');
   const [discoveryLocationEstablished, setDiscoveryLocationEstablished] = useState(false);
   const [tripDatesEstablished, setTripDatesEstablished] = useState(false);
+  const [exactTimesSelected, setExactTimesSelected] = useState(false);
   const [railFavoriteOverrides, setRailFavoriteOverrides] = useState<Record<string, boolean>>({});
   const { height: viewportHeight, width: viewportWidth } = useWindowDimensions();
   const initialResultsMapHeight = Math.max(220, Math.min(340, Math.round(viewportHeight * 0.34)));
@@ -898,6 +903,31 @@ export function DiscoveryScreen({
     const nextStart = draft?.start ?? pickup;
     const nextEnd = draft?.end ?? returnAt;
     if (nextEnd.getTime() <= nextStart.getTime()) return;
+    const datesExplicit = draft?.datesExplicit ?? (tripDatesEstablished || exactTimesSelected);
+    if (user?.roles.includes('RENTER')) {
+      void apiClient
+        .request('/me/discovery-history/searches', {
+          body: JSON.stringify(
+            committedSearchPayload({
+              location: nextPlace,
+              radiusKm,
+              datesExplicit,
+              start: nextStart,
+              end: nextEnd,
+              categoryId,
+              make,
+              seats,
+              transmission,
+              powertrain,
+              minPrice,
+              maxPrice,
+              handover,
+            }),
+          ),
+          method: 'POST',
+        })
+        .catch(() => undefined);
+    }
     Keyboard.dismiss();
     setPlace(nextPlace);
     setActivePlace(nextPlace);
@@ -905,7 +935,7 @@ export function DiscoveryScreen({
     setReturnAt(nextEnd);
     setActiveRadiusKm(radiusKm);
     setDiscoveryLocationEstablished(true);
-    setTripDatesEstablished(true);
+    setTripDatesEstablished(datesExplicit);
     resetResultsViewport();
     setMode('results');
   }
@@ -967,6 +997,7 @@ export function DiscoveryScreen({
       setPlace(draft.place);
       setPickup(draft.start);
       setReturnAt(draft.end);
+      setExactTimesSelected(draft.datesExplicit);
     }
     setLocationOpen(false);
     setExploreSearchOpen(true);
@@ -1701,13 +1732,19 @@ export function DiscoveryScreen({
                 label="Pickup"
                 value={pickup}
                 minimumDate={new Date()}
-                onChange={setPickup}
+                onChange={(value) => {
+                  setPickup(value);
+                  setExactTimesSelected(true);
+                }}
               />
               <DateTimeField
                 label="Return"
                 value={returnAt}
                 minimumDate={pickup}
-                onChange={setReturnAt}
+                onChange={(value) => {
+                  setReturnAt(value);
+                  setExactTimesSelected(true);
+                }}
               />
             </View>
             {!validDates && <Text style={styles.error}>Return must be after pickup.</Text>}
@@ -3232,7 +3269,14 @@ function LocationSheet({
             </Text>
             <Button
               label="Continue with exact times"
-              onPress={() => onContinue({ end: draftEnd, place: draftSelected, start: draftStart })}
+              onPress={() =>
+                onContinue({
+                  datesExplicit: draftDatesEstablished,
+                  end: draftEnd,
+                  place: draftSelected,
+                  start: draftStart,
+                })
+              }
               variant="ghost"
             />
           </Card>
@@ -3265,7 +3309,14 @@ function LocationSheet({
               disabled={!draftWhereEstablished || !draftDatesEstablished}
               icon="search"
               label="Search"
-              onPress={() => onSearch({ end: draftEnd, place: draftSelected, start: draftStart })}
+              onPress={() =>
+                onSearch({
+                  datesExplicit: draftDatesEstablished,
+                  end: draftEnd,
+                  place: draftSelected,
+                  start: draftStart,
+                })
+              }
             />
             {!draftWhereEstablished || !draftDatesEstablished ? (
               <Text accessibilityLiveRegion="polite" style={styles.whereSelectionNote}>
@@ -3274,7 +3325,14 @@ function LocationSheet({
             ) : null}
             <Button
               label="Continue with exact times"
-              onPress={() => onContinue({ end: draftEnd, place: draftSelected, start: draftStart })}
+              onPress={() =>
+                onContinue({
+                  datesExplicit: draftDatesEstablished,
+                  end: draftEnd,
+                  place: draftSelected,
+                  start: draftStart,
+                })
+              }
               variant="ghost"
             />
           </>

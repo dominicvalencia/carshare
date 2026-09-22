@@ -5,6 +5,7 @@ import {
   PricingQuotesController,
   PublicHostsController,
   PublicVehiclesController,
+  RenterHistoryController,
 } from './discovery.controller';
 import { DiscoveryAnalyticsService } from './analytics.service';
 import { AvailabilityService } from './availability.service';
@@ -14,6 +15,7 @@ import { PricingQuotesService } from './pricing-quotes.service';
 import { PublicVehicleEligibilityService } from './public-eligibility.service';
 import { PublicProjectionService } from './public-projection.service';
 import { PublicVehiclesService } from './public-vehicles.service';
+import { RenterHistoryService } from './renter-history.service';
 import { FilesModule } from '../files/files.module';
 import { FulfillmentModule } from '../fulfillment/fulfillment.module';
 
@@ -24,6 +26,7 @@ import { FulfillmentModule } from '../fulfillment/fulfillment.module';
     PublicHostsController,
     PricingQuotesController,
     FavoritesController,
+    RenterHistoryController,
     AdminVehicleVisibilityController,
   ],
   providers: [
@@ -35,6 +38,7 @@ import { FulfillmentModule } from '../fulfillment/fulfillment.module';
     PublicVehiclesService,
     PricingQuotesService,
     FavoritesService,
+    RenterHistoryService,
   ],
   exports: [DiscoveryAnalyticsService, RentalDurationService, PublicVehicleEligibilityService],
 })

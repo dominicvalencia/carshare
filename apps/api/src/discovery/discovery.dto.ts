@@ -8,6 +8,7 @@ import {
   IsInt,
   IsNumber,
   IsBoolean,
+  IsIn,
   IsOptional,
   IsString,
   IsUUID,
@@ -113,6 +114,26 @@ export class SearchVehiclesDto {
   @Min(1)
   @Max(50)
   limit = 10;
+}
+
+export class RecordRenterSearchDto {
+  @IsIn(['DEVICE', 'PLACE']) source!: 'DEVICE' | 'PLACE';
+  @IsString() @MaxLength(100) city!: string;
+  @IsString() @MaxLength(100) province!: string;
+  @IsNumber() @Min(-90) @Max(90) latitude!: number;
+  @IsNumber() @Min(-180) @Max(180) longitude!: number;
+  @IsInt() @Min(1) @Max(1000) radiusKm!: number;
+  @IsBoolean() datesExplicit!: boolean;
+  @IsOptional() @IsDateString() start?: string;
+  @IsOptional() @IsDateString() end?: string;
+  @IsOptional() @IsUUID() categoryId?: string;
+  @IsOptional() @IsString() @MaxLength(100) make?: string;
+  @IsOptional() @IsInt() @Min(1) @Max(20) seats?: number;
+  @IsOptional() @IsEnum(VehicleTransmission) transmission?: VehicleTransmission;
+  @IsOptional() @IsEnum(VehiclePowertrain) powertrain?: VehiclePowertrain;
+  @IsOptional() @IsInt() @Min(0) minPrice?: number;
+  @IsOptional() @IsInt() @Min(0) maxPrice?: number;
+  @IsOptional() @IsEnum(VehicleHandoverFilter) handover?: VehicleHandoverFilter;
 }
 
 export class AvailabilityQueryDto {

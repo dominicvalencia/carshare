@@ -874,6 +874,8 @@ model User {
   vehicleStatusChanges              VehicleStatusHistory[]                   @relation("VehicleStatusActor")
   vehicleDocumentsReviewed          VehicleDocument[]                        @relation("VehicleDocumentReviewer")
   favorites                         UserFavorite[]
+  recentSearches                    RenterRecentSearch[]
+  recentVehicleViews                RenterRecentVehicleView[]
   pricingQuotes                     PricingQuote[]                           @relation("QuoteRenter")
   analyticsEvents                   AnalyticsEvent[]
   renterBookings                    Booking[]                                @relation("BookingRenter")
@@ -1564,6 +1566,7 @@ model Vehicle {
   blockedPeriods  VehicleBlockedPeriod[]
   statusHistory   VehicleStatusHistory[]
   favorites       UserFavorite[]
+  recentViews     RenterRecentVehicleView[]
   pricingQuotes   PricingQuote[]
   analyticsEvents AnalyticsEvent[]
   bookings        Booking[]
@@ -1767,6 +1770,39 @@ model UserFavorite {
   @@index([userId, createdAt])
   @@index([vehicleId])
   @@map("user_favorites")
+}
+
+model RenterRecentSearch {
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  placeLabel      String    @map("place_label") @db.VarChar(120)
+  city            String    @db.VarChar(100)
+  province        String    @db.VarChar(100)
+  centerLatitude  Decimal   @map("center_latitude") @db.Decimal(4, 1)
+  centerLongitude Decimal   @map("center_longitude") @db.Decimal(4, 1)
+  radiusKm        Int       @map("radius_km")
+  rentalStart     DateTime? @map("rental_start") @db.Timestamptz(3)
+  rentalEnd       DateTime? @map("rental_end") @db.Timestamptz(3)
+  criteria        Json
+  searchedAt      DateTime  @default(now()) @map("searched_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, searchedAt(sort: Desc), id(sort: Desc)])
+  @@map("renter_recent_searches")
+}
+
+model RenterRecentVehicleView {
+  userId    String   @map("user_id") @db.Uuid
+  vehicleId String   @map("vehicle_id") @db.Uuid
+  viewedAt  DateTime @default(now()) @map("viewed_at") @db.Timestamptz(3)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, vehicleId])
+  @@index([userId, viewedAt(sort: Desc), vehicleId(sort: Desc)])
+  @@map("renter_recent_vehicle_views")
 }
 
 model PricingQuote {

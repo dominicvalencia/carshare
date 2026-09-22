@@ -508,6 +508,86 @@ describe.sequential('Phase 4 public discovery integration', () => {
       .expect(409);
   });
 
+  it('keeps committed search and recent-view history private, coarse, deduplicated, and public-only', async () => {
+    const search = await request(app.getHttpServer())
+      .post('/api/v1/me/discovery-history/searches')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .send({
+        city: 'Lucena City',
+        datesExplicit: false,
+        latitude: 13.9414,
+        longitude: 121.623,
+        province: 'Quezon',
+        radiusKm: 25,
+        source: 'PLACE',
+      })
+      .expect(201);
+    expect(search.body.data.id).toBeTruthy();
+
+    const ownSearches = await request(app.getHttpServer())
+      .get('/api/v1/me/discovery-history/searches')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .expect(200);
+    expect(ownSearches.body.data.items[0]).toMatchObject({
+      city: 'Lucena City',
+      placeLabel: 'Lucena City',
+      province: 'Quezon',
+      radiusKm: 25,
+      rentalStart: null,
+      rentalEnd: null,
+    });
+    expect(Number(ownSearches.body.data.items[0].centerLatitude)).toBe(13.9);
+    expect(Number(ownSearches.body.data.items[0].centerLongitude)).toBe(121.6);
+    expect(ownSearches.body.data.items[0]).not.toHaveProperty('userId');
+    await request(app.getHttpServer()).get('/api/v1/me/discovery-history/searches').expect(401);
+    const otherSearches = await request(app.getHttpServer())
+      .get('/api/v1/me/discovery-history/searches')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200);
+    expect(otherSearches.body.data.items).toEqual([]);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/vehicles/${firstVehicleId}`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get(`/api/v1/vehicles/${firstVehicleId}`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .expect(200);
+    const views = await request(app.getHttpServer())
+      .get('/api/v1/me/discovery-history/vehicles')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .expect(200);
+    expect(
+      views.body.data.items.filter(
+        (item: { vehicle: { vehicleId: string } }) => item.vehicle.vehicleId === firstVehicleId,
+      ),
+    ).toHaveLength(1);
+    expect(views.body.data.items[0].vehicle).not.toHaveProperty('latitude');
+    expect(views.body.data.items[0].vehicle).not.toHaveProperty('longitude');
+
+    await database.client.vehicle.update({
+      data: { operationalStatus: VehicleOperationalStatus.MAINTENANCE },
+      where: { id: firstVehicleId },
+    });
+    try {
+      const unavailable = await request(app.getHttpServer())
+        .get('/api/v1/me/discovery-history/vehicles')
+        .set('Authorization', `Bearer ${renterToken}`)
+        .expect(200);
+      expect(unavailable.body.data.items).not.toContainEqual(
+        expect.objectContaining({
+          vehicle: expect.objectContaining({ vehicleId: firstVehicleId }),
+        }),
+      );
+    } finally {
+      await database.client.vehicle.update({
+        data: { operationalStatus: VehicleOperationalStatus.AVAILABLE },
+        where: { id: firstVehicleId },
+      });
+    }
+  });
+
   async function register(email: string) {
     return request(app.getHttpServer())
       .post('/api/v1/auth/register')
