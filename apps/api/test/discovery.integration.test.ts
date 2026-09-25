@@ -153,6 +153,29 @@ describe.sequential('Phase 4 public discovery integration', () => {
       .expect(404);
   });
 
+  it('protects saved-similarity recommendations and scopes an empty result to the renter', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/me/discovery-recommendations/saved-similar')
+      .query({ latitude: 13.9414, longitude: 121.623, radius: 25 })
+      .expect(401);
+    await request(app.getHttpServer())
+      .get('/api/v1/me/discovery-recommendations/saved-similar')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .query({ latitude: 13.9414, radius: 25 })
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/api/v1/me/discovery-recommendations/saved-similar')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .query({ latitude: 13.9414, longitude: 121.623, radius: 25, start: futureIso(2, 9) })
+      .expect(400);
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/me/discovery-recommendations/saved-similar')
+      .set('Authorization', `Bearer ${renterToken}`)
+      .query({ latitude: 13.9414, longitude: 121.623, radius: 25 })
+      .expect(200);
+    expect(response.body.data.items).toEqual([]);
+  });
+
   it('filters unified booking occupancy before pagination and honors exact buffer boundaries', async () => {
     const occupiedStart = futureIso(10, 9);
     const rentalEnd = futureIso(11, 10);

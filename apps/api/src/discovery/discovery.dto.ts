@@ -141,6 +141,28 @@ export class AvailabilityQueryDto {
   @ApiProperty() @IsDateString() end!: string;
 }
 
+export class SavedSimilarityQueryDto {
+  @ValidateIf((input: SavedSimilarityQueryDto) => input.longitude !== undefined)
+  @IsString()
+  latitude?: string;
+  @ValidateIf((input: SavedSimilarityQueryDto) => input.latitude !== undefined)
+  @IsString()
+  longitude?: string;
+  @ApiPropertyOptional({ default: 25, maximum: 100, minimum: 1 })
+  @Type(() => Number)
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(100)
+  radius = 25;
+  @ValidateIf((input: SavedSimilarityQueryDto) => input.end !== undefined)
+  @IsDateString()
+  start?: string;
+  @ValidateIf((input: SavedSimilarityQueryDto) => input.start !== undefined)
+  @IsDateString()
+  end?: string;
+}
+
 export class FulfillmentDestinationDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) addressLine1?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(120) barangay?: string;

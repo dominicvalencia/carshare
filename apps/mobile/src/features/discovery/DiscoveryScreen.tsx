@@ -432,6 +432,36 @@ export function DiscoveryScreen({
     queryFn: () => apiClient.request<SearchResponse>(`/vehicles/search?${continuedRailQuery}`),
     staleTime: 30_000,
   });
+  const savedSimilarityQueryString = useMemo(() => {
+    if (!discoveryLocationEstablished) return '';
+    const query = new URLSearchParams({
+      latitude: String(activePlace.latitude),
+      longitude: String(activePlace.longitude),
+      radius: String(activeRadiusKm),
+    });
+    if (tripDatesEstablished) {
+      query.set('start', pickup.toISOString());
+      query.set('end', returnAt.toISOString());
+    }
+    return query.toString();
+  }, [
+    activePlace.latitude,
+    activePlace.longitude,
+    activeRadiusKm,
+    discoveryLocationEstablished,
+    pickup,
+    returnAt,
+    tripDatesEstablished,
+  ]);
+  const savedSimilarity = useQuery({
+    enabled: home && mode === 'form' && authenticatedRenter && Boolean(savedSimilarityQueryString),
+    queryKey: ['renter-recommendations', 'saved-similar', user?.id, savedSimilarityQueryString],
+    queryFn: () =>
+      apiClient.request<SearchResponse>(
+        `/me/discovery-recommendations/saved-similar?${savedSimilarityQueryString}`,
+      ),
+    staleTime: 30_000,
+  });
   const listSearch = useInfiniteQuery({
     enabled: mode === 'results' || (home && tripRailEligible),
     refetchInterval: mode === 'results' || (home && tripRailEligible) ? 5_000 : false,
@@ -509,6 +539,9 @@ export function DiscoveryScreen({
     }));
   const continuedRailItems = railVehicles(
     continuedRailSearch.isError ? [] : (continuedRailSearch.data?.items ?? []),
+  );
+  const savedSimilarityRailItems = railVehicles(
+    savedSimilarity.isError ? [] : (savedSimilarity.data?.items ?? []),
   );
   const mapItems = mapSearch.data?.items ?? [];
   const nextPageError = listSearch.isFetchNextPageError ? listSearch.error : null;
@@ -877,6 +910,7 @@ export function DiscoveryScreen({
       void client.invalidateQueries({ queryKey: ['public-search'] });
       void client.invalidateQueries({ queryKey: ['public-vehicle'] });
       void client.invalidateQueries({ queryKey: ['renter-history', 'vehicles'] });
+      void client.invalidateQueries({ queryKey: ['renter-recommendations', 'saved-similar'] });
     },
   });
   const quote = useMutation({
@@ -1932,6 +1966,15 @@ export function DiscoveryScreen({
               continuedSearch?.start && continuedSearch.end ? openContinuedResults : undefined
             }
             title={continuedSearch?.title ?? 'Continue exploring'}
+          />
+          <ExploreVehicleSection
+            cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
+            items={savedSimilarityRailItems.length >= 2 ? savedSimilarityRailItems : []}
+            onFavorite={(vehicle) =>
+              favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
+            }
+            onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
+            title="More like cars you've saved"
           />
           <ExploreVehicleSection
             cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}

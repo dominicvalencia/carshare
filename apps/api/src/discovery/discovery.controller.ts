@@ -29,12 +29,14 @@ import {
   AvailabilityQueryDto,
   CreatePricingQuoteDto,
   RecordRenterSearchDto,
+  SavedSimilarityQueryDto,
   SearchVehiclesDto,
 } from './discovery.dto';
 import { FavoritesService } from './favorites.service';
 import { PricingQuotesService } from './pricing-quotes.service';
 import { PublicVehiclesService } from './public-vehicles.service';
 import { RenterHistoryService } from './renter-history.service';
+import { SavedSimilarityService } from './saved-similarity.service';
 
 @ApiTags('Public vehicle discovery')
 @Controller('vehicles')
@@ -157,6 +159,23 @@ export class RenterHistoryController {
   @Get('vehicles')
   listVehicleViews(@CurrentPrincipal() principal: RequestPrincipal) {
     return this.history.listVehicleViews(principal.userId);
+  }
+}
+
+@ApiBearerAuth()
+@ApiTags('Renter discovery recommendations')
+@Controller('me/discovery-recommendations')
+@RequireRoles(RoleCode.RENTER)
+@UseGuards(AccessTokenGuard, PolicyGuard)
+export class RenterRecommendationsController {
+  constructor(private readonly recommendations: SavedSimilarityService) {}
+
+  @Get('saved-similar')
+  savedSimilar(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Query() input: SavedSimilarityQueryDto,
+  ) {
+    return this.recommendations.recommend(principal.userId, input);
   }
 }
 

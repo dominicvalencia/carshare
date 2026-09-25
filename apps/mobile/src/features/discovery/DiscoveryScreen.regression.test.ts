@@ -282,6 +282,28 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('if (items.length === 0) return null;');
   });
 
+  it('isolates the authenticated saved-similarity rail between history and contextual rails', () => {
+    expect(source).toContain("'renter-recommendations',");
+    expect(source).toContain("'saved-similar',");
+    expect(source).toContain('/me/discovery-recommendations/saved-similar?');
+    expect(source).toContain('savedSimilarity.isError ? []');
+    expect(source).toContain(
+      'items={savedSimilarityRailItems.length >= 2 ? savedSimilarityRailItems : []}',
+    );
+    expect(source).toContain('title="More like cars you\'ve saved"');
+    expect(source.indexOf('title="More like cars you\'ve saved"')).toBeGreaterThan(
+      source.indexOf("title={continuedSearch?.title ?? 'Continue exploring'}"),
+    );
+    expect(source.indexOf('title="More like cars you\'ve saved"')).toBeLessThan(
+      source.indexOf('title="Electric cars"'),
+    );
+    expect(source).toContain('if (!discoveryLocationEstablished) return');
+    expect(source).toContain('if (tripDatesEstablished)');
+    expect(source).toContain(
+      "void client.invalidateQueries({ queryKey: ['renter-recommendations', 'saved-similar'] })",
+    );
+  });
+
   it('records only committed renter searches, not place autocomplete or guest browsing', () => {
     const commit = source.slice(
       source.indexOf('function performSearch('),

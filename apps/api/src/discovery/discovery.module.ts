@@ -6,6 +6,7 @@ import {
   PublicHostsController,
   PublicVehiclesController,
   RenterHistoryController,
+  RenterRecommendationsController,
 } from './discovery.controller';
 import { DiscoveryAnalyticsService } from './analytics.service';
 import { AvailabilityService } from './availability.service';
@@ -16,6 +17,7 @@ import { PublicVehicleEligibilityService } from './public-eligibility.service';
 import { PublicProjectionService } from './public-projection.service';
 import { PublicVehiclesService } from './public-vehicles.service';
 import { RenterHistoryService } from './renter-history.service';
+import { SavedSimilarityService } from './saved-similarity.service';
 import { FilesModule } from '../files/files.module';
 import { FulfillmentModule } from '../fulfillment/fulfillment.module';
 
@@ -27,6 +29,7 @@ import { FulfillmentModule } from '../fulfillment/fulfillment.module';
     PricingQuotesController,
     FavoritesController,
     RenterHistoryController,
+    RenterRecommendationsController,
     AdminVehicleVisibilityController,
   ],
   providers: [
@@ -39,6 +42,7 @@ import { FulfillmentModule } from '../fulfillment/fulfillment.module';
     PricingQuotesService,
     FavoritesService,
     RenterHistoryService,
+    SavedSimilarityService,
   ],
   exports: [DiscoveryAnalyticsService, RentalDurationService, PublicVehicleEligibilityService],
 })
