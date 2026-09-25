@@ -81,6 +81,13 @@ import { formatResultSummary, uniqueVehicleCount } from './result-summary';
 import { areaRailTitle, exploreRailQuery, showTripRail, uniqueRailVehicles } from './explore-rails';
 import { committedSearchPayload } from './committed-search-history';
 import {
+  latestReconstructibleSearch,
+  recentVehicleCards,
+  type ExploreRailCard,
+  type HistorySearchRecord,
+  type RecentVehicleRecord,
+} from './personalized-rails';
+import {
   pendingExploreRecoveryActions,
   recoveryActionCountLabel,
   recoveryActionScopeLabel,
@@ -379,6 +386,7 @@ export function DiscoveryScreen({
   const listQueryString = `${activeCriteriaQueryString}&limit=10&mode=LIST`;
   const mapQueryString = `${activeCriteriaQueryString}&limit=50&mode=MAP`;
   const tripRailEligible = showTripRail(tripDatesEstablished, pickup, returnAt);
+  const authenticatedRenter = Boolean(user?.roles.includes('RENTER'));
   const areaRailQueryString = exploreRailQuery(activePlace, activeRadiusKm, 'AREA', {
     categoryId,
     handover,
@@ -396,6 +404,32 @@ export function DiscoveryScreen({
     enabled: home && mode === 'form',
     queryKey: ['public-search', 'rail', electricRailQueryString],
     queryFn: () => apiClient.request<SearchResponse>(`/vehicles/search?${electricRailQueryString}`),
+    staleTime: 30_000,
+  });
+  const recentSearchHistory = useQuery({
+    enabled: home && mode === 'form' && authenticatedRenter,
+    queryKey: ['renter-history', 'searches', user?.id],
+    queryFn: () =>
+      apiClient.request<{ items: readonly HistorySearchRecord[] }>(
+        '/me/discovery-history/searches',
+      ),
+  });
+  const recentVehicleHistory = useQuery({
+    enabled: home && mode === 'form' && authenticatedRenter,
+    queryKey: ['renter-history', 'vehicles', user?.id],
+    queryFn: () =>
+      apiClient.request<{ items: readonly RecentVehicleRecord[] }>(
+        '/me/discovery-history/vehicles',
+      ),
+  });
+  const continuedSearch = recentSearchHistory.isError
+    ? null
+    : latestReconstructibleSearch(recentSearchHistory.data?.items ?? []);
+  const continuedRailQuery = continuedSearch?.query ?? '';
+  const continuedRailSearch = useQuery({
+    enabled: home && mode === 'form' && Boolean(continuedSearch),
+    queryKey: ['public-search', 'rail', 'continue', continuedRailQuery],
+    queryFn: () => apiClient.request<SearchResponse>(`/vehicles/search?${continuedRailQuery}`),
     staleTime: 30_000,
   });
   const listSearch = useInfiniteQuery({
@@ -465,6 +499,17 @@ export function DiscoveryScreen({
   const areaRailItems = railVehicles(areaRailSearch.data?.items ?? []);
   const electricRailItems = railVehicles(electricRailSearch.data?.items ?? []);
   const tripRailItems = tripRailEligible ? railVehicles(searchItems).slice(0, 6) : [];
+  const recentRailItems = recentVehicleCards(
+    recentVehicleHistory.isError ? [] : (recentVehicleHistory.data?.items ?? []),
+  )
+    .slice(0, 6)
+    .map((vehicle) => ({
+      ...vehicle,
+      favorite: railFavoriteOverrides[vehicle.vehicleId] ?? vehicle.favorite,
+    }));
+  const continuedRailItems = railVehicles(
+    continuedRailSearch.isError ? [] : (continuedRailSearch.data?.items ?? []),
+  );
   const mapItems = mapSearch.data?.items ?? [];
   const nextPageError = listSearch.isFetchNextPageError ? listSearch.error : null;
   const fetchNextSearchPage = listSearch.fetchNextPage;
@@ -831,6 +876,7 @@ export function DiscoveryScreen({
       void client.invalidateQueries({ queryKey: ['favorites'] });
       void client.invalidateQueries({ queryKey: ['public-search'] });
       void client.invalidateQueries({ queryKey: ['public-vehicle'] });
+      void client.invalidateQueries({ queryKey: ['renter-history', 'vehicles'] });
     },
   });
   const quote = useMutation({
@@ -883,6 +929,10 @@ export function DiscoveryScreen({
       if (tripRailEligible) void listSearch.refetch();
       void areaRailSearch.refetch();
       void electricRailSearch.refetch();
+      if (authenticatedRenter) {
+        void recentSearchHistory.refetch();
+        void recentVehicleHistory.refetch();
+      }
     }
   });
 
@@ -897,6 +947,30 @@ export function DiscoveryScreen({
     detailOrigin.current = mode === 'favorites' ? 'favorites' : 'results';
     setVehicleId(id);
     setMode('detail');
+  }
+
+  function openContinuedResults() {
+    if (!continuedSearch?.start || !continuedSearch.end) return;
+    setPlace(continuedSearch.location);
+    setActivePlace(continuedSearch.location);
+    setRadiusKm(continuedSearch.radiusKm);
+    setActiveRadiusKm(continuedSearch.radiusKm);
+    setPickup(continuedSearch.start);
+    setReturnAt(continuedSearch.end);
+    setTripDatesEstablished(true);
+    setExactTimesSelected(true);
+    setDiscoveryLocationEstablished(true);
+    setCategoryId(continuedSearch.categoryId);
+    setMake(continuedSearch.make);
+    setSeats(continuedSearch.seats);
+    setTransmission(continuedSearch.transmission);
+    setPowertrain(continuedSearch.powertrain);
+    setMinPrice(continuedSearch.minPrice);
+    setMaxPrice(continuedSearch.maxPrice);
+    setHandover(continuedSearch.handover);
+    setExploreShortcut('CUSTOM');
+    resetResultsViewport();
+    setMode('results');
   }
   function performSearch(draft?: SearchDraft) {
     const nextPlace = draft?.place ?? place;
@@ -1840,6 +1914,27 @@ export function DiscoveryScreen({
           ) : null}
           <ExploreVehicleSection
             cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
+            items={recentRailItems}
+            onFavorite={(vehicle) =>
+              favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
+            }
+            onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
+            title="Recently viewed"
+          />
+          <ExploreVehicleSection
+            cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
+            items={continuedRailItems}
+            onFavorite={(vehicle) =>
+              favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
+            }
+            onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
+            onSeeAll={
+              continuedSearch?.start && continuedSearch.end ? openContinuedResults : undefined
+            }
+            title={continuedSearch?.title ?? 'Continue exploring'}
+          />
+          <ExploreVehicleSection
+            cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
             items={areaRailItems}
             onFavorite={(vehicle) =>
               favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
@@ -2033,11 +2128,11 @@ function ExploreVehicleSection({
 }: {
   readonly title: string;
   readonly subtitle?: string;
-  readonly items: readonly VehicleCardView[];
+  readonly items: readonly ExploreRailCard[];
   readonly cardWidth: number;
-  readonly onOpen: (vehicle: VehicleCardView) => void;
-  readonly onFavorite: (vehicle: VehicleCardView) => void;
-  readonly onSeeAll?: () => void;
+  readonly onOpen: (vehicle: ExploreRailCard) => void;
+  readonly onFavorite: (vehicle: ExploreRailCard) => void;
+  readonly onSeeAll?: (() => void) | undefined;
 }) {
   if (items.length === 0) return null;
   return (
@@ -2085,7 +2180,7 @@ function ExploreVehicleCard({
   onOpen,
   onFavorite,
 }: {
-  readonly vehicle: VehicleCardView;
+  readonly vehicle: ExploreRailCard;
   readonly cardWidth: number;
   readonly onOpen: () => void;
   readonly onFavorite: () => void;
@@ -3680,7 +3775,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   exploreSectionSubtitle: { color: colors.subtleText, lineHeight: 20, marginBottom: spacing.xs },
-  exploreSectionTitle: { color: colors.ink, fontSize: 22, fontWeight: '900' },
+  exploreSectionTitle: { color: colors.ink, fontSize: 18, fontWeight: '900' },
   exploreVehicleBody: { gap: spacing.xxs, padding: spacing.sm },
   exploreVehicleCard: {
     backgroundColor: colors.surface,

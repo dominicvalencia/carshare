@@ -222,6 +222,13 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('title="Available for your trip"');
   });
 
+  it('uses one compact semibold heading style for every Explore vehicle rail', () => {
+    expect(source).toContain(
+      "exploreSectionTitle: { color: colors.ink, fontSize: 18, fontWeight: '900' }",
+    );
+    expect(source).toContain('style={styles.exploreSectionTitle}');
+  });
+
   it('keeps rail queries independent, hearts shared, and trip See all faithful to Results', () => {
     expect(source).toContain("exploreRailQuery(activePlace, activeRadiusKm, 'AREA', {");
     expect(source).toContain("exploreRailQuery(activePlace, activeRadiusKm, 'ELECTRIC')");
@@ -237,6 +244,42 @@ describe('vehicle-detail responsive regression', () => {
       /onSeeAll=\{\(\) => \{\s*resetResultsViewport\(\);\s*setMode\('results'\)/,
     );
     expect(source).toContain('{onSeeAll ? (');
+  });
+
+  it('places optional account history rails before contextual rails without changing active search', () => {
+    expect(source).toContain("queryKey: ['renter-history', 'searches', user?.id]");
+    expect(source).toContain("queryKey: ['renter-history', 'vehicles', user?.id]");
+    expect(source).toContain("enabled: home && mode === 'form' && authenticatedRenter");
+    expect(source).toContain("queryKey: ['public-search', 'rail', 'continue', continuedRailQuery]");
+    expect(source).toContain('latestReconstructibleSearch(recentSearchHistory.data?.items ?? [])');
+    expect(source).toContain('recentVehicleHistory.data?.items ?? []');
+    expect(source).toContain('continuedRailSearch.data?.items ?? []');
+    expect(source).toContain('recentSearchHistory.isError');
+    expect(source).toContain('recentVehicleHistory.isError ? []');
+    expect(source).toContain('continuedRailSearch.isError ? []');
+    expect(source).toContain('onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}');
+    expect(source).toContain(
+      'favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })',
+    );
+    expect(source).toContain('title="Recently viewed"');
+    expect(source).toContain("title={continuedSearch?.title ?? 'Continue exploring'}");
+    expect(source.indexOf('title="Recently viewed"')).toBeLessThan(
+      source.indexOf("title={continuedSearch?.title ?? 'Continue exploring'}"),
+    );
+    expect(source.indexOf("title={continuedSearch?.title ?? 'Continue exploring'}")).toBeLessThan(
+      source.indexOf('title="Electric cars"'),
+    );
+    expect(source).toMatch(
+      /onSeeAll=\{\s*continuedSearch\?\.start && continuedSearch\.end \? openContinuedResults : undefined\s*\}/,
+    );
+    expect(source).toContain('if (!continuedSearch?.start || !continuedSearch.end) return;');
+    expect(source).toContain('setActivePlace(continuedSearch.location)');
+    expect(source).toContain('setTripDatesEstablished(true)');
+    expect(source).toContain(
+      "void client.invalidateQueries({ queryKey: ['renter-history', 'vehicles'] })",
+    );
+    expect(source).toContain('const areaRailQueryString = exploreRailQuery(activePlace');
+    expect(source).toContain('if (items.length === 0) return null;');
   });
 
   it('records only committed renter searches, not place autocomplete or guest browsing', () => {
