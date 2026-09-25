@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigationProp } from '@react-navigation/native';
-import { useNavigation } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, {
   cancelAnimation,
+  Extrapolation,
+  interpolate,
+  interpolateColor,
   runOnJS,
   scrollTo,
   useAnimatedRef,
@@ -273,15 +276,16 @@ export function DiscoveryScreen({
   initialMode = 'form',
   initialVehicleId,
   onExit,
-  onFullMapChange,
+  onTabBarHiddenChange,
 }: {
   readonly home?: boolean;
   readonly initialMode?: 'form' | 'favorites';
   readonly initialVehicleId?: string | undefined;
   readonly onExit?: (() => void) | undefined;
-  readonly onFullMapChange?: ((active: boolean) => void) | undefined;
+  readonly onTabBarHiddenChange?: ((hidden: boolean) => void) | undefined;
 }) {
   const navigation = useNavigation<NavigationProp<RenterTabParamList & RootStackParamList>>();
+  const isFocused = useIsFocused();
   const { bottom: bottomSafeArea } = useSafeAreaInsets();
   const client = useQueryClient();
   const { user } = useAuth();
@@ -306,7 +310,6 @@ export function DiscoveryScreen({
   const [maxPrice, setMaxPrice] = useState('');
   const [handover, setHandover] = useState('ANY');
   const [locationError, setLocationError] = useState('');
-  const [exploreSearchOpen, setExploreSearchOpen] = useState(false);
   const [recoveryActionsOpen, setRecoveryActionsOpen] = useState(false);
   const [recoveryClock, setRecoveryClock] = useState(() => Date.now());
   const seenRecoveryActionKeys = useRef(new Set<string>());
@@ -876,10 +879,13 @@ export function DiscoveryScreen({
   const collapseHandleStyle = useAnimatedStyle(() => ({
     opacity: 1 - collapseProgress.value,
   }));
+  const detailPresentationActive = mode === 'detail' || mode === 'quote';
   useEffect(() => {
-    onFullMapChange?.(mode === 'results' && fullMap);
-  }, [fullMap, mode, onFullMapChange]);
-  useEffect(() => () => onFullMapChange?.(false), [onFullMapChange]);
+    onTabBarHiddenChange?.(
+      isFocused && ((mode === 'results' && fullMap) || detailPresentationActive),
+    );
+  }, [detailPresentationActive, fullMap, isFocused, mode, onTabBarHiddenChange]);
+  useEffect(() => () => onTabBarHiddenChange?.(false), [onTabBarHiddenChange]);
   useEffect(() => {
     if (!fullMap || !listSearch.isError || !mapSearch.isError) return;
     const timer = setTimeout(settleFullMapExit, 0);
@@ -888,7 +894,6 @@ export function DiscoveryScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullMap, fullMapProgress, listSearch.isError, mapSearch.isError]);
   const exploreScrollRef = useRef<ScrollView>(null);
-  const searchFormOffset = useRef(0);
   const detail = useQuery({
     enabled: Boolean(vehicleId) && (mode === 'detail' || mode === 'quote'),
     queryKey: ['public-vehicle', vehicleId],
@@ -1102,22 +1107,6 @@ export function DiscoveryScreen({
     setLocationOpen(true);
   }
 
-  function openLegacySearch(draft?: SearchDraft) {
-    if (draft) {
-      setPlace(draft.place);
-      setPickup(draft.start);
-      setReturnAt(draft.end);
-      setExactTimesSelected(draft.datesExplicit);
-    }
-    setLocationOpen(false);
-    setExploreSearchOpen(true);
-    setMode('form');
-    setTimeout(
-      () => exploreScrollRef.current?.scrollTo({ animated: true, y: searchFormOffset.current }),
-      0,
-    );
-  }
-
   function selectExploreShortcut(shortcut: ExploreShortcut) {
     setExploreShortcut(shortcut);
     setCategoryId('');
@@ -1295,7 +1284,6 @@ export function DiscoveryScreen({
       locationEstablished={discoveryLocationEstablished}
       onClose={() => setLocationOpen(false)}
       onClearError={() => setLocationError('')}
-      onContinue={openLegacySearch}
       onCurrent={resolveCurrentLocation}
       onSearch={(draft) => {
         setLocationOpen(false);
@@ -1327,8 +1315,15 @@ export function DiscoveryScreen({
         error={detail.error}
         pickup={pickup}
         returnAt={returnAt}
-        setPickup={setPickup}
-        setReturnAt={setReturnAt}
+        datesExplicit={tripDatesEstablished || exactTimesSelected}
+        setPickup={(value) => {
+          setPickup(value);
+          setExactTimesSelected(true);
+        }}
+        setReturnAt={(value) => {
+          setReturnAt(value);
+          setExactTimesSelected(true);
+        }}
         onBack={() => (initialVehicleId && onExit ? onExit() : setMode(detailOrigin.current))}
         onFavorite={() =>
           detail.data &&
@@ -1816,8 +1811,8 @@ export function DiscoveryScreen({
           </View>
         </Modal>
       )}
-      {(!home || exploreSearchOpen) && (
-        <View onLayout={(event) => (searchFormOffset.current = event.nativeEvent.layout.y)}>
+      {!home && (
+        <View>
           <Card style={styles.searchCard}>
             <Pressable
               accessibilityRole="button"
@@ -1837,26 +1832,18 @@ export function DiscoveryScreen({
               <Icon color={colors.subtleText} name="chevron-down" size={18} />
             </Pressable>
             <View style={styles.divider} />
-            <View style={styles.dateGrid}>
-              <DateTimeField
-                label="Pickup"
-                value={pickup}
-                minimumDate={new Date()}
-                onChange={(value) => {
-                  setPickup(value);
-                  setExactTimesSelected(true);
-                }}
-              />
-              <DateTimeField
-                label="Return"
-                value={returnAt}
-                minimumDate={pickup}
-                onChange={(value) => {
-                  setReturnAt(value);
-                  setExactTimesSelected(true);
-                }}
-              />
-            </View>
+            <Pressable
+              accessibilityLabel={`Trip dates, ${tripDateSummary(pickup, returnAt)}. Change dates`}
+              accessibilityRole="button"
+              onPress={() => setLocationOpen(true)}
+              style={styles.searchCollapsedCard}
+            >
+              <View>
+                <Text style={styles.searchCollapsedLabel}>Trip dates</Text>
+                <Text style={styles.searchCollapsedValue}>{tripDateSummary(pickup, returnAt)}</Text>
+              </View>
+              <Text style={styles.searchEdit}>Change</Text>
+            </Pressable>
             {!validDates && <Text style={styles.error}>Return must be after pickup.</Text>}
             <Button
               disabled={!validDates}
@@ -1867,7 +1854,7 @@ export function DiscoveryScreen({
           </Card>
         </View>
       )}
-      {(!home || exploreSearchOpen) && (
+      {!home && (
         <View style={styles.quickRow}>
           <Chip
             icon="options-outline"
@@ -2290,6 +2277,7 @@ function VehicleView(properties: {
   readonly error: Error | null;
   readonly pickup: Date;
   readonly returnAt: Date;
+  readonly datesExplicit: boolean;
   readonly setPickup: (value: Date) => void;
   readonly setReturnAt: (value: Date) => void;
   readonly onBack: () => void;
@@ -2303,7 +2291,7 @@ function VehicleView(properties: {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const { vehicle } = properties;
   const { width: viewportWidth } = useWindowDimensions();
-  const { top: topSafeArea } = useSafeAreaInsets();
+  const { bottom: bottomSafeArea, top: topSafeArea } = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
   const heroGalleryRef = useRef<FlatList<VehicleGalleryItem>>(null);
   const fullGalleryRef = useRef<FlatList<VehicleGalleryItem>>(null);
@@ -2312,6 +2300,7 @@ function VehicleView(properties: {
   const lastScrolledQuoteId = useRef<string | null>(null);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [galleryOpen, setGalleryOpen] = useState(false);
+  const [quoteClock, setQuoteClock] = useState(() => Date.now());
   const [startMethod, setStartMethod] = useState<'RENTER_PICKUP' | 'OWNER_DELIVERY'>(
     vehicle?.fulfillment.renterPickupAvailable === false &&
       vehicle.fulfillment.ownerDeliveryAvailable
@@ -2327,8 +2316,57 @@ function VehicleView(properties: {
   const [sameAsDelivery, setSameAsDelivery] = useState(true);
   const [deliveryLocation, setDeliveryLocation] = useState<CarShareLocation>();
   const [collectionLocation, setCollectionLocation] = useState<CarShareLocation>();
+  const [tripOpen, setTripOpen] = useState(false);
+  const [tripCalendarOpen, setTripCalendarOpen] = useState(false);
+  const [draftPickup, setDraftPickup] = useState(properties.pickup);
+  const [draftReturnAt, setDraftReturnAt] = useState(properties.returnAt);
+  const [draftDatesExplicit, setDraftDatesExplicit] = useState(properties.datesExplicit);
+  const [draftStartMethod, setDraftStartMethod] = useState(startMethod);
+  const [draftEndMethod, setDraftEndMethod] = useState(endMethod);
+  const [draftSameAsDelivery, setDraftSameAsDelivery] = useState(sameAsDelivery);
+  const [draftDeliveryLocation, setDraftDeliveryLocation] = useState<CarShareLocation>();
+  const [draftCollectionLocation, setDraftCollectionLocation] = useState<CarShareLocation>();
   const [picker, setPicker] = useState<'delivery' | 'collection' | null>(null);
   const quoteData = properties.quote.data;
+  const detailScrollOffset = useSharedValue(0);
+  const heroHeight = Math.round(Math.min(viewportWidth / (4 / 3), 480));
+  const stickyHeaderHeight = topSafeArea + 48 + spacing.md;
+  const stickyHeaderTransitionDistance = Math.max(1, heroHeight - stickyHeaderHeight);
+  const onDetailScroll = useAnimatedScrollHandler({
+    onScroll: (event) => {
+      detailScrollOffset.value = Math.max(0, event.contentOffset.y);
+    },
+  });
+  const stickyHeaderStyle = useAnimatedStyle(() => {
+    const progress = interpolate(
+      detailScrollOffset.value,
+      [0, stickyHeaderTransitionDistance],
+      [0, 1],
+      Extrapolation.CLAMP,
+    );
+    return {
+      backgroundColor: interpolateColor(
+        progress,
+        [0, 1],
+        ['rgba(255,255,255,0)', 'rgba(255,255,255,1)'],
+      ),
+      borderBottomColor: interpolateColor(
+        progress,
+        [0, 1],
+        ['rgba(15,45,35,0)', 'rgba(15,45,35,0.12)'],
+      ),
+    };
+  });
+
+  useEffect(() => {
+    const expiresAt = quoteData ? Date.parse(quoteData.expiresAt) : Number.NaN;
+    if (!Number.isFinite(expiresAt)) return;
+    const timer = setTimeout(
+      () => setQuoteClock(Date.now()),
+      Math.max(0, expiresAt - Date.now()) + 50,
+    );
+    return () => clearTimeout(timer);
+  }, [quoteData]);
 
   const selectGalleryPage = (index: number) => {
     selectedGalleryIndex.current = index;
@@ -2370,7 +2408,9 @@ function VehicleView(properties: {
     );
   const durationDiscounts = positiveDurationDiscounts(vehicle.pricing.durationDiscounts);
   const selectedChargeableDays = chargeableDays(properties.pickup, properties.returnAt);
-  const discountMessage = durationDiscountMessage(selectedChargeableDays, durationDiscounts);
+  const discountMessage = properties.datesExplicit
+    ? durationDiscountMessage(selectedChargeableDays, durationDiscounts)
+    : 'Longer-trip discounts available.';
   const destination = (location: CarShareLocation): FulfillmentDestination => ({
     ...(location.addressLine1 ? { addressLine1: location.addressLine1 } : {}),
     ...(location.barangay ? { barangay: location.barangay } : {}),
@@ -2405,7 +2445,6 @@ function VehicleView(properties: {
   const galleryPhotos: readonly VehicleGalleryItem[] = vehicle.photos?.length
     ? vehicle.photos
     : [{ contentPath: '', expiresAt: '', id: 'fallback' }];
-  const heroHeight = Math.round(Math.min(viewportWidth / (4 / 3), 480));
   const vehicleTitle = [vehicle.make, vehicle.model, vehicle.variant, vehicle.year]
     .filter(Boolean)
     .join(' ');
@@ -2442,8 +2481,201 @@ function VehicleView(properties: {
       value: domainLabel(vehicle.powertrain ?? vehicle.fuelType),
     },
   ];
+  const quoteExpiresAt = quoteData ? Date.parse(quoteData.expiresAt) : Number.NaN;
+  const quoteExpired = Boolean(
+    quoteData && Number.isFinite(quoteExpiresAt) && quoteExpiresAt <= quoteClock,
+  );
+  const verificationRequired =
+    properties.reserve.isError &&
+    properties.reserve.error instanceof ApiError &&
+    properties.reserve.error.code === 'RENTER_VERIFICATION_REQUIRED';
+  const reservationNeedsRefresh = properties.reserve.isError && !verificationRequired;
+  const quoteNeedsRefresh = quoteExpired || properties.quote.isError || reservationNeedsRefresh;
+  const validQuote = Boolean(quoteData && !quoteNeedsRefresh);
+  const tripValid =
+    properties.datesExplicit && properties.returnAt > properties.pickup && fulfillmentValid;
+  const requestCurrentQuote = () => {
+    properties.reserve.reset();
+    properties.continueBooking.reset();
+    properties.quote.mutate(fulfillmentInput());
+  };
+  const resetUnheldQuote = () => {
+    if (properties.reserve.data) return;
+    properties.quote.reset();
+    properties.reserve.reset();
+    properties.continueBooking.reset();
+  };
+  const openTripConfiguration = () => {
+    setDraftPickup(properties.pickup);
+    setDraftReturnAt(properties.returnAt);
+    setDraftDatesExplicit(properties.datesExplicit);
+    setDraftStartMethod(startMethod);
+    setDraftEndMethod(endMethod);
+    setDraftSameAsDelivery(sameAsDelivery);
+    setDraftDeliveryLocation(deliveryLocation);
+    setDraftCollectionLocation(collectionLocation);
+    setTripCalendarOpen(false);
+    setPicker(null);
+    setTripOpen(true);
+  };
+  const closeTripConfiguration = () => {
+    setPicker(null);
+    setTripCalendarOpen(false);
+    setTripOpen(false);
+  };
+  const draftFulfillmentValid =
+    (draftStartMethod !== 'OWNER_DELIVERY' || Boolean(draftDeliveryLocation)) &&
+    (draftEndMethod !== 'OWNER_COLLECTION' ||
+      (draftStartMethod === 'OWNER_DELIVERY' && draftSameAsDelivery) ||
+      Boolean(draftCollectionLocation));
+  const draftTripValid = draftDatesExplicit && draftReturnAt > draftPickup && draftFulfillmentValid;
+  const draftChargeableDays = chargeableDays(draftPickup, draftReturnAt);
+  const draftDiscountMessage = draftDatesExplicit
+    ? durationDiscountMessage(draftChargeableDays, durationDiscounts)
+    : 'Longer-trip discounts available.';
+  const saveTripConfiguration = () => {
+    if (!draftTripValid) return;
+    const criteriaChanged =
+      draftPickup.getTime() !== properties.pickup.getTime() ||
+      draftReturnAt.getTime() !== properties.returnAt.getTime() ||
+      draftDatesExplicit !== properties.datesExplicit ||
+      draftStartMethod !== startMethod ||
+      draftEndMethod !== endMethod ||
+      draftSameAsDelivery !== sameAsDelivery ||
+      JSON.stringify(draftDeliveryLocation) !== JSON.stringify(deliveryLocation) ||
+      JSON.stringify(draftCollectionLocation) !== JSON.stringify(collectionLocation);
+    if (criteriaChanged || !properties.datesExplicit) resetUnheldQuote();
+    properties.setPickup(draftPickup);
+    properties.setReturnAt(draftReturnAt);
+    setStartMethod(draftStartMethod);
+    setEndMethod(draftEndMethod);
+    setSameAsDelivery(draftSameAsDelivery);
+    setDeliveryLocation(draftDeliveryLocation);
+    setCollectionLocation(draftCollectionLocation);
+    closeTripConfiguration();
+  };
+  const bookingBarAction = properties.reserve.data
+    ? {
+        disabled: properties.continueBooking.isPending,
+        label: properties.continueBooking.isPending ? 'Securing payment…' : 'Authorize payment',
+        onPress: () => properties.continueBooking.mutate(properties.reserve.data!.publicReference),
+      }
+    : properties.quote.isPending
+      ? { disabled: true, label: 'Checking price…', onPress: requestCurrentQuote }
+      : !properties.datesExplicit
+        ? { disabled: false, label: 'Select trip', onPress: openTripConfiguration }
+        : properties.reserve.isPending
+          ? {
+              disabled: true,
+              label: 'Reserving…',
+              onPress: () => undefined,
+            }
+          : validQuote && quoteData
+            ? {
+                disabled: false,
+                label: 'Reserve car',
+                onPress: () => properties.reserve.mutate(quoteData.id),
+              }
+            : {
+                disabled: !tripValid,
+                label: quoteNeedsRefresh ? 'Check current price' : 'Check price',
+                onPress: requestCurrentQuote,
+              };
+  const bookingBarPrice =
+    (validQuote || properties.reserve.isPending || properties.reserve.data) && quoteData
+      ? {
+          context: 'Authoritative quoted total',
+          label: money(quoteData.totalMinor, quoteData.currency),
+          suffix: 'total',
+        }
+      : {
+          context: 'Advisory daily price',
+          label: `From ${money(vehicle.pricing.dailyRateMinor, vehicle.pricing.currency)}`,
+          suffix: 'per day',
+        };
+  const bookingBarTripContext = properties.datesExplicit
+    ? tripDateSummary(properties.pickup, properties.returnAt)
+    : 'Add dates';
+  const bookingBar = (
+    <View style={[styles.bookingBar, { paddingBottom: Math.max(bottomSafeArea, spacing.sm) }]}>
+      <Pressable
+        accessibilityLabel={`${bookingBarPrice.label} ${bookingBarPrice.suffix}. ${bookingBarTripContext}. Edit trip`}
+        accessibilityRole="button"
+        disabled={Boolean(properties.reserve.data)}
+        onPress={openTripConfiguration}
+        style={styles.bookingBarPrice}
+      >
+        <Text accessible={false} style={styles.bookingBarContext}>
+          {bookingBarPrice.context}
+        </Text>
+        <Text accessible={false} numberOfLines={1} style={styles.bookingBarAmount}>
+          {bookingBarPrice.label}
+        </Text>
+        <Text accessible={false} style={styles.bookingBarSuffix}>
+          {bookingBarPrice.suffix} · {bookingBarTripContext}
+        </Text>
+      </Pressable>
+      <View style={styles.bookingBarAction}>
+        <Button
+          disabled={bookingBarAction.disabled}
+          label={bookingBarAction.label}
+          onPress={bookingBarAction.onPress}
+        />
+      </View>
+    </View>
+  );
+  const stickyGalleryHeader = (
+    <View
+      pointerEvents="box-none"
+      style={[styles.detailStickyHeader, { height: stickyHeaderHeight }]}
+    >
+      <Reanimated.View
+        pointerEvents="none"
+        style={[styles.detailStickyHeaderBackground, stickyHeaderStyle]}
+      />
+      <View
+        pointerEvents="box-none"
+        style={[styles.detailStickyControls, { top: topSafeArea + spacing.sm }]}
+      >
+        <View style={styles.detailGalleryControl}>
+          <Pressable
+            accessibilityLabel="Back"
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={properties.onBack}
+            style={styles.detailGalleryControlPressable}
+          >
+            <Icon color={colors.ink} name="arrow-back" size={24} />
+          </Pressable>
+        </View>
+        <View style={styles.detailGalleryControl}>
+          <Pressable
+            accessibilityLabel={vehicle.favorite ? 'Remove from Wishlist' : 'Save to Wishlist'}
+            accessibilityRole="button"
+            accessibilityState={{ selected: vehicle.favorite }}
+            hitSlop={8}
+            onPress={properties.onFavorite}
+            style={styles.detailGalleryControlPressable}
+          >
+            <Icon
+              color={vehicle.favorite ? colors.primary : colors.ink}
+              name={vehicle.favorite ? 'heart' : 'heart-outline'}
+              size={24}
+            />
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
   return (
-    <Screen scrollRef={scrollRef} safeTop={false}>
+    <Screen
+      animatedScroll
+      bottomAccessory={bookingBar}
+      onScroll={onDetailScroll}
+      overlay={stickyGalleryHeader}
+      scrollRef={scrollRef}
+      safeTop={false}
+    >
       <View style={[styles.detailGalleryShell, { height: heroHeight }]}>
         <FlatList
           ref={heroGalleryRef}
@@ -2478,37 +2710,6 @@ function VehicleView(properties: {
           showsHorizontalScrollIndicator={false}
           style={styles.detailGallery}
         />
-        <Pressable
-          accessibilityLabel="Back"
-          accessibilityRole="button"
-          hitSlop={8}
-          onPress={properties.onBack}
-          style={[
-            styles.detailGalleryControl,
-            styles.detailGalleryBack,
-            { top: topSafeArea + spacing.sm },
-          ]}
-        >
-          <Icon color={colors.ink} name="arrow-back" size={24} />
-        </Pressable>
-        <Pressable
-          accessibilityLabel={vehicle.favorite ? 'Remove from Wishlist' : 'Save to Wishlist'}
-          accessibilityRole="button"
-          accessibilityState={{ selected: vehicle.favorite }}
-          hitSlop={8}
-          onPress={properties.onFavorite}
-          style={[
-            styles.detailGalleryControl,
-            styles.detailGalleryFavorite,
-            { top: topSafeArea + spacing.sm },
-          ]}
-        >
-          <Icon
-            color={vehicle.favorite ? colors.primary : colors.ink}
-            name={vehicle.favorite ? 'heart' : 'heart-outline'}
-            size={24}
-          />
-        </Pressable>
         <View pointerEvents="none" style={styles.detailGalleryIndicator}>
           <Text style={styles.galleryIndicatorText}>
             {galleryIndex + 1} / {galleryPhotos.length}
@@ -2615,12 +2816,6 @@ function VehicleView(properties: {
           ))}
         </View>
       </View>
-      <View style={styles.priceLine}>
-        <Text style={styles.detailPrice}>
-          {money(vehicle.pricing.dailyRateMinor, vehicle.pricing.currency)}
-        </Text>
-        <Text style={styles.perDay}> per day</Text>
-      </View>
       {durationDiscounts.length > 0 && (
         <Card style={styles.discountCard}>
           <View style={styles.discountHeading}>
@@ -2648,168 +2843,222 @@ function VehicleView(properties: {
           )}
         </Card>
       )}
-      <Card style={styles.tripCard}>
-        <SectionHeader title="Your trip" />
-        <View style={styles.dateGrid}>
-          <DateTimeField
-            label="Pickup"
-            value={properties.pickup}
-            minimumDate={new Date()}
-            onChange={properties.setPickup}
-          />
-          <DateTimeField
-            label="Return"
-            value={properties.returnAt}
-            minimumDate={properties.pickup}
-            onChange={properties.setReturnAt}
-          />
-        </View>
-        <SectionHeader
-          title={
-            vehicle.fulfillment.renterPickupAvailable && vehicle.fulfillment.ownerDeliveryAvailable
-              ? 'How would you like to receive the car?'
-              : "How you'll receive the car"
+      <Modal
+        animationType="slide"
+        onRequestClose={closeTripConfiguration}
+        presentationStyle="pageSheet"
+        visible={tripOpen}
+      >
+        <Screen
+          bottomAccessory={
+            <View
+              style={[styles.tripSheetBar, { paddingBottom: Math.max(bottomSafeArea, spacing.sm) }]}
+            >
+              <View accessible accessibilityLabel="Advisory daily price" style={styles.flex}>
+                <Text style={styles.bookingBarContext}>Advisory daily price</Text>
+                <Text style={styles.bookingBarAmount}>
+                  {money(vehicle.pricing.dailyRateMinor, vehicle.pricing.currency)} / day
+                </Text>
+              </View>
+              <View style={styles.bookingBarAction}>
+                <Button disabled={!draftTripValid} label="Save" onPress={saveTripConfiguration} />
+              </View>
+            </View>
           }
-        />
-        {vehicle.fulfillment.renterPickupAvailable !==
-        vehicle.fulfillment.ownerDeliveryAvailable ? (
-          <View style={styles.handoverStatic}>
-            <Text style={styles.handoverStaticTitle}>
-              {vehicle.fulfillment.renterPickupAvailable ? 'Pickup only' : 'Delivery only'}
-            </Text>
-            <Text style={styles.note}>
-              {vehicle.fulfillment.renterPickupAvailable
-                ? "You'll pick up the vehicle at the owner's agreed pickup location."
-                : 'The owner will deliver the vehicle to your selected location.'}
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.quickRow}>
-            {vehicle.fulfillment.renterPickupAvailable && (
-              <Chip
-                label="Pick up the car"
-                selected={startMethod === 'RENTER_PICKUP'}
-                onPress={() => {
-                  setStartMethod('RENTER_PICKUP');
-                  properties.quote.reset();
-                }}
-              />
-            )}
-            {vehicle.fulfillment.ownerDeliveryAvailable && (
-              <Chip
-                label="Have it delivered"
-                selected={startMethod === 'OWNER_DELIVERY'}
-                onPress={() => {
-                  setStartMethod('OWNER_DELIVERY');
-                  properties.quote.reset();
-                }}
-              />
-            )}
-          </View>
-        )}
-        {startMethod === 'OWNER_DELIVERY' && (
-          <ConfirmedLocationCard
-            kind="delivery"
-            location={deliveryLocation}
-            onChange={() => setPicker('delivery')}
-          />
-        )}
-        <SectionHeader
-          title={
-            vehicle.fulfillment.renterReturnAvailable &&
-            vehicle.fulfillment.ownerCollectionAvailable
-              ? 'How would you like to return the car?'
-              : "How you'll return the car"
-          }
-        />
-        {vehicle.fulfillment.renterReturnAvailable !==
-        vehicle.fulfillment.ownerCollectionAvailable ? (
-          <View style={styles.handoverStatic}>
-            <Text style={styles.handoverStaticTitle}>
-              {vehicle.fulfillment.renterReturnAvailable ? 'Return to owner' : 'Owner collection'}
-            </Text>
-            <Text style={styles.note}>
-              {vehicle.fulfillment.renterReturnAvailable
-                ? "You'll return the vehicle to the agreed return location."
-                : 'The owner will collect the vehicle from your selected location.'}
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.quickRow}>
-            {vehicle.fulfillment.renterReturnAvailable && (
-              <Chip
-                label="Return it yourself"
-                selected={endMethod === 'RENTER_RETURN'}
-                onPress={() => {
-                  setEndMethod('RENTER_RETURN');
-                  properties.quote.reset();
-                }}
-              />
-            )}
-            {vehicle.fulfillment.ownerCollectionAvailable && (
-              <Chip
-                label="Have the owner collect it"
-                selected={endMethod === 'OWNER_COLLECTION'}
-                onPress={() => {
-                  setEndMethod('OWNER_COLLECTION');
-                  properties.quote.reset();
-                }}
-              />
-            )}
-          </View>
-        )}
-        {endMethod === 'OWNER_COLLECTION' && startMethod === 'OWNER_DELIVERY' && (
-          <Pressable
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: sameAsDelivery }}
-            onPress={() => {
-              setSameAsDelivery(!sameAsDelivery);
-              if (sameAsDelivery) setCollectionLocation(undefined);
-              properties.quote.reset();
-            }}
-            style={styles.locationRow}
-          >
-            <Icon
-              color={colors.primary}
-              name={sameAsDelivery ? 'checkbox' : 'square-outline'}
-              size={22}
+          leading={<BackControl label="Close" onPress={closeTripConfiguration} />}
+          title="Your trip"
+        >
+          <Text style={styles.sectionCopy}>
+            Review your dates, times, and handover details. Saving does not request a price.
+          </Text>
+          <View style={styles.tripDateRange}>
+            <View style={styles.flex}>
+              <Text style={styles.smallLabel}>Trip dates</Text>
+              <Text style={styles.tripDateRangeValue}>
+                {draftDatesExplicit ? tripDateSummary(draftPickup, draftReturnAt) : 'Add dates'}
+              </Text>
+            </View>
+            <Button
+              compact
+              label={draftDatesExplicit ? 'Change dates' : 'Add dates'}
+              onPress={() => setTripCalendarOpen(true)}
+              variant="secondary"
             />
-            <Text style={styles.body}>Same as delivery location</Text>
-          </Pressable>
-        )}
-        {endMethod === 'OWNER_COLLECTION' &&
-          !(startMethod === 'OWNER_DELIVERY' && sameAsDelivery) && (
+          </View>
+          {durationDiscounts.length > 0 && draftDiscountMessage && (
+            <View style={styles.tripDurationHint}>
+              <Icon color={colors.primaryDark} name="sparkles-outline" size={17} />
+              <View style={styles.flex}>
+                {draftDatesExplicit && (
+                  <Text style={styles.tripDurationDays}>
+                    {draftChargeableDays} chargeable day{draftChargeableDays === 1 ? '' : 's'}
+                  </Text>
+                )}
+                <Text style={styles.tripDurationCopy}>{draftDiscountMessage}</Text>
+                <Text style={styles.tripDurationAdvisory}>
+                  Published policy only. Check price for the authoritative discount and total.
+                </Text>
+              </View>
+            </View>
+          )}
+          <View style={styles.dateGrid}>
+            <DateTimeField
+              dismissLabel="Close"
+              label="Pickup time"
+              mode="time"
+              value={draftPickup}
+              onChange={setDraftPickup}
+            />
+            <DateTimeField
+              dismissLabel="Close"
+              label="Return time"
+              mode="time"
+              value={draftReturnAt}
+              onChange={setDraftReturnAt}
+            />
+          </View>
+          <Modal
+            animationType="slide"
+            onRequestClose={() => setTripCalendarOpen(false)}
+            presentationStyle="pageSheet"
+            visible={tripCalendarOpen}
+          >
+            <Screen
+              leading={<BackControl label="Close" onPress={() => setTripCalendarOpen(false)} />}
+              title="Trip dates"
+            >
+              <TripDateCalendar
+                appliedEnd={draftReturnAt}
+                appliedStart={draftPickup}
+                preselect={draftDatesExplicit}
+                onApply={(start, end) => {
+                  const nextPickup = new Date(start);
+                  const nextReturnAt = new Date(end);
+                  nextPickup.setHours(draftPickup.getHours(), draftPickup.getMinutes(), 0, 0);
+                  nextReturnAt.setHours(draftReturnAt.getHours(), draftReturnAt.getMinutes(), 0, 0);
+                  setDraftPickup(nextPickup);
+                  setDraftReturnAt(nextReturnAt);
+                  setDraftDatesExplicit(true);
+                  setTripCalendarOpen(false);
+                }}
+                onClear={() => {
+                  setDraftDatesExplicit(false);
+                  setTripCalendarOpen(false);
+                }}
+              />
+            </Screen>
+          </Modal>
+          <SectionHeader title="Pickup method" />
+          {vehicle.fulfillment.renterPickupAvailable !==
+          vehicle.fulfillment.ownerDeliveryAvailable ? (
+            <View style={styles.handoverStatic}>
+              <Text style={styles.handoverStaticTitle}>
+                {vehicle.fulfillment.renterPickupAvailable ? 'Pickup only' : 'Delivery only'}
+              </Text>
+              <Text style={styles.note}>
+                {vehicle.fulfillment.renterPickupAvailable
+                  ? "You'll pick up the vehicle at the owner's agreed pickup location."
+                  : 'The owner will deliver the vehicle to your selected location.'}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.quickRow}>
+              {vehicle.fulfillment.renterPickupAvailable && (
+                <Chip
+                  label="Pick up the car"
+                  selected={draftStartMethod === 'RENTER_PICKUP'}
+                  onPress={() => setDraftStartMethod('RENTER_PICKUP')}
+                />
+              )}
+              {vehicle.fulfillment.ownerDeliveryAvailable && (
+                <Chip
+                  label="Have it delivered"
+                  selected={draftStartMethod === 'OWNER_DELIVERY'}
+                  onPress={() => setDraftStartMethod('OWNER_DELIVERY')}
+                />
+              )}
+            </View>
+          )}
+          {draftStartMethod === 'OWNER_DELIVERY' && (
             <ConfirmedLocationCard
-              kind="collection"
-              location={collectionLocation}
-              onChange={() => setPicker('collection')}
+              kind="delivery"
+              location={draftDeliveryLocation}
+              onChange={() => setPicker('delivery')}
             />
           )}
-        {picker && (
-          <LocationPicker
-            visible
-            kind={picker}
-            initial={picker === 'collection' ? collectionLocation : deliveryLocation}
-            onCancel={() => setPicker(null)}
-            onConfirm={(location) => {
-              if (picker === 'delivery') setDeliveryLocation(location);
-              else setCollectionLocation(location);
-              properties.quote.reset();
-              setPicker(null);
-            }}
-          />
-        )}
-        <Text style={styles.quoteNote}>Checking the price does not reserve this car.</Text>
-        <Button
-          disabled={
-            properties.quote.isPending ||
-            properties.returnAt <= properties.pickup ||
-            !fulfillmentValid
-          }
-          label={properties.quote.isPending ? 'Checking price…' : 'Check price'}
-          onPress={() => properties.quote.mutate(fulfillmentInput())}
-        />
-      </Card>
+          <SectionHeader title="Return method" />
+          {vehicle.fulfillment.renterReturnAvailable !==
+          vehicle.fulfillment.ownerCollectionAvailable ? (
+            <View style={styles.handoverStatic}>
+              <Text style={styles.handoverStaticTitle}>
+                {vehicle.fulfillment.renterReturnAvailable ? 'Return to owner' : 'Owner collection'}
+              </Text>
+              <Text style={styles.note}>
+                {vehicle.fulfillment.renterReturnAvailable
+                  ? "You'll return the vehicle to the agreed return location."
+                  : 'The owner will collect the vehicle from your selected location.'}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.quickRow}>
+              {vehicle.fulfillment.renterReturnAvailable && (
+                <Chip
+                  label="Return it yourself"
+                  selected={draftEndMethod === 'RENTER_RETURN'}
+                  onPress={() => setDraftEndMethod('RENTER_RETURN')}
+                />
+              )}
+              {vehicle.fulfillment.ownerCollectionAvailable && (
+                <Chip
+                  label="Have the owner collect it"
+                  selected={draftEndMethod === 'OWNER_COLLECTION'}
+                  onPress={() => setDraftEndMethod('OWNER_COLLECTION')}
+                />
+              )}
+            </View>
+          )}
+          {draftEndMethod === 'OWNER_COLLECTION' && draftStartMethod === 'OWNER_DELIVERY' && (
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: draftSameAsDelivery }}
+              onPress={() => {
+                setDraftSameAsDelivery(!draftSameAsDelivery);
+                if (draftSameAsDelivery) setDraftCollectionLocation(undefined);
+              }}
+              style={styles.locationRow}
+            >
+              <Icon
+                color={colors.primary}
+                name={draftSameAsDelivery ? 'checkbox' : 'square-outline'}
+                size={22}
+              />
+              <Text style={styles.body}>Same as delivery location</Text>
+            </Pressable>
+          )}
+          {draftEndMethod === 'OWNER_COLLECTION' &&
+            !(draftStartMethod === 'OWNER_DELIVERY' && draftSameAsDelivery) && (
+              <ConfirmedLocationCard
+                kind="collection"
+                location={draftCollectionLocation}
+                onChange={() => setPicker('collection')}
+              />
+            )}
+          {picker && (
+            <LocationPicker
+              dismissLabel="Close"
+              visible
+              kind={picker}
+              initial={picker === 'collection' ? draftCollectionLocation : draftDeliveryLocation}
+              onCancel={() => setPicker(null)}
+              onConfirm={(location) => {
+                if (picker === 'delivery') setDraftDeliveryLocation(location);
+                else setDraftCollectionLocation(location);
+                setPicker(null);
+              }}
+            />
+          )}
+        </Screen>
+      </Modal>
       {properties.quote.isError && (
         <StateView
           icon="alert-circle-outline"
@@ -2826,23 +3075,19 @@ function VehicleView(properties: {
             requestAnimationFrame(() =>
               scrollRef.current?.scrollTo({
                 animated: true,
-                y: Math.max(0, quotePosition.current - spacing.sm),
+                y: Math.max(0, quotePosition.current - stickyHeaderHeight - spacing.sm),
               }),
             );
           }}
         >
           <QuoteCard
+            current={!quoteNeedsRefresh || Boolean(properties.reserve.data)}
             quote={quoteData}
             vehicle={vehicle}
             pickup={properties.pickup}
             returnAt={properties.returnAt}
             reserve={properties.reserve}
             continueBooking={properties.continueBooking}
-            onRefreshQuote={() => {
-              properties.reserve.reset();
-              properties.continueBooking.reset();
-              properties.quote.mutate(fulfillmentInput());
-            }}
           />
         </View>
       )}
@@ -2994,24 +3239,34 @@ function VehicleView(properties: {
 }
 
 function QuoteCard({
+  current,
   quote,
   vehicle,
   pickup,
   returnAt,
   reserve,
   continueBooking,
-  onRefreshQuote,
 }: {
+  readonly current: boolean;
   readonly quote: Quote;
   readonly vehicle: VehicleDetail;
   readonly pickup: Date;
   readonly returnAt: Date;
   readonly reserve: ReturnType<typeof useMutation<BookingView, Error, string>>;
   readonly continueBooking: ReturnType<typeof useMutation<PaymentSetupResult, Error, string>>;
-  readonly onRefreshQuote: () => void;
 }) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const expiryTime = timeLabel(quote.expiresAt);
+  if (!current && !reserve.data)
+    return (
+      <Card style={styles.quoteCard}>
+        <SectionHeader title="Price needs refreshing" />
+        <Text style={styles.body}>
+          This quote is no longer current. Check the current price to confirm availability,
+          fulfillment, and the authoritative trip total again.
+        </Text>
+      </Card>
+    );
   return (
     <Card style={styles.quoteCard}>
       <SectionHeader title="Price summary" />
@@ -3052,13 +3307,6 @@ function QuoteCard({
       <Text style={styles.note}>
         Price confirmed until {expiryTime}. Checking the price does not reserve this car.
       </Text>
-      {!reserve.data && (
-        <Button
-          disabled={reserve.isPending}
-          label={reserve.isPending ? 'Reserving…' : 'Reserve car'}
-          onPress={() => reserve.mutate(quote.id)}
-        />
-      )}
       {reserve.isError && (
         <View style={styles.hold}>
           <Text style={styles.error}>{reserve.error.message}</Text>
@@ -3079,7 +3327,6 @@ function QuoteCard({
               <Text style={styles.note}>
                 Quotes expire and availability can change before reservation.
               </Text>
-              <Button label="Check current price" onPress={onRefreshQuote} variant="secondary" />
             </>
           )}
         </View>
@@ -3093,11 +3340,6 @@ function QuoteCard({
               ? `Complete payment setup by ${dateTimeLabel(reserve.data.holdExpiresAt)}.`
               : 'Complete payment setup soon.'}
           </Text>
-          <Button
-            disabled={continueBooking.isPending}
-            label={continueBooking.isPending ? 'Securing payment…' : 'Authorize payment'}
-            onPress={() => continueBooking.mutate(reserve.data!.publicReference)}
-          />
           {continueBooking.isError && (
             <Text style={styles.error}>{continueBooking.error.message}</Text>
           )}
@@ -3250,7 +3492,6 @@ function LocationSheet({
   onClearError,
   onCurrent,
   onSearch,
-  onContinue,
   error,
 }: {
   readonly open: boolean;
@@ -3263,7 +3504,6 @@ function LocationSheet({
   readonly onClearError: () => void;
   readonly onCurrent: () => Promise<SearchLocation | null>;
   readonly onSearch: (draft: SearchDraft) => void;
-  readonly onContinue: (draft: SearchDraft) => void;
   readonly error: string;
 }) {
   const [whereExpanded, setWhereExpanded] = useState(true);
@@ -3535,18 +3775,6 @@ function LocationSheet({
               Discovery uses 9:00 AM search assumptions for both dates. Final handover times are
               confirmed later.
             </Text>
-            <Button
-              label="Continue with exact times"
-              onPress={() =>
-                onContinue({
-                  datesExplicit: draftDatesEstablished,
-                  end: draftEnd,
-                  place: draftSelected,
-                  start: draftStart,
-                })
-              }
-              variant="ghost"
-            />
           </Card>
         ) : !whereExpanded && draftDatesEstablished ? (
           <Pressable
@@ -3591,18 +3819,6 @@ function LocationSheet({
                 Select and apply trip dates to search.
               </Text>
             ) : null}
-            <Button
-              label="Continue with exact times"
-              onPress={() =>
-                onContinue({
-                  datesExplicit: draftDatesEstablished,
-                  end: draftEnd,
-                  place: draftSelected,
-                  start: draftStart,
-                })
-              }
-              variant="ghost"
-            />
           </>
         ) : null}
       </Screen>
@@ -3774,6 +3990,25 @@ function noticeLabel(minutes: number) {
 }
 
 const styles = StyleSheet.create({
+  bookingBar: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    shadowColor: '#000',
+    shadowOffset: { height: -2, width: 0 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+  },
+  bookingBarAction: { flex: 1, minWidth: 0 },
+  bookingBarAmount: { color: colors.ink, fontSize: 18, fontWeight: '900' },
+  bookingBarContext: { color: colors.subtleText, fontSize: 10, fontWeight: '700' },
+  bookingBarPrice: { flexShrink: 1, minWidth: 112 },
+  bookingBarSuffix: { color: colors.subtleText, fontSize: 11 },
   recoveryAlert: {
     alignItems: 'center',
     backgroundColor: colors.warningSoft,
@@ -3833,7 +4068,6 @@ const styles = StyleSheet.create({
   dateSummaryText: { color: colors.primaryDark, flex: 1, fontSize: 12, fontWeight: '700' },
   description: { color: colors.subtleText, fontSize: 15, lineHeight: 24 },
   detailGallery: { flex: 1 },
-  detailGalleryBack: { left: spacing.md },
   detailGalleryControl: {
     alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.94)',
@@ -3842,14 +4076,18 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     height: 48,
     justifyContent: 'center',
-    position: 'absolute',
     shadowColor: '#000',
     shadowOffset: { height: 2, width: 0 },
     shadowOpacity: 0.16,
     shadowRadius: 5,
     width: 48,
   },
-  detailGalleryFavorite: { right: spacing.md },
+  detailGalleryControlPressable: {
+    alignItems: 'center',
+    height: 48,
+    justifyContent: 'center',
+    width: 48,
+  },
   detailGalleryIndicator: {
     alignItems: 'flex-end',
     bottom: spacing.sm,
@@ -3861,8 +4099,26 @@ const styles = StyleSheet.create({
     marginTop: -spacing.lg,
     position: 'relative',
   },
+  detailStickyControls: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    position: 'absolute',
+    left: spacing.md,
+    right: spacing.md,
+    zIndex: 1,
+  },
+  detailStickyHeader: {
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 20,
+  },
+  detailStickyHeaderBackground: {
+    ...StyleSheet.absoluteFillObject,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   detailHeroInformation: { gap: spacing.xs, paddingTop: spacing.md },
-  detailPrice: { color: colors.ink, fontSize: 28, fontWeight: '900' },
   detailRating: {
     alignItems: 'center',
     alignSelf: 'flex-start',
@@ -4151,13 +4407,6 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   handoverStaticTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
-  quoteNote: {
-    color: colors.subtleText,
-    fontSize: 12,
-    lineHeight: 18,
-    marginBottom: spacing.xs,
-    marginTop: spacing.xs,
-  },
   ownerAvatar: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
@@ -4167,9 +4416,7 @@ const styles = StyleSheet.create({
     width: 46,
   },
   ownerCard: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
-  perDay: { color: colors.subtleText, fontSize: 11 },
   priceBox: { alignItems: 'flex-end', maxWidth: '35%' },
-  priceLine: { alignItems: 'baseline', flexDirection: 'row' },
   quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   quoteCard: { gap: spacing.sm },
   resultList: { gap: spacing.md, paddingBottom: 100, paddingHorizontal: spacing.md },
@@ -4327,7 +4574,39 @@ const styles = StyleSheet.create({
   },
   searchCollapsedValue: { color: colors.ink, fontSize: 17, fontWeight: '900', marginTop: 3 },
   searchEdit: { color: colors.primary, fontSize: 14, fontWeight: '800' },
-  tripCard: { gap: spacing.sm },
+  tripSheetBar: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  tripDateRange: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.md,
+    minHeight: 64,
+    padding: spacing.md,
+  },
+  tripDateRangeValue: { color: colors.ink, fontSize: 17, fontWeight: '800', marginTop: 2 },
+  tripDurationAdvisory: { color: colors.subtleText, fontSize: 11, marginTop: 2 },
+  tripDurationCopy: { color: colors.primaryDark, fontSize: 13, lineHeight: 18 },
+  tripDurationDays: { color: colors.ink, fontSize: 13, fontWeight: '800', marginBottom: 2 },
+  tripDurationHint: {
+    alignItems: 'flex-start',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.md,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    padding: spacing.sm,
+  },
   total: { color: colors.ink, fontSize: 24, fontWeight: '900' },
   totalLabel: { color: colors.ink, fontSize: 17, fontWeight: '800' },
   totalLine: {

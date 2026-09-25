@@ -39,6 +39,7 @@ export function LocationPicker({
   mapAccessibilityLabel,
   mapGuidance,
   allowCurrentLocation = true,
+  dismissLabel = 'Cancel location selection',
   onCancel,
   onConfirm,
   provider = bookingLocationProvider,
@@ -52,6 +53,7 @@ export function LocationPicker({
   readonly mapAccessibilityLabel?: string;
   readonly mapGuidance?: string;
   readonly allowCurrentLocation?: boolean;
+  readonly dismissLabel?: string;
   readonly onCancel: () => void;
   readonly onConfirm: (location: CarShareLocation) => void;
   readonly provider?: BookingLocationProvider;
@@ -176,7 +178,7 @@ export function LocationPicker({
   return (
     <Modal animationType="slide" onRequestClose={onCancel} visible={visible}>
       <View style={styles.screen}>
-        <BackControl label="Cancel location selection" onPress={onCancel} />
+        <BackControl label={dismissLabel} onPress={onCancel} />
         <Text accessibilityRole="header" style={styles.title}>
           {title ??
             (kind === 'delivery'

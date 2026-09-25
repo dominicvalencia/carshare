@@ -11,12 +11,16 @@ export function DateTimeField({
   onChange,
   minimumDate,
   maximumDate,
+  mode = 'dateTime',
+  dismissLabel = 'Cancel',
 }: {
   readonly label: string;
   readonly value: Date;
   readonly onChange: (value: Date) => void;
   readonly minimumDate?: Date;
   readonly maximumDate?: Date;
+  readonly mode?: 'dateTime' | 'time';
+  readonly dismissLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [androidMode, setAndroidMode] = useState<'date' | 'time'>('date');
@@ -24,7 +28,7 @@ export function DateTimeField({
   const show = () => {
     Keyboard.dismiss();
     setDraft(value);
-    setAndroidMode('date');
+    setAndroidMode(mode === 'time' ? 'time' : 'date');
     setOpen(true);
   };
   const androidChange = (event: DateTimePickerEvent, selected?: Date) => {
@@ -32,7 +36,7 @@ export function DateTimeField({
       setOpen(false);
       return;
     }
-    if (androidMode === 'date') {
+    if (mode === 'dateTime' && androidMode === 'date') {
       const next = new Date(selected);
       next.setHours(draft.getHours(), draft.getMinutes(), 0, 0);
       setDraft(next);
@@ -49,15 +53,26 @@ export function DateTimeField({
       <Text style={styles.label}>{label}</Text>
       <Pressable accessibilityRole="button" onPress={show} style={styles.value}>
         <View style={styles.valueCopy}>
-          <Text adjustsFontSizeToFit minimumFontScale={0.78} numberOfLines={1} style={styles.date}>
-            {dateLabel(value)}
-          </Text>
+          {mode === 'dateTime' && (
+            <Text
+              adjustsFontSizeToFit
+              minimumFontScale={0.78}
+              numberOfLines={1}
+              style={styles.date}
+            >
+              {dateLabel(value)}
+            </Text>
+          )}
           <Text numberOfLines={1} style={styles.time}>
             {timeLabel(value)}
           </Text>
         </View>
         <View style={styles.calendarIcon}>
-          <Icon color={colors.primary} name="calendar-outline" size={20} />
+          <Icon
+            color={colors.primary}
+            name={mode === 'time' ? 'time-outline' : 'calendar-outline'}
+            size={20}
+          />
         </View>
       </Pressable>
       {open && Platform.OS === 'android' && (
@@ -79,21 +94,25 @@ export function DateTimeField({
           <View style={styles.modal}>
             <View style={styles.handle} />
             <Text style={styles.modalTitle}>{label}</Text>
-            <Text style={styles.pickerLabel}>Date</Text>
-            <DateTimePicker
-              {...(minimumDate ? { minimumDate } : {})}
-              {...(maximumDate ? { maximumDate } : {})}
-              display="spinner"
-              mode="date"
-              onChange={(_, selected) => {
-                if (!selected) return;
-                const next = new Date(selected);
-                next.setHours(draft.getHours(), draft.getMinutes(), 0, 0);
-                setDraft(next);
-              }}
-              value={draft}
-              themeVariant="light"
-            />
+            {mode === 'dateTime' && (
+              <>
+                <Text style={styles.pickerLabel}>Date</Text>
+                <DateTimePicker
+                  {...(minimumDate ? { minimumDate } : {})}
+                  {...(maximumDate ? { maximumDate } : {})}
+                  display="spinner"
+                  mode="date"
+                  onChange={(_, selected) => {
+                    if (!selected) return;
+                    const next = new Date(selected);
+                    next.setHours(draft.getHours(), draft.getMinutes(), 0, 0);
+                    setDraft(next);
+                  }}
+                  value={draft}
+                  themeVariant="light"
+                />
+              </>
+            )}
             <Text style={styles.pickerLabel}>Time</Text>
             <DateTimePicker
               {...(minimumDate ? { minimumDate } : {})}
@@ -116,7 +135,7 @@ export function DateTimeField({
                 setOpen(false);
               }}
             />
-            <Button label="Cancel" onPress={() => setOpen(false)} variant="ghost" />
+            <Button label={dismissLabel} onPress={() => setOpen(false)} variant="ghost" />
           </View>
         </Modal>
       )}

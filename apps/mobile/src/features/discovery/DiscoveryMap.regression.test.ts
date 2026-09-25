@@ -523,7 +523,9 @@ describe('Task 12E FULL_MAP to SPLIT reveal regression', () => {
     expect(screenSource).toMatch(
       /fullMapGestureDistance\.current >= fullMapGestureThreshold[\s\S]*settleFullMapExit\(\);[\s\S]*else settleFullMap\(1\)/,
     );
-    expect(screenSource).toContain("onFullMapChange?.(mode === 'results' && fullMap)");
+    expect(screenSource).toContain(
+      "isFocused && ((mode === 'results' && fullMap) || detailPresentationActive)",
+    );
   });
 
   it('normalizes canonical SPLIT state only after the reveal animation finishes', () => {
@@ -737,7 +739,9 @@ describe('Task 12F-3 outer Results sheet height regression', () => {
     expect(screenSource).toContain('accessibilityElementsHidden={!fullMap}');
     expect(screenSource).toContain('fullMapListViewportStyle,');
     expect(screenSource).toContain("fullMapListViewport: { flex: 0, overflow: 'hidden' }");
-    expect(screenSource).toContain("onFullMapChange?.(mode === 'results' && fullMap)");
+    expect(screenSource).toContain(
+      "isFocused && ((mode === 'results' && fullMap) || detailPresentationActive)",
+    );
   });
 
   it('returns below-threshold entry to SPLIT and reverses height changes on exit', () => {

@@ -28,6 +28,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Reanimated from 'react-native-reanimated';
 import { colors, radius, shadows, spacing, typography } from '../theme/tokens';
 
 export const formKeyboardDismissMode = Platform.OS === 'android' ? 'none' : 'on-drag';
@@ -68,6 +69,8 @@ export function Icon({
 
 export function Screen({
   children,
+  bottomAccessory,
+  overlay,
   eyebrow,
   title,
   subtitle,
@@ -76,11 +79,15 @@ export function Screen({
   scroll = true,
   scrollRef,
   onScroll,
+  animatedScroll = false,
   onContentSizeChange,
   onScrollLayout,
   constrainOverscroll = false,
   safeTop = true,
 }: ScreenProperties) {
+  const ScrollContainer = (
+    animatedScroll ? Reanimated.ScrollView : ScrollView
+  ) as typeof ScrollView;
   const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding(screenBottomPadding);
   const header = (
     <>
@@ -114,7 +121,7 @@ export function Screen({
           <>
             <View style={styles.stickyNestedHeader}>{header}</View>
             {scroll ? (
-              <ScrollView
+              <ScrollContainer
                 ref={scrollRef}
                 automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
                 alwaysBounceVertical={!constrainOverscroll}
@@ -136,13 +143,13 @@ export function Screen({
                 showsVerticalScrollIndicator={false}
               >
                 {children}
-              </ScrollView>
+              </ScrollContainer>
             ) : (
               <View style={styles.nestedScreenContentFlex}>{children}</View>
             )}
           </>
         ) : scroll ? (
-          <ScrollView
+          <ScrollContainer
             ref={scrollRef}
             automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
             alwaysBounceVertical={!constrainOverscroll}
@@ -164,17 +171,21 @@ export function Screen({
             showsVerticalScrollIndicator={false}
           >
             {content}
-          </ScrollView>
+          </ScrollContainer>
         ) : (
           <View style={styles.screenContentFlex}>{content}</View>
         )}
       </KeyboardAvoidingView>
+      {overlay}
+      {bottomAccessory}
     </SafeAreaView>
   );
 }
 
 interface ScreenProperties {
   readonly children: ReactNode;
+  readonly bottomAccessory?: ReactNode | undefined;
+  readonly overlay?: ReactNode | undefined;
   readonly eyebrow?: string | undefined;
   readonly title?: string | undefined;
   readonly subtitle?: string | undefined;
@@ -183,6 +194,7 @@ interface ScreenProperties {
   readonly scroll?: boolean | undefined;
   readonly scrollRef?: RefObject<ScrollView | null> | undefined;
   readonly onScroll?: ((event: NativeSyntheticEvent<NativeScrollEvent>) => void) | undefined;
+  readonly animatedScroll?: boolean | undefined;
   readonly onContentSizeChange?: ((width: number, height: number) => void) | undefined;
   readonly onScrollLayout?: ((event: LayoutChangeEvent) => void) | undefined;
   readonly constrainOverscroll?: boolean | undefined;

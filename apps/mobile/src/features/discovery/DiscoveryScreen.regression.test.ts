@@ -36,12 +36,9 @@ describe('vehicle-detail responsive regression', () => {
     expect(categories).toBeGreaterThan(startSearch);
     expect(section).toBeGreaterThan(categories);
     expect(searchCard).toBeGreaterThan(startSearch);
-    expect(source).toContain('const [exploreSearchOpen, setExploreSearchOpen] = useState(false)');
-    expect(source).toContain('{(!home || exploreSearchOpen) && (');
     expect(source).toContain('function openExploreSearch()');
     expect(source).toMatch(/function openExploreSearch\(\) \{\s*setLocationOpen\(true\)/);
-    expect(source).toContain('function openLegacySearch(draft?: SearchDraft)');
-    expect(source).toContain('setExploreSearchOpen(true)');
+    expect(source).not.toContain('function openLegacySearch');
   });
 
   it('keeps the category row and content-width chips compact without stretch', () => {
@@ -101,7 +98,7 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('Edit discovery location');
     expect(source).toContain('When');
     expect(source).toContain('Add trip dates');
-    expect(source).toContain('label="Continue with exact times"');
+    expect(source).not.toContain('label="Continue with exact times"');
     expect(source).toMatch(/It stays selected until a replacement is\s*confirmed\./);
   });
 
@@ -120,6 +117,19 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('Select and apply trip dates to search.');
     expect(source).toContain('start: pickup.toISOString()');
     expect(source).toContain('end: returnAt.toISOString()');
+  });
+
+  it('keeps Search limited to location and the trip date range', () => {
+    const searchSheet = source.slice(
+      source.indexOf('function LocationSheet'),
+      source.indexOf('type FilterProperties'),
+    );
+    expect(searchSheet).toContain('<TripDateCalendar');
+    expect(searchSheet).toContain('Select your trip dates');
+    expect(searchSheet).not.toContain('<DateTimeField');
+    expect(searchSheet).not.toContain('Pickup preference');
+    expect(searchSheet).not.toContain('Return preference');
+    expect(searchSheet).not.toContain('<LocationPicker');
   });
 
   it('keeps sheet edits draft-only until the existing search authority applies them', () => {
@@ -360,7 +370,7 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('Save more on longer trips');
     expect(source).toContain('Discount is applied automatically when your rental dates qualify.');
     expect(source.indexOf('Save more on longer trips')).toBeLessThan(
-      source.indexOf('<SectionHeader title="Your trip" />'),
+      source.indexOf('title="Your trip"'),
     );
     expect(source).not.toContain('policyVersionId');
   });

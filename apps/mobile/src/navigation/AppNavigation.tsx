@@ -135,16 +135,20 @@ function RenterNavigation({
 }: Pick<AppNavigationProperties, 'onModeChange' | 'ownerCapable' | 'ownerStatus'>) {
   const badges = useBadges('renter');
   const insets = useSafeAreaInsets();
-  const [fullMap, setFullMap] = useState(false);
+  const [renterTabsHidden, setRenterTabsHidden] = useState(false);
   return (
     <RenterTabs.Navigator
       screenOptions={({ route }) => {
         const options = tabOptions(renterIcons[route.name], insets.bottom);
-        if (route.name !== 'Home') return options;
-        const homeTabBarStyle = { ...options.tabBarStyle, position: 'absolute' as const };
+        const tabBarStyle =
+          route.name === 'Home'
+            ? { ...options.tabBarStyle, position: 'absolute' as const }
+            : options.tabBarStyle;
         return {
           ...options,
-          tabBarStyle: fullMap ? { ...homeTabBarStyle, display: 'none' as const } : homeTabBarStyle,
+          tabBarStyle: renterTabsHidden
+            ? { ...tabBarStyle, display: 'none' as const }
+            : tabBarStyle,
         };
       }}
     >
@@ -152,14 +156,18 @@ function RenterNavigation({
         name="Home"
         options={{ tabBarAccessibilityLabel: 'Explore tab', tabBarLabel: 'Explore' }}
       >
-        {() => <DiscoveryScreen home onFullMapChange={setFullMap} />}
+        {() => <DiscoveryScreen home onTabBarHiddenChange={setRenterTabsHidden} />}
       </RenterTabs.Screen>
       <RenterTabs.Screen
         name="Wishlist"
         options={{ tabBarAccessibilityLabel: 'Wishlist tab', tabBarLabel: 'Wishlist' }}
       >
         {({ navigation }) => (
-          <DiscoveryScreen initialMode="favorites" onExit={() => navigation.navigate('Home')} />
+          <DiscoveryScreen
+            initialMode="favorites"
+            onExit={() => navigation.navigate('Home')}
+            onTabBarHiddenChange={setRenterTabsHidden}
+          />
         )}
       </RenterTabs.Screen>
       <RenterTabs.Screen

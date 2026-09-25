@@ -32,11 +32,20 @@ describe('compact mobile navigation', () => {
     expect(navigationSource).not.toContain('name="Profile"\n        options=');
   });
 
-  it('hides only the Home renter tab bar while FULL_MAP is authoritative', () => {
-    expect(navigationSource).toContain('const [fullMap, setFullMap] = useState(false)');
-    expect(navigationSource).toContain("if (route.name !== 'Home') return options");
+  it('hides the renter tab bar for full-map Results and Vehicle Detail presentations', () => {
+    expect(navigationSource).toContain(
+      'const [renterTabsHidden, setRenterTabsHidden] = useState(false)',
+    );
     expect(navigationSource).toContain("position: 'absolute' as const");
     expect(navigationSource).toContain("display: 'none' as const");
-    expect(navigationSource).toContain('<DiscoveryScreen home onFullMapChange={setFullMap} />');
+    expect(navigationSource).toMatch(
+      /tabBarStyle: renterTabsHidden[\s\S]*display: 'none' as const[\s\S]*: tabBarStyle/,
+    );
+    expect(navigationSource).toContain(
+      '<DiscoveryScreen home onTabBarHiddenChange={setRenterTabsHidden} />',
+    );
+    expect(navigationSource).toMatch(
+      /initialMode="favorites"[\s\S]*onTabBarHiddenChange=\{setRenterTabsHidden\}/,
+    );
   });
 });

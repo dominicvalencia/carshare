@@ -17,10 +17,10 @@ const owner = readFileSync(
 
 describe('B3 booking fulfillment presentation', () => {
   it('supports all start/end selections and same-as-delivery without client fee authority', () => {
-    expect(discovery).toContain('How would you like to receive the car?');
+    expect(discovery).toContain('title="Pickup method"');
     expect(discovery).toContain('Pick up the car');
     expect(discovery).toContain('Have it delivered');
-    expect(discovery).toContain('How would you like to return the car?');
+    expect(discovery).toContain('title="Return method"');
     expect(discovery).toContain('Have the owner collect it');
     expect(discovery).toContain('Pickup only');
     expect(discovery).toContain('Delivery only');

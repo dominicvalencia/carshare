@@ -11,6 +11,10 @@ const navigationSource = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '../../navigation/AppNavigation.tsx'),
   'utf8',
 );
+const primitivesSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../ui/primitives.tsx'),
+  'utf8',
+);
 
 describe('Task 14B vehicle-detail top', () => {
   const detail = source.slice(
@@ -38,12 +42,40 @@ describe('Task 14B vehicle-detail top', () => {
     );
   });
 
-  it('places accessible Back and Wishlist controls over the hero media', () => {
-    expect(detail).toContain('accessibilityLabel="Back"');
-    expect(detail).toContain('styles.detailGalleryBack');
+  it('keeps one accessible Back and Wishlist pair sticky over Detail', () => {
+    expect(detail.match(/accessibilityLabel="Back"/g)).toHaveLength(1);
+    expect(detail.match(/'Remove from Wishlist' : 'Save to Wishlist'/g)).toHaveLength(1);
+    expect(detail).toContain('overlay={stickyGalleryHeader}');
+    expect(detail).toContain('styles.detailStickyControls');
     expect(detail).toContain("vehicle.favorite ? 'Remove from Wishlist' : 'Save to Wishlist'");
     expect(detail).toContain('accessibilityState={{ selected: vehicle.favorite }}');
     expect(detail).toContain('top: topSafeArea + spacing.sm');
+  });
+
+  it('derives one full-width sticky header background from UI-thread Detail scroll progress', () => {
+    expect(detail).toContain('const detailScrollOffset = useSharedValue(0)');
+    expect(detail).toContain('const onDetailScroll = useAnimatedScrollHandler({');
+    expect(detail).toContain('detailScrollOffset.value = Math.max(0, event.contentOffset.y)');
+    expect(detail).toContain('Extrapolation.CLAMP');
+    expect(detail).toContain('interpolateColor(');
+    expect(detail).toContain("['rgba(255,255,255,0)', 'rgba(255,255,255,1)']");
+    expect(detail).toContain('const stickyHeaderHeight = topSafeArea + 48 + spacing.md');
+    expect(detail).toContain(
+      'const stickyHeaderTransitionDistance = Math.max(1, heroHeight - stickyHeaderHeight)',
+    );
+    expect(detail).toContain('styles.detailStickyHeaderBackground');
+    expect(source).toMatch(/detailStickyHeader:[\s\S]*left: 0,[\s\S]*right: 0,[\s\S]*top: 0/);
+    expect(source).toMatch(
+      /detailGalleryControl:[\s\S]*backgroundColor: 'rgba\(255,255,255,0\.94\)'/,
+    );
+    expect(detail).not.toContain('stickyControlStyle');
+    expect(detail).toContain('animatedScroll');
+    expect(primitivesSource).toMatch(
+      /const ScrollContainer = \(\s*animatedScroll \? Reanimated\.ScrollView : ScrollView\s*\) as typeof ScrollView/,
+    );
+    expect(primitivesSource).toMatch(/<\/KeyboardAvoidingView>\s*\{overlay\}/);
+    expect(detail).toContain('visible={galleryOpen}');
+    expect(detail).toContain('visible={tripOpen}');
   });
 
   it('presents the requested information hierarchy and preserves review navigation', () => {
@@ -58,7 +90,7 @@ describe('Task 14B vehicle-detail top', () => {
     expect(detail).toContain("label: 'Transmission'");
     expect(detail).toContain("label: 'Powertrain'");
     expect(detail.indexOf('style={styles.detailTitle}')).toBeLessThan(
-      detail.indexOf('<SectionHeader title="Your trip" />'),
+      detail.indexOf('title="Your trip"'),
     );
   });
 

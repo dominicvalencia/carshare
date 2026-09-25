@@ -35,8 +35,10 @@ describe('contractual location picker', () => {
   it('keeps point exploration pending until explicit confirmation', () => {
     expect(picker).toContain('onConfirm(pending)');
     expect(picker).toContain('onRegionChangeComplete');
-    expect(booking).toContain('setDeliveryLocation(location)');
-    expect(booking).toContain('setCollectionLocation(location)');
+    expect(booking).toContain('setDraftDeliveryLocation(location)');
+    expect(booking).toContain('setDraftCollectionLocation(location)');
+    expect(booking).toContain('setDeliveryLocation(draftDeliveryLocation)');
+    expect(booking).toContain('setCollectionLocation(draftCollectionLocation)');
   });
   it('reuses the same picker for the owner private vehicle location without raw coordinates', () => {
     expect(vehicles).toContain('<LocationPicker');
