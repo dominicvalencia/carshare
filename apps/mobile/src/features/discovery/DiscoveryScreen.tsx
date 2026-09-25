@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import type { NavigationProp } from '@react-navigation/native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Image } from 'expo-image';
 import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -185,6 +186,7 @@ interface VehicleDetail {
   readonly photos?: readonly (Grant & { id: string })[];
   readonly rating?: Rating;
   readonly owner: {
+    avatar?: Grant | null;
     displayName: string;
     verified: boolean;
     publicReference: string;
@@ -244,6 +246,20 @@ interface QuoteFulfillmentInput {
 interface PaymentSetupResult {
   readonly booking: BookingView;
   readonly customerActionUrl: string | null;
+}
+interface PublicHostSummary {
+  readonly completedRentalCount: number;
+}
+interface PublicReviewPreview {
+  readonly aggregate: { readonly averageRating: string; readonly reviewCount: number };
+  readonly items: readonly {
+    readonly id: string;
+    readonly rating: number;
+    readonly text: string | null;
+    readonly createdAt: string;
+    readonly author: { readonly profile: { readonly firstName: string | null } | null };
+  }[];
+  readonly pageInfo: { readonly hasNextPage: boolean; readonly nextCursor: string | null };
 }
 type SearchLocation = LocationSuggestion & { readonly source?: 'DEVICE' | undefined };
 type ViewMode = 'form' | 'results' | 'detail' | 'favorites' | 'quote';
@@ -2318,6 +2334,7 @@ function VehicleView(properties: {
   const [collectionLocation, setCollectionLocation] = useState<CarShareLocation>();
   const [tripOpen, setTripOpen] = useState(false);
   const [tripCalendarOpen, setTripCalendarOpen] = useState(false);
+  const [featuresOpen, setFeaturesOpen] = useState(false);
   const [draftPickup, setDraftPickup] = useState(properties.pickup);
   const [draftReturnAt, setDraftReturnAt] = useState(properties.returnAt);
   const [draftDatesExplicit, setDraftDatesExplicit] = useState(properties.datesExplicit);
@@ -2328,6 +2345,19 @@ function VehicleView(properties: {
   const [draftCollectionLocation, setDraftCollectionLocation] = useState<CarShareLocation>();
   const [picker, setPicker] = useState<'delivery' | 'collection' | null>(null);
   const quoteData = properties.quote.data;
+  const hostSummary = useQuery({
+    enabled: Boolean(vehicle?.owner.publicReference),
+    queryKey: ['public-host', vehicle?.owner.publicReference],
+    queryFn: () => apiClient.request<PublicHostSummary>(`/hosts/${vehicle!.owner.publicReference}`),
+    staleTime: 30_000,
+  });
+  const reviewPreview = useQuery({
+    enabled: Boolean(vehicle?.vehicleId && vehicle.rating?.reviewCount),
+    queryKey: ['public-review-preview', vehicle?.vehicleId, 2],
+    queryFn: () =>
+      apiClient.request<PublicReviewPreview>(`/vehicles/${vehicle!.vehicleId}/reviews?limit=2`),
+    staleTime: 30_000,
+  });
   const detailScrollOffset = useSharedValue(0);
   const heroHeight = Math.round(Math.min(viewportWidth / (4 / 3), 480));
   const stickyHeaderHeight = topSafeArea + 48 + spacing.md;
@@ -2449,6 +2479,9 @@ function VehicleView(properties: {
     .filter(Boolean)
     .join(' ');
   const reviewTitle = `${vehicle.year ?? ''} ${vehicle.make ?? ''} ${vehicle.model ?? ''}`.trim();
+  const memberSinceYear = vehicle.owner.memberSince
+    ? new Date(vehicle.owner.memberSince).getFullYear()
+    : null;
   const openReviews = () =>
     navigation.navigate('PublicReviews', {
       path: `/vehicles/${vehicle.vehicleId}/reviews`,
@@ -2481,6 +2514,7 @@ function VehicleView(properties: {
       value: domainLabel(vehicle.powertrain ?? vehicle.fuelType),
     },
   ];
+  const visibleFeatures = vehicle.features.slice(0, 6);
   const quoteExpiresAt = quoteData ? Date.parse(quoteData.expiresAt) : Number.NaN;
   const quoteExpired = Boolean(
     quoteData && Number.isFinite(quoteExpiresAt) && quoteExpiresAt <= quoteClock,
@@ -3091,39 +3125,117 @@ function VehicleView(properties: {
           />
         </View>
       )}
-      <SectionHeader title="Features" />
-      <View style={styles.quickRow}>
-        {vehicle.features.length ? (
-          vehicle.features.map((feature) => <Chip key={feature.id} label={feature.name} />)
-        ) : (
-          <Text style={styles.body}>No features listed.</Text>
-        )}
-      </View>
-      <SectionHeader title="Mileage & return policies" />
-      <Card>
-        <Text style={styles.cardTitle}>
-          {vehicle.mileagePolicy.type === 'UNLIMITED'
-            ? 'Unlimited mileage'
-            : `${vehicle.mileagePolicy.includedKilometersPerChargeableDay} km included per rental day`}
-        </Text>
+      {vehicle.description && (
+        <View style={styles.editorialSection}>
+          <SectionHeader title="About this car" />
+          <ExpandableDetailText
+            accessibilityLabel="full About this car description"
+            text={vehicle.description}
+          />
+        </View>
+      )}
+      {vehicle.features.length > 0 && (
+        <View style={styles.editorialSection}>
+          <SectionHeader title="Features" />
+          <View style={styles.featureGrid}>
+            {visibleFeatures.map((feature) => (
+              <View key={feature.id} style={styles.featureItem}>
+                <Icon color={colors.primary} name="checkmark-circle-outline" size={19} />
+                <Text style={styles.featureLabel}>{feature.name}</Text>
+              </View>
+            ))}
+          </View>
+          {vehicle.features.length > visibleFeatures.length && (
+            <Button
+              compact
+              label={`Show all ${vehicle.features.length} features`}
+              onPress={() => setFeaturesOpen(true)}
+              variant="secondary"
+            />
+          )}
+        </View>
+      )}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setFeaturesOpen(false)}
+        presentationStyle="pageSheet"
+        visible={featuresOpen}
+      >
+        <Screen
+          leading={<BackControl label="Close" onPress={() => setFeaturesOpen(false)} />}
+          title="All features"
+          subtitle={`${vehicle.year ?? ''} ${vehicle.make ?? ''} ${vehicle.model ?? ''}`.trim()}
+        >
+          <View style={styles.featureGrid}>
+            {vehicle.features.map((feature) => (
+              <View key={feature.id} style={styles.featureItem}>
+                <Icon color={colors.primary} name="checkmark-circle-outline" size={19} />
+                <Text style={styles.featureLabel}>{feature.name}</Text>
+              </View>
+            ))}
+          </View>
+        </Screen>
+      </Modal>
+      <View style={styles.editorialSection}>
+        <SectionHeader title="Things to know" />
+        <PolicyRow
+          icon="speedometer-outline"
+          title="Mileage"
+          value={
+            vehicle.mileagePolicy.type === 'UNLIMITED'
+              ? 'Unlimited mileage'
+              : `${vehicle.mileagePolicy.includedKilometersPerChargeableDay} km included per rental day`
+          }
+        />
         {typeof vehicle.mileagePolicy.excessKilometerRateMinor === 'number' &&
           vehicle.mileagePolicy.excessKilometerRateMinor > 0 && (
-            <Text style={styles.body}>
-              {money(vehicle.mileagePolicy.excessKilometerRateMinor)} per excess whole kilometer,
-              based on inspection readings.
-            </Text>
+            <PolicyRow
+              icon="add-circle-outline"
+              title="Excess mileage"
+              value={`${money(vehicle.mileagePolicy.excessKilometerRateMinor)} per excess whole kilometer, based on inspection readings`}
+            />
           )}
-        <Text style={styles.body}>
-          {vehicle.powertrain === 'BATTERY_ELECTRIC'
-            ? `Battery return: ${domainLabel(vehicle.returnPolicy?.ev)}`
-            : `Fuel return: ${domainLabel(vehicle.returnPolicy?.fuel)}`}
-        </Text>
-        {typeof vehicle.turnaroundMinutes === 'number' && vehicle.turnaroundMinutes > 0 && (
-          <Text style={styles.note}>
-            The owner allows {vehicle.turnaroundMinutes / 60} hours between rentals for preparation.
-          </Text>
+        {vehicle.powertrain === 'BATTERY_ELECTRIC' &&
+          (vehicle.returnPolicy?.ev ||
+            typeof vehicle.returnPolicy?.evRequiredPercentage === 'number') && (
+            <PolicyRow
+              icon="flash-outline"
+              title="Charging on return"
+              value={[
+                typeof vehicle.returnPolicy?.evRequiredPercentage === 'number'
+                  ? `Return with at least ${vehicle.returnPolicy.evRequiredPercentage}% charge`
+                  : null,
+                vehicle.returnPolicy?.ev ? domainLabel(vehicle.returnPolicy.ev) : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            />
+          )}
+        {vehicle.powertrain !== 'BATTERY_ELECTRIC' && vehicle.returnPolicy?.fuel && (
+          <PolicyRow
+            icon="water-outline"
+            title="Fuel on return"
+            value={domainLabel(vehicle.returnPolicy.fuel)}
+          />
         )}
-      </Card>
+        {typeof vehicle.turnaroundMinutes === 'number' && vehicle.turnaroundMinutes > 0 && (
+          <PolicyRow
+            icon="time-outline"
+            title="Vehicle preparation"
+            value={`${noticeLabel(vehicle.turnaroundMinutes)} between rentals for owner preparation`}
+          />
+        )}
+      </View>
+      {vehicle.rentalRequirements && (
+        <View style={styles.editorialSection}>
+          <SectionHeader title="Rental requirements" />
+          <ExpandableDetailText
+            accessibilityLabel="full rental requirements"
+            compactLength={180}
+            text={vehicle.rentalRequirements}
+          />
+        </View>
+      )}
       <SectionHeader title="Handover options" />
       <Card>
         <Text style={styles.cardTitle}>Start of rental</Text>
@@ -3183,58 +3295,198 @@ function VehicleView(properties: {
           Actual booking total and handover eligibility are confirmed during booking.
         </Text>
       </Card>
-      <SectionHeader title="Your host" />
+      <SectionHeader title="Meet your host" />
       <Pressable
+        accessibilityHint="Opens the public host profile"
+        accessibilityLabel={`View ${vehicle.owner.displayName}'s host profile`}
         accessibilityRole="button"
         onPress={() =>
           navigation.navigate('HostProfile', { hostReference: vehicle.owner.publicReference })
         }
+        style={({ pressed }) => [styles.hostSectionCard, pressed && styles.explorePressed]}
       >
-        <Card style={styles.ownerCard}>
-          <View style={styles.ownerAvatar}>
-            <Icon color={colors.primary} name="person" />
-          </View>
-          <View style={styles.flex}>
-            <View style={styles.row}>
-              <Text style={styles.cardTitle}>{vehicle.owner.displayName}</Text>
-              {vehicle.owner.verified && (
-                <Icon color={colors.primary} name="checkmark-circle" size={18} />
-              )}
+        <View style={styles.hostIdentity}>
+          {vehicle.owner.avatar?.contentPath ? (
+            <Image
+              accessible
+              accessibilityLabel={`${vehicle.owner.displayName}'s profile photo`}
+              contentFit="cover"
+              source={{ uri: apiClient.assetUrl(vehicle.owner.avatar.contentPath) }}
+              style={styles.ownerAvatarImage}
+              transition={180}
+            />
+          ) : (
+            <View
+              accessible
+              accessibilityLabel={`${vehicle.owner.displayName}, profile photo unavailable`}
+              style={styles.ownerAvatar}
+            >
+              <Icon color={colors.primary} name="person" />
             </View>
-            <Text style={styles.body}>
-              {vehicle.owner.rating?.averageRating
-                ? `★ ${vehicle.owner.rating.averageRating} · ${vehicle.owner.rating.reviewCount} reviews`
-                : 'Verified owner · New host'}
-            </Text>
+          )}
+          <View style={styles.flex}>
+            <Text style={styles.hostName}>{vehicle.owner.displayName}</Text>
+            {vehicle.owner.verified && (
+              <View accessibilityLabel="Verified host" style={styles.hostVerified}>
+                <Icon color={colors.primary} name="checkmark-circle" size={17} />
+                <Text style={styles.hostVerifiedText}>Verified</Text>
+              </View>
+            )}
           </View>
-        </Card>
+        </View>
+        <View style={styles.hostMetrics}>
+          {vehicle.owner.rating?.averageRating && (
+            <View style={styles.hostMetric}>
+              <Text style={styles.hostMetricValue}>★ {vehicle.owner.rating.averageRating}</Text>
+              <Text style={styles.hostMetricLabel}>Host rating</Text>
+            </View>
+          )}
+          {vehicle.owner.rating?.averageRating && vehicle.owner.rating.reviewCount > 0 && (
+            <View style={styles.hostMetric}>
+              <Text style={styles.hostMetricValue}>{vehicle.owner.rating.reviewCount}</Text>
+              <Text style={styles.hostMetricLabel}>
+                {vehicle.owner.rating.reviewCount === 1 ? 'Review' : 'Reviews'}
+              </Text>
+            </View>
+          )}
+          {typeof hostSummary.data?.completedRentalCount === 'number' && (
+            <View style={styles.hostMetric}>
+              <Text style={styles.hostMetricValue}>{hostSummary.data.completedRentalCount}</Text>
+              <Text style={styles.hostMetricLabel}>
+                {hostSummary.data.completedRentalCount === 1
+                  ? 'Completed rental'
+                  : 'Completed rentals'}
+              </Text>
+            </View>
+          )}
+          {memberSinceYear && Number.isFinite(memberSinceYear) && (
+            <View style={styles.hostMetric}>
+              <Text style={styles.hostMetricValue}>{memberSinceYear}</Text>
+              <Text style={styles.hostMetricLabel}>Hosting since</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.hostProfileAction}>
+          <Text style={styles.hostProfileActionText}>View host profile</Text>
+          <Icon color={colors.primary} name="chevron-forward" size={18} />
+        </View>
       </Pressable>
-      {vehicle.rating?.reviewCount ? (
-        <Button
-          label={`Read all ${vehicle.rating.reviewCount} vehicle reviews`}
-          onPress={openReviews}
-          variant="secondary"
+      <View style={styles.editorialSection}>
+        <SectionHeader
+          title={
+            vehicle.rating?.averageRating && vehicle.rating.reviewCount > 0
+              ? `★ ${vehicle.rating.averageRating} · ${vehicle.rating.reviewCount} ${vehicle.rating.reviewCount === 1 ? 'review' : 'reviews'}`
+              : 'Reviews'
+          }
         />
-      ) : null}
-      {vehicle.description && (
-        <>
-          <SectionHeader title="About this car" />
-          <Text style={styles.description}>{vehicle.description}</Text>
-        </>
-      )}
-      <SectionHeader title="Booking & cancellation" />
-      <Card>
-        <Text style={styles.cardTitle}>Rental requirements</Text>
-        <Text style={styles.body}>
-          {vehicle.rentalRequirements ??
-            'Bring the verified identity and driving documents required for pickup.'}
-        </Text>
-        <Text style={styles.note}>
-          Cancellation availability and payment consequences are checked against the live booking
-          state. The app asks for confirmation before a request is cancelled.
-        </Text>
-      </Card>
+        {!vehicle.rating?.reviewCount ? (
+          <Text style={styles.body}>No reviews yet</Text>
+        ) : reviewPreview.isPending ? (
+          <Text accessibilityLiveRegion="polite" style={styles.note}>
+            Loading review preview…
+          </Text>
+        ) : reviewPreview.isError ? (
+          <Text accessibilityRole="alert" style={styles.note}>
+            Review preview is unavailable. You can still open all published reviews.
+          </Text>
+        ) : (
+          <View style={styles.reviewPreviewList}>
+            {(reviewPreview.data?.items ?? []).map((review) => {
+              const reviewer = review.author.profile?.firstName ?? 'Guest';
+              return (
+                <View key={review.id} style={styles.reviewPreview}>
+                  <View
+                    accessible
+                    accessibilityLabel={`${reviewer}, rated ${review.rating} out of 5`}
+                    style={styles.reviewPreviewHeader}
+                  >
+                    <Text style={styles.reviewAuthor}>{reviewer}</Text>
+                    <Text style={styles.reviewRating}>Rated {review.rating} out of 5</Text>
+                  </View>
+                  {review.text && (
+                    <ExpandableDetailText
+                      accessibilityLabel={`full review by ${reviewer}`}
+                      compactLength={180}
+                      text={review.text}
+                    />
+                  )}
+                  <Text style={styles.reviewDate}>{dateTimeLabel(review.createdAt)}</Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+        {vehicle.rating?.reviewCount ? (
+          <Button
+            label={
+              vehicle.rating.reviewCount > (reviewPreview.data?.items.length ?? 0)
+                ? `Read all ${vehicle.rating.reviewCount} reviews`
+                : vehicle.rating.reviewCount === 1
+                  ? 'View review'
+                  : `View ${vehicle.rating.reviewCount} reviews`
+            }
+            onPress={openReviews}
+            variant="secondary"
+          />
+        ) : null}
+      </View>
     </Screen>
+  );
+}
+
+function ExpandableDetailText({
+  text,
+  accessibilityLabel,
+  compactLength = 220,
+}: {
+  readonly text: string;
+  readonly accessibilityLabel: string;
+  readonly compactLength?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const expandable = text.trim().length > compactLength;
+  return (
+    <View style={styles.expandableCopy}>
+      <Text numberOfLines={expandable && !expanded ? 4 : undefined} style={styles.description}>
+        {text}
+      </Text>
+      {expandable && (
+        <Pressable
+          accessibilityHint={
+            expanded ? `Collapses ${accessibilityLabel}` : `Reveals ${accessibilityLabel}`
+          }
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          onPress={() => setExpanded((current) => !current)}
+          style={styles.editorialAction}
+        >
+          <Text style={styles.editorialActionText}>{expanded ? 'Show less' : 'Show more'}</Text>
+          <Icon color={colors.primary} name={expanded ? 'chevron-up' : 'chevron-down'} size={16} />
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function PolicyRow({
+  icon,
+  title,
+  value,
+}: {
+  readonly icon: ComponentProps<typeof Icon>['name'];
+  readonly title: string;
+  readonly value: string;
+}) {
+  return (
+    <View style={styles.policyRow}>
+      <View style={styles.policyIcon}>
+        <Icon color={colors.primary} name={icon} size={20} />
+      </View>
+      <View style={styles.flex}>
+        <Text style={styles.policyTitle}>{title}</Text>
+        <Text style={styles.policyValue}>{value}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -4067,6 +4319,21 @@ const styles = StyleSheet.create({
   },
   dateSummaryText: { color: colors.primaryDark, flex: 1, fontSize: 12, fontWeight: '700' },
   description: { color: colors.subtleText, fontSize: 15, lineHeight: 24 },
+  editorialAction: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    minHeight: 44,
+  },
+  editorialActionText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  editorialSection: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    paddingBottom: spacing.lg,
+  },
+  expandableCopy: { gap: spacing.xs },
   detailGallery: { flex: 1 },
   detailGalleryControl: {
     alignItems: 'center',
@@ -4277,6 +4544,16 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   favoriteImage: { borderRadius: radius.md, height: 88, width: 110 },
+  featureGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  featureItem: {
+    alignItems: 'center',
+    flexBasis: '47%',
+    flexDirection: 'row',
+    flexGrow: 1,
+    gap: spacing.xs,
+    minHeight: 40,
+  },
+  featureLabel: { color: colors.ink, flex: 1, fontSize: 14, lineHeight: 20 },
   filterCount: {
     backgroundColor: colors.primary,
     borderRadius: radius.pill,
@@ -4350,6 +4627,38 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     padding: spacing.md,
   },
+  hostIdentity: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  hostMetric: { flexBasis: '42%', flexGrow: 1, gap: 2 },
+  hostMetricLabel: { color: colors.subtleText, fontSize: 12, lineHeight: 17 },
+  hostMetrics: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+  },
+  hostMetricValue: { color: colors.ink, fontSize: 16, fontWeight: '900' },
+  hostName: { color: colors.ink, fontSize: 18, fontWeight: '900' },
+  hostProfileAction: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 44,
+  },
+  hostProfileActionText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  hostSectionCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    padding: spacing.md,
+  },
+  hostVerified: { alignItems: 'center', flexDirection: 'row', gap: spacing.xxs, marginTop: 3 },
+  hostVerifiedText: { color: colors.primaryDark, fontSize: 13, fontWeight: '700' },
   line: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -4415,7 +4724,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: 46,
   },
-  ownerCard: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  ownerAvatarImage: { borderRadius: radius.pill, height: 46, width: 46 },
   priceBox: { alignItems: 'flex-end', maxWidth: '35%' },
   quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   quoteCard: { gap: spacing.sm },
@@ -4510,6 +4819,18 @@ const styles = StyleSheet.create({
     height: 4,
     width: 42,
   },
+  reviewAuthor: { color: colors.ink, fontSize: 15, fontWeight: '800' },
+  reviewDate: { color: colors.subtleText, fontSize: 12 },
+  reviewPreview: { gap: spacing.xs, paddingVertical: spacing.sm },
+  reviewPreviewHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  reviewPreviewList: { gap: spacing.xs },
+  reviewRating: { color: colors.ink, fontSize: 13, fontWeight: '700' },
   resultsSearchSummary: {
     alignItems: 'center',
     backgroundColor: colors.surface,
@@ -4555,6 +4876,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   placeSearchInput: { color: colors.ink, flex: 1, minHeight: 48 },
+  policyIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  policyRow: {
+    alignItems: 'flex-start',
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
+  },
+  policyTitle: { color: colors.ink, fontSize: 14, fontWeight: '800' },
+  policyValue: { color: colors.subtleText, fontSize: 14, lineHeight: 20, marginTop: 2 },
   searchCollapsedCard: {
     alignItems: 'center',
     backgroundColor: colors.surface,
