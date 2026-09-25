@@ -17,7 +17,7 @@ import Reanimated, {
 } from 'react-native-reanimated';
 import {
   AccessibilityInfo,
-  type FlatList,
+  FlatList,
   findNodeHandle,
   Keyboard,
   Linking,
@@ -197,6 +197,7 @@ interface VehicleDetail {
   readonly rentalRequirements?: string | null;
   readonly fulfillment: PublicFulfillment;
 }
+type VehicleGalleryItem = Grant & { readonly id: string };
 interface Quote {
   readonly id: string;
   readonly vehicleId: string;
@@ -285,7 +286,7 @@ export function DiscoveryScreen({
   const client = useQueryClient();
   const { user } = useAuth();
   const [mode, setMode] = useState<ViewMode>(initialVehicleId ? 'detail' : initialMode);
-  const detailOrigin = useRef<ViewMode>(initialMode === 'favorites' ? 'favorites' : 'results');
+  const detailOrigin = useRef<ViewMode>(initialMode === 'favorites' ? 'favorites' : 'form');
   const [vehicleId, setVehicleId] = useState<string | null>(initialVehicleId ?? null);
   const [place, setPlace] = useState<SearchLocation>(locations[0]!);
   const [activePlace, setActivePlace] = useState<SearchLocation>(locations[0]!);
@@ -978,7 +979,8 @@ export function DiscoveryScreen({
     if (index >= 0) sessionRecentlyViewed.splice(index, 1);
     sessionRecentlyViewed.unshift(id);
     sessionRecentlyViewed.splice(10);
-    detailOrigin.current = mode === 'favorites' ? 'favorites' : 'results';
+    detailOrigin.current =
+      mode === 'favorites' ? 'favorites' : mode === 'results' ? 'results' : 'form';
     setVehicleId(id);
     setMode('detail');
   }
@@ -2301,7 +2303,11 @@ function VehicleView(properties: {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const { vehicle } = properties;
   const { width: viewportWidth } = useWindowDimensions();
+  const { top: topSafeArea } = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
+  const heroGalleryRef = useRef<FlatList<VehicleGalleryItem>>(null);
+  const fullGalleryRef = useRef<FlatList<VehicleGalleryItem>>(null);
+  const selectedGalleryIndex = useRef(0);
   const quotePosition = useRef(0);
   const lastScrolledQuoteId = useRef<string | null>(null);
   const [galleryIndex, setGalleryIndex] = useState(0);
@@ -2323,6 +2329,21 @@ function VehicleView(properties: {
   const [collectionLocation, setCollectionLocation] = useState<CarShareLocation>();
   const [picker, setPicker] = useState<'delivery' | 'collection' | null>(null);
   const quoteData = properties.quote.data;
+
+  const selectGalleryPage = (index: number) => {
+    selectedGalleryIndex.current = index;
+    setGalleryIndex(index);
+  };
+
+  const closeGallery = () => {
+    setGalleryOpen(false);
+    requestAnimationFrame(() => {
+      heroGalleryRef.current?.scrollToIndex({
+        animated: false,
+        index: selectedGalleryIndex.current,
+      });
+    });
+  };
   if (properties.loading)
     return (
       <Screen
@@ -2381,80 +2402,217 @@ function VehicleView(properties: {
     (endMethod !== 'OWNER_COLLECTION' ||
       (startMethod === 'OWNER_DELIVERY' && sameAsDelivery) ||
       Boolean(collectionLocation));
+  const galleryPhotos: readonly VehicleGalleryItem[] = vehicle.photos?.length
+    ? vehicle.photos
+    : [{ contentPath: '', expiresAt: '', id: 'fallback' }];
+  const heroHeight = Math.round(Math.min(viewportWidth / (4 / 3), 480));
+  const vehicleTitle = [vehicle.make, vehicle.model, vehicle.variant, vehicle.year]
+    .filter(Boolean)
+    .join(' ');
+  const reviewTitle = `${vehicle.year ?? ''} ${vehicle.make ?? ''} ${vehicle.model ?? ''}`.trim();
+  const openReviews = () =>
+    navigation.navigate('PublicReviews', {
+      path: `/vehicles/${vehicle.vehicleId}/reviews`,
+      title: reviewTitle,
+    });
+  const keySpecifications = [
+    {
+      icon: 'car-outline' as const,
+      label: 'Category',
+      value: vehicle.category?.name ?? 'Vehicle',
+    },
+    {
+      icon: 'people-outline' as const,
+      label: 'Seats',
+      value: vehicle.seats ? `${vehicle.seats} seats` : 'Seats not specified',
+    },
+    {
+      icon: 'exit-outline' as const,
+      label: 'Doors',
+      value: vehicle.doors ? `${vehicle.doors} doors` : 'Doors not specified',
+    },
+    {
+      icon: 'options-outline' as const,
+      label: 'Transmission',
+      value: domainLabel(vehicle.transmission),
+    },
+    {
+      icon: 'flash-outline' as const,
+      label: 'Powertrain',
+      value: domainLabel(vehicle.powertrain ?? vehicle.fuelType),
+    },
+  ];
   return (
-    <Screen
-      scrollRef={scrollRef}
-      leading={<BackControl label="Back to results" onPress={properties.onBack} />}
-      eyebrow="Vehicle details"
-      title={`${vehicle.year ?? ''} ${vehicle.make ?? ''} ${vehicle.model ?? ''}`.trim()}
-      action={
-        <IconButton
-          active={vehicle.favorite}
-          icon={vehicle.favorite ? 'heart' : 'heart-outline'}
-          label={vehicle.favorite ? 'Remove from Wishlist' : 'Save to Wishlist'}
-          onPress={properties.onFavorite}
-        />
-      }
-    >
-      <ScrollView
-        horizontal
-        onMomentumScrollEnd={(event) =>
-          setGalleryIndex(Math.round(event.nativeEvent.contentOffset.x / viewportWidth))
-        }
-        pagingEnabled
-        showsHorizontalScrollIndicator={false}
-        style={styles.gallery}
-      >
-        {(vehicle.photos?.length ? vehicle.photos : [{ id: 'fallback', contentPath: '' }]).map(
-          (photo) => (
-            <Pressable key={photo.id} onPress={() => setGalleryOpen(true)}>
+    <Screen scrollRef={scrollRef} safeTop={false}>
+      <View style={[styles.detailGalleryShell, { height: heroHeight }]}>
+        <FlatList
+          ref={heroGalleryRef}
+          data={galleryPhotos}
+          getItemLayout={(_, index) => ({
+            index,
+            length: viewportWidth,
+            offset: viewportWidth * index,
+          })}
+          horizontal
+          keyExtractor={(photo) => photo.id}
+          onMomentumScrollEnd={(event) =>
+            selectGalleryPage(Math.round(event.nativeEvent.contentOffset.x / viewportWidth))
+          }
+          pagingEnabled
+          renderItem={({ item: photo, index }) => (
+            <Pressable
+              accessibilityHint="Opens this photo full screen"
+              accessibilityLabel={`Vehicle photo ${index + 1} of ${galleryPhotos.length}`}
+              accessibilityRole="button"
+              onPress={() => {
+                selectGalleryPage(index);
+                setGalleryOpen(true);
+              }}
+            >
               <VehicleImage
                 contentPath={photo.contentPath}
-                style={[styles.heroImage, { width: viewportWidth }]}
+                style={{ height: heroHeight, width: viewportWidth }}
               />
             </Pressable>
-          ),
-        )}
-      </ScrollView>
-      <View pointerEvents="none" style={styles.galleryIndicator}>
-        <Text style={styles.galleryIndicatorText}>
-          {galleryIndex + 1} / {Math.max(1, vehicle.photos?.length ?? 0)}
-        </Text>
+          )}
+          showsHorizontalScrollIndicator={false}
+          style={styles.detailGallery}
+        />
+        <Pressable
+          accessibilityLabel="Back"
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={properties.onBack}
+          style={[
+            styles.detailGalleryControl,
+            styles.detailGalleryBack,
+            { top: topSafeArea + spacing.sm },
+          ]}
+        >
+          <Icon color={colors.ink} name="arrow-back" size={24} />
+        </Pressable>
+        <Pressable
+          accessibilityLabel={vehicle.favorite ? 'Remove from Wishlist' : 'Save to Wishlist'}
+          accessibilityRole="button"
+          accessibilityState={{ selected: vehicle.favorite }}
+          hitSlop={8}
+          onPress={properties.onFavorite}
+          style={[
+            styles.detailGalleryControl,
+            styles.detailGalleryFavorite,
+            { top: topSafeArea + spacing.sm },
+          ]}
+        >
+          <Icon
+            color={vehicle.favorite ? colors.primary : colors.ink}
+            name={vehicle.favorite ? 'heart' : 'heart-outline'}
+            size={24}
+          />
+        </Pressable>
+        <View pointerEvents="none" style={styles.detailGalleryIndicator}>
+          <Text style={styles.galleryIndicatorText}>
+            {galleryIndex + 1} / {galleryPhotos.length}
+          </Text>
+        </View>
       </View>
       <Modal
         animationType="fade"
-        onRequestClose={() => setGalleryOpen(false)}
+        onRequestClose={closeGallery}
+        onShow={() =>
+          fullGalleryRef.current?.scrollToIndex({
+            animated: false,
+            index: selectedGalleryIndex.current,
+          })
+        }
+        statusBarTranslucent
         visible={galleryOpen}
       >
         <View style={styles.fullGallery}>
-          <IconButton icon="close" label="Close gallery" onPress={() => setGalleryOpen(false)} />
-          <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
-            {(vehicle.photos?.length ? vehicle.photos : [{ id: 'fallback', contentPath: '' }]).map(
-              (photo) => (
-                <VehicleImage
-                  key={photo.id}
-                  contentPath={photo.contentPath}
-                  resizeMode="contain"
-                  style={{ height: '100%', width: viewportWidth }}
-                />
-              ),
+          <FlatList
+            ref={fullGalleryRef}
+            data={galleryPhotos}
+            getItemLayout={(_, index) => ({
+              index,
+              length: viewportWidth,
+              offset: viewportWidth * index,
+            })}
+            horizontal
+            initialScrollIndex={galleryIndex}
+            keyExtractor={(photo) => photo.id}
+            onMomentumScrollEnd={(event) =>
+              selectGalleryPage(Math.round(event.nativeEvent.contentOffset.x / viewportWidth))
+            }
+            pagingEnabled
+            renderItem={({ item: photo, index }) => (
+              <VehicleImage
+                accessibilityLabel={`Vehicle photo ${index + 1} of ${galleryPhotos.length}`}
+                contentPath={photo.contentPath}
+                resizeMode="contain"
+                style={{ height: '100%', width: viewportWidth }}
+              />
             )}
-          </ScrollView>
+            showsHorizontalScrollIndicator={false}
+          />
+          <Pressable
+            accessibilityLabel="Close gallery"
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={closeGallery}
+            style={[styles.fullGalleryClose, { top: topSafeArea + spacing.sm }]}
+          >
+            <Icon color={colors.onPrimary} name="close" size={26} />
+          </Pressable>
+          <View pointerEvents="none" style={styles.fullGalleryIndicator}>
+            <Text style={styles.galleryIndicatorText}>
+              {galleryIndex + 1} / {galleryPhotos.length}
+            </Text>
+          </View>
         </View>
       </Modal>
-      <View style={styles.detailMeta}>
-        <StatusBadge
-          label={
+      <View style={styles.detailHeroInformation}>
+        <Text accessibilityRole="header" style={styles.detailTitle}>
+          {vehicleTitle}
+        </Text>
+        <Pressable
+          accessibilityHint={vehicle.rating?.reviewCount ? 'Opens vehicle reviews' : undefined}
+          accessibilityLabel={
             vehicle.rating?.averageRating
-              ? `★ ${vehicle.rating.averageRating} · ${vehicle.rating.reviewCount} reviews`
-              : 'New listing'
+              ? `${vehicle.rating.averageRating} out of 5, ${vehicle.rating.reviewCount} reviews`
+              : 'New listing with no reviews'
           }
-        />
+          accessibilityRole={vehicle.rating?.reviewCount ? 'button' : 'text'}
+          disabled={!vehicle.rating?.reviewCount}
+          onPress={openReviews}
+          style={styles.detailRating}
+        >
+          <Icon color={colors.primary} name="star" size={17} />
+          <Text style={styles.detailRatingText}>
+            {vehicle.rating?.averageRating
+              ? `${vehicle.rating.averageRating} · ${vehicle.rating.reviewCount} reviews`
+              : 'New listing'}
+          </Text>
+        </Pressable>
         <View style={styles.locationRow}>
           <Icon color={colors.subtleText} name="location-outline" size={15} />
           <Text style={styles.location}>
             {vehicle.location.city}, {vehicle.location.province}
           </Text>
+        </View>
+        <View
+          accessible
+          accessibilityLabel={keySpecifications
+            .map((specification) => `${specification.label}: ${specification.value}`)
+            .join(', ')}
+          style={styles.detailSpecifications}
+        >
+          {keySpecifications.map((specification) => (
+            <View key={specification.label} accessible={false} style={styles.detailSpecification}>
+              <Icon color={colors.primary} name={specification.icon} size={18} />
+              <Text accessible={false} style={styles.detailSpecificationText}>
+                {specification.value}
+              </Text>
+            </View>
+          ))}
         </View>
       </View>
       <View style={styles.priceLine}>
@@ -2688,29 +2846,6 @@ function VehicleView(properties: {
           />
         </View>
       )}
-      <SectionHeader title="Vehicle details" />
-      <Card>
-        <DetailRow
-          icon="car-outline"
-          label="Category"
-          value={vehicle.category?.name ?? 'Vehicle'}
-        />
-        <DetailRow
-          icon="options-outline"
-          label="Transmission"
-          value={domainLabel(vehicle.transmission)}
-        />
-        <DetailRow
-          icon="people-outline"
-          label="Seats"
-          value={vehicle.seats ? `${vehicle.seats} seats` : 'Not specified'}
-        />
-        <DetailRow
-          icon="flash-outline"
-          label="Powertrain"
-          value={domainLabel(vehicle.powertrain ?? vehicle.fuelType)}
-        />
-      </Card>
       <SectionHeader title="Features" />
       <View style={styles.quickRow}>
         {vehicle.features.length ? (
@@ -2832,12 +2967,7 @@ function VehicleView(properties: {
       {vehicle.rating?.reviewCount ? (
         <Button
           label={`Read all ${vehicle.rating.reviewCount} vehicle reviews`}
-          onPress={() =>
-            navigation.navigate('PublicReviews', {
-              path: `/vehicles/${vehicle.vehicleId}/reviews`,
-              title: `${vehicle.year} ${vehicle.make} ${vehicle.model}`,
-            })
-          }
+          onPress={openReviews}
           variant="secondary"
         />
       ) : null}
@@ -3626,27 +3756,6 @@ function FilterSheet(properties: FilterProperties) {
   );
 }
 
-function DetailRow({
-  icon,
-  label,
-  value,
-}: {
-  readonly icon: Parameters<typeof Icon>[0]['name'];
-  readonly label: string;
-  readonly value: string;
-}) {
-  return (
-    <View style={styles.detailRow}>
-      <View style={styles.searchIcon}>
-        <Icon color={colors.primary} name={icon} size={19} />
-      </View>
-      <View style={styles.flex}>
-        <Text style={styles.smallLabel}>{label}</Text>
-        <Text style={styles.cardTitle}>{value}</Text>
-      </View>
-    </View>
-  );
-}
 function activeFilterCount(filters: Record<string, string>) {
   return Object.values(filters).filter(Boolean).length;
 }
@@ -3723,8 +3832,64 @@ const styles = StyleSheet.create({
   },
   dateSummaryText: { color: colors.primaryDark, flex: 1, fontSize: 12, fontWeight: '700' },
   description: { color: colors.subtleText, fontSize: 15, lineHeight: 24 },
-  detailMeta: { gap: spacing.xs },
+  detailGallery: { flex: 1 },
+  detailGalleryBack: { left: spacing.md },
+  detailGalleryControl: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.94)',
+    borderColor: 'rgba(15,45,35,0.12)',
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    height: 48,
+    justifyContent: 'center',
+    position: 'absolute',
+    shadowColor: '#000',
+    shadowOffset: { height: 2, width: 0 },
+    shadowOpacity: 0.16,
+    shadowRadius: 5,
+    width: 48,
+  },
+  detailGalleryFavorite: { right: spacing.md },
+  detailGalleryIndicator: {
+    alignItems: 'flex-end',
+    bottom: spacing.sm,
+    position: 'absolute',
+    right: spacing.md,
+  },
+  detailGalleryShell: {
+    marginHorizontal: -spacing.lg,
+    marginTop: -spacing.lg,
+    position: 'relative',
+  },
+  detailHeroInformation: { gap: spacing.xs, paddingTop: spacing.md },
   detailPrice: { color: colors.ink, fontSize: 28, fontWeight: '900' },
+  detailRating: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    minHeight: 32,
+  },
+  detailRatingText: { color: colors.ink, fontSize: 14, fontWeight: '800' },
+  detailSpecification: {
+    alignItems: 'center',
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    minHeight: 40,
+    paddingHorizontal: spacing.sm,
+  },
+  detailSpecifications: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    paddingTop: spacing.xs,
+  },
+  detailSpecificationText: { color: colors.ink, fontSize: 13, fontWeight: '700' },
+  detailTitle: { color: colors.ink, fontSize: 28, fontWeight: '900', lineHeight: 34 },
   discountCard: { gap: spacing.sm },
   discountDays: { color: colors.ink, fontSize: 14, fontWeight: '700' },
   discountHeading: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
@@ -3747,14 +3912,6 @@ const styles = StyleSheet.create({
   },
   discountTiers: { gap: spacing.xs },
   discountValue: { color: colors.primary, fontSize: 14, fontWeight: '800' },
-  detailRow: {
-    alignItems: 'center',
-    borderBottomColor: colors.border,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    gap: spacing.sm,
-    minHeight: 62,
-  },
   divider: { backgroundColor: colors.border, height: StyleSheet.hairlineWidth },
   error: { color: colors.danger, lineHeight: 20 },
   endOfResults: {
@@ -3902,8 +4059,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     width: '100%',
   },
-  gallery: { marginHorizontal: -spacing.lg },
-  galleryIndicator: { alignItems: 'center', marginTop: -42, paddingBottom: spacing.sm },
   galleryIndicatorText: {
     backgroundColor: 'rgba(0,0,0,0.68)',
     borderRadius: radius.pill,
@@ -3914,8 +4069,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: 5,
   },
-  fullGallery: { backgroundColor: '#000', flex: 1, paddingTop: 54 },
-  heroImage: { height: 265 },
+  fullGallery: { backgroundColor: '#000', flex: 1 },
+  fullGalleryClose: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.58)',
+    borderRadius: radius.pill,
+    height: 48,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: spacing.md,
+    width: 48,
+  },
+  fullGalleryIndicator: {
+    alignItems: 'center',
+    bottom: spacing.xl,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+  },
   hold: {
     backgroundColor: colors.primarySoft,
     borderRadius: radius.md,
