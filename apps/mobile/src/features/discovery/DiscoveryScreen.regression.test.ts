@@ -113,6 +113,12 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('datesExplicit: draftDatesEstablished');
     expect(source).toContain('setTripDatesEstablished(datesExplicit)');
     expect(source).toContain('tripDateSummary(pickup, returnAt)');
+    expect(source).toContain('<View style={styles.resultsSearchTextColumn}>');
+    expect(source).toContain('style={styles.resultSearchLocation}');
+    expect(source).toContain('style={styles.resultsSearchDate}');
+    expect(source).toMatch(
+      /resultsSearchTextColumn: \{[\s\S]*alignItems: 'flex-start',[\s\S]*minWidth: 0/,
+    );
     expect(source).toContain('label="Search"');
     expect(source).toContain('Select and apply trip dates to search.');
     expect(source).toContain('start: pickup.toISOString()');
@@ -164,9 +170,9 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain("'Filters, none active'");
     expect(source).toContain('const resultSummary = formatResultSummary({');
     expect(source).toContain('loadedCount: uniqueVehicleCount(searchItems)');
-    expect(source).toContain(
-      'ListHeaderComponent={<NormalResultsSummary summary={resultSummary} />}',
-    );
+    expect(source).toContain('ListHeaderComponent={');
+    expect(source).toContain('compact={mapFullyCollapsed}');
+    expect(source).toContain('summary={resultSummary}');
   });
 
   it('maps quick filters to the existing authoritative filter fields', () => {

@@ -254,9 +254,7 @@ describe('Task 12C FULL_MAP centered result peek regression', () => {
 describe('Task 12D non-sticky normal result summary regression', () => {
   it('owns the SPLIT and FULL_LIST summary as genuine FlatList header content', () => {
     const listStart = screenSource.indexOf('<Reanimated.FlatList');
-    const listHeader = screenSource.indexOf(
-      'ListHeaderComponent={<NormalResultsSummary summary={resultSummary} />}',
-    );
+    const listHeader = screenSource.indexOf('ListHeaderComponent={', listStart);
     const contentContainer = screenSource.indexOf('contentContainerStyle={[', listStart);
     expect(listHeader).toBeGreaterThan(listStart);
     expect(listHeader).toBeLessThan(contentContainer);
@@ -271,11 +269,29 @@ describe('Task 12D non-sticky normal result summary regression', () => {
     expect(screenSource).not.toContain('normalResultsSummary: { position:');
   });
 
+  it('does not duplicate the safe-area inset above the Results summary', () => {
+    const listStart = screenSource.indexOf('<Reanimated.FlatList');
+    const listEnd = screenSource.indexOf('/>', listStart);
+    const list = screenSource.slice(listStart, listEnd);
+    expect(list).toContain('contentInsetAdjustmentBehavior="never"');
+  });
+
+  it('removes the invisible handle spacing and halves the summary gap in FULL_LIST only', () => {
+    expect(screenSource).toContain('mapFullyCollapsed && styles.resultsSheetDragTargetCollapsed');
+    expect(screenSource).toContain('compact={mapFullyCollapsed}');
+    expect(screenSource).toContain('resultsSheetDragTargetCollapsed: { height: 0, minHeight: 0 }');
+    expect(screenSource).toContain('normalResultsSummaryCompact: { paddingTop: spacing.xl }');
+    expect(screenSource).toMatch(/resultsSheetCollapsed: \{[\s\S]*paddingTop: 0/);
+    expect(screenSource).toContain('resultsSheetDragTarget: {');
+    expect(screenSource).toContain('minHeight: 28');
+  });
+
   it('shares one truthful LIST summary authority with FULL_MAP without resetting list state', () => {
     expect(screenSource.match(/formatResultSummary\(\{/g)).toHaveLength(1);
     expect(screenSource).toContain('loadedCount: uniqueVehicleCount(searchItems)');
     expect(screenSource).toContain('hasNextPage: listSearch.hasNextPage === true');
-    expect(screenSource).toContain('<NormalResultsSummary summary={resultSummary} />');
+    expect(screenSource).toContain('compact={mapFullyCollapsed}');
+    expect(screenSource).toContain('summary={resultSummary}');
     expect(screenSource).toContain('{resultSummary}');
     expect(screenSource).not.toContain('normalResultsCount');
     expect(screenSource).not.toContain('key={resultSummary}');
@@ -318,7 +334,7 @@ describe('floating Map restore control regression', () => {
     expect(screenSource).not.toContain('normalizedOffset >= mapButtonShowOffset');
   });
 
-  it('restores through the existing FlatList offset without creating a Map mode', () => {
+  it('restores through the existing FlatList offset and opens FULL_MAP', () => {
     expect(screenSource).toMatch(
       /function restoreResultsMap\(\) \{[\s\S]*resultListRef\.current\?\.scrollToOffset\(\{ animated: true, offset: 0 \}\)/,
     );
@@ -332,16 +348,44 @@ describe('floating Map restore control regression', () => {
     expect(restoreHandler).not.toContain('setActiveRadiusKm');
     expect(restoreHandler).not.toContain('animateToRegion');
     expect(screenSource).not.toContain('showMapMode');
+    expect(restoreHandler).toContain('fullMapPresentationOnUi.value = true');
+    expect(restoreHandler).toContain('runOnJS(commitMapRestoreToFullMap)()');
+    expect(restoreHandler).toContain('fullMapProgress.value = 2');
+    expect(restoreHandler).toContain('fullMapProgress.value = withTiming(1, { duration: 260 }');
+    expect(screenSource).toMatch(
+      /function commitMapRestoreToFullMap\(\) \{[\s\S]*setFullMap\(true\)[\s\S]*setCollapseMapButtonVisible\(false\)/,
+    );
+  });
+
+  it('animates the floating Map action directly from FULL_LIST to FULL_MAP', () => {
+    expect(screenSource).not.toContain('directFullMapRestoreOnUi');
+    expect(screenSource).toContain('fullMapHeight * (2 - fullMapProgress.value)');
+    expect(screenSource).toContain(
+      '(fullMapPeekHeight - resultsCompositionHeight) * (2 - fullMapProgress.value)',
+    );
+    expect(screenSource).not.toMatch(
+      /collapseProgress\.value = withTiming\(0,[\s\S]*fullMapProgress\.value = withTiming\(1/,
+    );
   });
 
   it('provides one safe-area-aware accessible floating action only on useful Results', () => {
     expect(screenSource).toContain('accessibilityLabel="Show map"');
     expect(screenSource).toContain('accessibilityHint="Scrolls results to reveal the map."');
     expect(screenSource).toContain('name="map-outline"');
-    expect(screenSource).toContain('Math.max(spacing.md, bottomSafeArea + spacing.xs)');
+    expect(screenSource).toContain('const mapRestoreBottom = home');
+    expect(screenSource).toContain('54 + Math.max(bottomSafeArea, 10) + spacing.md');
+    expect(screenSource).toContain('{ bottom: mapRestoreBottom }');
     expect(screenSource).toContain('Math.max(100, bottomSafeArea + 88)');
     expect(screenSource).toContain('!(listSearch.isError && mapSearch.isError)');
     expect(screenSource).toContain('(searchItems.length > 0 || listSearch.isError)');
+  });
+
+  it('keeps the floating Map action above the absolute renter tab bar in FULL_LIST', () => {
+    expect(screenSource).toMatch(
+      /const mapRestoreBottom = home[\s\S]*54 \+ Math\.max\(bottomSafeArea, 10\) \+ spacing\.md/,
+    );
+    expect(screenSource).toContain('mapFullyCollapsed && styles.resultsSheetCollapsed');
+    expect(screenSource).toContain('setCollapseMapButtonVisible(collapsed)');
   });
 
   it('keeps the control behind search/filter/detail surfaces and resets with criteria', () => {
@@ -391,8 +435,9 @@ describe('three-state Results presentation regression', () => {
   it('derives full height from measured composition and a safe-area-aware peek', () => {
     expect(screenSource).toContain('setResultsCompositionHeight(nativeEvent.layout.height)');
     expect(screenSource).toContain('resultsCompositionHeight - fullMapPeekHeight - spacing.sm');
-    expect(screenSource).toContain('Math.max(92, Math.min(124, 96 + bottomSafeArea))');
-    expect(screenSource).toContain('!mapFullyCollapsed && styles.resultsSheetFullMap');
+    expect(screenSource).toContain('Math.max(88, Math.min(104, 64 + bottomSafeArea))');
+    expect(screenSource).toContain('flex: fullMapPresentationOnUi.value ? 0 : 1');
+    expect(screenSource).not.toContain('styles.resultsSheetFullMap');
   });
 
   it('keeps one Map and one FlatList while hiding inaccessible card content in FULL_MAP', () => {
@@ -456,9 +501,10 @@ describe('three-state Results presentation regression', () => {
     expect(screenSource).toContain(
       '(fullMapPeekHeight - splitResultsHeight) * fullMapProgress.value',
     );
-    expect(screenSource).toContain('const fullMapContentStyle = useAnimatedStyle(() => ({');
-    expect(screenSource).toContain('fullMapProgress.value <= 0.6');
-    expect(screenSource).toContain('fullMapProgress.value >= 0.78');
+    expect(screenSource).toContain('const fullMapContentStyle = useAnimatedStyle(() => {');
+    expect(screenSource).toContain('const progress = fullMapVisualProgress(fullMapProgress.value)');
+    expect(screenSource).toContain('progress <= 0.6');
+    expect(screenSource).toContain('progress >= 0.78');
     expect(screenSource).toContain('style={[styles.flex, fullMapContentStyle]}');
     expect(screenSource).toContain('fullMapSheetStyle,');
   });
@@ -475,8 +521,8 @@ describe('three-state Results presentation regression', () => {
     );
     expect(screenSource.match(/<DiscoveryMap/g)).toHaveLength(1);
     expect(screenSource.match(/<Reanimated.FlatList/g)).toHaveLength(1);
+    expect(screenSource).toContain('splitListViewportHeight');
     expect(screenSource).not.toContain('fullListViewportHeight');
-    expect(screenSource).not.toContain('splitListViewportHeight');
   });
 
   it('keeps settlement, reset, and Map restore presentation-only across repeated cycles', () => {
@@ -499,7 +545,7 @@ describe('Task 12E FULL_MAP to SPLIT reveal regression', () => {
     );
     expect(screenSource).not.toContain("fullMapPeekBody: { flex: 1, width: '100%' }");
     expect(screenSource).toContain('fullMapSheetStyle,');
-    expect(screenSource).toContain('height: fullMapPeekBodyHeight * fullMapProgress.value');
+    expect(screenSource).toContain('height: fullMapPeekBodyHeight * progress');
   });
 
   it('uses one FULL_MAP progress authority for viewport, peek, and list reveal', () => {
@@ -543,9 +589,8 @@ describe('Task 12E FULL_MAP to SPLIT reveal regression', () => {
   it('preserves one Map, one list, list-header ownership, and fixed card geometry', () => {
     expect(screenSource.match(/<DiscoveryMap/g)).toHaveLength(1);
     expect(screenSource.match(/<Reanimated.FlatList/g)).toHaveLength(1);
-    expect(screenSource).toContain(
-      'ListHeaderComponent={<NormalResultsSummary summary={resultSummary} />}',
-    );
+    expect(screenSource).toContain('ListHeaderComponent={');
+    expect(screenSource).toContain('compact={mapFullyCollapsed}');
     expect(screenSource).toContain('aspectRatio: 1.6');
     expect(screenSource).toContain('maxHeight: 240');
     expect(screenSource).not.toContain('cardHeight');
@@ -577,7 +622,8 @@ describe('Task 12F-1 settled SPLIT downward entry regression', () => {
     expect(entry).toContain('runOnJS(finishFullMapEntryGesture)(event.translationY)');
     expect(screenSource).toContain('<GestureDetector gesture={handleFullMapEntryGesture}>');
     expect(screenSource).toContain('<GestureDetector gesture={resultsGesture}>');
-    expect(screenSource).toContain('style={styles.resultsSheetDragTarget}');
+    expect(screenSource).toContain('styles.resultsSheetDragTarget,');
+    expect(screenSource).toContain('mapFullyCollapsed && styles.resultsSheetDragTargetCollapsed');
     expect(screenSource).not.toContain('onTouchStart={({ nativeEvent }) => beginFullMapGesture');
   });
 
@@ -691,11 +737,21 @@ describe('Task 12F-2 settled FULL_MAP peek regression', () => {
     expect(screenSource).toContain('style={[styles.fullMapPeekBody, fullMapPeekStyle]}');
   });
 
+  it('keeps the FULL_MAP peek compact while retaining its safe-area allowance', () => {
+    expect(screenSource).toContain('Math.max(88, Math.min(104, 64 + bottomSafeArea))');
+    expect(screenSource).not.toContain('Math.min(124, 96 + bottomSafeArea)');
+  });
+
   it('keeps the mounted normal list in a zero-height clipped viewport at settled FULL_MAP', () => {
     expect(screenSource).toContain('const fullMapListViewportStyle = useAnimatedStyle(() => ({');
-    expect(screenSource).toContain('Math.max(0, splitResultsHeight - fullMapHandleRegionHeight) *');
-    expect(screenSource).toContain("fullMapListViewport: { flex: 0, overflow: 'hidden' }");
-    expect(screenSource).toContain('fullMapListViewportStyle,');
+    expect(screenSource).toContain(': splitListViewportHeight) *');
+    expect(screenSource).toContain(
+      'fullMapProgress.value > 1 ? fullMapProgress.value - 1 : 1 - fullMapProgress.value',
+    );
+    expect(screenSource).toContain("fullMapListViewport: { minHeight: 0, overflow: 'hidden' }");
+    expect(screenSource).toContain(
+      'style={[styles.fullMapListViewport, fullMapListViewportStyle]}',
+    );
     expect(screenSource).toContain("pointerEvents={fullMap ? 'none' : 'auto'}");
     expect(screenSource).toContain('accessibilityElementsHidden={fullMap}');
     expect(screenSource.match(/<Reanimated.FlatList/g)).toHaveLength(1);
@@ -705,8 +761,8 @@ describe('Task 12F-2 settled FULL_MAP peek regression', () => {
     expect(screenSource).toContain(
       '(fullMapPeekHeight - splitResultsHeight) * fullMapProgress.value',
     );
-    expect(screenSource).toContain('fullMapProgress.value <= 0.6');
-    expect(screenSource).toContain('fullMapProgress.value >= 0.78');
+    expect(screenSource).toContain('progress <= 0.6');
+    expect(screenSource).toContain('progress >= 0.78');
     expect(screenSource).toContain('else settleFullMap(1)');
     expect(screenSource).toContain('loadedCount: uniqueVehicleCount(searchItems)');
     expect(screenSource).toContain('const handleFullMapEntryGesture = useMemo(');
@@ -725,9 +781,9 @@ describe('Task 12F-3 outer Results sheet height regression', () => {
     expect(screenSource).toContain(
       '(fullMapPeekHeight - splitResultsHeight) * fullMapProgress.value',
     );
-    expect(screenSource).toContain('!mapFullyCollapsed && styles.resultsSheetFullMap');
     expect(screenSource).toContain('fullMapSheetStyle,');
-    expect(screenSource).toContain('resultsSheetFullMap: { flex: 0, marginTop: -spacing.sm }');
+    expect(screenSource).toContain('flex: fullMapPresentationOnUi.value ? 0 : 1');
+    expect(screenSource).not.toContain('styles.resultsSheetFullMap');
   });
 
   it('keeps settled FULL_MAP compact with dominant Map, visible peek, and zero list viewport', () => {
@@ -735,10 +791,12 @@ describe('Task 12F-3 outer Results sheet height regression', () => {
     expect(screenSource).toContain(
       '(fullMapPeekHeight - splitResultsHeight) * fullMapProgress.value',
     );
-    expect(screenSource).toContain('Math.max(0, splitResultsHeight - fullMapHandleRegionHeight) *');
+    expect(screenSource).toContain(': splitListViewportHeight) *');
     expect(screenSource).toContain('accessibilityElementsHidden={!fullMap}');
-    expect(screenSource).toContain('fullMapListViewportStyle,');
-    expect(screenSource).toContain("fullMapListViewport: { flex: 0, overflow: 'hidden' }");
+    expect(screenSource).toContain(
+      'style={[styles.fullMapListViewport, fullMapListViewportStyle]}',
+    );
+    expect(screenSource).toContain("fullMapListViewport: { minHeight: 0, overflow: 'hidden' }");
     expect(screenSource).toContain(
       "isFocused && ((mode === 'results' && fullMap) || detailPresentationActive)",
     );
@@ -748,7 +806,7 @@ describe('Task 12F-3 outer Results sheet height regression', () => {
     expect(screenSource).toContain('settleFullMap(0, () => {');
     expect(screenSource).toContain('settleFullMap(0, commitFullMapExit)');
     expect(screenSource).toContain('fullMapPresentationOnUi.value = false');
-    expect(screenSource).toContain('height: fullMapPeekBodyHeight * fullMapProgress.value');
+    expect(screenSource).toContain('height: fullMapPeekBodyHeight * progress');
     expect(screenSource).toContain(
       '(fullMapHeight - initialResultsMapHeight) * fullMapProgress.value',
     );
@@ -768,5 +826,35 @@ describe('Task 12F-3 outer Results sheet height regression', () => {
     expect(screenSource).toContain('styles.flex,');
     expect(screenSource.match(/<DiscoveryMap/g)).toHaveLength(1);
     expect(screenSource.match(/<Reanimated.FlatList/g)).toHaveLength(1);
+  });
+
+  it('lets parent layout continuously fill the list viewport as the Map collapses', () => {
+    expect(screenSource).toContain('const splitListViewportHeight = Math.max(');
+    expect(screenSource).not.toContain('const fullListViewportHeight = Math.max(');
+    expect(screenSource).toContain('flex: fullMapPresentationOnUi.value ? 0 : 1');
+    expect(screenSource).toMatch(
+      /height: fullMapPresentationOnUi\.value[\s\S]*: splitListViewportHeight\) \*[\s\S]*1 - fullMapProgress\.value[\s\S]*: 0/,
+    );
+    expect(screenSource).not.toContain(
+      '(fullListViewportHeight - splitListViewportHeight) * collapseProgress.value',
+    );
+    expect(screenSource).not.toContain('!mapFullyCollapsed && styles.fullMapListViewport');
+    expect(screenSource).toContain('styles.fullMapListViewport,');
+  });
+
+  it('lets the outer sheet fill the live space below the collapsing Map', () => {
+    const sheetStyle = screenSource.slice(
+      screenSource.indexOf('const fullMapSheetStyle = useAnimatedStyle(() => ({'),
+      screenSource.indexOf(
+        'const fullMapListViewportStyle',
+        screenSource.indexOf('const fullMapSheetStyle'),
+      ),
+    );
+    expect(sheetStyle).toContain('flex: fullMapPresentationOnUi.value ? 0 : 1');
+    expect(sheetStyle).toMatch(
+      /height: fullMapPresentationOnUi\.value[\s\S]*splitResultsHeight \+[\s\S]*fullMapProgress\.value[\s\S]*: 0/,
+    );
+    expect(sheetStyle).not.toContain('!mapFullyCollapsed');
+    expect(screenSource).not.toContain('resultsSheetFullMap:');
   });
 });

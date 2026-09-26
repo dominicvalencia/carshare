@@ -287,6 +287,11 @@ function futureDate(days: number, hour = 9) {
   return value;
 }
 
+function fullMapVisualProgress(progress: number) {
+  'worklet';
+  return progress > 1 ? 2 - progress : progress;
+}
+
 export function DiscoveryScreen({
   home = false,
   initialMode = 'form',
@@ -303,6 +308,9 @@ export function DiscoveryScreen({
   const navigation = useNavigation<NavigationProp<RenterTabParamList & RootStackParamList>>();
   const isFocused = useIsFocused();
   const { bottom: bottomSafeArea } = useSafeAreaInsets();
+  const mapRestoreBottom = home
+    ? 54 + Math.max(bottomSafeArea, 10) + spacing.md
+    : Math.max(spacing.md, bottomSafeArea + spacing.xs);
   const client = useQueryClient();
   const { user } = useAuth();
   const [mode, setMode] = useState<ViewMode>(initialVehicleId ? 'detail' : initialMode);
@@ -341,7 +349,7 @@ export function DiscoveryScreen({
   const mapCollapseDistance = Math.max(190, Math.min(280, initialResultsMapHeight * 0.85));
   const mapTransientUiDismissOffset = Math.min(32, mapCollapseDistance * 0.15);
   const fullMapGestureThreshold = 72;
-  const fullMapPeekHeight = Math.max(92, Math.min(124, 96 + bottomSafeArea));
+  const fullMapPeekHeight = Math.max(88, Math.min(104, 64 + bottomSafeArea));
   const validDates = returnAt.getTime() > pickup.getTime();
   const reference = useQuery({
     enabled: home || filtersOpen,
@@ -601,6 +609,7 @@ export function DiscoveryScreen({
   const fullMapExpansionDistance = Math.max(180, fullMapHeight - initialResultsMapHeight);
   const fullMapHandleRegionHeight = spacing.xs + 28 + StyleSheet.hairlineWidth * 2;
   const fullMapPeekBodyHeight = Math.max(0, fullMapPeekHeight - fullMapHandleRegionHeight);
+  const splitListViewportHeight = Math.max(0, splitResultsHeight - fullMapHandleRegionHeight);
   const fullMapGestureStartY = useRef<number | null>(null);
   const fullMapGestureDistance = useRef(0);
   const onResultsScroll = useAnimatedScrollHandler({
@@ -852,10 +861,15 @@ export function DiscoveryScreen({
   );
   const collapsedMapStyle = useAnimatedStyle(() => ({
     height: fullMapPresentationOnUi.value
-      ? initialResultsMapHeight + (fullMapHeight - initialResultsMapHeight) * fullMapProgress.value
+      ? fullMapProgress.value > 1
+        ? fullMapHeight * (2 - fullMapProgress.value)
+        : initialResultsMapHeight +
+          (fullMapHeight - initialResultsMapHeight) * fullMapProgress.value
       : Math.max(0, initialResultsMapHeight * (1 - collapseProgress.value)),
     marginTop: fullMapPresentationOnUi.value
-      ? spacing.sm
+      ? fullMapProgress.value > 1
+        ? spacing.sm * (2 - fullMapProgress.value)
+        : spacing.sm
       : spacing.sm * (1 - collapseProgress.value),
     opacity: fullMapPresentationOnUi.value
       ? 1
@@ -864,34 +878,36 @@ export function DiscoveryScreen({
         : 0.72 * ((1 - collapseProgress.value) / 0.28),
   }));
   const fullMapSheetStyle = useAnimatedStyle(() => ({
-    height:
-      !mapFullyCollapsed || fullMapPresentationOnUi.value
-        ? splitResultsHeight + (fullMapPeekHeight - splitResultsHeight) * fullMapProgress.value
-        : undefined,
+    flex: fullMapPresentationOnUi.value ? 0 : 1,
+    height: fullMapPresentationOnUi.value
+      ? fullMapProgress.value > 1
+        ? resultsCompositionHeight +
+          (fullMapPeekHeight - resultsCompositionHeight) * (2 - fullMapProgress.value)
+        : splitResultsHeight + (fullMapPeekHeight - splitResultsHeight) * fullMapProgress.value
+      : 0,
   }));
   const fullMapListViewportStyle = useAnimatedStyle(() => ({
-    height:
-      !mapFullyCollapsed || fullMapPresentationOnUi.value
-        ? Math.max(0, splitResultsHeight - fullMapHandleRegionHeight) * (1 - fullMapProgress.value)
-        : undefined,
+    flex: fullMapPresentationOnUi.value ? 0 : 1,
+    height: fullMapPresentationOnUi.value
+      ? (fullMapProgress.value > 1
+          ? Math.max(0, resultsCompositionHeight - fullMapHandleRegionHeight)
+          : splitListViewportHeight) *
+        (fullMapProgress.value > 1 ? fullMapProgress.value - 1 : 1 - fullMapProgress.value)
+      : 0,
   }));
-  const fullMapContentStyle = useAnimatedStyle(() => ({
-    opacity:
-      fullMapProgress.value <= 0.6
-        ? 1
-        : fullMapProgress.value >= 0.78
-          ? 0
-          : 1 - (fullMapProgress.value - 0.6) / 0.18,
-  }));
-  const fullMapPeekStyle = useAnimatedStyle(() => ({
-    height: fullMapPeekBodyHeight * fullMapProgress.value,
-    opacity:
-      fullMapProgress.value <= 0.78
-        ? 0
-        : fullMapProgress.value >= 0.9
-          ? 1
-          : (fullMapProgress.value - 0.78) / 0.12,
-  }));
+  const fullMapContentStyle = useAnimatedStyle(() => {
+    const progress = fullMapVisualProgress(fullMapProgress.value);
+    return {
+      opacity: progress <= 0.6 ? 1 : progress >= 0.78 ? 0 : 1 - (progress - 0.6) / 0.18,
+    };
+  });
+  const fullMapPeekStyle = useAnimatedStyle(() => {
+    const progress = fullMapVisualProgress(fullMapProgress.value);
+    return {
+      height: fullMapPeekBodyHeight * progress,
+      opacity: progress <= 0.78 ? 0 : progress >= 0.9 ? 1 : (progress - 0.78) / 0.12,
+    };
+  });
   const collapseHandleStyle = useAnimatedStyle(() => ({
     opacity: 1 - collapseProgress.value,
   }));
@@ -1161,6 +1177,16 @@ export function DiscoveryScreen({
     }
   }
 
+  function commitMapRestoreToFullMap() {
+    commitForwardPresentation(false, 0);
+    setFullMap(true);
+    setCollapseMapButtonVisible(false);
+  }
+
+  function finishMapRestoreToFullMap() {
+    mapRestoreInProgress.current = false;
+  }
+
   function restoreResultsMap() {
     if (mapRestoreInProgress.current) return;
     mapRestoreInProgress.current = true;
@@ -1168,8 +1194,13 @@ export function DiscoveryScreen({
     observedListOffset.value = 0;
     topReachedTravel.value = -1;
     reverseRestorationActive.value = false;
-    collapseProgress.value = withTiming(0, { duration: 180 }, (finished) => {
-      if (finished) runOnJS(commitForwardPresentation)(false, 0);
+    collapseProgress.value = 0;
+    fullMapProgress.value = 2;
+    fullMapPresentationOnUi.value = true;
+    runOnJS(commitMapRestoreToFullMap)();
+    fullMapProgress.value = withTiming(1, { duration: 260 }, (finished) => {
+      if (!finished) return;
+      runOnJS(finishMapRestoreToFullMap)();
     });
     mapButtonShownOnUi.value = false;
   }
@@ -1379,11 +1410,11 @@ export function DiscoveryScreen({
             style={styles.resultsSearchSummary}
           >
             <Icon color={colors.primary} name="search" size={18} />
-            <View style={styles.flex}>
+            <View style={styles.resultsSearchTextColumn}>
               <Text numberOfLines={1} style={styles.resultSearchLocation}>
                 {activePlace.label}
               </Text>
-              <Text numberOfLines={1} style={styles.dateSummaryText}>
+              <Text numberOfLines={1} style={styles.resultsSearchDate}>
                 {tripDateSummary(pickup, returnAt)}
               </Text>
             </View>
@@ -1498,7 +1529,6 @@ export function DiscoveryScreen({
             style={[
               styles.resultsSheet,
               mapFullyCollapsed && styles.resultsSheetCollapsed,
-              !mapFullyCollapsed && styles.resultsSheetFullMap,
               fullMapSheetStyle,
             ]}
           >
@@ -1506,7 +1536,10 @@ export function DiscoveryScreen({
               <Reanimated.View
                 accessible={false}
                 importantForAccessibility="no"
-                style={styles.resultsSheetDragTarget}
+                style={[
+                  styles.resultsSheetDragTarget,
+                  mapFullyCollapsed && styles.resultsSheetDragTargetCollapsed,
+                ]}
               >
                 <Reanimated.View style={[styles.resultsSheetHandle, collapseHandleStyle]} />
               </Reanimated.View>
@@ -1528,11 +1561,7 @@ export function DiscoveryScreen({
                 accessibilityElementsHidden={fullMap}
                 importantForAccessibility={fullMap ? 'no-hide-descendants' : 'auto'}
                 pointerEvents={fullMap ? 'none' : 'auto'}
-                style={[
-                  styles.flex,
-                  !mapFullyCollapsed && styles.fullMapListViewport,
-                  fullMapListViewportStyle,
-                ]}
+                style={[styles.fullMapListViewport, fullMapListViewportStyle]}
               >
                 <Reanimated.View style={[styles.flex, fullMapContentStyle]}>
                   {listSearch.isPending ? (
@@ -1554,11 +1583,17 @@ export function DiscoveryScreen({
                       <Reanimated.FlatList
                         accessibilityLabel="Cars available vehicle list"
                         bounces={false}
+                        contentInsetAdjustmentBehavior="never"
                         ref={resultListRef}
                         style={styles.flex}
                         data={searchItems}
                         keyExtractor={(item) => item.vehicleId}
-                        ListHeaderComponent={<NormalResultsSummary summary={resultSummary} />}
+                        ListHeaderComponent={
+                          <NormalResultsSummary
+                            compact={mapFullyCollapsed}
+                            summary={resultSummary}
+                          />
+                        }
                         contentContainerStyle={[
                           styles.resultList,
                           { paddingBottom: Math.max(100, bottomSafeArea + 88) },
@@ -1641,10 +1676,7 @@ export function DiscoveryScreen({
           (searchItems.length > 0 || listSearch.isError) ? (
             <View
               pointerEvents="box-none"
-              style={[
-                styles.mapRestoreLayer,
-                { bottom: Math.max(spacing.md, bottomSafeArea + spacing.xs) },
-              ]}
+              style={[styles.mapRestoreLayer, { bottom: mapRestoreBottom }]}
             >
               <Pressable
                 accessibilityHint="Scrolls results to reveal the map."
@@ -2049,9 +2081,15 @@ export function DiscoveryScreen({
   );
 }
 
-function NormalResultsSummary({ summary }: { readonly summary: string }) {
+function NormalResultsSummary({
+  compact = false,
+  summary,
+}: {
+  readonly compact?: boolean;
+  readonly summary: string;
+}) {
   return (
-    <View style={styles.normalResultsSummary}>
+    <View style={[styles.normalResultsSummary, compact && styles.normalResultsSummaryCompact]}>
       <Text accessibilityRole="header" style={styles.resultsHeading}>
         {summary}
       </Text>
@@ -4570,7 +4608,7 @@ const styles = StyleSheet.create({
     top: -3,
   },
   flex: { flex: 1, minWidth: 0 },
-  fullMapListViewport: { flex: 0, overflow: 'hidden' },
+  fullMapListViewport: { minHeight: 0, overflow: 'hidden' },
   fullMapPeekBody: {
     alignItems: 'center',
     alignSelf: 'stretch',
@@ -4749,6 +4787,7 @@ const styles = StyleSheet.create({
   resultsHeaderButtonActive: { backgroundColor: colors.primarySoft, borderColor: colors.primary },
   resultsHeading: { color: colors.ink, fontSize: 16, fontWeight: '900' },
   normalResultsSummary: { paddingTop: spacing.xs },
+  normalResultsSummaryCompact: { paddingTop: spacing.xl },
   mapRestoreButton: {
     alignItems: 'center',
     backgroundColor: colors.ink,
@@ -4804,15 +4843,16 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 0,
     elevation: 0,
     marginTop: 0,
+    paddingTop: 0,
     shadowOpacity: 0,
   },
-  resultsSheetFullMap: { flex: 0, marginTop: -spacing.sm },
   resultsSheetDragTarget: {
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 28,
     width: '100%',
   },
+  resultsSheetDragTargetCollapsed: { height: 0, minHeight: 0 },
   resultsSheetHandle: {
     backgroundColor: colors.border,
     borderRadius: radius.pill,
@@ -4845,6 +4885,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   resultSearchLocation: { color: colors.ink, fontSize: 15, fontWeight: '900' },
+  resultsSearchDate: { color: colors.primaryDark, fontSize: 12, fontWeight: '700' },
+  resultsSearchTextColumn: {
+    alignItems: 'flex-start',
+    flex: 1,
+    justifyContent: 'center',
+    minWidth: 0,
+  },
   row: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
   searchCard: { gap: spacing.md },
   searchDetail: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
