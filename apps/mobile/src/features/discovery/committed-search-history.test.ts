@@ -20,6 +20,7 @@ const base = {
   minPrice: '',
   maxPrice: '',
   handover: 'ANY',
+  returnHandover: 'ANY',
 };
 
 describe('committed search history payload', () => {
@@ -45,6 +46,19 @@ describe('committed search history payload', () => {
       end: '2026-09-27T09:00:00.000Z',
       powertrain: 'BATTERY_ELECTRIC',
       seats: 7,
+    });
+  });
+
+  it('records return capability independently from pickup capability', () => {
+    expect(
+      committedSearchPayload({
+        ...base,
+        handover: 'DELIVERY_AVAILABLE',
+        returnHandover: 'OWNER_COLLECTION_AVAILABLE',
+      }),
+    ).toMatchObject({
+      handover: 'DELIVERY_AVAILABLE',
+      returnHandover: 'OWNER_COLLECTION_AVAILABLE',
     });
   });
 

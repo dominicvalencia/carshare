@@ -52,6 +52,7 @@ export class RenterHistoryService {
       ...(input.minPrice !== undefined ? { minPrice: input.minPrice } : {}),
       ...(input.maxPrice !== undefined ? { maxPrice: input.maxPrice } : {}),
       ...(input.handover ? { handover: input.handover } : {}),
+      ...(input.returnHandover ? { returnHandover: input.returnHandover } : {}),
     };
     return this.database.client.$transaction(async (transaction) => {
       await transaction.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId}::uuid FOR UPDATE`;

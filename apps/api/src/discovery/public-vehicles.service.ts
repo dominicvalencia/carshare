@@ -13,8 +13,13 @@ import type { RequestPrincipal } from '../security/security-context';
 import { AnalyticsEventType, DiscoveryAnalyticsService } from './analytics.service';
 import { AvailabilityService } from './availability.service';
 import type { SearchVehiclesDto } from './discovery.dto';
-import { VehicleHandoverFilter, VehicleSearchMode, VehicleSearchSort } from './discovery.dto';
-import { matchesHandoverFilter } from './fulfillment-discovery';
+import {
+  VehicleHandoverFilter,
+  VehicleReturnHandoverFilter,
+  VehicleSearchMode,
+  VehicleSearchSort,
+} from './discovery.dto';
+import { matchesHandoverFilter, matchesReturnHandoverFilter } from './fulfillment-discovery';
 import { RentalDurationService } from './duration.service';
 import { durationDiscount } from './duration-discounts';
 import {
@@ -95,7 +100,7 @@ export class PublicVehiclesService {
       undefined,
       principal?.userId,
     );
-    vehicles = vehicles.filter((vehicle) => this.matches(vehicle, input));
+    vehicles = vehicles.filter((vehicle) => this.matches(vehicle, input, false));
     let availabilities: Awaited<ReturnType<AvailabilityService['checkMany']>> | undefined;
     let chargeableDays: number | undefined;
     if (input.start && input.end) {
@@ -103,6 +108,19 @@ export class PublicVehiclesService {
       availabilities = await this.availability.checkMany(vehicles, input.start, input.end);
       vehicles = vehicles.filter((vehicle) => availabilities!.get(vehicle.id)?.available);
     }
+    const priceCurrencies = new Set(
+      vehicles.map((vehicle) => vehicle.policyVersions[0]!.currency.toUpperCase()),
+    );
+    const eligiblePrices = vehicles.map((vehicle) => vehicle.policyVersions[0]!.dailyRateMinor);
+    const pricePerDay =
+      eligiblePrices.length > 0 && priceCurrencies.size === 1
+        ? {
+            currency: [...priceCurrencies][0]!,
+            minMinor: Math.min(...eligiblePrices),
+            maxMinor: Math.max(...eligiblePrices),
+          }
+        : null;
+    vehicles = vehicles.filter((vehicle) => this.matchesPrice(vehicle, input));
     vehicles.sort((left, right) => this.compare(left, right, distance, input.sort));
     if (input.cursor) {
       const cursor = this.decodeCursor(input.cursor, input);
@@ -181,6 +199,7 @@ export class PublicVehiclesService {
       userId: principal?.userId,
     });
     return {
+      facets: { pricePerDay },
       items,
       pageInfo: {
         hasNextPage,
@@ -347,7 +366,11 @@ export class PublicVehiclesService {
     return this.eligibility.diagnostic(id);
   }
 
-  private matches(vehicle: PublicVehicleRecord, input: SearchVehiclesDto): boolean {
+  private matches(
+    vehicle: PublicVehicleRecord,
+    input: SearchVehiclesDto,
+    includePrice = true,
+  ): boolean {
     const policy = vehicle.policyVersions[0]!;
     const featureIds = new Set(vehicle.features.map(({ feature }) => feature.id));
     return (
@@ -358,14 +381,22 @@ export class PublicVehiclesService {
       (!input.powertrain || vehicle.powertrain === input.powertrain) &&
       (!input.fuelType || vehicle.fuelType === input.fuelType) &&
       (!input.seats || (vehicle.seatCount ?? 0) >= input.seats) &&
-      (input.minPrice === undefined || policy.dailyRateMinor >= input.minPrice) &&
-      (input.maxPrice === undefined || policy.dailyRateMinor <= input.maxPrice) &&
+      (!includePrice || this.matchesPrice(vehicle, input)) &&
       (input.unlimitedMileage === undefined ||
         (policy.mileagePolicy === 'UNLIMITED') === input.unlimitedMileage) &&
       (!input.featureIds ||
         input.featureIds.length === 0 ||
         input.featureIds.every((id) => featureIds.has(id))) &&
-      matchesHandoverFilter(policy, input.handover ?? VehicleHandoverFilter.ANY)
+      matchesHandoverFilter(policy, input.handover ?? VehicleHandoverFilter.ANY) &&
+      matchesReturnHandoverFilter(policy, input.returnHandover ?? VehicleReturnHandoverFilter.ANY)
+    );
+  }
+
+  private matchesPrice(vehicle: PublicVehicleRecord, input: SearchVehiclesDto): boolean {
+    const dailyRateMinor = vehicle.policyVersions[0]!.dailyRateMinor;
+    return (
+      (input.minPrice === undefined || dailyRateMinor >= input.minPrice) &&
+      (input.maxPrice === undefined || dailyRateMinor <= input.maxPrice)
     );
   }
 
@@ -515,6 +546,7 @@ export class PublicVehiclesService {
       transmission: input.transmission ?? null,
       unlimitedMileage: input.unlimitedMileage ?? null,
       handover: input.handover ?? VehicleHandoverFilter.ANY,
+      returnHandover: input.returnHandover ?? VehicleReturnHandoverFilter.ANY,
     });
   }
 
@@ -540,6 +572,9 @@ export class PublicVehiclesService {
       input.unlimitedMileage,
       input.featureIds?.length,
       !input.handover || input.handover === VehicleHandoverFilter.ANY ? undefined : input.handover,
+      !input.returnHandover || input.returnHandover === VehicleReturnHandoverFilter.ANY
+        ? undefined
+        : input.returnHandover,
     ].filter((value) => value !== undefined).length;
   }
 }

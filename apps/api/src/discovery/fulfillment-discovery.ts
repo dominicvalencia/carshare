@@ -1,5 +1,5 @@
 import { evaluateFulfillmentServiceability } from '../fulfillment/fulfillment-serviceability';
-import { VehicleHandoverFilter } from './discovery.dto';
+import { VehicleHandoverFilter, VehicleReturnHandoverFilter } from './discovery.dto';
 
 export interface PublicFulfillmentPolicy {
   readonly collectionFeeMinor: number | null;
@@ -20,6 +20,17 @@ export function matchesHandoverFilter(
   if (filter === VehicleHandoverFilter.DELIVERY_AVAILABLE) return policy.supportsOwnerDelivery;
   if (filter === VehicleHandoverFilter.PICKUP_AND_DELIVERY)
     return policy.supportsRenterPickup && policy.supportsOwnerDelivery;
+  return true;
+}
+
+export function matchesReturnHandoverFilter(
+  policy: PublicFulfillmentPolicy,
+  filter: VehicleReturnHandoverFilter,
+) {
+  if (filter === VehicleReturnHandoverFilter.RENTER_RETURN_AVAILABLE)
+    return policy.supportsRenterReturn;
+  if (filter === VehicleReturnHandoverFilter.OWNER_COLLECTION_AVAILABLE)
+    return policy.supportsOwnerCollection;
   return true;
 }
 

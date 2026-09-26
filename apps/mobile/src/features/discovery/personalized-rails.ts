@@ -34,6 +34,7 @@ export interface ReconstructedSearch {
   readonly minPrice: string;
   readonly maxPrice: string;
   readonly handover: string;
+  readonly returnHandover: string;
 }
 
 export interface ExploreRailCard {
@@ -75,10 +76,12 @@ const allowedCriteria = new Set([
   'minPrice',
   'maxPrice',
   'handover',
+  'returnHandover',
 ]);
 const transmissions = new Set(['AUTOMATIC', 'MANUAL', 'CVT', 'DCT', 'OTHER']);
 const powertrains = new Set(['ICE', 'HYBRID', 'PLUG_IN_HYBRID', 'BATTERY_ELECTRIC']);
 const handovers = new Set(['ANY', 'PICKUP_AVAILABLE', 'DELIVERY_AVAILABLE', 'PICKUP_AND_DELIVERY']);
+const returnHandovers = new Set(['ANY', 'RENTER_RETURN_AVAILABLE', 'OWNER_COLLECTION_AVAILABLE']);
 
 function optionalString(value: unknown): string | null {
   return value === undefined || (typeof value === 'string' && value.length > 0)
@@ -124,14 +127,26 @@ export function reconstructSearch(record: HistorySearchRecord): ReconstructedSea
   const minPrice = optionalInteger(saved.minPrice, 0);
   const maxPrice = optionalInteger(saved.maxPrice, 0);
   const handover = optionalString(saved.handover);
+  const returnHandover = optionalString(saved.returnHandover);
   if (
-    [categoryId, make, seats, transmission, powertrain, minPrice, maxPrice, handover].includes(null)
+    [
+      categoryId,
+      make,
+      seats,
+      transmission,
+      powertrain,
+      minPrice,
+      maxPrice,
+      handover,
+      returnHandover,
+    ].includes(null)
   )
     return null;
   if (
     (transmission && !transmissions.has(transmission)) ||
     (powertrain && !powertrains.has(powertrain)) ||
     (handover && !handovers.has(handover)) ||
+    (returnHandover && !returnHandovers.has(returnHandover)) ||
     (minPrice && maxPrice && minPrice > maxPrice)
   )
     return null;
@@ -167,6 +182,7 @@ export function reconstructSearch(record: HistorySearchRecord): ReconstructedSea
   if (minPrice) query.set('minPrice', String(minPrice));
   if (maxPrice) query.set('maxPrice', String(maxPrice));
   if (handover && handover !== 'ANY') query.set('handover', handover);
+  if (returnHandover && returnHandover !== 'ANY') query.set('returnHandover', returnHandover);
 
   return {
     title: `Continue exploring ${record.placeLabel.trim()}`,
@@ -190,6 +206,7 @@ export function reconstructSearch(record: HistorySearchRecord): ReconstructedSea
     minPrice: minPrice ? String(minPrice / 100) : '',
     maxPrice: maxPrice ? String(maxPrice / 100) : '',
     handover: handover || 'ANY',
+    returnHandover: returnHandover || 'ANY',
   };
 }
 

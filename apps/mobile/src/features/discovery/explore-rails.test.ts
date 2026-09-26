@@ -47,6 +47,17 @@ describe('truthful Explore rail criteria', () => {
     expect(electric).toBe(exploreRailQuery(makati, 25, 'ELECTRIC'));
   });
 
+  it('keeps pickup and return capability criteria independent', () => {
+    const query = new URLSearchParams(
+      exploreRailQuery(makati, 25, 'AREA', {
+        handover: 'DELIVERY_AVAILABLE',
+        returnHandover: 'RENTER_RETURN_AVAILABLE',
+      }),
+    );
+    expect(query.get('handover')).toBe('DELIVERY_AVAILABLE');
+    expect(query.get('returnHandover')).toBe('RENTER_RETURN_AVAILABLE');
+  });
+
   it('deduplicates within a rail but permits a vehicle in different rails', () => {
     const car = { vehicleId: 'one' };
     const area = uniqueRailVehicles([car, car, { vehicleId: 'two' }]);

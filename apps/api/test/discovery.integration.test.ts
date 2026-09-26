@@ -126,6 +126,24 @@ describe.sequential('Phase 4 public discovery integration', () => {
       firstVehicleId,
       secondVehicleId,
     ]);
+    expect(anonymous.body.data.facets.pricePerDay).toEqual({
+      currency: 'PHP',
+      minMinor: 220_000,
+      maxMinor: 250_000,
+    });
+
+    const priceFiltered = await request(app.getHttpServer())
+      .get('/api/v1/vehicles/search')
+      .query({ ...query, minPrice: 240_000 })
+      .expect(200);
+    expect(
+      priceFiltered.body.data.items.map((item: { vehicleId: string }) => item.vehicleId),
+    ).toEqual([firstVehicleId]);
+    expect(priceFiltered.body.data.facets.pricePerDay).toEqual({
+      currency: 'PHP',
+      minMinor: 220_000,
+      maxMinor: 250_000,
+    });
 
     const asOwner = await request(app.getHttpServer())
       .get('/api/v1/vehicles/search')

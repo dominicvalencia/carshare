@@ -45,6 +45,7 @@ describe('map discovery regression', () => {
 
   it('uses one shared criteria authority for simultaneous LIST and MAP projections', () => {
     expect(screenSource).toContain("query.set('handover', handover)");
+    expect(screenSource).toContain("query.set('returnHandover', returnHandover)");
     expect(screenSource).toContain(
       'const listQueryString = `${activeCriteriaQueryString}&limit=10&mode=LIST`',
     );

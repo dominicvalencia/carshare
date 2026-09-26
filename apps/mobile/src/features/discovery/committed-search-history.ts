@@ -20,6 +20,7 @@ export interface CommittedSearchInput {
   readonly minPrice: string;
   readonly maxPrice: string;
   readonly handover: string;
+  readonly returnHandover: string;
 }
 
 export function committedSearchPayload(input: CommittedSearchInput) {
@@ -43,5 +44,6 @@ export function committedSearchPayload(input: CommittedSearchInput) {
     ...(input.minPrice ? { minPrice: Math.round(Number(input.minPrice) * 100) } : {}),
     ...(input.maxPrice ? { maxPrice: Math.round(Number(input.maxPrice) * 100) } : {}),
     ...(input.handover !== 'ANY' ? { handover: input.handover } : {}),
+    ...(input.returnHandover !== 'ANY' ? { returnHandover: input.returnHandover } : {}),
   };
 }

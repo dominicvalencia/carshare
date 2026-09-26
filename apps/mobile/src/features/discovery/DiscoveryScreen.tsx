@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import type { NavigationProp } from '@react-navigation/native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -24,8 +24,10 @@ import {
   FlatList,
   findNodeHandle,
   Keyboard,
+  KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -54,7 +56,6 @@ import {
   Button,
   Card,
   Chip,
-  Field,
   Icon,
   IconButton,
   Screen,
@@ -84,6 +85,15 @@ import { tripDateSummary } from './trip-date-policy';
 import { formatResultSummary, uniqueVehicleCount } from './result-summary';
 import { areaRailTitle, exploreRailQuery, showTripRail, uniqueRailVehicles } from './explore-rails';
 import { committedSearchPayload } from './committed-search-history';
+import { PriceRangeSlider } from './PriceRangeSlider';
+import { MinimumSeatsSlider } from './MinimumSeatsSlider';
+import {
+  cloneDiscoveryFilters,
+  DEFAULT_DISCOVERY_FILTERS,
+  discoveryFiltersEqual,
+  priceRangeError,
+  type DiscoveryFilters,
+} from './filter-draft';
 import {
   latestReconstructibleSearch,
   recentVehicleCards,
@@ -154,6 +164,13 @@ export interface VehicleCardView {
   };
 }
 interface SearchResponse {
+  readonly facets?: {
+    readonly pricePerDay: {
+      readonly currency: string;
+      readonly minMinor: number;
+      readonly maxMinor: number;
+    } | null;
+  };
   readonly items: readonly VehicleCardView[];
   readonly pageInfo: { hasNextPage: boolean; nextCursor: string | null };
 }
@@ -333,6 +350,7 @@ export function DiscoveryScreen({
   const [minPrice, setMinPrice] = useState('');
   const [maxPrice, setMaxPrice] = useState('');
   const [handover, setHandover] = useState('ANY');
+  const [returnHandover, setReturnHandover] = useState('ANY');
   const [locationError, setLocationError] = useState('');
   const [recoveryActionsOpen, setRecoveryActionsOpen] = useState(false);
   const [recoveryClock, setRecoveryClock] = useState(() => Date.now());
@@ -370,6 +388,7 @@ export function DiscoveryScreen({
   const resultsFilterCount = activeFilterCount({
     categoryId,
     handover: handover === 'ANY' ? '' : handover,
+    returnHandover: returnHandover === 'ANY' ? '' : returnHandover,
     make,
     maxPrice,
     minPrice,
@@ -396,6 +415,7 @@ export function DiscoveryScreen({
     if (minPrice) query.set('minPrice', String(Math.round(Number(minPrice) * 100)));
     if (maxPrice) query.set('maxPrice', String(Math.round(Number(maxPrice) * 100)));
     if (handover !== 'ANY') query.set('handover', handover);
+    if (returnHandover !== 'ANY') query.set('returnHandover', returnHandover);
     return query.toString();
   }, [
     make,
@@ -410,6 +430,7 @@ export function DiscoveryScreen({
     seats,
     transmission,
     handover,
+    returnHandover,
   ]);
   const listQueryString = `${activeCriteriaQueryString}&limit=10&mode=LIST`;
   const mapQueryString = `${activeCriteriaQueryString}&limit=50&mode=MAP`;
@@ -418,6 +439,7 @@ export function DiscoveryScreen({
   const areaRailQueryString = exploreRailQuery(activePlace, activeRadiusKm, 'AREA', {
     categoryId,
     handover,
+    returnHandover,
     powertrain,
     seats,
   });
@@ -1041,6 +1063,7 @@ export function DiscoveryScreen({
     setMinPrice(continuedSearch.minPrice);
     setMaxPrice(continuedSearch.maxPrice);
     setHandover(continuedSearch.handover);
+    setReturnHandover(continuedSearch.returnHandover);
     setExploreShortcut('CUSTOM');
     resetResultsViewport();
     setMode('results');
@@ -1069,6 +1092,7 @@ export function DiscoveryScreen({
               minPrice,
               maxPrice,
               handover,
+              returnHandover,
             }),
           ),
           method: 'POST',
@@ -1320,6 +1344,38 @@ export function DiscoveryScreen({
   function toggleResultsDelivery() {
     prepareResultsFilterChange();
     setHandover(deliveryFilterActive ? 'ANY' : 'DELIVERY_AVAILABLE');
+  }
+
+  const committedFilters: DiscoveryFilters = {
+    radiusKm: activeRadiusKm,
+    make,
+    categoryId,
+    seats,
+    transmission,
+    powertrain,
+    minPrice,
+    maxPrice,
+    handover,
+    returnHandover,
+  };
+
+  function applyFilters(next: DiscoveryFilters) {
+    const changed = !discoveryFiltersEqual(committedFilters, next);
+    if (changed) prepareResultsFilterChange();
+    setRadiusKm(next.radiusKm);
+    setActiveRadiusKm(next.radiusKm);
+    setMake(next.make);
+    setCategoryId(next.categoryId);
+    setSeats(next.seats);
+    setTransmission(next.transmission);
+    setPowertrain(next.powertrain);
+    setMinPrice(next.minPrice);
+    setMaxPrice(next.maxPrice);
+    setHandover(next.handover);
+    setReturnHandover(next.returnHandover);
+    syncExploreShortcut(next.categoryId, next.powertrain, next.seats);
+    if (home) setExploreShortcut('CUSTOM');
+    setFiltersOpen(false);
   }
 
   const searchEditor = (
@@ -1700,35 +1756,12 @@ export function DiscoveryScreen({
         {searchEditor}
         {filtersOpen && (
           <FilterSheet
+            committed={committedFilters}
+            priceRange={listSearch.data?.pages[0]?.facets?.pricePerDay}
             referenceData={reference.data}
-            {...{
-              filtersOpen,
-              setFiltersOpen,
-              radiusKm,
-              setRadiusKm,
-              make,
-              setMake,
-              categoryId,
-              setCategoryId,
-              seats,
-              setSeats,
-              transmission,
-              setTransmission,
-              powertrain,
-              setPowertrain,
-              minPrice,
-              setMinPrice,
-              maxPrice,
-              setMaxPrice,
-              handover,
-              setHandover,
-            }}
-            onApply={() => {
-              prepareResultsFilterChange();
-              setActiveRadiusKm(radiusKm);
-              syncExploreShortcut(categoryId, powertrain, seats);
-              setFiltersOpen(false);
-            }}
+            filtersOpen={filtersOpen}
+            onApply={applyFilters}
+            onClose={() => setFiltersOpen(false)}
           />
         )}
       </Screen>
@@ -1916,8 +1949,9 @@ export function DiscoveryScreen({
                 minPrice,
                 maxPrice,
                 handover: handover === 'ANY' ? '' : handover,
+                returnHandover: returnHandover === 'ANY' ? '' : returnHandover,
               })
-                ? `${activeFilterCount({ make, categoryId, seats, transmission, powertrain, minPrice, maxPrice, handover: handover === 'ANY' ? '' : handover })} filters`
+                ? `${activeFilterCount({ make, categoryId, seats, transmission, powertrain, minPrice, maxPrice, handover: handover === 'ANY' ? '' : handover, returnHandover: returnHandover === 'ANY' ? '' : returnHandover })} filters`
                 : 'Filters'
             }
             onPress={() => setFiltersOpen(true)}
@@ -2048,35 +2082,16 @@ export function DiscoveryScreen({
         </>
       )}
       {searchEditor}
-      <FilterSheet
-        referenceData={reference.data}
-        {...{
-          filtersOpen,
-          setFiltersOpen,
-          radiusKm,
-          setRadiusKm,
-          make,
-          setMake,
-          categoryId,
-          setCategoryId,
-          seats,
-          setSeats,
-          transmission,
-          setTransmission,
-          powertrain,
-          setPowertrain,
-          minPrice,
-          setMinPrice,
-          maxPrice,
-          setMaxPrice,
-          handover,
-          setHandover,
-        }}
-        onApply={() => {
-          setExploreShortcut('CUSTOM');
-          setFiltersOpen(false);
-        }}
-      />
+      {filtersOpen ? (
+        <FilterSheet
+          committed={committedFilters}
+          priceRange={listSearch.data?.pages[0]?.facets?.pricePerDay}
+          referenceData={reference.data}
+          filtersOpen={filtersOpen}
+          onApply={applyFilters}
+          onClose={() => setFiltersOpen(false)}
+        />
+      ) : null}
     </Screen>
   );
 }
@@ -4118,147 +4133,269 @@ function LocationSheet({
 
 type FilterProperties = {
   readonly referenceData?: VehicleReferenceData | undefined;
+  readonly priceRange?: NonNullable<SearchResponse['facets']>['pricePerDay'] | undefined;
   readonly filtersOpen: boolean;
-  readonly setFiltersOpen: (value: boolean) => void;
-  readonly radiusKm: number;
-  readonly setRadiusKm: (value: number) => void;
-  readonly make: string;
-  readonly setMake: (value: string) => void;
-  readonly categoryId: string;
-  readonly setCategoryId: (value: string) => void;
-  readonly seats: string;
-  readonly setSeats: (value: string) => void;
-  readonly transmission: string;
-  readonly setTransmission: (value: string) => void;
-  readonly powertrain: string;
-  readonly setPowertrain: (value: string) => void;
-  readonly minPrice: string;
-  readonly setMinPrice: (value: string) => void;
-  readonly maxPrice: string;
-  readonly setMaxPrice: (value: string) => void;
-  readonly handover: string;
-  readonly setHandover: (value: string) => void;
-  readonly onApply: () => void;
+  readonly committed: DiscoveryFilters;
+  readonly onClose: () => void;
+  readonly onApply: (filters: DiscoveryFilters) => void;
 };
 function FilterSheet(properties: FilterProperties) {
-  const clear = () => {
-    properties.setMake('');
-    properties.setCategoryId('');
-    properties.setSeats('');
-    properties.setTransmission('');
-    properties.setPowertrain('');
-    properties.setMinPrice('');
-    properties.setMaxPrice('');
-    properties.setHandover('ANY');
-    properties.setRadiusKm(25);
+  const { bottom } = useSafeAreaInsets();
+  const [draft, setDraft] = useState(() => cloneDiscoveryFilters(properties.committed));
+  const [validationError, setValidationError] = useState('');
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+  const updateDraft = <Key extends keyof DiscoveryFilters>(
+    key: Key,
+    value: DiscoveryFilters[Key],
+  ) => {
+    setValidationError('');
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+  const close = () => {
+    setDraft(cloneDiscoveryFilters(properties.committed));
+    setValidationError('');
+    properties.onClose();
+  };
+  const apply = () => {
+    const error = priceRangeError(draft);
+    if (error) {
+      setValidationError(error);
+      return;
+    }
+    properties.onApply(draft);
   };
   return (
     <Modal
       animationType="slide"
-      onRequestClose={() => properties.setFiltersOpen(false)}
+      onRequestClose={close}
       presentationStyle="pageSheet"
       visible={properties.filtersOpen}
     >
-      <Screen
-        title="Filters"
-        subtitle="Narrow the cars shown. Availability and final price are still checked by the platform."
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.filterSheet}
       >
-        <SectionHeader title="Search radius" />
-        <View style={styles.quickRow}>
-          {[5, 10, 25, 50, 100].map((value) => (
-            <Chip
-              key={value}
-              label={`${value} km`}
-              selected={properties.radiusKm === value}
-              onPress={() => properties.setRadiusKm(value)}
-            />
-          ))}
+        <View style={styles.filterHeader}>
+          <Pressable accessibilityLabel="Close filters" accessibilityRole="button" onPress={close}>
+            <Text style={styles.filterHeaderAction}>Close</Text>
+          </Pressable>
+          <Text accessibilityRole="header" style={styles.filterTitle}>
+            Filters
+          </Text>
+          <View style={styles.filterHeaderSpacer} />
         </View>
-        <SearchableReferenceSelector
-          allowAny
-          anyLabel="Any make"
-          label="Make"
-          options={(properties.referenceData?.makes ?? []).map((item) => ({
-            ...item,
-            id: item.name,
-          }))}
-          value={properties.make}
-          onChange={properties.setMake}
-        />
-        <SearchableReferenceSelector
-          allowAny
-          anyLabel="Any vehicle type"
-          label="Vehicle type"
-          options={properties.referenceData?.categories ?? []}
-          value={properties.categoryId}
-          onChange={properties.setCategoryId}
-        />
-        <SectionHeader title="Advanced filters" />
-        <SectionHeader title="Handover" />
-        <View accessibilityLabel="Handover filter" style={styles.quickRow}>
-          {[
-            ['ANY', 'Any'],
-            ['PICKUP_AVAILABLE', 'Pickup available'],
-            ['DELIVERY_AVAILABLE', 'Delivery available'],
-            ['PICKUP_AND_DELIVERY', 'Pickup & delivery available'],
-          ].map(([value, label]) => (
-            <Chip
-              key={value}
-              label={label!}
-              selected={properties.handover === value}
-              onPress={() => properties.setHandover(value!)}
+        <ScrollView
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+          contentContainerStyle={styles.filterContent}
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.filterIntro}>
+            Narrow the cars shown. Availability and final price are still checked by the platform.
+          </Text>
+          <FilterSection title="Search area">
+            <Text style={styles.filterHelp}>Distance from your selected location</Text>
+            <View accessibilityLabel="Search radius" style={styles.quickRow}>
+              {[5, 10, 25, 50, 100].map((value) => (
+                <Chip
+                  key={value}
+                  label={`${value} km`}
+                  selected={draft.radiusKm === value}
+                  onPress={() => updateDraft('radiusKm', value)}
+                />
+              ))}
+            </View>
+          </FilterSection>
+          <FilterSection title="Vehicle type">
+            <View style={styles.quickRow}>
+              <Chip
+                label="Any"
+                selected={!draft.categoryId}
+                onPress={() => updateDraft('categoryId', '')}
+              />
+              {(properties.referenceData?.categories ?? []).map((item) => (
+                <Chip
+                  key={item.id}
+                  label={item.name}
+                  selected={draft.categoryId === item.id}
+                  onPress={() => updateDraft('categoryId', item.id)}
+                />
+              ))}
+            </View>
+            {!properties.referenceData ? (
+              <Text accessibilityLiveRegion="polite" style={styles.filterHelp}>
+                Loading vehicle types…
+              </Text>
+            ) : null}
+          </FilterSection>
+          <FilterSection title="Make">
+            <SearchableReferenceSelector
+              allowAny
+              anyLabel="Any make"
+              label="Make"
+              options={(properties.referenceData?.makes ?? []).map((item) => ({
+                ...item,
+                id: item.name,
+              }))}
+              value={draft.make}
+              onChange={(value) => updateDraft('make', value)}
             />
-          ))}
-        </View>
-        <Field
-          label="Minimum seats (optional)"
-          value={properties.seats}
-          onChangeText={properties.setSeats}
-          keyboardType="number-pad"
-          placeholder="e.g. 5"
-        />
-        <SectionHeader title="Transmission" />
-        <View style={styles.quickRow}>
-          {['', 'AUTOMATIC', 'MANUAL', 'CVT'].map((value) => (
-            <Chip
-              key={value || 'any'}
-              label={value ? domainLabel(value) : 'Any'}
-              selected={properties.transmission === value}
-              onPress={() => properties.setTransmission(value)}
+          </FilterSection>
+          <FilterSection title="Powertrain">
+            <View style={styles.quickRow}>
+              {[
+                ['', 'Any'],
+                ['ICE', 'Gas or diesel'],
+                ['HYBRID', 'Hybrid'],
+                ['PLUG_IN_HYBRID', 'Plug-in hybrid'],
+                ['BATTERY_ELECTRIC', 'Electric'],
+              ].map(([value, label]) => (
+                <Chip
+                  key={value || 'any'}
+                  label={label!}
+                  selected={draft.powertrain === value}
+                  onPress={() => updateDraft('powertrain', value!)}
+                />
+              ))}
+            </View>
+          </FilterSection>
+          <FilterSection title="Price per day">
+            <Text style={styles.filterHelp}>Prices in Philippine pesos (PHP)</Text>
+            {properties.priceRange?.currency === 'PHP' &&
+            properties.priceRange.maxMinor > properties.priceRange.minMinor ? (
+              <PriceRangeSlider
+                bounds={properties.priceRange}
+                key={`${draft.minPrice}:${draft.maxPrice}:${properties.priceRange.minMinor}:${properties.priceRange.maxMinor}`}
+                maximum={
+                  draft.maxPrice
+                    ? Math.min(
+                        properties.priceRange.maxMinor / 100,
+                        Math.max(properties.priceRange.minMinor / 100, Number(draft.maxPrice)),
+                      )
+                    : properties.priceRange.maxMinor / 100
+                }
+                minimum={
+                  draft.minPrice
+                    ? Math.max(
+                        properties.priceRange.minMinor / 100,
+                        Math.min(properties.priceRange.maxMinor / 100, Number(draft.minPrice)),
+                      )
+                    : properties.priceRange.minMinor / 100
+                }
+                onChange={(minimum, maximum) => {
+                  setValidationError('');
+                  setDraft((current) => ({
+                    ...current,
+                    minPrice: String(minimum),
+                    maxPrice: String(maximum),
+                  }));
+                }}
+              />
+            ) : null}
+            {validationError ? (
+              <Text accessibilityLiveRegion="assertive" style={styles.filterError}>
+                {validationError}
+              </Text>
+            ) : null}
+          </FilterSection>
+          <FilterSection title="Transmission">
+            <View style={styles.quickRow}>
+              {['', 'AUTOMATIC', 'MANUAL', 'CVT', 'DCT', 'OTHER'].map((value) => (
+                <Chip
+                  key={value || 'any'}
+                  label={value ? domainLabel(value) : 'Any'}
+                  selected={draft.transmission === value}
+                  onPress={() => updateDraft('transmission', value)}
+                />
+              ))}
+            </View>
+          </FilterSection>
+          <FilterSection title="Minimum seats">
+            <MinimumSeatsSlider
+              key={draft.seats || 'any'}
+              onChange={(value) => updateDraft('seats', value)}
+              value={draft.seats}
             />
-          ))}
-        </View>
-        <SectionHeader title="Powertrain" />
-        <View style={styles.quickRow}>
-          {['', 'ICE', 'HYBRID', 'BATTERY_ELECTRIC'].map((value) => (
-            <Chip
-              key={value || 'any'}
-              label={value ? domainLabel(value) : 'Any'}
-              selected={properties.powertrain === value}
-              onPress={() => properties.setPowertrain(value)}
-            />
-          ))}
-        </View>
-        <View style={styles.dateGrid}>
-          <Field
-            label="Minimum price / day"
-            value={properties.minPrice}
-            onChangeText={properties.setMinPrice}
-            keyboardType="number-pad"
-            placeholder="₱"
+          </FilterSection>
+          <FilterSection title="Handover options">
+            <Text style={styles.filterGroupLabel}>Pickup</Text>
+            <View accessibilityLabel="Pickup options" style={styles.quickRow}>
+              {[
+                ['ANY', 'Any'],
+                ['PICKUP_AVAILABLE', 'Pick up the car'],
+                ['DELIVERY_AVAILABLE', 'Owner delivery'],
+              ].map(([value, label]) => (
+                <Chip
+                  key={value}
+                  label={label!}
+                  selected={draft.handover === value}
+                  onPress={() => updateDraft('handover', value!)}
+                />
+              ))}
+            </View>
+            <Text style={styles.filterGroupLabel}>Return</Text>
+            <View accessibilityLabel="Return options" style={styles.quickRow}>
+              {[
+                ['ANY', 'Any'],
+                ['RENTER_RETURN_AVAILABLE', 'Return it yourself'],
+                ['OWNER_COLLECTION_AVAILABLE', 'Owner collection'],
+              ].map(([value, label]) => (
+                <Chip
+                  key={value}
+                  label={label!}
+                  selected={draft.returnHandover === value}
+                  onPress={() => updateDraft('returnHandover', value!)}
+                />
+              ))}
+            </View>
+          </FilterSection>
+        </ScrollView>
+        <View
+          style={[
+            styles.filterActions,
+            {
+              paddingBottom: Math.max(bottom, spacing.sm) + (keyboardVisible ? spacing.md : 0),
+            },
+          ]}
+        >
+          <Button
+            label="Clear all"
+            onPress={() => {
+              setDraft(cloneDiscoveryFilters(DEFAULT_DISCOVERY_FILTERS));
+              setValidationError('');
+            }}
+            variant="ghost"
           />
-          <Field
-            label="Maximum price / day"
-            value={properties.maxPrice}
-            onChangeText={properties.setMaxPrice}
-            keyboardType="number-pad"
-            placeholder="₱"
-          />
+          <View style={styles.filterApplyButton}>
+            <Button label="Show cars" onPress={apply} />
+          </View>
         </View>
-        <Button label="Show cars" onPress={properties.onApply} />
-        <Button label="Clear filters" onPress={clear} variant="ghost" />
-      </Screen>
+      </KeyboardAvoidingView>
     </Modal>
+  );
+}
+
+function FilterSection({
+  children,
+  title,
+}: {
+  readonly children: ReactNode;
+  readonly title: string;
+}) {
+  return (
+    <View style={styles.filterSection}>
+      <SectionHeader title={title} />
+      {children}
+    </View>
   );
 }
 
@@ -4606,6 +4743,47 @@ const styles = StyleSheet.create({
     right: -3,
     textAlign: 'center',
     top: -3,
+  },
+  filterActions: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  filterApplyButton: { flex: 1 },
+  filterContent: {
+    gap: spacing.lg,
+    paddingBottom: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  filterError: { color: colors.danger, fontSize: 13, fontWeight: '700', lineHeight: 19 },
+  filterGroupLabel: { color: colors.ink, fontSize: 14, fontWeight: '800' },
+  filterHeader: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    minHeight: 56,
+    paddingHorizontal: spacing.lg,
+  },
+  filterHeaderAction: { color: colors.primary, fontSize: 16, fontWeight: '800', minWidth: 56 },
+  filterHeaderSpacer: { minWidth: 56 },
+  filterHelp: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
+  filterIntro: { color: colors.subtleText, fontSize: 14, lineHeight: 21 },
+  filterSection: { gap: spacing.sm },
+  filterSheet: { backgroundColor: colors.background, flex: 1 },
+  filterTitle: {
+    color: colors.ink,
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '900',
+    textAlign: 'center',
   },
   flex: { flex: 1, minWidth: 0 },
   fullMapListViewport: { minHeight: 0, overflow: 'hidden' },

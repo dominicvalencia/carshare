@@ -106,6 +106,7 @@ describe('Task 13D personalized rail authority', () => {
         minPrice: 12345,
         maxPrice: 260000,
         handover: 'DELIVERY_AVAILABLE',
+        returnHandover: 'OWNER_COLLECTION_AVAILABLE',
       },
     })!;
     const query = new URLSearchParams(restored.query);
@@ -119,6 +120,8 @@ describe('Task 13D personalized rail authority', () => {
     expect(query.get('minPrice')).toBe('12345');
     expect(query.get('maxPrice')).toBe('260000');
     expect(query.get('handover')).toBe('DELIVERY_AVAILABLE');
+    expect(query.get('returnHandover')).toBe('OWNER_COLLECTION_AVAILABLE');
+    expect(restored.returnHandover).toBe('OWNER_COLLECTION_AVAILABLE');
     expect(restored.minPrice).toBe('123.45');
   });
 

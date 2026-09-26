@@ -697,6 +697,37 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
           });
         });
     }
+    for (const [handover, returnHandover] of [
+      ['PICKUP_AVAILABLE', 'RENTER_RETURN_AVAILABLE'],
+      ['PICKUP_AVAILABLE', 'OWNER_COLLECTION_AVAILABLE'],
+      ['DELIVERY_AVAILABLE', 'RENTER_RETURN_AVAILABLE'],
+      ['DELIVERY_AVAILABLE', 'OWNER_COLLECTION_AVAILABLE'],
+    ]) {
+      for (const mode of ['LIST', 'MAP']) {
+        await request(app.getHttpServer())
+          .get('/api/v1/vehicles/search')
+          .set('Authorization', `Bearer ${renterToken}`)
+          .query({
+            end: '2027-01-05T09:00:00+08:00',
+            handover,
+            latitude: '14.5547',
+            longitude: '121.0244',
+            mode,
+            radius: 100,
+            returnHandover,
+            sort: 'NEWEST',
+            start: '2027-01-04T09:00:00+08:00',
+          })
+          .expect(200)
+          .expect(({ body }) => {
+            expect(
+              body.data.items.some(
+                (candidate: { vehicleId: string }) => candidate.vehicleId === vehicleId,
+              ),
+            ).toBe(true);
+          });
+      }
+    }
     await request(app.getHttpServer())
       .get('/api/v1/vehicles/search')
       .set('Authorization', `Bearer ${renterToken}`)

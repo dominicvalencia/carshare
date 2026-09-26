@@ -385,7 +385,9 @@ describe('vehicle-detail responsive regression', () => {
 describe('fulfillment discovery presentation', () => {
   it('keeps server-owned handover filtering and contextual badges', () => {
     expect(source).toContain("query.set('handover', handover)");
-    expect(source).toContain('Pickup & delivery available');
+    expect(source).toContain("query.set('returnHandover', returnHandover)");
+    expect(source).toContain('Owner delivery');
+    expect(source).toContain('Owner collection');
     expect(source).toContain('Delivery to your location');
     expect(source).not.toContain('Self-drive');
     expect(source).toContain(

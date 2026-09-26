@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { VehicleHandoverFilter } from './discovery.dto';
+import { VehicleHandoverFilter, VehicleReturnHandoverFilter } from './discovery.dto';
 import {
   matchesHandoverFilter,
+  matchesReturnHandoverFilter,
   publicFulfillment,
   publicSearchFulfillment,
 } from './fulfillment-discovery';
@@ -41,6 +42,28 @@ describe('fulfillment discovery', () => {
         VehicleHandoverFilter.DELIVERY_AVAILABLE,
       ),
     ).toBe(true);
+  });
+
+  it('filters return capabilities independently from pickup capabilities', () => {
+    expect(matchesReturnHandoverFilter(policy, VehicleReturnHandoverFilter.ANY)).toBe(true);
+    expect(
+      matchesReturnHandoverFilter(policy, VehicleReturnHandoverFilter.RENTER_RETURN_AVAILABLE),
+    ).toBe(true);
+    expect(
+      matchesReturnHandoverFilter(policy, VehicleReturnHandoverFilter.OWNER_COLLECTION_AVAILABLE),
+    ).toBe(true);
+    expect(
+      matchesReturnHandoverFilter(
+        { ...policy, supportsOwnerCollection: false },
+        VehicleReturnHandoverFilter.OWNER_COLLECTION_AVAILABLE,
+      ),
+    ).toBe(false);
+    expect(
+      matchesReturnHandoverFilter(
+        { ...policy, supportsRenterReturn: false },
+        VehicleReturnHandoverFilter.RENTER_RETURN_AVAILABLE,
+      ),
+    ).toBe(false);
   });
 
   it('uses authoritative distance and notice for contextual delivery and rounds public distance', () => {

@@ -41,6 +41,12 @@ export enum VehicleHandoverFilter {
   PICKUP_AND_DELIVERY = 'PICKUP_AND_DELIVERY',
 }
 
+export enum VehicleReturnHandoverFilter {
+  ANY = 'ANY',
+  RENTER_RETURN_AVAILABLE = 'RENTER_RETURN_AVAILABLE',
+  OWNER_COLLECTION_AVAILABLE = 'OWNER_COLLECTION_AVAILABLE',
+}
+
 export enum VehicleSearchMode {
   LIST = 'LIST',
   MAP = 'MAP',
@@ -106,6 +112,13 @@ export class SearchVehiclesDto {
   @IsOptional()
   @IsEnum(VehicleHandoverFilter)
   handover: VehicleHandoverFilter = VehicleHandoverFilter.ANY;
+  @ApiPropertyOptional({
+    enum: VehicleReturnHandoverFilter,
+    default: VehicleReturnHandoverFilter.ANY,
+  })
+  @IsOptional()
+  @IsEnum(VehicleReturnHandoverFilter)
+  returnHandover: VehicleReturnHandoverFilter = VehicleReturnHandoverFilter.ANY;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(1000) cursor?: string;
   @ApiPropertyOptional({ default: 10, maximum: 50 })
   @Type(() => Number)
@@ -134,6 +147,9 @@ export class RecordRenterSearchDto {
   @IsOptional() @IsInt() @Min(0) minPrice?: number;
   @IsOptional() @IsInt() @Min(0) maxPrice?: number;
   @IsOptional() @IsEnum(VehicleHandoverFilter) handover?: VehicleHandoverFilter;
+  @IsOptional()
+  @IsEnum(VehicleReturnHandoverFilter)
+  returnHandover?: VehicleReturnHandoverFilter;
 }
 
 export class AvailabilityQueryDto {

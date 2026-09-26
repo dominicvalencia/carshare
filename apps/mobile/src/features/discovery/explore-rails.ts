@@ -19,6 +19,7 @@ export function exploreRailQuery(
   filters: {
     readonly categoryId?: string;
     readonly handover?: string;
+    readonly returnHandover?: string;
     readonly powertrain?: string;
     readonly seats?: string;
   } = {},
@@ -37,6 +38,8 @@ export function exploreRailQuery(
   if (powertrain) query.set('powertrain', powertrain);
   if (filters.handover && filters.handover !== 'ANY' && kind === 'AREA')
     query.set('handover', filters.handover);
+  if (filters.returnHandover && filters.returnHandover !== 'ANY' && kind === 'AREA')
+    query.set('returnHandover', filters.returnHandover);
   return query.toString();
 }
 
