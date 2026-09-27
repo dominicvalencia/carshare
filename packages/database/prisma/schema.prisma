@@ -249,6 +249,64 @@ enum BookingActorType {
   ADMIN
 }
 
+enum CancellationActorType {
+  RENTER
+  OWNER
+  ADMIN
+  PLATFORM
+  LEGACY_UNSPECIFIED
+}
+
+enum CancellationResponsibility {
+  RENTER
+  OWNER
+  PLATFORM
+  SHARED
+  LEGACY_UNSPECIFIED
+}
+
+enum CancellationReasonCode {
+  CHANGE_OF_PLANS
+  BOOKED_ANOTHER_VEHICLE
+  TRIP_CANCELLED
+  SCHEDULE_CHANGED
+  VEHICLE_OR_LISTING_CONCERN
+  VEHICLE_UNAVAILABLE
+  VEHICLE_MAINTENANCE
+  OWNER_SCHEDULE_CONFLICT
+  RENTER_OR_TRIP_CONCERN
+  SAFETY_CONCERN
+  EMERGENCY
+  PLATFORM_SYSTEM_FAULT
+  PAYMENT_OR_FRAUD_RISK
+  SAFETY_INTERVENTION
+  POLICY_VIOLATION
+  IDENTITY_OR_ELIGIBILITY
+  LEGAL_OR_REGULATORY
+  FORCE_MAJEURE
+  DUPLICATE_OR_INVALID_BOOKING
+  OTHER
+  OTHER_APPROVED
+  LEGACY_UNSPECIFIED
+}
+
+enum CancellationPolicyCode {
+  PRE_CONFIRMATION_VOID
+  ADVANCE_REFUNDABLE
+  LAST_MINUTE_GRACE_REFUNDABLE
+  ADVANCE_FINAL_72H_NON_REFUNDABLE
+  LAST_MINUTE_GRACE_EXPIRED_NON_REFUNDABLE
+  LEGACY_UNSPECIFIED
+}
+
+enum CancellationPaymentDisposition {
+  VOID
+  FULL_REFUND
+  PARTIAL_REFUND
+  NO_REFUND
+  LEGACY_UNSPECIFIED
+}
+
 enum BookingOwnerDecisionType {
   ACCEPTED
   REJECTED
@@ -331,6 +389,8 @@ enum FinancialAccountType {
   PAYOUT_PROVIDER_CLEARING
   PAYOUT_CASH
   PAYOUT_PROVIDER_FEE_EXPENSE
+  OWNER_PENALTY_RECEIVABLE
+  PLATFORM_CANCELLATION_REVENUE
 }
 
 enum LedgerTransactionType {
@@ -344,6 +404,28 @@ enum LedgerTransactionType {
   PAYOUT_FAILURE_REVERSAL
   PAYOUT_REVERSAL
   PAYOUT_PROVIDER_FEE
+  OWNER_PENALTY_RECOGNITION
+  OWNER_PENALTY_RECOVERY
+  OWNER_PENALTY_WAIVER
+}
+
+enum OwnerFinancialObligationType {
+  CANCELLATION_PENALTY
+}
+
+enum OwnerFinancialObligationStatus {
+  OUTSTANDING
+  PARTIALLY_RECOVERED
+  SATISFIED
+  WAIVED
+}
+
+enum OwnerObligationWaiverReason {
+  POLICY_EXCEPTION
+  PLATFORM_ERROR
+  EMERGENCY_HARDSHIP
+  DISPUTE_RESOLUTION
+  OTHER_APPROVED
 }
 
 enum OwnerEarningStatus {
@@ -924,6 +1006,7 @@ model User {
   payoutsCreated                    Payout[]                                 @relation("PayoutCreator")
   payoutsApproved                   Payout[]                                 @relation("PayoutApprover")
   payoutOperations                  PayoutOperation[]                        @relation("PayoutOperationActor")
+  ownerObligationWaivers            OwnerObligationWaiver[]                  @relation("OwnerObligationWaiverAdmin")
   conversationParticipants          ConversationParticipant[]
   sentMessages                      Message[]                                @relation("MessageSender")
   notifications                     Notification[]
@@ -1248,16 +1331,17 @@ model OwnerProfile {
   createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  user              User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
-  verifications     Verification[]
-  vehicles          Vehicle[]
-  bookings          Booking[]
-  commissionRules   CommissionRule[]
-  earnings          OwnerEarning[]
-  payoutEligibility PayoutEligibility?
-  payoutAccounts    OwnerPayoutAccount[]
-  payouts           Payout[]
-  reviews           Review[]
+  user                 User                       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  verifications        Verification[]
+  vehicles             Vehicle[]
+  bookings             Booking[]
+  commissionRules      CommissionRule[]
+  earnings             OwnerEarning[]
+  payoutEligibility    PayoutEligibility?
+  payoutAccounts       OwnerPayoutAccount[]
+  payouts              Payout[]
+  financialObligations OwnerFinancialObligation[]
+  reviews              Review[]
 
   @@index([status, submittedAt])
   @@map("owner_profiles")
@@ -2837,40 +2921,59 @@ model BookingCancellation {
   correlationId String?          @map("correlation_id") @db.VarChar(100)
   createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  booking    Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  actorUser  User?                          @relation("BookingCancellationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
-  settlement BookingCancellationSettlement?
+  booking                   Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  actorUser                 User?                          @relation("BookingCancellationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  settlement                BookingCancellationSettlement?
+  ownerFinancialObligations OwnerFinancialObligation[]
 
   @@map("booking_cancellations")
 }
 
 model BookingCancellationSettlement {
-  id                      String   @id @default(uuid()) @db.Uuid
-  bookingId               String   @unique @map("booking_id") @db.Uuid
-  bookingCancellationId   String   @unique @map("booking_cancellation_id") @db.Uuid
-  paymentId               String   @unique @map("payment_id") @db.Uuid
-  commissionSnapshotId    String   @unique @map("commission_snapshot_id") @db.Uuid
-  refundId                String?  @unique @map("refund_id") @db.Uuid
-  rentalComponentMinor    BigInt   @map("rental_component_minor")
-  commissionRetainedMinor BigInt   @map("commission_retained_minor")
-  deliveryFeeMinor        BigInt   @map("delivery_fee_minor")
-  deliveryRetainedMinor   BigInt   @map("delivery_retained_minor")
-  deliveryRefundedMinor   BigInt   @map("delivery_refunded_minor")
-  collectionFeeMinor      BigInt   @map("collection_fee_minor")
-  collectionRefundedMinor BigInt   @map("collection_refunded_minor")
-  capturedAmountMinor     BigInt   @map("captured_amount_minor")
-  refundAmountMinor       BigInt   @map("refund_amount_minor")
-  currency                String   @db.Char(3)
-  deliveryCompleted       Boolean  @map("delivery_completed")
-  deliveryCompletionBasis String   @map("delivery_completion_basis") @db.VarChar(100)
-  calculationVersion      String   @map("calculation_version") @db.VarChar(100)
-  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  id                         String                         @id @default(uuid()) @db.Uuid
+  bookingId                  String                         @unique @map("booking_id") @db.Uuid
+  bookingCancellationId      String                         @unique @map("booking_cancellation_id") @db.Uuid
+  paymentId                  String                         @unique @map("payment_id") @db.Uuid
+  commissionSnapshotId       String                         @unique @map("commission_snapshot_id") @db.Uuid
+  refundId                   String?                        @unique @map("refund_id") @db.Uuid
+  rentalComponentMinor       BigInt                         @map("rental_component_minor")
+  commissionRetainedMinor    BigInt                         @map("commission_retained_minor")
+  deliveryFeeMinor           BigInt                         @map("delivery_fee_minor")
+  deliveryRetainedMinor      BigInt                         @map("delivery_retained_minor")
+  deliveryRefundedMinor      BigInt                         @map("delivery_refunded_minor")
+  collectionFeeMinor         BigInt                         @map("collection_fee_minor")
+  collectionRefundedMinor    BigInt                         @map("collection_refunded_minor")
+  capturedAmountMinor        BigInt                         @map("captured_amount_minor")
+  refundAmountMinor          BigInt                         @map("refund_amount_minor")
+  currency                   String                         @db.Char(3)
+  deliveryCompleted          Boolean                        @map("delivery_completed")
+  deliveryCompletionBasis    String                         @map("delivery_completion_basis") @db.VarChar(100)
+  calculationVersion         String                         @map("calculation_version") @db.VarChar(100)
+  actorType                  CancellationActorType          @default(LEGACY_UNSPECIFIED) @map("actor_type")
+  responsibility             CancellationResponsibility     @default(LEGACY_UNSPECIFIED)
+  structuredReason           CancellationReasonCode         @default(LEGACY_UNSPECIFIED) @map("structured_reason")
+  policyVersion              String                         @default("LEGACY_UNSPECIFIED") @map("policy_version") @db.VarChar(100)
+  policyCode                 CancellationPolicyCode         @default(LEGACY_UNSPECIFIED) @map("policy_code")
+  confirmedAt                DateTime?                      @map("confirmed_at") @db.Timestamptz(3)
+  scheduledPickupAt          DateTime?                      @map("scheduled_pickup_at") @db.Timestamptz(3)
+  evaluatedAt                DateTime?                      @map("evaluated_at") @db.Timestamptz(3)
+  applicableDeadlineAt       DateTime?                      @map("applicable_deadline_at") @db.Timestamptz(3)
+  cancellationFeeMinor       BigInt                         @default(0) @map("cancellation_fee_minor")
+  refundableRentalMinor      BigInt                         @default(0) @map("refundable_rental_minor")
+  nonRefundableRentalMinor   BigInt                         @default(0) @map("non_refundable_rental_minor")
+  ownerEarningForfeitedMinor BigInt                         @default(0) @map("owner_earning_forfeited_minor")
+  paymentDisposition         CancellationPaymentDisposition @default(LEGACY_UNSPECIFIED) @map("payment_disposition")
+  fulfillmentTreatment       Json                           @default("{}") @map("fulfillment_treatment")
+  previewVersion             String                         @default("LEGACY_UNSPECIFIED") @map("preview_version") @db.VarChar(100)
+  correlationId              String?                        @map("correlation_id") @db.VarChar(100)
+  createdAt                  DateTime                       @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  booking             Booking             @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  bookingCancellation BookingCancellation @relation(fields: [bookingCancellationId], references: [id], onDelete: Restrict)
-  payment             Payment             @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  commissionSnapshot  CommissionSnapshot  @relation(fields: [commissionSnapshotId], references: [id], onDelete: Restrict)
-  refund              Refund?             @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  booking                   Booking                    @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  bookingCancellation       BookingCancellation        @relation(fields: [bookingCancellationId], references: [id], onDelete: Restrict)
+  payment                   Payment                    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  commissionSnapshot        CommissionSnapshot         @relation(fields: [commissionSnapshotId], references: [id], onDelete: Restrict)
+  refund                    Refund?                    @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  ownerFinancialObligations OwnerFinancialObligation[]
 
   @@index([createdAt])
   @@map("booking_cancellation_settlements")
@@ -3342,10 +3445,11 @@ model CommissionSnapshot {
   calculationVersion        String          @map("calculation_version") @db.VarChar(100)
   createdAt                 DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  booking                Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  payment                Payment                        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  rule                   CommissionRule                 @relation(fields: [ruleId], references: [id], onDelete: Restrict)
-  cancellationSettlement BookingCancellationSettlement?
+  booking                   Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  payment                   Payment                        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  rule                      CommissionRule                 @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+  cancellationSettlement    BookingCancellationSettlement?
+  ownerFinancialObligations OwnerFinancialObligation[]
 
   @@map("commission_snapshots")
 }
@@ -3375,7 +3479,9 @@ model LedgerTransaction {
   correlationId String?               @map("correlation_id") @db.VarChar(100)
   postedAt      DateTime              @default(now()) @map("posted_at") @db.Timestamptz(3)
 
-  entries LedgerEntry[]
+  entries                 LedgerEntry[]
+  ownerObligationRecovery OwnerObligationRecovery?
+  ownerObligationWaiver   OwnerObligationWaiver?
 
   @@unique([sourceType, sourceId, type, currency])
   @@index([postedAt])
@@ -3417,12 +3523,13 @@ model OwnerEarning {
   lastFinancialResolutionAt   DateTime?          @map("last_financial_resolution_at") @db.Timestamptz(3)
   createdAt                   DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  booking           Booking            @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  payment           Payment            @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  ownerProfile      OwnerProfile       @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
-  holds             EarningHold[]
-  additionalCharges AdditionalCharge[]
-  payoutItems       PayoutItem[]
+  booking              Booking                   @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  payment              Payment                   @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  ownerProfile         OwnerProfile              @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  holds                EarningHold[]
+  additionalCharges    AdditionalCharge[]
+  payoutItems          PayoutItem[]
+  obligationRecoveries OwnerObligationRecovery[]
 
   @@index([ownerProfileId, status, createdAt])
   @@index([status, availableAt])
@@ -3664,14 +3771,15 @@ model Payout {
   createdAt                DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt                DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  batch         PayoutBatch          @relation(fields: [batchId], references: [id], onDelete: Restrict)
-  ownerProfile  OwnerProfile         @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
-  payoutAccount OwnerPayoutAccount   @relation(fields: [payoutAccountId], references: [id], onDelete: Restrict)
-  createdBy     User                 @relation("PayoutCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  approvedBy    User?                @relation("PayoutApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
-  items         PayoutItem[]
-  operations    PayoutOperation[]
-  webhookEvents PayoutWebhookEvent[]
+  batch                PayoutBatch               @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  ownerProfile         OwnerProfile              @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  payoutAccount        OwnerPayoutAccount        @relation(fields: [payoutAccountId], references: [id], onDelete: Restrict)
+  createdBy            User                      @relation("PayoutCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  approvedBy           User?                     @relation("PayoutApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+  items                PayoutItem[]
+  operations           PayoutOperation[]
+  webhookEvents        PayoutWebhookEvent[]
+  obligationRecoveries OwnerObligationRecovery[]
 
   @@unique([provider, providerPayoutId])
   @@index([ownerProfileId, status, createdAt])
@@ -3690,12 +3798,92 @@ model PayoutItem {
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   releasedAt       DateTime? @map("released_at") @db.Timestamptz(3)
 
-  payout       Payout       @relation(fields: [payoutId], references: [id], onDelete: Restrict)
-  ownerEarning OwnerEarning @relation(fields: [ownerEarningId], references: [id], onDelete: Restrict)
+  payout               Payout                    @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  ownerEarning         OwnerEarning              @relation(fields: [ownerEarningId], references: [id], onDelete: Restrict)
+  obligationRecoveries OwnerObligationRecovery[]
 
   @@unique([payoutId, ownerEarningId])
   @@index([ownerEarningId, activeAllocation])
   @@map("payout_items")
+}
+
+model OwnerFinancialObligation {
+  id                       String                         @id @default(uuid()) @db.Uuid
+  ownerProfileId           String                         @map("owner_profile_id") @db.Uuid
+  sourceCancellationId     String                         @map("source_cancellation_id") @db.Uuid
+  cancellationSettlementId String                         @map("cancellation_settlement_id") @db.Uuid
+  commissionSnapshotId     String                         @map("commission_snapshot_id") @db.Uuid
+  type                     OwnerFinancialObligationType
+  status                   OwnerFinancialObligationStatus @default(OUTSTANDING)
+  originalAmountMinor      BigInt                         @map("original_amount_minor")
+  remainingAmountMinor     BigInt                         @map("remaining_amount_minor")
+  recoveredAmountMinor     BigInt                         @default(0) @map("recovered_amount_minor")
+  waivedAmountMinor        BigInt                         @default(0) @map("waived_amount_minor")
+  currency                 String                         @db.Char(3)
+  policyVersion            String                         @map("policy_version") @db.VarChar(100)
+  reasonCode               CancellationReasonCode         @map("reason_code")
+  effectiveAt              DateTime                       @map("effective_at") @db.Timestamptz(3)
+  correlationId            String?                        @map("correlation_id") @db.VarChar(100)
+  auditMetadata            Json?                          @map("audit_metadata")
+  createdAt                DateTime                       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  ownerProfile           OwnerProfile                  @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  sourceCancellation     BookingCancellation           @relation(fields: [sourceCancellationId], references: [id], onDelete: Restrict)
+  cancellationSettlement BookingCancellationSettlement @relation(fields: [cancellationSettlementId], references: [id], onDelete: Restrict)
+  commissionSnapshot     CommissionSnapshot            @relation(fields: [commissionSnapshotId], references: [id], onDelete: Restrict)
+  recoveries             OwnerObligationRecovery[]
+  waivers                OwnerObligationWaiver[]
+
+  @@unique([sourceCancellationId, type])
+  @@index([ownerProfileId, status, effectiveAt, id])
+  @@map("owner_financial_obligations")
+}
+
+model OwnerObligationRecovery {
+  id                  String   @id @default(uuid()) @db.Uuid
+  obligationId        String   @map("obligation_id") @db.Uuid
+  payoutId            String   @map("payout_id") @db.Uuid
+  payoutItemId        String?  @map("payout_item_id") @db.Uuid
+  ownerEarningId      String?  @map("owner_earning_id") @db.Uuid
+  ledgerTransactionId String   @unique @map("ledger_transaction_id") @db.Uuid
+  amountMinor         BigInt   @map("amount_minor")
+  currency            String   @db.Char(3)
+  idempotencyKey      String   @unique @map("idempotency_key") @db.VarChar(200)
+  recoveredAt         DateTime @default(now()) @map("recovered_at") @db.Timestamptz(3)
+
+  obligation        OwnerFinancialObligation @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  payout            Payout                   @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  payoutItem        PayoutItem?              @relation(fields: [payoutItemId], references: [id], onDelete: Restrict)
+  ownerEarning      OwnerEarning?            @relation(fields: [ownerEarningId], references: [id], onDelete: Restrict)
+  ledgerTransaction LedgerTransaction        @relation(fields: [ledgerTransactionId], references: [id], onDelete: Restrict)
+
+  @@index([obligationId, recoveredAt, id])
+  @@index([payoutId, recoveredAt])
+  @@map("owner_obligation_recoveries")
+}
+
+model OwnerObligationWaiver {
+  id                  String                      @id @default(uuid()) @db.Uuid
+  obligationId        String                      @map("obligation_id") @db.Uuid
+  amountMinor         BigInt                      @map("amount_minor")
+  currency            String                      @db.Char(3)
+  adminActorUserId    String                      @map("admin_actor_user_id") @db.Uuid
+  reasonCode          OwnerObligationWaiverReason @map("reason_code")
+  internalDetail      String?                     @map("internal_detail") @db.VarChar(2000)
+  evidenceReference   String?                     @map("evidence_reference") @db.VarChar(255)
+  correlationId       String?                     @map("correlation_id") @db.VarChar(100)
+  auditMetadata       Json?                       @map("audit_metadata")
+  idempotencyKey      String                      @unique @map("idempotency_key") @db.VarChar(200)
+  ledgerTransactionId String                      @unique @map("ledger_transaction_id") @db.Uuid
+  waivedAt            DateTime                    @default(now()) @map("waived_at") @db.Timestamptz(3)
+
+  obligation        OwnerFinancialObligation @relation(fields: [obligationId], references: [id], onDelete: Restrict)
+  adminActor        User                     @relation("OwnerObligationWaiverAdmin", fields: [adminActorUserId], references: [id], onDelete: Restrict)
+  ledgerTransaction LedgerTransaction        @relation(fields: [ledgerTransactionId], references: [id], onDelete: Restrict)
+
+  @@index([obligationId, waivedAt, id])
+  @@map("owner_obligation_waivers")
 }
 
 model PayoutOperation {
