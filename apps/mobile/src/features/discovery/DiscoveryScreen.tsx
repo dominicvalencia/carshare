@@ -115,6 +115,11 @@ import {
   normalizedUpwardTravel,
   reverseCollapseProgress,
 } from './results-forward-handoff';
+import {
+  cancellationPolicyDisclaimer,
+  cancellationPolicyIntroduction,
+  cancellationPolicySections,
+} from './cancellation-policy-content';
 
 interface Grant {
   readonly contentPath: string;
@@ -2383,6 +2388,7 @@ function VehicleView(properties: {
   const [tripOpen, setTripOpen] = useState(false);
   const [tripCalendarOpen, setTripCalendarOpen] = useState(false);
   const [featuresOpen, setFeaturesOpen] = useState(false);
+  const [cancellationPolicyOpen, setCancellationPolicyOpen] = useState(false);
   const [draftPickup, setDraftPickup] = useState(properties.pickup);
   const [draftReturnAt, setDraftReturnAt] = useState(properties.returnAt);
   const [draftDatesExplicit, setDraftDatesExplicit] = useState(properties.datesExplicit);
@@ -3273,7 +3279,44 @@ function VehicleView(properties: {
             value={`${noticeLabel(vehicle.turnaroundMinutes)} between rentals for owner preparation`}
           />
         )}
+        <PolicyRow
+          icon="document-text-outline"
+          onPress={() => setCancellationPolicyOpen(true)}
+          title="Cancellation policy"
+          value="Review cancellation timing and refund rules"
+        />
       </View>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setCancellationPolicyOpen(false)}
+        presentationStyle="pageSheet"
+        visible={cancellationPolicyOpen}
+      >
+        <Screen
+          leading={<BackControl label="Close" onPress={() => setCancellationPolicyOpen(false)} />}
+          title="Cancellation policy"
+          subtitle={cancellationPolicyIntroduction}
+        >
+          {cancellationPolicySections.map((section) => (
+            <View key={section.title} style={styles.policySheetSection}>
+              <Text accessibilityRole="header" style={styles.policySheetHeading}>
+                {section.title}
+              </Text>
+              {section.paragraphs.map((paragraph) => (
+                <Text key={paragraph} style={styles.description}>
+                  {paragraph}
+                </Text>
+              ))}
+            </View>
+          ))}
+          <Card style={styles.policyDisclaimer}>
+            <Text accessibilityRole="header" style={styles.cardTitle}>
+              Your exact refund
+            </Text>
+            <Text style={styles.description}>{cancellationPolicyDisclaimer}</Text>
+          </Card>
+        </Screen>
+      </Modal>
       {vehicle.rentalRequirements && (
         <View style={styles.editorialSection}>
           <SectionHeader title="Rental requirements" />
@@ -3518,15 +3561,17 @@ function ExpandableDetailText({
 
 function PolicyRow({
   icon,
+  onPress,
   title,
   value,
 }: {
   readonly icon: ComponentProps<typeof Icon>['name'];
+  readonly onPress?: (() => void) | undefined;
   readonly title: string;
   readonly value: string;
 }) {
-  return (
-    <View style={styles.policyRow}>
+  const content = (
+    <>
       <View style={styles.policyIcon}>
         <Icon color={colors.primary} name={icon} size={20} />
       </View>
@@ -3534,8 +3579,22 @@ function PolicyRow({
         <Text style={styles.policyTitle}>{title}</Text>
         <Text style={styles.policyValue}>{value}</Text>
       </View>
-    </View>
+      {onPress && <Icon color={colors.primary} name="chevron-forward" size={20} />}
+    </>
   );
+  if (onPress)
+    return (
+      <Pressable
+        accessibilityHint="Opens the renter cancellation policy"
+        accessibilityLabel={`${title}. ${value}`}
+        accessibilityRole="button"
+        onPress={onPress}
+        style={styles.policyRow}
+      >
+        {content}
+      </Pressable>
+    );
+  return <View style={styles.policyRow}>{content}</View>;
 }
 
 function QuoteCard({
@@ -5112,6 +5171,14 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingBottom: spacing.sm,
   },
+  policySheetSection: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xs,
+    paddingBottom: spacing.lg,
+  },
+  policySheetHeading: { color: colors.ink, fontSize: 18, fontWeight: '900' },
+  policyDisclaimer: { gap: spacing.xs },
   policyTitle: { color: colors.ink, fontSize: 14, fontWeight: '800' },
   policyValue: { color: colors.subtleText, fontSize: 14, lineHeight: 20, marginTop: 2 },
   searchCollapsedCard: {

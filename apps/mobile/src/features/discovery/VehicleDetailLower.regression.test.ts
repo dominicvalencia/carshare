@@ -53,8 +53,13 @@ describe('Task 14D-1 Vehicle Detail lower content', () => {
     expect(detail).not.toContain('Bring the verified identity and driving documents');
   });
 
-  it('does not fabricate cancellation policy or duplicate duration-discount content below', () => {
+  it('places the authoritative cancellation policy in Things to know without duplicating discounts', () => {
     const lower = detail.slice(detail.indexOf('title="About this car"'));
+    const thingsToKnow = lower.slice(
+      lower.indexOf('title="Things to know"'),
+      lower.indexOf('title="Rental requirements"'),
+    );
+    expect(thingsToKnow).toContain('title="Cancellation policy"');
     expect(lower).not.toContain('Booking & cancellation');
     expect(lower).not.toContain('Cancellation availability and payment consequences');
     expect(lower).not.toContain('Save more on longer trips');
