@@ -30,6 +30,16 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toMatch(
       /<Button\s+compact\s+label="Not now"\s+onPress=\{closeRecoveryActions\}/,
     );
+    expect(source).toContain('animationType="slide"');
+    expect(source).not.toMatch(
+      /<Button\s+compact\s+label="Not now"\s+onPress=\{closeRecoveryActions\}\s+variant=/,
+    );
+    expect(
+      source.match(/visible=\{recoveryActionsOpen && pendingRecoveryActions\.length > 0\}/g),
+    ).toHaveLength(1);
+    expect(source).toMatch(
+      /function closeRecoveryActions\(\) \{\s*setRecoveryActionsOpen\(false\)/,
+    );
     expect(source).toContain(
       "navigation.navigate('BookingRecovery', { bookingId: action.reference })",
     );

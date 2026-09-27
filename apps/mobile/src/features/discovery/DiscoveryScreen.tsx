@@ -1827,7 +1827,7 @@ export function DiscoveryScreen({
       )}
       {home && (
         <Modal
-          animationType="fade"
+          animationType="slide"
           onRequestClose={closeRecoveryActions}
           onShow={() => {
             const target = findNodeHandle(recoveryTitleRef.current);
@@ -1881,12 +1881,7 @@ export function DiscoveryScreen({
                     </Pressable>
                   </View>
                 ))}
-                <Button
-                  compact
-                  label="Not now"
-                  onPress={closeRecoveryActions}
-                  variant="secondary"
-                />
+                <Button compact label="Not now" onPress={closeRecoveryActions} />
               </ScrollView>
             </View>
           </View>

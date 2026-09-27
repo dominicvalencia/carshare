@@ -214,6 +214,22 @@ interface CommissionRule {
   readonly reason: string;
 }
 interface OperationalRental {
+  readonly overdueHandoverRecoveries?: readonly {
+    readonly scope: string;
+    readonly responseDeadlineAt: string;
+    readonly acceptance: { readonly acceptedAt: string; readonly acceptanceSource: string } | null;
+    readonly response: { readonly decision: string; readonly respondedAt: string } | null;
+    readonly reminders: readonly {
+      readonly stage: string;
+      readonly channel: string;
+      readonly status: string;
+      readonly scheduledAt: string;
+      readonly submittedAt: string | null;
+      readonly deliveredAt: string | null;
+      readonly failureCategory: string | null;
+      readonly safeFailureMessage: string | null;
+    }[];
+  }[];
   readonly overdueHandoverRecovery?: {
     readonly scope: string;
     readonly responseDeadlineAt: string;
@@ -1600,15 +1616,23 @@ export function AdminConsole({
                       </p>
                     </>
                   )}
-                  {rentalDetail.data.overdueHandoverRecovery && (
-                    <div>
+                  {(
+                    rentalDetail.data.overdueHandoverRecoveries ??
+                    (rentalDetail.data.overdueHandoverRecovery
+                      ? [rentalDetail.data.overdueHandoverRecovery]
+                      : [])
+                  ).map((recovery) => (
+                    <div key={`${recovery.scope}:${recovery.responseDeadlineAt}`}>
                       <p>
-                        Recovery reminder history · Scope:{' '}
-                        {adminLabel(rentalDetail.data.overdueHandoverRecovery.scope)} · Response
-                        deadline:{' '}
-                        {formatDate(rentalDetail.data.overdueHandoverRecovery.responseDeadlineAt)}
+                        Recovery reminder history · Scope: {adminLabel(recovery.scope)} · Response
+                        deadline: {formatDate(recovery.responseDeadlineAt)}
+                        {'acceptance' in recovery && recovery.acceptance
+                          ? ` · Resolved ${adminLabel(recovery.acceptance.acceptanceSource)} at ${formatDate(recovery.acceptance.acceptedAt)}`
+                          : 'response' in recovery && recovery.response
+                            ? ` · ${adminLabel(recovery.response.decision)} at ${formatDate(recovery.response.respondedAt)}`
+                            : ' · Awaiting renter response'}
                       </p>
-                      {rentalDetail.data.overdueHandoverRecovery.reminders.map((reminder) => (
+                      {recovery.reminders.map((reminder) => (
                         <p key={`${reminder.stage}:${reminder.channel}`}>
                           {adminLabel(reminder.stage)} {adminLabel(reminder.channel)} ·{' '}
                           {adminLabel(reminder.status)} · Scheduled{' '}
@@ -1626,7 +1650,7 @@ export function AdminConsole({
                         </p>
                       ))}
                     </div>
-                  )}
+                  ))}
                   <p>
                     {rentalDetail.data.workflowCompliance.start.overdue
                       ? 'Handover overdue'

@@ -125,7 +125,10 @@ const rentalInclude = {
   handoverReturnReceipt: true,
   pickupHandoverReport: { include: { response: true } },
   pickupHandoverResponse: true,
-  overdueHandoverRecovery: { include: { response: true, acceptance: true } },
+  overdueHandoverRecoveries: {
+    include: { response: true, acceptance: true },
+    orderBy: { reportedAt: 'desc' as const },
+  },
   cancellation: true,
   cancellationSettlement: { include: { refund: true } },
   fulfillmentSnapshot: true,
@@ -1267,7 +1270,7 @@ export class RentalsService {
         include: {
           ownerProfile: true,
           fulfillmentSnapshot: true,
-          overdueHandoverRecovery: true,
+          overdueHandoverRecoveries: { include: { response: true, acceptance: true } },
           inspections: { where: { status: InspectionStatus.FINALIZED } },
         },
       });
@@ -1307,7 +1310,13 @@ export class RentalsService {
               ? `Only the overdue ${requiredScope === 'START' ? 'Pickup' : 'Return'} may be reported.`
               : 'The regular handover process is still required because no handover is overdue.',
         );
-      if (booking.overdueHandoverRecovery) return;
+      const overlappingRecovery = booking.overdueHandoverRecoveries.find(
+        (recovery) =>
+          !recovery.response &&
+          !recovery.acceptance &&
+          (recovery.scope === 'BOTH' || input.scope === 'BOTH' || recovery.scope === input.scope),
+      );
+      if (overlappingRecovery) return;
       const needsStart = input.scope === 'START' || input.scope === 'BOTH';
       const needsReturn = input.scope === 'RETURN' || input.scope === 'BOTH';
       if ((needsStart && !input.reportedPickupAt) || (needsReturn && !input.reportedReturnAt))
@@ -1373,11 +1382,16 @@ export class RentalsService {
       const booking = await transaction.booking.findUniqueOrThrow({
         where: { publicReference: reference },
         include: {
-          overdueHandoverRecovery: { include: { response: true, acceptance: true } },
+          overdueHandoverRecoveries: {
+            include: { response: true, acceptance: true },
+            orderBy: { reportedAt: 'desc' },
+          },
         },
       });
       if (booking.renterUserId !== renterUserId) this.denied();
-      const recovery = booking.overdueHandoverRecovery;
+      const recovery = booking.overdueHandoverRecoveries.find(
+        (candidate) => !candidate.response && !candidate.acceptance,
+      );
       if (!recovery) this.invalidState('There is no owner-reported overdue handover to review.');
       if (recovery.acceptance)
         this.invalidState('The 24-hour response window has closed and the report is accepted.');

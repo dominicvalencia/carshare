@@ -6,7 +6,7 @@ import { FilesService } from '../files/files.service';
 import { workflowCompliance } from '../rentals/workflow-compliance';
 
 export const bookingInclude = {
-  overdueHandoverRecovery: {
+  overdueHandoverRecoveries: {
     include: {
       acceptance: true,
       response: true,
@@ -24,6 +24,7 @@ export const bookingInclude = {
         },
       },
     },
+    orderBy: { reportedAt: 'desc' as const },
   },
   handoverEvidenceWaivers: true,
   handoverTravelEvents: true,
@@ -137,6 +138,35 @@ export class BookingProjectionService {
   ) {}
 
   renter(booking: BookingRecord) {
+    const serializeOverdueRecovery = (
+      recovery: BookingRecord['overdueHandoverRecoveries'][number],
+    ) => ({
+      acceptance: recovery.acceptance
+        ? {
+            acceptedAt: recovery.acceptance.acceptedAt,
+            acceptanceSource: recovery.acceptance.acceptanceSource,
+          }
+        : null,
+      reportedAt: recovery.reportedAt,
+      reportedPickupAt: recovery.reportedPickupAt,
+      reportedReturnAt: recovery.reportedReturnAt,
+      response: recovery.response
+        ? {
+            decision: recovery.response.decision,
+            reason: recovery.response.reason,
+            respondedAt: recovery.response.respondedAt,
+          }
+        : null,
+      responseDeadlineAt: recovery.responseDeadlineAt,
+      reminders: recovery.reminders,
+      scope: recovery.scope,
+    });
+    const overdueHandoverRecovery =
+      booking.overdueHandoverRecoveries.find(
+        (recovery) => !recovery.acceptance && !recovery.response,
+      ) ??
+      booking.overdueHandoverRecoveries[0] ??
+      null;
     return {
       workflowCompliance: workflowCompliance(
         {
@@ -175,28 +205,9 @@ export class BookingProjectionService {
         verified: true,
       },
       ownerResponseDeadlineAt: booking.ownerResponseDeadlineAt,
-      overdueHandoverRecovery: booking.overdueHandoverRecovery
-        ? {
-            acceptance: booking.overdueHandoverRecovery.acceptance
-              ? {
-                  acceptedAt: booking.overdueHandoverRecovery.acceptance.acceptedAt,
-                  acceptanceSource: booking.overdueHandoverRecovery.acceptance.acceptanceSource,
-                }
-              : null,
-            reportedAt: booking.overdueHandoverRecovery.reportedAt,
-            reportedPickupAt: booking.overdueHandoverRecovery.reportedPickupAt,
-            reportedReturnAt: booking.overdueHandoverRecovery.reportedReturnAt,
-            response: booking.overdueHandoverRecovery.response
-              ? {
-                  decision: booking.overdueHandoverRecovery.response.decision,
-                  reason: booking.overdueHandoverRecovery.response.reason,
-                  respondedAt: booking.overdueHandoverRecovery.response.respondedAt,
-                }
-              : null,
-            responseDeadlineAt: booking.overdueHandoverRecovery.responseDeadlineAt,
-            reminders: booking.overdueHandoverRecovery.reminders,
-            scope: booking.overdueHandoverRecovery.scope,
-          }
+      overdueHandoverRecoveries: booking.overdueHandoverRecoveries.map(serializeOverdueRecovery),
+      overdueHandoverRecovery: overdueHandoverRecovery
+        ? serializeOverdueRecovery(overdueHandoverRecovery)
         : null,
       pickupWindow: {
         closesAt: new Date(
