@@ -32,6 +32,7 @@ import { RenterClaimsPanel } from '../claims/ClaimsPanels';
 import { RenterRentalPanel } from '../rentals/RentalOperationsPanels';
 import { ReviewPanel } from '../reviews/ReviewPanel';
 import { bookingGroup, type BookingGroup } from './booking-presentation';
+import { BookingCancellationSheet } from './BookingCancellationSheet';
 
 interface ContentGrant {
   readonly contentPath: string;
@@ -274,6 +275,7 @@ export function MyBookingsScreen({
           navigation.setParams({ bookingId: undefined });
         }}
         onMessage={(conversationId) => navigation.navigate('Conversation', { conversationId })}
+        onCancellationCompleted={() => refresh(client, selected)}
         cancel={cancel}
         payment={payment}
         refreshPayment={refreshPayment}
@@ -445,6 +447,7 @@ function BookingDetail({
   error,
   onBack,
   onMessage,
+  onCancellationCompleted,
   cancel,
   payment,
   refreshPayment,
@@ -455,6 +458,7 @@ function BookingDetail({
   readonly error: Error | null;
   readonly onBack: () => void;
   readonly onMessage: (id: string) => void;
+  readonly onCancellationCompleted: () => void;
   readonly cancel: ReturnType<typeof useMutation<BookingView, Error, string>>;
   readonly payment: ReturnType<typeof useMutation<unknown, Error, BookingView>>;
   readonly refreshPayment: ReturnType<typeof useMutation<unknown, Error, string>>;
@@ -464,6 +468,7 @@ function BookingDetail({
   const scrollToCancelledSummaryAfterLayout = useRef(false);
   const [now, setNow] = useState(0);
   const [bookingDetailsOpen, setBookingDetailsOpen] = useState(false);
+  const [cancellationOpen, setCancellationOpen] = useState(false);
   useEffect(() => {
     const initialize = setTimeout(() => setNow(Date.now()), 0);
     const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -928,6 +933,16 @@ function BookingDetail({
           variant="danger"
         />
       )}
+      {['CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status) && (
+        <Button label="Cancel booking" onPress={() => setCancellationOpen(true)} variant="danger" />
+      )}
+      <BookingCancellationSheet
+        bookingReference={booking.publicReference}
+        onClose={() => setCancellationOpen(false)}
+        onCompleted={onCancellationCompleted}
+        role="RENTER"
+        visible={cancellationOpen}
+      />
     </Screen>
   );
 }

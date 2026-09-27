@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View, type ScrollView } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import type { BookingView } from '../bookings/MyBookingsScreen';
+import { BookingCancellationSheet } from '../bookings/BookingCancellationSheet';
 import { colors, spacing } from '../../theme/tokens';
 import { OwnerRentalPanel } from './RentalOperationsPanels';
 import { OwnerClaimsPanel } from '../claims/ClaimsPanels';
@@ -13,7 +14,7 @@ import type { NavigationProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../../navigation/routes';
 import { bookingStatusLabel, dateTimeLabel } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
-import { Card, NestedScreen, StateView, StatusBadge } from '../../ui/primitives';
+import { Button, Card, NestedScreen, StateView, StatusBadge } from '../../ui/primitives';
 
 const operational = new Set([
   'CONFIRMED',
@@ -32,10 +33,12 @@ export function OwnerRentalsScreen({
   readonly onClose?: () => void;
 } = {}) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
+  const client = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const scrollOffsetY = useRef(0);
   const scrollViewportHeight = useRef(0);
   const [selected, setSelected] = useState<string | null>(initialBookingReference ?? null);
+  const [cancellationOpen, setCancellationOpen] = useState(false);
   const rentals = useQuery({
     queryKey: ['owner-rentals'],
     queryFn: () => apiClient.request<BookingView[]>('/owner/bookings/requests'),
@@ -96,6 +99,29 @@ export function OwnerRentalsScreen({
             >
               <Text style={styles.actionText}>Open booking conversation</Text>
             </Pressable>
+          )}
+          {selectedBooking &&
+            ['CONFIRMED', 'READY_FOR_PICKUP'].includes(selectedBooking.status) && (
+              <Button
+                label="Cancel booking"
+                onPress={() => setCancellationOpen(true)}
+                variant="danger"
+              />
+            )}
+          {selectedBooking && (
+            <BookingCancellationSheet
+              bookingReference={selectedBooking.publicReference}
+              onClose={() => setCancellationOpen(false)}
+              onCompleted={() => {
+                void rentals.refetch();
+                void client.invalidateQueries({ queryKey: ['owner-booking-requests'] });
+                void client.invalidateQueries({ queryKey: ['owner-booking', selected] });
+                void client.invalidateQueries({ queryKey: ['owner-earnings'] });
+                void client.invalidateQueries({ queryKey: ['public-search'] });
+              }}
+              role="OWNER"
+              visible={cancellationOpen}
+            />
           )}
           {selectedBooking?.status === 'COMPLETED' && <ReviewPanel bookingReference={selected} />}
         </>

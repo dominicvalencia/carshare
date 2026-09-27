@@ -17,6 +17,7 @@ import {
   StatusBadge,
 } from '../../ui/primitives';
 import type { BookingView } from './MyBookingsScreen';
+import { BookingCancellationSheet } from './BookingCancellationSheet';
 
 interface OwnerBookingView extends BookingView {
   readonly renter: {
@@ -91,6 +92,13 @@ export function OwnerBookingRequestsScreen({
         error={detail.error}
         loading={detail.isPending}
         onBack={onClose ?? (() => setSelected(null))}
+        onCancellationCompleted={() => {
+          void client.invalidateQueries({ queryKey: ['owner-booking-requests'] });
+          void client.invalidateQueries({ queryKey: ['owner-booking', selected] });
+          void client.invalidateQueries({ queryKey: ['owner-rentals'] });
+          void client.invalidateQueries({ queryKey: ['owner-earnings'] });
+          void client.invalidateQueries({ queryKey: ['public-search'] });
+        }}
         decision={decision}
       />
     );
@@ -178,17 +186,20 @@ function OwnerRequestDetail({
   error,
   loading,
   onBack,
+  onCancellationCompleted,
   decision,
 }: {
   readonly booking?: OwnerBookingView | undefined;
   readonly error: Error | null;
   readonly loading: boolean;
   readonly onBack: () => void;
+  readonly onCancellationCompleted: () => void;
   readonly decision: ReturnType<
     typeof useMutation<unknown, Error, { reference: string; action: 'accept' | 'reject' }>
   >;
 }) {
   const [trustProfileOpen, setTrustProfileOpen] = useState(false);
+  const [cancellationOpen, setCancellationOpen] = useState(false);
   if (loading)
     return (
       <Screen
@@ -423,6 +434,16 @@ function OwnerRequestDetail({
         ))}
       </Card>
       {decision.isError && <Text style={styles.error}>{decision.error.message}</Text>}
+      {['CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status) && (
+        <Button label="Cancel booking" onPress={() => setCancellationOpen(true)} variant="danger" />
+      )}
+      <BookingCancellationSheet
+        bookingReference={booking.publicReference}
+        onClose={() => setCancellationOpen(false)}
+        onCompleted={onCancellationCompleted}
+        role="OWNER"
+        visible={cancellationOpen}
+      />
     </Screen>
   );
 }

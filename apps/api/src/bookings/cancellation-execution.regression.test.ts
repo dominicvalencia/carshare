@@ -32,8 +32,18 @@ describe('confirmed cancellation execution authority', () => {
 
   it('creates an Owner obligation without wiring payout recovery', () => {
     expect(service).toContain('ownerFinancialObligation.create');
+    expect(service).toContain('ownerFinancialObligation: prepared.obligation');
+    expect(service).toContain(
+      'ownerFinancialObligation: prepared.existing.ownerFinancialObligations[0] ?? null',
+    );
     expect(service).toContain('OWNER_PENALTY_RECOGNITION');
     expect(service).not.toContain('ownerObligationRecovery.create');
     expect(service).not.toContain('payout.update');
+  });
+
+  it('does not pass a public booking reference into the UUID predicate', () => {
+    expect(service).toContain('{ publicReference: reference }');
+    expect(service).toContain('...(this.isUuid(reference) ? [{ id: reference }] : [])');
+    expect(service).not.toContain('OR: [{ id: reference }, { publicReference: reference }]');
   });
 });

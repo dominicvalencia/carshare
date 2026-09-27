@@ -45,6 +45,9 @@ describe('confirmed cancellation policy', () => {
     expect(result.deliveryRefundedMinor).toBe(1_500n);
     expect(result.collectionRefundedMinor).toBe(500n);
     expect(result.totalRefundMinor).toBe(11_000n);
+    expect(
+      result.refundableRentalMinor + result.nonRefundableRentalMinor + result.cancellationFeeMinor,
+    ).toBe(10_000n);
   });
 
   it('allows a zero-rental-refund cancellation and still refunds unperformed fulfillment', () => {
@@ -52,6 +55,9 @@ describe('confirmed cancellation policy', () => {
     expect(result.refundableRentalMinor).toBe(0n);
     expect(result.nonRefundableRentalMinor).toBe(10_000n);
     expect(result.totalRefundMinor).toBe(2_000n);
+    expect(
+      result.refundableRentalMinor + result.nonRefundableRentalMinor + result.cancellationFeeMinor,
+    ).toBe(10_000n);
   });
 
   it('fully refunds an Owner cancellation and creates the snapshot-sized penalty result', () => {

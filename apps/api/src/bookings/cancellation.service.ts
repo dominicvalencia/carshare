@@ -372,7 +372,11 @@ export class CancellationService {
       });
       return { booking, obligation, operation, payment, refund, result, settlement } as const;
     });
-    if ('existing' in prepared) return this.serialize(prepared.existing);
+    if ('existing' in prepared)
+      return this.serialize({
+        ...prepared.existing,
+        ownerFinancialObligation: prepared.existing.ownerFinancialObligations[0] ?? null,
+      });
     if (!prepared.refund || !prepared.operation)
       return this.serialize({
         ...prepared.settlement,
@@ -392,11 +396,19 @@ export class CancellationService {
       });
     } catch {
       await this.markUnknown(prepared.payment.id, prepared.refund.id, prepared.operation.id);
-      return this.serialize({ ...prepared.settlement, refundStatus: RefundStatus.PROCESSING });
+      return this.serialize({
+        ...prepared.settlement,
+        ownerFinancialObligation: prepared.obligation,
+        refundStatus: RefundStatus.PROCESSING,
+      });
     }
     if (providerResult.kind !== 'SUCCEEDED') {
       await this.markUnknown(prepared.payment.id, prepared.refund.id, prepared.operation.id);
-      return this.serialize({ ...prepared.settlement, refundStatus: RefundStatus.PROCESSING });
+      return this.serialize({
+        ...prepared.settlement,
+        ownerFinancialObligation: prepared.obligation,
+        refundStatus: RefundStatus.PROCESSING,
+      });
     }
     await this.finalizeRefund(
       {
@@ -408,7 +420,11 @@ export class CancellationService {
       providerResult,
       request,
     );
-    return this.serialize({ ...prepared.settlement, refundStatus: RefundStatus.COMPLETED });
+    return this.serialize({
+      ...prepared.settlement,
+      ownerFinancialObligation: prepared.obligation,
+      refundStatus: RefundStatus.COMPLETED,
+    });
   }
 
   private evaluate(booking: CancellationBooking, actor: CancellationActorType, evaluatedAt: Date) {
@@ -477,9 +493,16 @@ export class CancellationService {
         ...(actor === CancellationActorType.OWNER
           ? { ownerUserId: userId }
           : { renterUserId: userId }),
-        OR: [{ id: reference }, { publicReference: reference }],
+        OR: [
+          { publicReference: reference },
+          ...(this.isUuid(reference) ? [{ id: reference }] : []),
+        ],
       },
     });
+  }
+
+  private isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
   }
 
   private async createOwnerObligation(
