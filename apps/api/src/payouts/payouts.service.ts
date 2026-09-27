@@ -6,6 +6,8 @@ import {
   FinancialAccountType,
   LedgerTransactionType,
   OwnerEarningStatus,
+  OwnerFinancialObligationStatus,
+  OwnerFinancialObligationType,
   OwnerProfileStatus,
   PayoutAccountStatus,
   PayoutBatchStatus,
@@ -17,6 +19,7 @@ import {
   PayoutStatus,
   PayoutWebhookStatus,
   Prisma,
+  planOwnerObligationRecoveries,
 } from '@carrental/database';
 import type {
   PayoutProvider,
@@ -44,9 +47,12 @@ const PAYOUT_INCLUDE = {
     orderBy: { createdAt: 'asc' as const },
   },
   operations: { orderBy: { createdAt: 'asc' as const } },
+  adjustments: { orderBy: { createdAt: 'asc' as const } },
+  obligationRecoveries: { orderBy: { recoveredAt: 'asc' as const } },
   ownerProfile: {
     include: {
       payoutEligibility: true,
+      financialObligations: { select: { currency: true, remainingAmountMinor: true } },
       user: { include: { profile: true } },
     },
   },
@@ -372,6 +378,9 @@ export class PayoutsService {
     const account = readiness.destination!;
     const payout = await this.database.client.$transaction(
       async (transaction) => {
+        await transaction.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "owner_profiles" WHERE "id" = ${input.ownerProfileId}::uuid FOR UPDATE`,
+        );
         const rows = await transaction.$queryRaw<Array<{ id: string }>>(
           this.eligibility.eligibleSelectionSql(
             input.ownerProfileId,
@@ -400,6 +409,39 @@ export class PayoutsService {
             'PAYOUT_BELOW_MINIMUM',
             'Eligible total is below the configured payout minimum.',
           );
+        const currency = selected[0]!.currency;
+        const obligations = await transaction.ownerFinancialObligation.findMany({
+          orderBy: [{ effectiveAt: 'asc' }, { id: 'asc' }],
+          select: { id: true, remainingAmountMinor: true },
+          where: {
+            currency,
+            ownerProfileId: input.ownerProfileId,
+            remainingAmountMinor: { gt: 0n },
+            status: {
+              in: [
+                OwnerFinancialObligationStatus.OUTSTANDING,
+                OwnerFinancialObligationStatus.PARTIALLY_RECOVERED,
+              ],
+            },
+            type: OwnerFinancialObligationType.CANCELLATION_PENALTY,
+          },
+        });
+        const reserved = await transaction.payoutAdjustment.groupBy({
+          by: ['sourceId'],
+          _sum: { signedAmountMinor: true },
+          where: { sourceId: { in: obligations.map(({ id }) => id) }, status: 'RESERVED' },
+        });
+        const recoveryPlan = planOwnerObligationRecoveries(
+          obligations.map((obligation) => ({
+            ...obligation,
+            remainingAmountMinor:
+              obligation.remainingAmountMinor +
+              (reserved.find(({ sourceId }) => sourceId === obligation.id)?._sum
+                .signedAmountMinor ?? 0n),
+          })),
+          total,
+        );
+        const recoveryTotal = recoveryPlan.reduce((sum, item) => sum + item.amountMinor, 0n);
         const batch = existingBatchId
           ? await transaction.payoutBatch.findUniqueOrThrow({ where: { id: existingBatchId } })
           : await transaction.payoutBatch.create({
@@ -410,12 +452,26 @@ export class PayoutsService {
                 status: PayoutBatchStatus.IN_PROGRESS,
               },
             });
+        const payoutId = randomUUID();
         const created = await transaction.payout.create({
           data: {
-            amountMinor: total,
+            adjustmentAmountMinor: -recoveryTotal,
+            amountMinor: total - recoveryTotal,
+            adjustments: {
+              create: recoveryPlan.map((item) => ({
+                auditMetadata: { authority: 'OWNER_FINANCIAL_OBLIGATION' },
+                correlationId: request.correlationId ?? null,
+                currency,
+                idempotencyKey: `payout:${payoutId}:obligation:${item.obligationId}:reserve:v1`,
+                signedAmountMinor: -item.amountMinor,
+                sourceId: item.obligationId,
+                sourceType: 'OWNER_FINANCIAL_OBLIGATION',
+                type: 'OWNER_CANCELLATION_PENALTY_RECOVERY',
+              })),
+            },
             batchId: batch.id,
             createdByUserId: actorUserId,
-            currency: 'PHP',
+            currency,
             destinationAccountHolder: account.accountHolderName,
             destinationChannel: account.destinationChannel,
             destinationCountry: account.country,
@@ -423,6 +479,7 @@ export class PayoutsService {
             destinationMasked: account.maskedAccountIdentifier,
             destinationType: account.type,
             grossEarningMinor: total,
+            id: payoutId,
             items: {
               create: selected.map((earning) => ({
                 amountMinor: this.earningAmount(earning),
@@ -776,6 +833,35 @@ export class PayoutsService {
         include: PAYOUT_INCLUDE,
         where: { id: payoutId },
       });
+      if (payout.amountMinor === 0n) {
+        await this.applyPenaltyAdjustments(transaction, payout, request);
+        await transaction.ownerEarning.updateMany({
+          data: { status: OwnerEarningStatus.PAID },
+          where: { payoutItems: { some: { activeAllocation: true, payoutId: payout.id } } },
+        });
+        await transaction.payoutOperation.updateMany({
+          data: { completedAt: new Date(), status: PayoutOperationStatus.SUCCEEDED },
+          where: { idempotencyKey: `payout:${payout.id}:submit:v1` },
+        });
+        const settled = await transaction.payout.update({
+          data: {
+            paidAt: new Date(),
+            reconcileAfter: null,
+            reconciliationRequired: false,
+            status: PayoutStatus.PAID,
+            submittedAt: new Date(),
+          },
+          include: PAYOUT_INCLUDE,
+          where: { id: payout.id },
+        });
+        await this.event(transaction, payout.id, 'PAYOUT_PAID', {
+          amountMinor: '0',
+          ownerProfileId: payout.ownerProfileId,
+          payoutId: payout.id,
+          providerSubmissionSkipped: true,
+        });
+        return { claimed: false, payout: settled };
+      }
       return { claimed: true, payout };
     });
     const included = prepared.payout as PayoutRecord;
@@ -926,6 +1012,7 @@ export class PayoutsService {
     request: RequestMetadata,
   ) {
     if (payout.status === PayoutStatus.PAID) return;
+    await this.applyPenaltyAdjustments(transaction, payout, request);
     const accounts = await this.accounts(transaction, payout.currency);
     await transaction.ledgerTransaction.create({
       data: {
@@ -976,6 +1063,65 @@ export class PayoutsService {
       ownerProfileId: payout.ownerProfileId,
       payoutId: payout.id,
     });
+  }
+
+  private async applyPenaltyAdjustments(
+    transaction: Prisma.TransactionClient,
+    payout: PayoutRecord,
+    request: RequestMetadata,
+  ) {
+    await transaction.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "owner_profiles" WHERE "id" = ${payout.ownerProfileId}::uuid FOR UPDATE`,
+    );
+    for (const adjustment of payout.adjustments.filter(({ status }) => status === 'RESERVED')) {
+      await transaction.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "owner_financial_obligations" WHERE "id" = ${adjustment.sourceId}::uuid FOR UPDATE`,
+      );
+      const amountMinor = -adjustment.signedAmountMinor;
+      const ledgerTransactionId = randomUUID();
+      const accounts = await this.accounts(transaction, payout.currency);
+      await transaction.ledgerTransaction.create({
+        data: {
+          correlationId: request.correlationId ?? null,
+          currency: payout.currency,
+          description: 'Owner cancellation penalty recovered from eligible payout',
+          entries: {
+            create: [
+              {
+                accountId: accounts(FinancialAccountType.OWNER_PAYABLE),
+                amountMinor,
+                currency: payout.currency,
+                memo: 'Reduce Owner payable',
+              },
+              {
+                accountId: accounts(FinancialAccountType.OWNER_PENALTY_RECEIVABLE),
+                amountMinor: -amountMinor,
+                currency: payout.currency,
+                memo: 'Reduce cancellation penalty receivable',
+              },
+            ],
+          },
+          id: ledgerTransactionId,
+          sourceId: adjustment.id,
+          sourceType: 'PAYOUT_ADJUSTMENT',
+          type: LedgerTransactionType.OWNER_PENALTY_RECOVERY,
+        },
+      });
+      await transaction.ownerObligationRecovery.create({
+        data: {
+          amountMinor,
+          currency: payout.currency,
+          idempotencyKey: `payout-adjustment:${adjustment.id}:recovery:v1`,
+          ledgerTransactionId,
+          obligationId: adjustment.sourceId,
+          payoutId: payout.id,
+        },
+      });
+      await transaction.payoutAdjustment.update({
+        data: { appliedAt: new Date(), ledgerTransactionId, status: 'APPLIED' },
+        where: { id: adjustment.id },
+      });
+    }
   }
 
   private async finalizeFailed(
@@ -1149,6 +1295,10 @@ export class PayoutsService {
     payout: PayoutRecord,
     earningStatus: OwnerEarningStatus,
   ) {
+    await transaction.payoutAdjustment.updateMany({
+      data: { releasedAt: new Date(), status: 'RELEASED' },
+      where: { payoutId: payout.id, status: 'RESERVED' },
+    });
     const earningIds = payout.items
       .filter((item) => item.activeAllocation)
       .map((item) => item.ownerEarningId);
@@ -1184,7 +1334,10 @@ export class PayoutsService {
       payout.amountMinor -
       payout.items
         .filter((item) => item.activeAllocation)
-        .reduce((sum, item) => sum + item.amountMinor, 0n);
+        .reduce((sum, item) => sum + item.amountMinor, 0n) -
+      payout.adjustments
+        .filter(({ status }) => status !== 'RELEASED')
+        .reduce((sum, item) => sum + item.signedAmountMinor, 0n);
     return {
       ...this.payoutProjection(payout),
       diagnostics: {
@@ -1204,6 +1357,7 @@ export class PayoutsService {
         problem:
           difference !== 0n ||
           (payout.status === PayoutStatus.PAID &&
+            payout.amountMinor > 0n &&
             !ledger.some((item) => item.type === LedgerTransactionType.PAYOUT_SETTLEMENT)),
         providerReference: payout.providerPayoutId,
       },
@@ -1213,10 +1367,24 @@ export class PayoutsService {
   private payoutProjection(payout: PayoutRecord) {
     return {
       amountMinor: this.minor(payout.amountMinor),
+      cancellationPenaltyRecoveryMinor: this.minor(
+        -payout.adjustments
+          .filter(
+            ({ type, status }) =>
+              type === 'OWNER_CANCELLATION_PENALTY_RECOVERY' && status !== 'RELEASED',
+          )
+          .reduce((sum, item) => sum + item.signedAmountMinor, 0n),
+      ),
       approvedAt: payout.approvedAt,
       batch: payout.batch,
       createdAt: payout.createdAt,
       currency: payout.currency,
+      grossEligibleEarningsMinor: this.minor(payout.grossEarningMinor),
+      outstandingCancellationPenaltyMinor: this.minor(
+        payout.ownerProfile.financialObligations
+          .filter(({ currency }) => currency === payout.currency)
+          .reduce((sum, item) => sum + item.remainingAmountMinor, 0n),
+      ),
       destination: {
         accountHolderName: payout.destinationAccountHolder,
         channel: payout.destinationChannel,

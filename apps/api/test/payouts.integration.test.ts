@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { API_PREFIX } from '@carrental/api-contracts';
 import { OwnerProfileStatus, RoleCode, Prisma } from '@carrental/database';
 import { PayoutEligibilityService } from '../src/payouts/payout-eligibility.service';
+import { PayoutsService } from '../src/payouts/payouts.service';
 import { type FakePayoutProvider } from '@carrental/payouts';
 import { AppModule } from '../src/app.module';
 import { TokenService } from '../src/auth/token.service';
@@ -338,6 +339,177 @@ describe.sequential('Phase 9 owner payout settlement', () => {
     ).toBe(1);
   }, 60_000);
 
+  it('recovers an Owner penalty across a zero-net and later partial-net payout', async () => {
+    const actor = await createOwner('penalty-recovery');
+    await addAccount(actor, '09170001111', 'PH_GCASH', 'E_WALLET');
+    const source = await createAvailableEarning(actor, 'PenaltySource', null, undefined, {
+      commissionAmountMinor: 150_000n,
+      grossRentalAmountMinor: 1_000_000n,
+      netEarningAmountMinor: 850_000n,
+    });
+    await database.client.ownerEarning.update({
+      data: { status: 'PAID' },
+      where: { id: source.id },
+    });
+    const obligation = await createPenaltyObligation(actor, source, 150_000n);
+    const firstEarning = await createAvailableEarning(actor, 'RecoveryOne', null, undefined, {
+      commissionAmountMinor: 15_000n,
+      grossRentalAmountMinor: 115_000n,
+      netEarningAmountMinor: 100_000n,
+    });
+    const first = await createAndApprove(actor.ownerProfileId);
+    const calls = provider.createCallCount;
+    const zero = await app.get(PayoutsService).submit(admin.userId, first, {
+      correlationId: `test-zero-${randomUUID()}`,
+    });
+    expect(provider.createCallCount).toBe(calls);
+    expect(zero).toMatchObject({
+      amountMinor: 0,
+      cancellationPenaltyRecoveryMinor: 100_000,
+      grossEligibleEarningsMinor: 100_000,
+      outstandingCancellationPenaltyMinor: 50_000,
+      status: 'PAID',
+    });
+    const zeroPayout = await database.client.payout.findUniqueOrThrow({
+      include: { adjustments: true, items: true },
+      where: { id: first },
+    });
+    expect(zeroPayout).toMatchObject({ amountMinor: 0n, providerPayoutId: null, status: 'PAID' });
+    expect(zeroPayout.items).toEqual([
+      expect.objectContaining({ amountMinor: 100_000n, ownerEarningId: firstEarning.id }),
+    ]);
+    expect(zeroPayout.adjustments).toEqual([
+      expect.objectContaining({ signedAmountMinor: -100_000n, status: 'APPLIED' }),
+    ]);
+    const zeroRecovery = await database.client.ownerObligationRecovery.findMany({
+      where: { obligationId: obligation.id, payoutId: first },
+    });
+    expect(zeroRecovery).toEqual([expect.objectContaining({ amountMinor: 100_000n })]);
+    const zeroLedger = await database.client.ledgerTransaction.findUniqueOrThrow({
+      include: { entries: true },
+      where: { id: zeroPayout.adjustments[0]!.ledgerTransactionId! },
+    });
+    expect(zeroLedger.type).toBe('OWNER_PENALTY_RECOVERY');
+    expect(zeroLedger.entries.reduce((sum, entry) => sum + entry.amountMinor, 0n)).toBe(0n);
+    expect(
+      await database.client.ownerFinancialObligation.findUniqueOrThrow({
+        where: { id: obligation.id },
+      }),
+    ).toMatchObject({ remainingAmountMinor: 50_000n, status: 'PARTIALLY_RECOVERED' });
+    await app.get(PayoutsService).submit(admin.userId, first, {
+      correlationId: `test-zero-retry-${randomUUID()}`,
+    });
+    expect(provider.createCallCount).toBe(calls);
+    expect(
+      await database.client.ownerObligationRecovery.count({
+        where: { obligationId: obligation.id },
+      }),
+    ).toBe(1);
+
+    const secondEarning = await createAvailableEarning(actor, 'RecoveryTwo', null, undefined, {
+      commissionAmountMinor: 70_000n,
+      grossRentalAmountMinor: 470_000n,
+      netEarningAmountMinor: 400_000n,
+    });
+    const second = await createAndApprove(actor.ownerProfileId);
+    const submitted = await app.get(PayoutsService).submit(admin.userId, second, {
+      correlationId: `test-partial-${randomUUID()}`,
+    });
+    expect(submitted).toMatchObject({
+      amountMinor: 350_000,
+      cancellationPenaltyRecoveryMinor: 50_000,
+      grossEligibleEarningsMinor: 400_000,
+      outstandingCancellationPenaltyMinor: 50_000,
+    });
+    expect(provider.createCallCount).toBe(calls + 1);
+    const processing = await database.client.payout.findUniqueOrThrow({ where: { id: second } });
+    await expect(provider.retrievePayout(processing.providerPayoutId!)).resolves.toMatchObject({
+      amountMinor: 350_000n,
+    });
+    expect(
+      await database.client.payoutItem.findFirstOrThrow({ where: { payoutId: second } }),
+    ).toMatchObject({ amountMinor: 400_000n, ownerEarningId: secondEarning.id });
+    await app.get(PayoutsService).submit(admin.userId, second, {
+      correlationId: `test-partial-retry-${randomUUID()}`,
+    });
+    expect(provider.createCallCount).toBe(calls + 1);
+    provider.settle(processing.providerPayoutId!);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/payouts/${second}/reconcile`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(201);
+    expect(
+      await database.client.ownerFinancialObligation.findUniqueOrThrow({
+        where: { id: obligation.id },
+      }),
+    ).toMatchObject({
+      remainingAmountMinor: 0n,
+      recoveredAmountMinor: 150_000n,
+      status: 'SATISFIED',
+    });
+    expect(
+      await database.client.ownerObligationRecovery.count({
+        where: { obligationId: obligation.id },
+      }),
+    ).toBe(2);
+    expect(
+      await database.client.ownerObligationRecovery.aggregate({
+        _sum: { amountMinor: true },
+        where: { obligationId: obligation.id },
+      }),
+    ).toMatchObject({ _sum: { amountMinor: 150_000n } });
+
+    const directActor = await createOwner('penalty-direct-partial');
+    await addAccount(directActor, '09170002222', 'PH_GCASH', 'E_WALLET');
+    const directSource = await createAvailableEarning(
+      directActor,
+      'DirectPenaltySource',
+      null,
+      undefined,
+      {
+        commissionAmountMinor: 150_000n,
+        grossRentalAmountMinor: 1_000_000n,
+        netEarningAmountMinor: 850_000n,
+      },
+    );
+    await database.client.ownerEarning.update({
+      data: { status: 'PAID' },
+      where: { id: directSource.id },
+    });
+    const directObligation = await createPenaltyObligation(directActor, directSource, 150_000n);
+    await createAvailableEarning(directActor, 'DirectRecovery', null, undefined, {
+      commissionAmountMinor: 70_000n,
+      grossRentalAmountMinor: 470_000n,
+      netEarningAmountMinor: 400_000n,
+    });
+    const directPayoutId = await createAndApprove(directActor.ownerProfileId);
+    const directSubmitted = await app.get(PayoutsService).submit(admin.userId, directPayoutId, {
+      correlationId: `test-direct-partial-${randomUUID()}`,
+    });
+    expect(directSubmitted).toMatchObject({
+      amountMinor: 250_000,
+      cancellationPenaltyRecoveryMinor: 150_000,
+      grossEligibleEarningsMinor: 400_000,
+      outstandingCancellationPenaltyMinor: 150_000,
+    });
+    const directProcessing = await database.client.payout.findUniqueOrThrow({
+      where: { id: directPayoutId },
+    });
+    await expect(
+      provider.retrievePayout(directProcessing.providerPayoutId!),
+    ).resolves.toMatchObject({ amountMinor: 250_000n });
+    provider.settle(directProcessing.providerPayoutId!);
+    await request(app.getHttpServer())
+      .post(`/api/v1/admin/payouts/${directPayoutId}/reconcile`)
+      .set('Authorization', `Bearer ${admin.token}`)
+      .expect(201);
+    expect(
+      await database.client.ownerFinancialObligation.findUniqueOrThrow({
+        where: { id: directObligation.id },
+      }),
+    ).toMatchObject({ remainingAmountMinor: 0n, status: 'SATISFIED' });
+  }, 60_000);
+
   it('creates a batch with one isolated payout per owner', async () => {
     const restored = await addAccount(owner, '09176660123', 'PH_GCASH', 'E_WALLET');
     await request(app.getHttpServer())
@@ -500,6 +672,15 @@ describe.sequential('Phase 9 owner payout settlement', () => {
       deliveryEarningMinor: 0n,
       collectionEarningMinor: 0n,
     },
+    financials: {
+      commissionAmountMinor: bigint;
+      grossRentalAmountMinor: bigint;
+      netEarningAmountMinor: bigint;
+    } = {
+      commissionAmountMinor: 15_000n,
+      grossRentalAmountMinor: 100_000n,
+      netEarningAmountMinor: 85_000n,
+    },
   ) {
     const category = await database.client.vehicleCategory.findFirstOrThrow({
       where: { active: true },
@@ -523,7 +704,7 @@ describe.sequential('Phase 9 owner payout settlement', () => {
     const policy = await database.client.vehiclePolicyVersion.create({
       data: {
         createdByUserId: actor.userId,
-        dailyRateMinor: 100_000,
+        dailyRateMinor: Number(financials.grossRentalAmountMinor),
         fuelReturnPolicy: 'SAME_TO_SAME',
         fuelTolerancePercent: 5,
         includedKilometersPerDay: 150,
@@ -539,7 +720,7 @@ describe.sequential('Phase 9 owner payout settlement', () => {
     const rentalEnd = new Date(Date.now() - 2 * 86_400_000);
     const quote = await database.client.pricingQuote.create({
       data: {
-        baseRentalAmountMinor: 100_000,
+        baseRentalAmountMinor: Number(financials.grossRentalAmountMinor),
         chargeableDays: 1,
         currency: 'PHP',
         excessKilometerRateMinor: 1_000,
@@ -551,9 +732,9 @@ describe.sequential('Phase 9 owner payout settlement', () => {
         rentalEnd,
         rentalStart,
         renterUserId: renter.userId,
-        subtotalMinor: 100_000,
-        discountedRentalSubtotalMinor: 100_000,
-        totalMinor: 100_000,
+        subtotalMinor: Number(financials.grossRentalAmountMinor),
+        discountedRentalSubtotalMinor: Number(financials.grossRentalAmountMinor),
+        totalMinor: Number(financials.grossRentalAmountMinor),
         turnaroundMinutes: 120,
         unlimitedMileage: false,
         vehicleId: vehicle.id,
@@ -576,10 +757,10 @@ describe.sequential('Phase 9 owner payout settlement', () => {
     });
     const payment = await database.client.payment.create({
       data: {
-        amountMinor: 100_000n,
-        authorizedAmountMinor: 100_000n,
+        amountMinor: financials.grossRentalAmountMinor,
+        authorizedAmountMinor: financials.grossRentalAmountMinor,
         bookingId: booking.id,
-        capturedAmountMinor: 100_000n,
+        capturedAmountMinor: financials.grossRentalAmountMinor,
         capturedAt: new Date(),
         currency: 'PHP',
         externalPaymentId: `p9-${randomUUID()}`,
@@ -595,13 +776,90 @@ describe.sequential('Phase 9 owner payout settlement', () => {
         ...fulfillmentEarnings,
         availableAt: new Date(Date.now() - 1_000),
         bookingId: booking.id,
-        commissionAmountMinor: 15_000n,
+        commissionAmountMinor: financials.commissionAmountMinor,
         currency: 'PHP',
-        grossRentalAmountMinor: 100_000n,
-        netEarningAmountMinor: 85_000n,
+        grossRentalAmountMinor: financials.grossRentalAmountMinor,
+        netEarningAmountMinor: financials.netEarningAmountMinor,
         ownerProfileId: actor.ownerProfileId,
         paymentId: payment.id,
         status: 'AVAILABLE',
+      },
+    });
+  }
+
+  async function createPenaltyObligation(
+    actor: OwnerActor,
+    earning: Awaited<ReturnType<typeof createAvailableEarning>>,
+    amountMinor: bigint,
+  ) {
+    const booking = await database.client.booking.findUniqueOrThrow({
+      include: { payments: true },
+      where: { id: earning.bookingId },
+    });
+    const payment = booking.payments[0]!;
+    const rule = await database.client.commissionRule.findFirstOrThrow({
+      orderBy: { effectiveFrom: 'asc' },
+    });
+    const snapshot = await database.client.commissionSnapshot.create({
+      data: {
+        bookingId: booking.id,
+        paymentId: payment.id,
+        ruleId: rule.id,
+        ruleVersion: rule.version,
+        scope: rule.scope,
+        rateBasisPoints: 1500,
+        fixedAmountMinor: 0n,
+        commissionableBaseMinor: payment.capturedAmountMinor,
+        calculatedCommissionMinor: amountMinor,
+        currency: 'PHP',
+        calculationVersion: 'COMMISSION_BPS_V1',
+      },
+    });
+    const cancellation = await database.client.bookingCancellation.create({
+      data: {
+        actorType: 'USER',
+        actorUserId: actor.userId,
+        bookingId: booking.id,
+        reasonCode: 'VEHICLE_UNAVAILABLE',
+      },
+    });
+    const settlement = await database.client.bookingCancellationSettlement.create({
+      data: {
+        actorType: 'OWNER',
+        bookingCancellationId: cancellation.id,
+        bookingId: booking.id,
+        calculationVersion: 'CONFIRMED_BOOKING_CANCELLATION_V1',
+        capturedAmountMinor: payment.capturedAmountMinor,
+        collectionFeeMinor: 0n,
+        collectionRefundedMinor: 0n,
+        commissionRetainedMinor: amountMinor,
+        commissionSnapshotId: snapshot.id,
+        currency: 'PHP',
+        deliveryCompleted: false,
+        deliveryCompletionBasis: 'NOT_APPLICABLE',
+        deliveryFeeMinor: 0n,
+        deliveryRefundedMinor: 0n,
+        deliveryRetainedMinor: 0n,
+        fulfillmentTreatment: {},
+        paymentId: payment.id,
+        previewVersion: 'CONFIRMED_BOOKING_CANCELLATION_V1',
+        refundAmountMinor: payment.capturedAmountMinor - amountMinor,
+        rentalComponentMinor: payment.capturedAmountMinor,
+      },
+    });
+    return database.client.ownerFinancialObligation.create({
+      data: {
+        cancellationSettlementId: settlement.id,
+        commissionSnapshotId: snapshot.id,
+        currency: 'PHP',
+        effectiveAt: new Date(),
+        originalAmountMinor: amountMinor,
+        ownerProfileId: actor.ownerProfileId,
+        policyVersion: 'DOON_RENTER_CANCELLATION_V1',
+        reasonCode: 'VEHICLE_UNAVAILABLE',
+        remainingAmountMinor: amountMinor,
+        sourceCancellationId: cancellation.id,
+        type: 'CANCELLATION_PENALTY',
       },
     });
   }

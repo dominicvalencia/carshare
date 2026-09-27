@@ -428,6 +428,16 @@ enum OwnerObligationWaiverReason {
   OTHER_APPROVED
 }
 
+enum PayoutAdjustmentType {
+  OWNER_CANCELLATION_PENALTY_RECOVERY
+}
+
+enum PayoutAdjustmentStatus {
+  RESERVED
+  APPLIED
+  RELEASED
+}
+
 enum OwnerEarningStatus {
   PENDING
   HELD
@@ -3482,6 +3492,7 @@ model LedgerTransaction {
   entries                 LedgerEntry[]
   ownerObligationRecovery OwnerObligationRecovery?
   ownerObligationWaiver   OwnerObligationWaiver?
+  payoutAdjustment        PayoutAdjustment?
 
   @@unique([sourceType, sourceId, type, currency])
   @@index([postedAt])
@@ -3780,6 +3791,7 @@ model Payout {
   operations           PayoutOperation[]
   webhookEvents        PayoutWebhookEvent[]
   obligationRecoveries OwnerObligationRecovery[]
+  adjustments          PayoutAdjustment[]
 
   @@unique([provider, providerPayoutId])
   @@index([ownerProfileId, status, createdAt])
@@ -3805,6 +3817,32 @@ model PayoutItem {
   @@unique([payoutId, ownerEarningId])
   @@index([ownerEarningId, activeAllocation])
   @@map("payout_items")
+}
+
+model PayoutAdjustment {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  payoutId            String                 @map("payout_id") @db.Uuid
+  type                PayoutAdjustmentType
+  status              PayoutAdjustmentStatus @default(RESERVED)
+  signedAmountMinor   BigInt                 @map("signed_amount_minor")
+  currency            String                 @db.Char(3)
+  sourceType          String                 @map("source_type") @db.VarChar(100)
+  sourceId            String                 @map("source_id") @db.Uuid
+  idempotencyKey      String                 @unique @map("idempotency_key") @db.VarChar(200)
+  ledgerTransactionId String?                @unique @map("ledger_transaction_id") @db.Uuid
+  correlationId       String?                @map("correlation_id") @db.VarChar(100)
+  auditMetadata       Json?                  @map("audit_metadata")
+  appliedAt           DateTime?              @map("applied_at") @db.Timestamptz(3)
+  releasedAt          DateTime?              @map("released_at") @db.Timestamptz(3)
+  createdAt           DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  payout            Payout             @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  ledgerTransaction LedgerTransaction? @relation(fields: [ledgerTransactionId], references: [id], onDelete: Restrict)
+
+  @@unique([payoutId, type, sourceType, sourceId])
+  @@index([payoutId, status, createdAt])
+  @@index([sourceType, sourceId, status])
+  @@map("payout_adjustments")
 }
 
 model OwnerFinancialObligation {

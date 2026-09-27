@@ -4,6 +4,7 @@ import {
   applyOwnerObligationWaiver,
   createCancellationPenaltyBalance,
   ownerPenaltyLedgerEntries,
+  planOwnerObligationRecoveries,
 } from './owner-financial-obligations';
 
 describe('Owner financial obligation primitives', () => {
@@ -116,5 +117,20 @@ describe('Owner financial obligation primitives', () => {
     );
     expect(accounts).toContain('PLATFORM_CANCELLATION_REVENUE');
     expect(accounts).not.toContain('PLATFORM_COMMISSION_REVENUE');
+  });
+
+  it('plans oldest-first partial recovery across multiple obligations', () => {
+    expect(
+      planOwnerObligationRecoveries(
+        [
+          { id: 'a', remainingAmountMinor: 500n },
+          { id: 'b', remainingAmountMinor: 1_000n },
+        ],
+        1_200n,
+      ),
+    ).toEqual([
+      { amountMinor: 500n, obligationId: 'a' },
+      { amountMinor: 700n, obligationId: 'b' },
+    ]);
   });
 });

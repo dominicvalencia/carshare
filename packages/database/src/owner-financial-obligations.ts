@@ -14,6 +14,20 @@ export interface PenaltyLedgerEntry {
   amountMinor: bigint;
 }
 
+export function planOwnerObligationRecoveries(
+  obligations: readonly { id: string; remainingAmountMinor: bigint }[],
+  eligibleAmountMinor: bigint,
+) {
+  let capacity = eligibleAmountMinor;
+  return obligations.flatMap((obligation) => {
+    if (capacity <= 0n || obligation.remainingAmountMinor <= 0n) return [];
+    const amountMinor =
+      obligation.remainingAmountMinor < capacity ? obligation.remainingAmountMinor : capacity;
+    capacity -= amountMinor;
+    return [{ amountMinor, obligationId: obligation.id }];
+  });
+}
+
 function assertCurrency(currency: string) {
   if (!/^[A-Z]{3}$/u.test(currency)) throw new Error('Currency must be a three-letter ISO code.');
 }
