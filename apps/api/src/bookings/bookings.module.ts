@@ -14,6 +14,7 @@ import { BookingProjectionService } from './booking-projection.service';
 import { BookingsService } from './bookings.service';
 import { OccupancyService } from './occupancy.service';
 import { OutboxService } from './outbox.service';
+import { CancellationService } from './cancellation.service';
 
 @Module({
   controllers: [RenterBookingsController, OwnerBookingsController, AdminBookingsController],
@@ -26,6 +27,12 @@ import { OutboxService } from './outbox.service';
     PaymentsModule,
     RenterVerificationModule,
   ],
-  providers: [BookingsService, BookingProjectionService, OccupancyService, OutboxService],
+  providers: [
+    BookingsService,
+    BookingProjectionService,
+    CancellationService,
+    OccupancyService,
+    OutboxService,
+  ],
 })
 export class BookingsModule {}

@@ -17,11 +17,14 @@ import { HttpStatus } from '@nestjs/common';
 import { BookingsService } from './bookings.service';
 import {
   CancelBookingDto,
+  CancellationPreviewDto,
   CreateBookingHoldDto,
+  ExecuteCancellationDto,
   PreCustodyCancellationDto,
   RejectBookingDto,
 } from './bookings.dto';
 import { PaymentsService } from '../payments/payments.service';
+import { CancellationService } from './cancellation.service';
 
 @ApiBearerAuth()
 @ApiTags('Renter bookings')
@@ -32,6 +35,7 @@ export class RenterBookingsController {
   constructor(
     private readonly bookings: BookingsService,
     private readonly payments: PaymentsService,
+    private readonly cancellations: CancellationService,
   ) {}
 
   @Post()
@@ -52,6 +56,39 @@ export class RenterBookingsController {
     return this.bookings.createHold(
       principal.userId,
       input.quoteId,
+      idempotencyKey,
+      requestMetadata(request),
+    );
+  }
+
+  @Post(':reference/cancellation-preview')
+  cancellationPreview(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: CancellationPreviewDto,
+  ) {
+    return this.cancellations.previewRenter(principal.userId, reference, input.reasonCode);
+  }
+
+  @Post(':reference/cancellation')
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  executeCancellation(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: ExecuteCancellationDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() request: Request,
+  ) {
+    if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 200)
+      throw new ApplicationException(
+        BookingErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+        'A valid Idempotency-Key header is required.',
+        HttpStatus.BAD_REQUEST,
+      );
+    return this.cancellations.executeRenter(
+      principal.userId,
+      reference,
+      input,
       idempotencyKey,
       requestMetadata(request),
     );
@@ -133,7 +170,41 @@ export class OwnerBookingsController {
   constructor(
     private readonly bookings: BookingsService,
     private readonly payments: PaymentsService,
+    private readonly cancellations: CancellationService,
   ) {}
+
+  @Post(':reference/cancellation-preview')
+  cancellationPreview(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: CancellationPreviewDto,
+  ) {
+    return this.cancellations.previewOwner(principal.userId, reference, input.reasonCode);
+  }
+
+  @Post(':reference/cancellation')
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  executeCancellation(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: ExecuteCancellationDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() request: Request,
+  ) {
+    if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 200)
+      throw new ApplicationException(
+        BookingErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+        'A valid Idempotency-Key header is required.',
+        HttpStatus.BAD_REQUEST,
+      );
+    return this.cancellations.executeOwner(
+      principal.userId,
+      reference,
+      input,
+      idempotencyKey,
+      requestMetadata(request),
+    );
+  }
 
   @Get('requests')
   requests(@CurrentPrincipal() principal: RequestPrincipal) {
