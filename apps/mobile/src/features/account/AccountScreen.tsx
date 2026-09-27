@@ -185,11 +185,6 @@ export function AccountScreen({
     queryFn: () => apiClient.request<OwnerProfile>('/owners/me'),
     retry: false,
   });
-  const notificationSummary = useQuery({
-    queryKey: ['notification-summary', 'renter'],
-    queryFn: () =>
-      apiClient.request<{ unreadCount: number }>('/notifications/summary?audience=RENTER'),
-  });
   const name =
     me.data?.profile?.displayName ??
     me.data?.profile?.firstName ??
@@ -255,6 +250,11 @@ export function AccountScreen({
           onPress={() => navigation.navigate('PersonalInformation')}
         />
         <MenuRow
+          icon="star-outline"
+          label="Reviews"
+          onPress={() => navigation.navigate('Reviews')}
+        />
+        <MenuRow
           icon="shield-checkmark-outline"
           label="Verification"
           detail={auth.user?.emailVerified ? 'Email verified' : 'Email verification needed'}
@@ -269,24 +269,6 @@ export function AccountScreen({
           icon="phone-portrait-outline"
           label="Active devices"
           onPress={() => navigation.navigate('ActiveDevices')}
-        />
-      </MenuSection>
-      <MenuSection title="Renting">
-        <MenuRow
-          icon="heart-outline"
-          label="Wishlist"
-          onPress={() => navigation.navigate('Favorites')}
-        />
-        <MenuRow
-          icon="star-outline"
-          label="Reviews"
-          onPress={() => navigation.navigate('Reviews')}
-        />
-        <MenuRow
-          icon="notifications-outline"
-          label="Notifications"
-          detail={notificationDetail(notificationSummary.data?.unreadCount)}
-          onPress={() => navigation.navigate('Notifications')}
         />
       </MenuSection>
       <MenuSection title="Support & settings">
@@ -1982,12 +1964,6 @@ function MenuRow({
       {content}
     </View>
   );
-}
-function notificationDetail(count: number | undefined): string {
-  if (count === undefined) return 'Checking for updates…';
-  return count
-    ? `${count} unread notification${count === 1 ? '' : 's'}`
-    : 'No unread notifications';
 }
 function ownerStatusLabel(status: OwnerStatus): string {
   return {

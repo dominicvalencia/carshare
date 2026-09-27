@@ -7,6 +7,18 @@ const source = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), 'AccountScreen.tsx'),
   'utf8',
 );
+const renterProfile = source.slice(
+  source.indexOf('export function AccountScreen'),
+  source.indexOf('export function PersonalInformationScreen'),
+);
+const navigationSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../navigation/AppNavigation.tsx'),
+  'utf8',
+);
+const messagesSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../communications/MessagesScreen.tsx'),
+  'utf8',
+);
 
 describe('contact verification presentation', () => {
   it('exposes email and Philippine mobile verification flows', () => {
@@ -38,6 +50,31 @@ describe('renter profile persona presentation', () => {
     expect(source).toContain("onSuccess: () => onModeChange('owner')");
     expect(source).not.toContain("onSuccess: () => navigation.navigate('OwnerOnboarding')");
     expect(source).not.toContain('<LogoutButton variant="secondary" />');
+  });
+
+  it('keeps Reviews directly below Personal information in Account', () => {
+    const personalInformation = renterProfile.indexOf('label="Personal information"');
+    const reviews = renterProfile.indexOf('label="Reviews"');
+    const verification = renterProfile.indexOf('label="Verification"');
+    expect(personalInformation).toBeGreaterThan(-1);
+    expect(reviews).toBeGreaterThan(personalInformation);
+    expect(verification).toBeGreaterThan(reviews);
+    expect(renterProfile.slice(personalInformation, reviews).match(/<MenuRow/g)).toHaveLength(1);
+    expect(renterProfile).toContain("navigation.navigate('Reviews')");
+  });
+
+  it('removes renter Profile Wishlist and Notifications rows without orphaned sections', () => {
+    expect(renterProfile).not.toContain('label="Wishlist"');
+    expect(renterProfile).not.toContain('label="Notifications"');
+    expect(renterProfile).not.toContain('<MenuSection title="Renting">');
+    expect(renterProfile).not.toContain('notification-summary');
+  });
+
+  it('preserves Wishlist and Notifications navigation outside renter Profile', () => {
+    expect(navigationSource).toContain('name="Wishlist"');
+    expect(navigationSource).toContain("tabBarLabel: 'Wishlist'");
+    expect(navigationSource).toContain('name="Notifications"');
+    expect(messagesSource).toContain("navigation.navigate('Notifications')");
   });
 });
 
