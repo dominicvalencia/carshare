@@ -8,7 +8,7 @@ import { DatabaseService } from '../infrastructure/database/database.service';
 import { RedisService } from '../infrastructure/redis/redis.service';
 import { AnalyticsEventType, DiscoveryAnalyticsService } from './analytics.service';
 import { AvailabilityService } from './availability.service';
-import { durationDiscount } from './duration-discounts';
+import { priceCompleteTripRental } from './complete-trip-pricing';
 import { PRICING_ENGINE_VERSION, RentalDurationService } from './duration.service';
 import { PublicVehiclesService } from './public-vehicles.service';
 import type { CreatePricingQuoteDto } from './discovery.dto';
@@ -95,15 +95,17 @@ export class PricingQuotesService {
     const deliveryFeeMinor = input.startMethod === 'OWNER_DELIVERY' ? policy.deliveryFeeMinor! : 0;
     const collectionFeeMinor =
       input.endMethod === 'OWNER_COLLECTION' ? policy.collectionFeeMinor! : 0;
-    const baseRentalAmountMinor = policy.dailyRateMinor * chargeableDays;
-    if (!Number.isSafeInteger(baseRentalAmountMinor) || baseRentalAmountMinor > 2_147_483_647) {
+    let rentalPricing: ReturnType<typeof priceCompleteTripRental>;
+    try {
+      rentalPricing = priceCompleteTripRental(chargeableDays, policy);
+    } catch {
       throw new ApplicationException(
         DiscoveryErrorCode.INVALID_RENTAL_PERIOD,
         'The calculated rental amount exceeds the supported range.',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
-    const discount = durationDiscount(baseRentalAmountMinor, chargeableDays, policy);
+    const { baseRentalAmountMinor, discount } = rentalPricing;
     const lines = [
       {
         amountMinor: baseRentalAmountMinor,

@@ -1,13 +1,55 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsDateString,
+  IsEnum,
   IsIn,
+  IsLatitude,
+  IsLongitude,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
   MinLength,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { EndFulfillmentMethod, StartFulfillmentMethod } from '@carrental/database';
+
+export class AmendmentDestinationDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(255) addressLine1?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(120) barangay?: string;
+  @ApiProperty() @IsString() @MaxLength(120) city!: string;
+  @ApiProperty() @IsString() @MaxLength(120) province!: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(12) postalCode?: string;
+  @ApiPropertyOptional({ default: 'PH' }) @IsOptional() @IsString() @MaxLength(2) country?: string;
+  @ApiProperty() @IsNumber() @IsLatitude() latitude!: number;
+  @ApiProperty() @IsNumber() @IsLongitude() longitude!: number;
+}
+
+export class BookingAmendmentPreviewDto {
+  @ApiPropertyOptional() @IsOptional() @IsDateString({ strict: true }) proposedPickupAt?: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString({ strict: true }) proposedReturnAt?: string;
+  @ApiPropertyOptional({ enum: StartFulfillmentMethod })
+  @IsOptional()
+  @IsEnum(StartFulfillmentMethod)
+  proposedStartMethod?: StartFulfillmentMethod;
+  @ApiPropertyOptional({ enum: EndFulfillmentMethod })
+  @IsOptional()
+  @IsEnum(EndFulfillmentMethod)
+  proposedEndMethod?: EndFulfillmentMethod;
+  @ApiPropertyOptional({ nullable: true, type: AmendmentDestinationDto })
+  @IsOptional()
+  @Type(() => AmendmentDestinationDto)
+  @ValidateNested()
+  proposedDeliveryDestination?: AmendmentDestinationDto | null;
+  @ApiPropertyOptional({ nullable: true, type: AmendmentDestinationDto })
+  @IsOptional()
+  @Type(() => AmendmentDestinationDto)
+  @ValidateNested()
+  proposedCollectionDestination?: AmendmentDestinationDto | null;
+}
 
 export const cancellationReasons = [
   'CHANGE_OF_PLANS',

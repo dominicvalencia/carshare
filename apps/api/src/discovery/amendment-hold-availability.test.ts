@@ -50,8 +50,118 @@ describe('amendment hold availability', () => {
     );
 
     expect(result).toMatchObject({ available: false, reasons: ['AMENDMENT_HELD'] });
+    expect(database.client.vehicleOccupancy.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { active: true, vehicleId: { in: [vehicle.id] } } }),
+    );
     expect(() => service.assertQuotable(result)).toThrow(
       'The vehicle is not available for the requested rental period.',
     );
+  });
+
+  it('excludes only the amended booking while retaining another amendment hold', async () => {
+    const bookingId = '22222222-2222-4222-8222-222222222222';
+    const database = {
+      client: {
+        vehicleOccupancy: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              bookingId,
+              occupiedEnd: new Date('2026-10-03T00:00:00.000Z'),
+              occupiedStart: new Date('2026-10-01T00:00:00.000Z'),
+              type: VehicleOccupancyType.BOOKING_RESERVATION,
+            },
+            {
+              bookingId: null,
+              occupiedEnd: new Date('2026-10-04T00:00:00.000Z'),
+              occupiedStart: new Date('2026-10-03T00:00:00.000Z'),
+              type: VehicleOccupancyType.AMENDMENT_HOLD,
+            },
+          ]),
+        },
+      },
+    };
+    const service = new AvailabilityService(database as never, {} as never);
+
+    await expect(
+      service.occupancyConflict({
+        end: new Date('2026-10-02T00:00:00.000Z'),
+        excludeBookingId: bookingId,
+        start: new Date('2026-10-01T00:00:00.000Z'),
+        turnaroundMinutes: 0,
+        vehicleId: vehicle.id,
+      }),
+    ).resolves.toBeNull();
+
+    await expect(
+      service.occupancyConflict({
+        end: new Date('2026-10-03T12:00:00.000Z'),
+        excludeBookingId: bookingId,
+        start: new Date('2026-10-02T12:00:00.000Z'),
+        turnaroundMinutes: 0,
+        vehicleId: vehicle.id,
+      }),
+    ).resolves.toMatchObject({ reason: 'AMENDMENT_HELD', turnaroundOnly: false });
+    expect(database.client.vehicleOccupancy.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { active: true, vehicleId: vehicle.id } }),
+    );
+  });
+
+  it.each([
+    [VehicleOccupancyType.OWNER_BLOCK, 'OWNER_BLOCKED'],
+    [VehicleOccupancyType.MAINTENANCE, 'MAINTENANCE'],
+  ] as const)('classifies %s without exposing occupancy details', async (type, reason) => {
+    const database = {
+      client: {
+        vehicleOccupancy: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              bookingId: null,
+              occupiedEnd: new Date('2026-10-03T00:00:00.000Z'),
+              occupiedStart: new Date('2026-10-02T00:00:00.000Z'),
+              type,
+            },
+          ]),
+        },
+      },
+    };
+    const service = new AvailabilityService(database as never, {} as never);
+
+    await expect(
+      service.occupancyConflict({
+        end: new Date('2026-10-02T12:00:00.000Z'),
+        excludeBookingId: '22222222-2222-4222-8222-222222222222',
+        start: new Date('2026-10-02T01:00:00.000Z'),
+        turnaroundMinutes: 0,
+        vehicleId: vehicle.id,
+      }),
+    ).resolves.toEqual({ reason, turnaroundOnly: false });
+  });
+
+  it('identifies a preparation-only overlap after the requested return', async () => {
+    const database = {
+      client: {
+        vehicleOccupancy: {
+          findMany: vi.fn().mockResolvedValue([
+            {
+              bookingId: null,
+              occupiedEnd: new Date('2026-10-03T00:00:00.000Z'),
+              occupiedStart: new Date('2026-10-02T13:00:00.000Z'),
+              type: VehicleOccupancyType.BOOKING_RESERVATION,
+            },
+          ]),
+        },
+      },
+    };
+    const service = new AvailabilityService(database as never, {} as never);
+
+    await expect(
+      service.occupancyConflict({
+        end: new Date('2026-10-02T12:00:00.000Z'),
+        excludeBookingId: '22222222-2222-4222-8222-222222222222',
+        start: new Date('2026-10-02T00:00:00.000Z'),
+        turnaroundMinutes: 120,
+        vehicleId: vehicle.id,
+      }),
+    ).resolves.toEqual({ reason: 'BOOKING_RESERVED', turnaroundOnly: true });
   });
 });

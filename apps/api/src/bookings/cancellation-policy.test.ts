@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { CancellationActorType, CancellationPolicyCode } from '@carrental/database';
-import { evaluateConfirmedCancellation } from './cancellation-policy';
+import {
+  evaluateConfirmedCancellation,
+  evaluateConfirmedCancellationTiming,
+} from './cancellation-policy';
 
 const hour = 60 * 60 * 1000;
 const pickup = new Date('2026-10-10T12:00:00.000Z');
@@ -28,7 +31,15 @@ describe('confirmed cancellation policy', () => {
     [96, 72, CancellationPolicyCode.ADVANCE_FINAL_72H_NON_REFUNDABLE],
     [96, 71, CancellationPolicyCode.ADVANCE_FINAL_72H_NON_REFUNDABLE],
   ])('classifies advance booking boundaries', (confirmed, cancelled, expected) => {
-    expect(policy(confirmed, cancelled).policyCode).toBe(expected);
+    const result = policy(confirmed, cancelled);
+    const sharedTiming = evaluateConfirmedCancellationTiming({
+      confirmedAt: new Date(pickup.getTime() - confirmed * hour),
+      evaluatedAt: new Date(pickup.getTime() - cancelled * hour),
+      scheduledPickupAt: pickup,
+    });
+    expect(result.policyCode).toBe(expected);
+    expect(sharedTiming.policyCode).toBe(result.policyCode);
+    expect(sharedTiming.refundable).toBe(result.refundableRentalMinor > 0n);
   });
 
   it('keeps exactly six hours in last-minute grace and expires it after seven', () => {

@@ -15,6 +15,7 @@ import { BookingsService } from './bookings.service';
 import { OccupancyService } from './occupancy.service';
 import { OutboxService } from './outbox.service';
 import { CancellationService } from './cancellation.service';
+import { AmendmentPreviewService } from './amendment-preview.service';
 
 @Module({
   controllers: [RenterBookingsController, OwnerBookingsController, AdminBookingsController],
@@ -28,6 +29,7 @@ import { CancellationService } from './cancellation.service';
     RenterVerificationModule,
   ],
   providers: [
+    AmendmentPreviewService,
     BookingsService,
     BookingProjectionService,
     CancellationService,

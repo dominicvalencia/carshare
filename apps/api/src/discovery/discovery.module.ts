@@ -44,6 +44,11 @@ import { FulfillmentModule } from '../fulfillment/fulfillment.module';
     RenterHistoryService,
     SavedSimilarityService,
   ],
-  exports: [DiscoveryAnalyticsService, RentalDurationService, PublicVehicleEligibilityService],
+  exports: [
+    AvailabilityService,
+    DiscoveryAnalyticsService,
+    RentalDurationService,
+    PublicVehicleEligibilityService,
+  ],
 })
 export class DiscoveryModule {}

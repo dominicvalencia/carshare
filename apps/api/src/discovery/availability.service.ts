@@ -23,6 +23,14 @@ export interface AdvisoryAvailability {
   readonly warning: string;
 }
 
+export interface OccupancyConflict {
+  readonly reason: Extract<
+    UnavailableReason,
+    'AMENDMENT_HELD' | 'BOOKING_RESERVED' | 'MAINTENANCE' | 'OWNER_BLOCKED'
+  >;
+  readonly turnaroundOnly: boolean;
+}
+
 const WARNING =
   'Availability is advisory and does not reserve the vehicle. It will be rechecked transactionally during booking.';
 
@@ -95,6 +103,41 @@ export class AvailabilityService {
       });
     }
     return results;
+  }
+
+  /** Server-only amendment check: excludes one booking, never a vehicle's other occupancy. */
+  async occupancyConflict(input: {
+    end: Date;
+    excludeBookingId: string;
+    start: Date;
+    turnaroundMinutes: number;
+    vehicleId: string;
+  }): Promise<OccupancyConflict | null> {
+    const requestedOccupiedEnd = new Date(input.end.getTime() + input.turnaroundMinutes * 60_000);
+    const occupancies = await this.database.client.vehicleOccupancy.findMany({
+      select: { bookingId: true, occupiedEnd: true, occupiedStart: true, type: true },
+      where: { active: true, vehicleId: input.vehicleId },
+    });
+    for (const occupancy of occupancies) {
+      if (occupancy.bookingId === input.excludeBookingId) continue;
+      if (input.start >= occupancy.occupiedEnd || requestedOccupiedEnd <= occupancy.occupiedStart)
+        continue;
+      const reason =
+        occupancy.type === VehicleOccupancyType.BOOKING_RESERVATION
+          ? 'BOOKING_RESERVED'
+          : occupancy.type === VehicleOccupancyType.AMENDMENT_HOLD
+            ? 'AMENDMENT_HELD'
+            : occupancy.type === VehicleOccupancyType.MAINTENANCE
+              ? 'MAINTENANCE'
+              : 'OWNER_BLOCKED';
+      return {
+        reason,
+        turnaroundOnly: !(
+          input.start < occupancy.occupiedEnd && input.end > occupancy.occupiedStart
+        ),
+      };
+    }
+    return null;
   }
 
   assertQuotable(result: AdvisoryAvailability): void {

@@ -43,6 +43,15 @@ describe('fulfillment serviceability', () => {
         method: 'OWNER_COLLECTION',
         now,
         policy,
+        scheduledAt: new Date('2026-09-11T02:00:00.000Z'),
+      }),
+    ).toMatchObject({ noticeSatisfied: true, reason: 'SUPPORTED', supported: true });
+    expect(
+      evaluateFulfillmentServiceability({
+        distanceMeters: 100,
+        method: 'OWNER_COLLECTION',
+        now,
+        policy,
         scheduledAt: new Date('2026-09-11T01:59:59.000Z'),
       }),
     ).toMatchObject({ noticeSatisfied: false, reason: 'INSUFFICIENT_NOTICE', supported: false });

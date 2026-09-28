@@ -8,6 +8,13 @@ const sql = readFileSync(
   ),
   'utf8',
 );
+const bookingEngineSql = readFileSync(
+  new URL(
+    '../prisma/migrations/20260820040100_phase5_booking_engine/migration.sql',
+    import.meta.url,
+  ),
+  'utf8',
+);
 
 describe('Migration 65 booking amendment foundation', () => {
   it('creates durable snapshots, holds, history, and settlement authority', () => {
@@ -25,6 +32,18 @@ describe('Migration 65 booking amendment foundation', () => {
     expect(sql).toContain('validate_booking_amendment_hold_occupancy');
     expect(sql).toContain('release_booking_amendment_holds');
     expect(sql).toContain('convert_booking_amendment_holds');
+    expect(bookingEngineSql).toContain('ADD CONSTRAINT "vehicle_occupancies_no_overlap"');
+    expect(bookingEngineSql).toContain('WHERE ("active")');
+  });
+
+  it('makes only ACTIVE durable amendment holds block shared availability', () => {
+    expect(sql).toContain('occupancy."active" <> (NEW."status" = \'ACTIVE\')');
+    expect(sql).toContain('SET "active" = false, "updated_at" = CURRENT_TIMESTAMP');
+    expect(sql).toContain("IF target_status = 'ACTIVE'");
+    expect(sql).toContain('\'CONVERTED\'::"BookingAmendmentHoldStatus"');
+    expect(sql).toContain(
+      'PERFORM "release_booking_amendment_holds"(amendment_row."id", \'EXPIRED\'',
+    );
   });
 
   it('keeps owner-response and renter-payment deadlines distinct', () => {

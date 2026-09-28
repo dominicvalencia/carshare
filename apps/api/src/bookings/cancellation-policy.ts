@@ -8,6 +8,48 @@ import {
 export const CANCELLATION_POLICY_VERSION = 'CARSHARE_CONFIRMED_CANCELLATION_V1';
 const HOUR_MS = 60 * 60 * 1000;
 
+export interface ConfirmedCancellationTimingInput {
+  confirmedAt: Date;
+  evaluatedAt: Date;
+  scheduledPickupAt: Date;
+}
+
+export interface ConfirmedCancellationTimingResult {
+  advance: boolean;
+  applicableDeadlineAt: Date;
+  policyCode: CancellationPolicyCode;
+  refundable: boolean;
+}
+
+/** Shared timing authority for cancellation and pre-trip amendment shortening. */
+export function evaluateConfirmedCancellationTiming(
+  input: ConfirmedCancellationTimingInput,
+): ConfirmedCancellationTimingResult {
+  if (input.evaluatedAt >= input.scheduledPickupAt)
+    throw new Error('Ordinary cancellation is unavailable after pickup.');
+  if (input.confirmedAt >= input.scheduledPickupAt)
+    throw new Error('Confirmation must precede scheduled pickup.');
+
+  const advance = input.scheduledPickupAt.getTime() - input.confirmedAt.getTime() >= 72 * HOUR_MS;
+  const applicableDeadlineAt = advance
+    ? new Date(input.scheduledPickupAt.getTime() - 72 * HOUR_MS)
+    : new Date(
+        Math.min(input.confirmedAt.getTime() + 6 * HOUR_MS, input.scheduledPickupAt.getTime()),
+      );
+  const refundable = advance
+    ? input.evaluatedAt < applicableDeadlineAt
+    : input.evaluatedAt <= applicableDeadlineAt && input.evaluatedAt < input.scheduledPickupAt;
+  const policyCode = advance
+    ? refundable
+      ? CancellationPolicyCode.ADVANCE_REFUNDABLE
+      : CancellationPolicyCode.ADVANCE_FINAL_72H_NON_REFUNDABLE
+    : refundable
+      ? CancellationPolicyCode.LAST_MINUTE_GRACE_REFUNDABLE
+      : CancellationPolicyCode.LAST_MINUTE_GRACE_EXPIRED_NON_REFUNDABLE;
+
+  return { advance, applicableDeadlineAt, policyCode, refundable };
+}
+
 export interface ConfirmedCancellationPolicyInput {
   actor: Exclude<CancellationActorType, 'LEGACY_UNSPECIFIED'>;
   capturedAmountMinor: bigint;
@@ -56,22 +98,11 @@ export function evaluateConfirmedCancellation(
   if (componentTotal !== input.capturedAmountMinor)
     throw new Error('Captured amount does not reconcile to booking components.');
 
-  const advance = input.scheduledPickupAt.getTime() - input.confirmedAt.getTime() >= 72 * HOUR_MS;
-  const deadline = advance
-    ? new Date(input.scheduledPickupAt.getTime() - 72 * HOUR_MS)
-    : new Date(
-        Math.min(input.confirmedAt.getTime() + 6 * HOUR_MS, input.scheduledPickupAt.getTime()),
-      );
-  const refundable = advance
-    ? input.evaluatedAt < deadline
-    : input.evaluatedAt <= deadline && input.evaluatedAt < input.scheduledPickupAt;
-  const policyCode = advance
-    ? refundable
-      ? CancellationPolicyCode.ADVANCE_REFUNDABLE
-      : CancellationPolicyCode.ADVANCE_FINAL_72H_NON_REFUNDABLE
-    : refundable
-      ? CancellationPolicyCode.LAST_MINUTE_GRACE_REFUNDABLE
-      : CancellationPolicyCode.LAST_MINUTE_GRACE_EXPIRED_NON_REFUNDABLE;
+  const {
+    applicableDeadlineAt: deadline,
+    policyCode,
+    refundable,
+  } = evaluateConfirmedCancellationTiming(input);
 
   const ownerCancellation = input.actor === CancellationActorType.OWNER;
   const neutralCancellation =

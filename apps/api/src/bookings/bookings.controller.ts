@@ -16,6 +16,7 @@ import type { RequestPrincipal } from '../security/security-context';
 import { HttpStatus } from '@nestjs/common';
 import { BookingsService } from './bookings.service';
 import {
+  BookingAmendmentPreviewDto,
   CancelBookingDto,
   CancellationPreviewDto,
   CreateBookingHoldDto,
@@ -25,6 +26,7 @@ import {
 } from './bookings.dto';
 import { PaymentsService } from '../payments/payments.service';
 import { CancellationService } from './cancellation.service';
+import { AmendmentPreviewService } from './amendment-preview.service';
 
 @ApiBearerAuth()
 @ApiTags('Renter bookings')
@@ -36,7 +38,17 @@ export class RenterBookingsController {
     private readonly bookings: BookingsService,
     private readonly payments: PaymentsService,
     private readonly cancellations: CancellationService,
+    private readonly amendmentPreviews: AmendmentPreviewService,
   ) {}
+
+  @Post(':reference/amendment-preview')
+  amendmentPreview(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: BookingAmendmentPreviewDto,
+  ) {
+    return this.amendmentPreviews.previewRenter(principal.userId, reference, input);
+  }
 
   @Post()
   @ApiHeader({ name: 'Idempotency-Key', required: true })
