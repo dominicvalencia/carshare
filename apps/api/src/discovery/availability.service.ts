@@ -106,15 +106,19 @@ export class AvailabilityService {
   }
 
   /** Server-only amendment check: excludes one booking, never a vehicle's other occupancy. */
-  async occupancyConflict(input: {
-    end: Date;
-    excludeBookingId: string;
-    start: Date;
-    turnaroundMinutes: number;
-    vehicleId: string;
-  }): Promise<OccupancyConflict | null> {
+  async occupancyConflict(
+    input: {
+      end: Date;
+      excludeBookingId: string;
+      start: Date;
+      turnaroundMinutes: number;
+      vehicleId: string;
+    },
+    transaction?: Prisma.TransactionClient,
+  ): Promise<OccupancyConflict | null> {
+    const client = transaction ?? this.database.client;
     const requestedOccupiedEnd = new Date(input.end.getTime() + input.turnaroundMinutes * 60_000);
-    const occupancies = await this.database.client.vehicleOccupancy.findMany({
+    const occupancies = await client.vehicleOccupancy.findMany({
       select: { bookingId: true, occupiedEnd: true, occupiedStart: true, type: true },
       where: { active: true, vehicleId: input.vehicleId },
     });

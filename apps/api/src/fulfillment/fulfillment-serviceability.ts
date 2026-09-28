@@ -104,14 +104,18 @@ function result(
 export class FulfillmentServiceabilityService {
   constructor(private readonly database: DatabaseService) {}
 
-  async evaluate(input: {
-    policyVersionId: string;
-    method: FulfillmentMethod;
-    destinationLatitude: number;
-    destinationLongitude: number;
-    scheduledAt: Date;
-    now?: Date;
-  }): Promise<FulfillmentServiceabilityResult> {
+  async evaluate(
+    input: {
+      policyVersionId: string;
+      method: FulfillmentMethod;
+      destinationLatitude: number;
+      destinationLongitude: number;
+      scheduledAt: Date;
+      now?: Date;
+    },
+    transaction?: Prisma.TransactionClient,
+  ): Promise<FulfillmentServiceabilityResult> {
+    const client = transaction ?? this.database.client;
     const destinationValid = isValidFulfillmentDestination(
       input.destinationLatitude,
       input.destinationLongitude,
@@ -127,7 +131,7 @@ export class FulfillmentServiceabilityService {
       });
     }
 
-    const policy = await this.database.client.vehiclePolicyVersion.findUnique({
+    const policy = await client.vehiclePolicyVersion.findUnique({
       select: {
         fulfillmentMinimumNoticeMinutes: true,
         fulfillmentServiceRadiusMeters: true,
@@ -151,7 +155,7 @@ export class FulfillmentServiceabilityService {
 
     let distanceMeters: number | null = null;
     if (input.method === 'OWNER_DELIVERY' || input.method === 'OWNER_COLLECTION') {
-      const rows = await this.database.client.$queryRaw<Array<{ distance_meters: number }>>(
+      const rows = await client.$queryRaw<Array<{ distance_meters: number }>>(
         Prisma.sql`
           SELECT ROUND(ST_Distance(
             vl.point,

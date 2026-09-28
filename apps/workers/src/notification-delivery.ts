@@ -43,7 +43,7 @@ export async function consumeDomainEvent(
   applicationEnvironment = 'local',
 ): Promise<number> {
   const payload = isRecord(rawPayload) ? rawPayload : {};
-  const policy = policyFor(eventType);
+  const policy = policyFor(eventType, payload);
   if (!policy) return 0;
   const recipients = await resolveRecipients(database, policy.recipients, payload);
   const sourceId =
@@ -269,7 +269,31 @@ async function applyResult(
   }
 }
 
-function policyFor(eventType: string): EventPolicy | null {
+function policyFor(eventType: string, payload: Payload): EventPolicy | null {
+  if (eventType === 'BOOKING_AMENDMENT_REQUESTED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking-amendment.requested',
+      recipients: 'OWNER',
+    };
+  if (eventType === 'BOOKING_AMENDMENT_WITHDRAWN')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking-amendment.withdrawn',
+      recipients: 'OWNER',
+    };
+  if (eventType === 'BOOKING_AMENDMENT_TERMINATED')
+    return payload.status === 'EXPIRED'
+      ? {
+          category: NotificationCategory.BOOKING_UPDATES,
+          templateKey: 'booking-amendment.expired',
+          recipients: 'BOTH',
+        }
+      : {
+          category: NotificationCategory.BOOKING_UPDATES,
+          templateKey: 'payment.updated',
+          recipients: 'RENTER',
+        };
   if (eventType === 'OVERDUE_HANDOVER_RECOVERY_MIDPOINT_REMINDER')
     return {
       category: NotificationCategory.RENTAL_REMINDERS,

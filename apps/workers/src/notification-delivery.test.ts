@@ -186,6 +186,52 @@ describe('booking request notification delivery', () => {
     });
   });
 
+  it('routes amendment lifecycle events idempotently without trusting private payload fields', async () => {
+    const bookingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const renterUserId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const creates: Record<string, unknown>[] = [];
+    const stableKeys = new Set<string>();
+    const database = {
+      booking: {
+        findUnique: vi.fn(async ({ select }: { select: Record<string, unknown> }) =>
+          'publicReference' in select
+            ? { publicReference: 'CR-2026-AMEND' }
+            : { ownerUserId, renterUserId },
+        ),
+      },
+      devicePushToken: { findMany: vi.fn(async () => []) },
+      notification: {
+        upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+          if (!stableKeys.has(String(create.stableKey))) creates.push(create);
+          stableKeys.add(String(create.stableKey));
+          return { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+        }),
+      },
+      notificationPreference: { findUnique: vi.fn(async () => null) },
+    } as unknown as PrismaClient;
+    const events = [
+      ['BOOKING_AMENDMENT_REQUESTED', { bookingId }],
+      ['BOOKING_AMENDMENT_WITHDRAWN', { bookingId }],
+      ['BOOKING_AMENDMENT_TERMINATED', { bookingId, status: 'EXPIRED' }],
+    ] as const;
+    for (const [index, [eventType, payload]] of events.entries()) {
+      const outboxId = `${index + 1}1111111-1111-4111-8111-111111111111`.slice(0, 36);
+      await consumeDomainEvent(database, eventType, payload, outboxId);
+      await consumeDomainEvent(database, eventType, payload, outboxId);
+    }
+    expect(creates.map(({ templateKey, userId }) => ({ templateKey, userId }))).toEqual([
+      { templateKey: 'booking-amendment.requested', userId: ownerUserId },
+      { templateKey: 'booking-amendment.withdrawn', userId: ownerUserId },
+      { templateKey: 'booking-amendment.expired', userId: renterUserId },
+      { templateKey: 'booking-amendment.expired', userId: ownerUserId },
+    ]);
+    for (const notification of creates) {
+      expect(notification.deepLink).toBe('carrental://bookings/CR-2026-AMEND');
+      expect(notification.variables).toEqual({ reference: 'CR-2026-AMEND' });
+    }
+  });
+
   it('routes actionable pickup and discrepancy events to the correct role', async () => {
     const bookingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';

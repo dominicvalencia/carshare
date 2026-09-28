@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Headers, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiHeader, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { BookingErrorCode } from '@carrental/api-contracts';
@@ -23,10 +33,13 @@ import {
   ExecuteCancellationDto,
   PreCustodyCancellationDto,
   RejectBookingDto,
+  SubmitBookingAmendmentDto,
 } from './bookings.dto';
 import { PaymentsService } from '../payments/payments.service';
 import { CancellationService } from './cancellation.service';
 import { AmendmentPreviewService } from './amendment-preview.service';
+import { AmendmentSubmissionService } from './amendment-submission.service';
+import { AmendmentWithdrawalService } from './amendment-withdrawal.service';
 
 @ApiBearerAuth()
 @ApiTags('Renter bookings')
@@ -39,6 +52,8 @@ export class RenterBookingsController {
     private readonly payments: PaymentsService,
     private readonly cancellations: CancellationService,
     private readonly amendmentPreviews: AmendmentPreviewService,
+    private readonly amendmentSubmissions: AmendmentSubmissionService,
+    private readonly amendmentWithdrawals: AmendmentWithdrawalService,
   ) {}
 
   @Post(':reference/amendment-preview')
@@ -48,6 +63,45 @@ export class RenterBookingsController {
     @Body() input: BookingAmendmentPreviewDto,
   ) {
     return this.amendmentPreviews.previewRenter(principal.userId, reference, input);
+  }
+
+  @Post(':reference/amendments')
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  submitAmendment(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: SubmitBookingAmendmentDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() request: Request,
+  ) {
+    if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 200)
+      throw new ApplicationException(
+        BookingErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+        'A valid Idempotency-Key header is required.',
+        HttpStatus.BAD_REQUEST,
+      );
+    return this.amendmentSubmissions.submitRenter(
+      principal.userId,
+      reference,
+      input.previewToken,
+      idempotencyKey,
+      requestMetadata(request),
+    );
+  }
+
+  @Post(':reference/amendments/:amendmentReference/withdraw')
+  withdrawAmendment(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Param('amendmentReference', new ParseUUIDPipe()) amendmentReference: string,
+    @Req() request: Request,
+  ) {
+    return this.amendmentWithdrawals.withdrawRenter(
+      principal.userId,
+      reference,
+      amendmentReference,
+      requestMetadata(request),
+    );
   }
 
   @Post()

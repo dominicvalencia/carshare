@@ -4,8 +4,8 @@ import { ValidationPipe, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Logger } from 'nestjs-pino';
 import request from 'supertest';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { API_PREFIX } from '@carrental/api-contracts';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { API_PREFIX, BookingErrorCode } from '@carrental/api-contracts';
 import {
   BookingAmendmentStatus,
   BookingStatus,
@@ -22,6 +22,9 @@ import {
   VehicleOccupancyType,
 } from '@carrental/database';
 import { AppModule } from '../src/app.module';
+import { AmendmentPreviewService } from '../src/bookings/amendment-preview.service';
+import { AmendmentSubmissionService } from '../src/bookings/amendment-submission.service';
+import { AvailabilityService } from '../src/discovery/availability.service';
 import { TokenService } from '../src/auth/token.service';
 import { DatabaseService } from '../src/infrastructure/database/database.service';
 
@@ -34,6 +37,9 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
   let app: INestApplication;
   let database: DatabaseService;
   let tokens: TokenService;
+  let amendmentPreviews: AmendmentPreviewService;
+  let amendmentSubmissions: AmendmentSubmissionService;
+  let availabilityService: AvailabilityService;
   let renter: Actor;
   let unrelatedRenter: Actor;
   let owner: Actor;
@@ -61,6 +67,9 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
     await app.init();
     database = app.get(DatabaseService);
     tokens = app.get(TokenService);
+    amendmentPreviews = app.get(AmendmentPreviewService);
+    amendmentSubmissions = app.get(AmendmentSubmissionService);
+    availabilityService = app.get(AvailabilityService);
     renter = await createActor('renter', [RoleCode.RENTER]);
     unrelatedRenter = await createActor('other-renter', [RoleCode.RENTER]);
     owner = await createActor('owner', [RoleCode.OWNER]);
@@ -182,7 +191,7 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
     await app.close();
   });
 
-  async function createBookingFixture(status = BookingStatus.CONFIRMED) {
+  async function createBookingFixture(status = BookingStatus.CONFIRMED, ownerDelivery = false) {
     fixtureIndex += 1;
     rentalStart = future(10 + fixtureIndex * 4, 9);
     rentalEnd = new Date(rentalStart.getTime() + 2 * 86_400_000);
@@ -213,7 +222,8 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
           create: {
             collectionFeeMinor: 0,
             currency: 'PHP',
-            deliveryFeeMinor: 0,
+            deliveryFeeMinor: ownerDelivery ? 30_000 : 0,
+            ...(ownerDelivery ? { deliveryDistanceMeters: 0, serviceRadiusMeters: 50_000 } : {}),
             endCity: 'Makati City',
             endCountry: 'PH',
             endLatitude: '14.554700',
@@ -226,7 +236,7 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
             startCountry: 'PH',
             startLatitude: '14.554700',
             startLongitude: '121.024400',
-            startMethod: 'RENTER_PICKUP',
+            startMethod: ownerDelivery ? 'OWNER_DELIVERY' : 'RENTER_PICKUP',
             startProvince: 'Metro Manila',
           },
         },
@@ -762,11 +772,780 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
     });
   });
 
+  it('submits an extension atomically, protects only the net-new tail, and replays idempotently', async () => {
+    const proposedEnd = new Date(rentalEnd.getTime() + 24 * 60 * 60_000);
+    const tailStart = new Date(rentalEnd.getTime() + 120 * 60_000);
+    const tailEnd = new Date(proposedEnd.getTime() + 120 * 60_000);
+    const competingQuote = await quote(unrelatedRenter, tailStart, tailEnd).expect(201);
+    const previewResponse = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({ where: { amendment: { bookingId } } }),
+    ).toBe(0);
+    const beforeBooking = await database.client.booking.findUniqueOrThrow({
+      include: { commissionSnapshot: true, fulfillmentSnapshot: true, ownerEarning: true },
+      where: { id: bookingId },
+    });
+    const key = `submit-extension-${randomUUID()}`;
+    const first = await submit(renter.token, previewResponse.body.data.previewToken, key).expect(
+      201,
+    );
+    const retry = await submit(renter.token, previewResponse.body.data.previewToken, key).expect(
+      201,
+    );
+    expect(retry.body.data).toEqual(first.body.data);
+    expect(first.body.data).toMatchObject({ status: BookingAmendmentStatus.PENDING_OWNER });
+
+    const amendment = await database.client.bookingAmendment.findUniqueOrThrow({
+      include: {
+        fulfillmentSnapshot: true,
+        holds: { include: { occupancy: true } },
+        pricingSnapshot: true,
+        settlement: true,
+        statusHistory: true,
+      },
+      where: { id: first.body.data.amendmentId },
+    });
+    expect(amendment.holds).toHaveLength(1);
+    expect(amendment.holds[0]).toMatchObject({
+      expiresAt: amendment.expiresAt,
+      protectedEnd: tailEnd,
+      protectedStart: tailStart,
+      status: 'ACTIVE',
+    });
+    expect(amendment.holds[0]!.occupancy).toMatchObject({
+      active: true,
+      occupiedEnd: tailEnd,
+      occupiedStart: tailStart,
+      type: VehicleOccupancyType.AMENDMENT_HOLD,
+    });
+    expect(amendment.pricingSnapshot?.finalizedAt).toBeInstanceOf(Date);
+    expect(amendment.fulfillmentSnapshot?.finalizedAt).toBeInstanceOf(Date);
+    expect(amendment.pricingSnapshot).toMatchObject({
+      currency: previewResponse.body.data.financial.currency,
+      proposedChargeableDays: previewResponse.body.data.proposed.chargeableDays,
+      proposedRentalSubtotalMinor: BigInt(previewResponse.body.data.proposed.rentalMinor),
+      proposedTotalMinor:
+        BigInt(previewResponse.body.data.proposed.rentalMinor) +
+        BigInt(previewResponse.body.data.proposed.fulfillmentMinor),
+      sourceBookingPolicyVersionId: policyId,
+    });
+    expect(amendment.fulfillmentSnapshot).toMatchObject({
+      proposedEndMethod: previewResponse.body.data.proposed.endMethod,
+      proposedFulfillmentTotalMinor: BigInt(previewResponse.body.data.proposed.fulfillmentMinor),
+      proposedStartMethod: previewResponse.body.data.proposed.startMethod,
+    });
+    expect(amendment.statusHistory).toHaveLength(1);
+    expect(amendment.statusHistory[0]).toMatchObject({
+      fromStatus: null,
+      toStatus: BookingAmendmentStatus.PENDING_OWNER,
+    });
+    expect(amendment.settlement).toMatchObject({ status: 'PENDING' });
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: bookingId, eventType: 'BOOKING_AMENDMENT_REQUESTED' },
+      }),
+    ).toBe(1);
+    const outbox = await database.client.outboxEvent.findFirstOrThrow({
+      where: { aggregateId: bookingId, eventType: 'BOOKING_AMENDMENT_REQUESTED' },
+    });
+    expect(outbox.payload).toMatchObject({
+      amendmentId: amendment.id,
+      bookingId,
+      ownerUserId: owner.userId,
+      requesterUserId: renter.userId,
+    });
+    expect(JSON.stringify(outbox.payload)).not.toMatch(/previewToken|address|payment|commission/u);
+    expect(amendment.expiresAt.getTime() - amendment.createdAt.getTime()).toBeCloseTo(
+      60 * 60_000,
+      -3,
+    );
+    expect(await searchRange('LIST', tailStart, tailEnd)).not.toContain(vehicleId);
+    expect(await searchRange('MAP', tailStart, tailEnd)).not.toContain(vehicleId);
+    await request(app.getHttpServer())
+      .post('/api/v1/bookings')
+      .set('Authorization', `Bearer ${unrelatedRenter.token}`)
+      .set('Idempotency-Key', `direct-vs-amendment-${randomUUID()}`)
+      .send({ quoteId: competingQuote.body.data.id })
+      .expect(409);
+    await preview(renter.token, {
+      proposedReturnAt: new Date(proposedEnd.getTime() + 60 * 60_000).toISOString(),
+    })
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('AMENDMENT_ALREADY_PENDING'));
+
+    const afterBooking = await database.client.booking.findUniqueOrThrow({
+      include: { commissionSnapshot: true, fulfillmentSnapshot: true, ownerEarning: true },
+      where: { id: bookingId },
+    });
+    expect(afterBooking).toEqual(beforeBooking);
+    expect(await database.client.payment.count({ where: { bookingId } })).toBe(1);
+    expect(await database.client.refund.count({ where: { payment: { bookingId } } })).toBe(0);
+    expect(await database.client.ledgerTransaction.count({ where: { sourceId: bookingId } })).toBe(
+      0,
+    );
+    await database.client.booking.update({
+      data: { operationalHold: true },
+      where: { id: bookingId },
+    });
+    await submit(renter.token, previewResponse.body.data.previewToken, key)
+      .expect(201)
+      .expect(({ body }) => expect(body.data).toEqual(first.body.data));
+    await expect(
+      amendmentSubmissions.submitRenter(
+        renter.userId,
+        reference,
+        previewResponse.body.data.previewToken,
+        key,
+        {},
+        new Date(Date.now() + 60 * 60_000),
+      ),
+    ).resolves.toEqual(first.body.data);
+  });
+
+  it('submits shortening and fulfillment-only changes without releasing or duplicating occupancy', async () => {
+    const originalOccupancy = await database.client.vehicleOccupancy.findFirstOrThrow({
+      where: { bookingId },
+    });
+    const shorteningPreview = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() - 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const shortening = await submit(
+      renter.token,
+      shorteningPreview.body.data.previewToken,
+      `shortening-${randomUUID()}`,
+    ).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: shortening.body.data.amendmentId },
+      }),
+    ).toBe(0);
+    expect(
+      await database.client.vehicleOccupancy.findUniqueOrThrow({
+        where: { id: originalOccupancy.id },
+      }),
+    ).toEqual(originalOccupancy);
+
+    await createBookingFixture();
+    const fulfillmentPreview = await preview(renter.token, {
+      proposedDeliveryDestination: {
+        city: 'Makati City',
+        country: 'PH',
+        latitude: 14.5547,
+        longitude: 121.0244,
+        province: 'Metro Manila',
+      },
+      proposedStartMethod: 'OWNER_DELIVERY',
+    }).expect(201);
+    const fulfillment = await submit(
+      renter.token,
+      fulfillmentPreview.body.data.previewToken,
+      `fulfillment-${randomUUID()}`,
+    ).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: fulfillment.body.data.amendmentId },
+      }),
+    ).toBe(0);
+  });
+
+  it('withdraws through HTTP atomically, idempotently releases holds, and permits a fresh request', async () => {
+    const proposedEnd = new Date(rentalEnd.getTime() + 24 * 60 * 60_000);
+    const tailStart = new Date(rentalEnd.getTime() + 120 * 60_000);
+    const tailEnd = new Date(proposedEnd.getTime() + 120 * 60_000);
+    const competingQuote = await quote(unrelatedRenter, tailStart, tailEnd).expect(201);
+    const previewResponse = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    const submissionKey = `withdraw-${randomUUID()}`;
+    const submitted = await submit(
+      renter.token,
+      previewResponse.body.data.previewToken,
+      submissionKey,
+    ).expect(201);
+    const amendmentId = submitted.body.data.amendmentId as string;
+    const beforeBooking = await database.client.booking.findUniqueOrThrow({
+      include: { commissionSnapshot: true, fulfillmentSnapshot: true, ownerEarning: true },
+      where: { id: bookingId },
+    });
+    const activeHold = await database.client.bookingAmendmentHold.findFirstOrThrow({
+      include: { occupancy: true },
+      where: { amendmentId, status: 'ACTIVE' },
+    });
+    expect(
+      await searchRange('LIST', activeHold.protectedStart, activeHold.protectedEnd),
+    ).not.toContain(vehicleId);
+    await request(app.getHttpServer())
+      .post('/api/v1/bookings')
+      .set('Authorization', `Bearer ${unrelatedRenter.token}`)
+      .set('Idempotency-Key', `withdrawal-held-${randomUUID()}`)
+      .send({ quoteId: competingQuote.body.data.id })
+      .expect(409);
+
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/amendments/${amendmentId}/withdraw`)
+      .expect(401);
+    for (const actor of [unrelatedRenter, owner])
+      await withdraw(actor.token, amendmentId).expect(({ status }) =>
+        expect([403, 404]).toContain(status),
+      );
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/amendments/not-a-uuid/withdraw`)
+      .set('Authorization', `Bearer ${renter.token}`)
+      .expect(400);
+
+    const first = await withdraw(renter.token, amendmentId).expect(201);
+    const retry = await withdraw(renter.token, amendmentId).expect(201);
+    expect(retry.body.data).toEqual(first.body.data);
+    expect(first.body.data).toMatchObject({ amendmentReference: amendmentId, status: 'WITHDRAWN' });
+    const released = await database.client.bookingAmendmentHold.findUniqueOrThrow({
+      include: { occupancy: true },
+      where: { id: activeHold.id },
+    });
+    expect(released.status).toBe('RELEASED');
+    expect(released.releasedAt).toBeInstanceOf(Date);
+    expect(released.releaseReason).toBe('RENTER_WITHDREW_REQUEST');
+    expect(released.occupancy).toMatchObject({
+      active: false,
+      releaseReason: 'RENTER_WITHDREW_REQUEST',
+    });
+    expect(released.occupancy.releasedAt).toBeInstanceOf(Date);
+    expect(
+      await database.client.bookingAmendmentStatusHistory.count({
+        where: { amendmentId, toStatus: 'WITHDRAWN' },
+      }),
+    ).toBe(1);
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: bookingId, eventType: 'BOOKING_AMENDMENT_WITHDRAWN' },
+      }),
+    ).toBe(1);
+    expect(await searchRange('LIST', activeHold.protectedStart, activeHold.protectedEnd)).toContain(
+      vehicleId,
+    );
+    expect(await searchRange('MAP', activeHold.protectedStart, activeHold.protectedEnd)).toContain(
+      vehicleId,
+    );
+    expect(
+      await database.client.booking.findUniqueOrThrow({
+        include: { commissionSnapshot: true, fulfillmentSnapshot: true, ownerEarning: true },
+        where: { id: bookingId },
+      }),
+    ).toEqual(beforeBooking);
+    await submit(renter.token, previewResponse.body.data.previewToken, submissionKey)
+      .expect(201)
+      .expect(({ body }) => expect(body.data.status).toBe('WITHDRAWN'));
+
+    const freshPreview = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 12 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const freshSubmission = await submit(
+      renter.token,
+      freshPreview.body.data.previewToken,
+      `after-withdrawal-${randomUUID()}`,
+    );
+    expect(freshSubmission.status, JSON.stringify(freshSubmission.body)).toBe(201);
+    expect(freshSubmission.body.data.status).toBe('PENDING_OWNER');
+    await withdraw(renter.token, freshSubmission.body.data.amendmentId).expect(201);
+    await request(app.getHttpServer())
+      .post('/api/v1/bookings')
+      .set('Authorization', `Bearer ${unrelatedRenter.token}`)
+      .set('Idempotency-Key', `withdrawal-released-${randomUUID()}`)
+      .send({ quoteId: competingQuote.body.data.id })
+      .expect(201);
+  });
+
+  it('withdraws a zero-hold shortening and rejects payment-pending withdrawal', async () => {
+    const previewResponse = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() - 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const submitted = await submit(
+      renter.token,
+      previewResponse.body.data.previewToken,
+      `short-withdraw-${randomUUID()}`,
+    ).expect(201);
+    const amendmentId = submitted.body.data.amendmentId as string;
+    const occupancy = await database.client.vehicleOccupancy.findFirstOrThrow({
+      where: { bookingId, type: VehicleOccupancyType.BOOKING },
+    });
+    expect(await database.client.bookingAmendmentHold.count({ where: { amendmentId } })).toBe(0);
+    await withdraw(renter.token, amendmentId).expect(201);
+    expect(
+      await database.client.vehicleOccupancy.findUniqueOrThrow({ where: { id: occupancy.id } }),
+    ).toEqual(occupancy);
+
+    await createBookingFixture();
+    const paymentPreview = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 60 * 60_000).toISOString(),
+    }).expect(201);
+    const paymentSubmission = await submit(
+      renter.token,
+      paymentPreview.body.data.previewToken,
+      `payment-pending-${randomUUID()}`,
+    ).expect(201);
+    await database.client.bookingAmendment.update({
+      data: {
+        acceptedAt: new Date(),
+        paymentDeadlineAt: new Date(Date.now() + 10 * 60_000),
+        status: 'OWNER_ACCEPTED_PAYMENT_PENDING',
+      },
+      where: { id: paymentSubmission.body.data.amendmentId },
+    });
+    await withdraw(renter.token, paymentSubmission.body.data.amendmentId)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('BOOKING_INVALID_STATE'));
+    await database.client.bookingAmendment.update({
+      data: { expiresAt: new Date(Date.now() - 1_000) },
+      where: { id: paymentSubmission.body.data.amendmentId },
+    });
+    expect(await expireAmendments()).toBe(0);
+    expect(
+      await database.client.bookingAmendment.findUniqueOrThrow({
+        where: { id: paymentSubmission.body.data.amendmentId },
+      }),
+    ).toMatchObject({ status: 'OWNER_ACCEPTED_PAYMENT_PENDING' });
+
+    await createBookingFixture();
+    const expiringShorteningPreview = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() - 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const expiringShortening = await submit(
+      renter.token,
+      expiringShorteningPreview.body.data.previewToken,
+      `expire-shortening-${randomUUID()}`,
+    ).expect(201);
+    await database.client.bookingAmendment.update({
+      data: { expiresAt: new Date(Date.now() - 1_000) },
+      where: { id: expiringShortening.body.data.amendmentId },
+    });
+    expect(await expireAmendments()).toBe(1);
+    expect(
+      await database.client.bookingAmendment.findUniqueOrThrow({
+        where: { id: expiringShortening.body.data.amendmentId },
+      }),
+    ).toMatchObject({ status: 'EXPIRED' });
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: expiringShortening.body.data.amendmentId },
+      }),
+    ).toBe(0);
+  });
+
+  it('releases leading and two-interval hold shapes through terminal lifecycle paths', async () => {
+    const leadingPreview = await preview(renter.token, {
+      proposedPickupAt: new Date(rentalStart.getTime() - 60 * 60_000).toISOString(),
+    }).expect(201);
+    const leading = await submit(
+      renter.token,
+      leadingPreview.body.data.previewToken,
+      `leading-withdraw-${randomUUID()}`,
+    ).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: leading.body.data.amendmentId, status: 'ACTIVE' },
+      }),
+    ).toBe(1);
+    await withdraw(renter.token, leading.body.data.amendmentId).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: leading.body.data.amendmentId, status: 'ACTIVE' },
+      }),
+    ).toBe(0);
+
+    await createBookingFixture();
+    const twoIntervalPreview = await preview(renter.token, {
+      proposedPickupAt: new Date(rentalStart.getTime() - 60 * 60_000).toISOString(),
+      proposedReturnAt: new Date(rentalEnd.getTime() + 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const twoInterval = await submit(
+      renter.token,
+      twoIntervalPreview.body.data.previewToken,
+      `two-interval-expiry-${randomUUID()}`,
+    ).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: twoInterval.body.data.amendmentId, status: 'ACTIVE' },
+      }),
+    ).toBe(2);
+    await database.client.bookingAmendment.update({
+      data: { expiresAt: new Date(Date.now() - 1_000) },
+      where: { id: twoInterval.body.data.amendmentId },
+    });
+    expect(await expireAmendments()).toBe(1);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: twoInterval.body.data.amendmentId, status: 'ACTIVE' },
+      }),
+    ).toBe(0);
+    expect(
+      await database.client.vehicleOccupancy.count({
+        where: {
+          active: true,
+          amendmentHold: { amendmentId: twoInterval.body.data.amendmentId },
+          type: VehicleOccupancyType.AMENDMENT_HOLD,
+        },
+      }),
+    ).toBe(0);
+  });
+
+  it('naturally expires a submitted amendment idempotently and restores inventory', async () => {
+    const proposedEnd = new Date(rentalEnd.getTime() + 24 * 60 * 60_000);
+    const previewResponse = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    const submitted = await submit(
+      renter.token,
+      previewResponse.body.data.previewToken,
+      `expire-submitted-${randomUUID()}`,
+    ).expect(201);
+    const amendmentId = submitted.body.data.amendmentId as string;
+    const beforeBooking = await database.client.booking.findUniqueOrThrow({
+      include: { commissionSnapshot: true, fulfillmentSnapshot: true, ownerEarning: true },
+      where: { id: bookingId },
+    });
+    const hold = await database.client.bookingAmendmentHold.findFirstOrThrow({
+      include: { occupancy: true },
+      where: { amendmentId },
+    });
+    await database.client.bookingAmendment.update({
+      data: { expiresAt: new Date(Date.now() - 1_000) },
+      where: { id: amendmentId },
+    });
+    const first = await expireAmendments();
+    const retry = await expireAmendments();
+    expect(first).toBe(1);
+    expect(retry).toBe(0);
+    expect(
+      await database.client.bookingAmendment.findUniqueOrThrow({ where: { id: amendmentId } }),
+    ).toMatchObject({ status: 'EXPIRED' });
+    const released = await database.client.bookingAmendmentHold.findUniqueOrThrow({
+      include: { occupancy: true },
+      where: { id: hold.id },
+    });
+    expect(released.status).toBe('EXPIRED');
+    expect(released.occupancy.active).toBe(false);
+    expect(
+      await database.client.bookingAmendmentStatusHistory.count({
+        where: { amendmentId, toStatus: 'EXPIRED' },
+      }),
+    ).toBe(1);
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: amendmentId, eventType: 'BOOKING_AMENDMENT_TERMINATED' },
+      }),
+    ).toBe(1);
+    expect(await searchRange('LIST', hold.protectedStart, hold.protectedEnd)).toContain(vehicleId);
+    expect(await searchRange('MAP', hold.protectedStart, hold.protectedEnd)).toContain(vehicleId);
+    expect(
+      await database.client.booking.findUniqueOrThrow({
+        include: { commissionSnapshot: true, fulfillmentSnapshot: true, ownerEarning: true },
+        where: { id: bookingId },
+      }),
+    ).toEqual(beforeBooking);
+
+    const freshPreview = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 12 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const freshSubmission = await submit(
+      renter.token,
+      freshPreview.body.data.previewToken,
+      `after-expiry-${randomUUID()}`,
+    );
+    expect(freshSubmission.status, JSON.stringify(freshSubmission.body)).toBe(201);
+  });
+
+  it('converges withdrawal and natural expiry to exactly one terminal winner', async () => {
+    const previewResponse = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const submitted = await submit(
+      renter.token,
+      previewResponse.body.data.previewToken,
+      `terminal-race-${randomUUID()}`,
+    ).expect(201);
+    const amendmentId = submitted.body.data.amendmentId as string;
+    await database.client.bookingAmendment.update({
+      data: { expiresAt: new Date(Date.now() - 1_000) },
+      where: { id: amendmentId },
+    });
+    await Promise.allSettled([withdraw(renter.token, amendmentId), expireAmendments()]);
+    const amendment = await database.client.bookingAmendment.findUniqueOrThrow({
+      include: { holds: { include: { occupancy: true } }, statusHistory: true },
+      where: { id: amendmentId },
+    });
+    expect(['WITHDRAWN', 'EXPIRED']).toContain(amendment.status);
+    expect(
+      amendment.statusHistory.filter(({ toStatus }) => ['WITHDRAWN', 'EXPIRED'].includes(toStatus)),
+    ).toHaveLength(1);
+    expect(
+      amendment.holds.every(({ occupancy, status }) => !occupancy.active && status !== 'ACTIVE'),
+    ).toBe(true);
+    expect(
+      await database.client.outboxEvent.count({
+        where: {
+          OR: [
+            { aggregateId: bookingId, eventType: 'BOOKING_AMENDMENT_WITHDRAWN' },
+            { aggregateId: amendmentId, eventType: 'BOOKING_AMENDMENT_TERMINATED' },
+          ],
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('enforces submission authentication, ownership, token expiry/tampering, and idempotency identity', async () => {
+    const firstPreview = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 60 * 60_000).toISOString(),
+    }).expect(201);
+    const secondPreview = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 2 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const token = firstPreview.body.data.previewToken as string;
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/amendments`)
+      .set('Idempotency-Key', `anonymous-${randomUUID()}`)
+      .send({ previewToken: token })
+      .expect(401);
+    for (const actor of [unrelatedRenter, owner])
+      await submit(actor.token, token, `unauthorized-${randomUUID()}`).expect(({ status }) =>
+        expect([403, 409]).toContain(status),
+      );
+    await submit(renter.token, `${token}x`, `tampered-${randomUUID()}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('AMENDMENT_PREVIEW_INVALID'));
+
+    const expired = await amendmentPreviews.previewRenter(
+      renter.userId,
+      reference,
+      { proposedReturnAt: new Date(rentalEnd.getTime() + 3 * 60 * 60_000).toISOString() },
+      new Date(Date.now() - 16 * 60_000),
+    );
+    await submit(renter.token, expired.previewToken, `expired-${randomUUID()}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('QUOTE_EXPIRED'));
+
+    const key = `mismatch-${randomUUID()}`;
+    await submit(renter.token, token, key).expect(201);
+    await submit(renter.token, secondPreview.body.data.previewToken, key)
+      .expect(409)
+      .expect(({ body }) =>
+        expect(body.error.code).toBe(BookingErrorCode.IDEMPOTENCY_KEY_CONFLICT),
+      );
+    await submit(renter.token, secondPreview.body.data.previewToken, `new-key-${randomUUID()}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('AMENDMENT_ALREADY_PENDING'));
+  });
+
+  it('rejects stale and post-preview inventory changes with zero partial submission artifacts', async () => {
+    const stalePreview = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 60 * 60_000).toISOString(),
+    }).expect(201);
+    await database.client.booking.update({
+      data: { operationalHold: true },
+      where: { id: bookingId },
+    });
+    await submit(renter.token, stalePreview.body.data.previewToken, `stale-${randomUUID()}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('BOOKING_STATE_CHANGED'));
+    expect(await database.client.bookingAmendment.count({ where: { bookingId } })).toBe(0);
+
+    await createBookingFixture();
+    const proposedEnd = new Date(rentalEnd.getTime() + 4 * 60 * 60_000);
+    const racePreview = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    const blocker = await database.client.vehicleOccupancy.create({
+      data: {
+        occupiedEnd: new Date(proposedEnd.getTime() + 120 * 60_000),
+        occupiedStart: new Date(rentalEnd.getTime() + 120 * 60_000),
+        type: VehicleOccupancyType.OWNER_BLOCK,
+        vehicleId,
+      },
+    });
+    const before = await mutationSnapshot();
+    await submit(renter.token, racePreview.body.data.previewToken, `inventory-race-${randomUUID()}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('DATES_UNAVAILABLE'));
+    expect(await mutationSnapshot()).toEqual(before);
+    expect(await database.client.bookingAmendment.count({ where: { bookingId } })).toBe(0);
+    await database.client.vehicleOccupancy.delete({ where: { id: blocker.id } });
+  });
+
+  it('freezes reviewed fulfillment pricing and revalidates live fulfillment capability', async () => {
+    const destination = {
+      city: 'Makati City',
+      country: 'PH',
+      latitude: 14.5547,
+      longitude: 121.0244,
+      province: 'Metro Manila',
+    };
+    const reviewed = await preview(renter.token, {
+      proposedDeliveryDestination: destination,
+      proposedStartMethod: 'OWNER_DELIVERY',
+    }).expect(201);
+    expect(reviewed.body.data.proposed.deliveryFeeMinor).toBe('30000');
+    await database.client.vehiclePolicyVersion.create({
+      data: {
+        availabilityPolicy: 'EVERY_DAY',
+        collectionFeeMinor: 30_000,
+        createdByUserId: owner.userId,
+        dailyRateMinor: 100_000,
+        deliveryFeeMinor: 99_000,
+        extendedTripDiscountBps: 1_500,
+        fulfillmentMinimumNoticeMinutes: 0,
+        fulfillmentServiceRadiusMeters: 50_000,
+        maximumRentalDays: 30,
+        mileagePolicy: 'UNLIMITED',
+        minimumRentalDays: 1,
+        monthlyDiscountBps: 2_000,
+        shortDurationDiscountBps: 500,
+        supportsOwnerCollection: true,
+        supportsOwnerDelivery: true,
+        turnaroundMinutes: 120,
+        vehicleId,
+        version: 2,
+        weeklyDiscountBps: 1_000,
+      },
+    });
+    const submitted = await submit(
+      renter.token,
+      reviewed.body.data.previewToken,
+      `pricing-freeze-${randomUUID()}`,
+    ).expect(201);
+    const snapshot = await database.client.bookingAmendmentFulfillmentSnapshot.findUniqueOrThrow({
+      where: { amendmentId: submitted.body.data.amendmentId },
+    });
+    expect(snapshot.proposedFulfillmentTotalMinor).toBe(30_000n);
+  });
+
+  it('revalidates fulfillment removal against service-performance evidence', async () => {
+    await createBookingFixture(BookingStatus.CONFIRMED, true);
+    const reviewed = await preview(renter.token, {
+      proposedDeliveryDestination: null,
+      proposedStartMethod: 'RENTER_PICKUP',
+    }).expect(201);
+    await database.client.bookingHandoverTravelEvent.create({
+      data: {
+        actorUserId: renter.userId,
+        bookingId,
+        phase: 'START',
+        status: 'ARRIVED',
+      },
+    });
+    const before = await mutationSnapshot();
+    await submit(renter.token, reviewed.body.data.previewToken, `performed-service-${randomUUID()}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('FULFILLMENT_UNAVAILABLE'));
+    expect(await mutationSnapshot()).toEqual(before);
+    expect(await database.client.bookingAmendment.count({ where: { bookingId } })).toBe(0);
+  });
+
+  it('rolls back every artifact when the final PostgreSQL exclusion race is lost', async () => {
+    const proposedEnd = new Date(rentalEnd.getTime() + 4 * 60 * 60_000);
+    const reviewed = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    const tailStart = new Date(rentalEnd.getTime() + 120 * 60_000);
+    const tailEnd = new Date(proposedEnd.getTime() + 120 * 60_000);
+    let blockerId = '';
+    const spy = vi
+      .spyOn(availabilityService, 'occupancyConflict')
+      .mockImplementationOnce(async () => {
+        const blocker = await database.client.vehicleOccupancy.create({
+          data: {
+            occupiedEnd: tailEnd,
+            occupiedStart: tailStart,
+            type: VehicleOccupancyType.OWNER_BLOCK,
+            vehicleId,
+          },
+        });
+        blockerId = blocker.id;
+        return null;
+      });
+    const before = await mutationSnapshot();
+    await submit(renter.token, reviewed.body.data.previewToken, `exclusion-race-${randomUUID()}`)
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('DATES_UNAVAILABLE'));
+    spy.mockRestore();
+    await database.client.vehicleOccupancy.delete({ where: { id: blockerId } });
+    expect(await mutationSnapshot()).toEqual(before);
+    expect(await database.client.bookingAmendment.count({ where: { bookingId } })).toBe(0);
+    expect(
+      await database.client.bookingAmendmentPricingSnapshot.count({
+        where: { amendment: { bookingId } },
+      }),
+    ).toBe(0);
+    expect(
+      await database.client.bookingAmendmentFulfillmentSnapshot.count({
+        where: { amendment: { bookingId } },
+      }),
+    ).toBe(0);
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: bookingId, eventType: 'BOOKING_AMENDMENT_REQUESTED' },
+      }),
+    ).toBe(0);
+  });
+
+  it('allows exactly one winner for concurrent submissions', async () => {
+    const reviewed = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 4 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const [left, right] = await Promise.all([
+      submit(renter.token, reviewed.body.data.previewToken, `concurrent-left-${randomUUID()}`),
+      submit(renter.token, reviewed.body.data.previewToken, `concurrent-right-${randomUUID()}`),
+    ]);
+    expect([left.status, right.status].sort()).toEqual([201, 409]);
+    expect(await database.client.bookingAmendment.count({ where: { bookingId } })).toBe(1);
+    const winner = await database.client.bookingAmendment.findFirstOrThrow({
+      include: {
+        fulfillmentSnapshot: true,
+        holds: true,
+        pricingSnapshot: true,
+        settlement: true,
+        statusHistory: true,
+      },
+      where: { bookingId },
+    });
+    expect(winner).toMatchObject({ status: BookingAmendmentStatus.PENDING_OWNER });
+    expect(winner.pricingSnapshot).not.toBeNull();
+    expect(winner.fulfillmentSnapshot).not.toBeNull();
+    expect(winner.settlement).not.toBeNull();
+    expect(winner.holds).toHaveLength(1);
+    expect(winner.statusHistory).toHaveLength(1);
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: bookingId, eventType: 'BOOKING_AMENDMENT_REQUESTED' },
+      }),
+    ).toBe(1);
+  });
+
   function preview(token: string, input: object, bookingReference = reference) {
     return request(app.getHttpServer())
       .post(`/api/v1/bookings/${bookingReference}/amendment-preview`)
       .set('Authorization', `Bearer ${token}`)
       .send(input);
+  }
+
+  function submit(token: string, previewToken: string, idempotencyKey: string) {
+    return request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/amendments`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', idempotencyKey)
+      .send({ previewToken });
+  }
+
+  function withdraw(token: string, amendmentReference: string) {
+    return request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/amendments/${amendmentReference}/withdraw`)
+      .set('Authorization', `Bearer ${token}`);
+  }
+
+  async function expireAmendments() {
+    const result = await database.client.$queryRaw<Array<{ expired: number }>>(Prisma.sql`
+      SELECT "expire_stale_booking_amendments"() AS "expired"
+    `);
+    return Number(result[0]?.expired ?? 0);
   }
 
   function availability() {

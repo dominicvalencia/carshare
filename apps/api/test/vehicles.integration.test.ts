@@ -180,7 +180,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
         make: 'Toyota',
         model: 'Fortuner',
         modelYear: 2025,
-        plateNumber: `ABC-${String(Date.now()).slice(-4)}`,
+        plateNumber: `ABC-${unique.slice(-12).toUpperCase()}`,
         powertrain: 'ICE',
         seatCount: 7,
         transmission: 'AUTOMATIC',

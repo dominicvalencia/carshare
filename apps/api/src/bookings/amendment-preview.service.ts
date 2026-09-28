@@ -25,7 +25,7 @@ import { evaluateConfirmedCancellationTiming } from './cancellation-policy';
 const PREVIEW_VERSION = 'BOOKING_AMENDMENT_PREVIEW_V1';
 const FINANCIAL_VERSION = 'BOOKING_AMENDMENT_COMPLETE_TRIP_V1';
 
-const INCLUDE = {
+export const AMENDMENT_PREVIEW_INCLUDE = {
   amendments: {
     include: { fulfillmentSnapshot: true, pricingSnapshot: true, settlement: true },
     orderBy: [{ appliedAt: 'asc' as const }, { id: 'asc' as const }],
@@ -47,7 +47,9 @@ const INCLUDE = {
   vehicle: { include: { location: true } },
 } satisfies Prisma.BookingInclude;
 
-type PreviewBooking = Prisma.BookingGetPayload<{ include: typeof INCLUDE }>;
+export type PreviewBooking = Prisma.BookingGetPayload<{
+  include: typeof AMENDMENT_PREVIEW_INCLUDE;
+}>;
 
 interface Destination {
   addressLine1?: string;
@@ -61,6 +63,11 @@ interface Destination {
 }
 
 export interface AmendmentPreviewClaims {
+  authority: {
+    current: AmendmentCurrentResponse;
+    fulfillmentPolicyVersionId: string;
+    proposed: AmendmentProposedResponse;
+  };
   bookingId: string;
   bookingReference: string;
   currentFingerprint: string;
@@ -78,6 +85,33 @@ export interface AmendmentPreviewClaims {
   policyDigest: string;
   renterUserId: string;
   version: typeof PREVIEW_VERSION;
+}
+
+export interface AmendmentCurrentResponse {
+  chargeableDays: number;
+  endMethod: CanonicalAmendmentProposal['endMethod'];
+  rentalEnd: string;
+  rentalStart: string;
+  startMethod: CanonicalAmendmentProposal['startMethod'];
+  totalMinor: string;
+}
+
+export interface AmendmentProposedResponse {
+  chargeableDays: number;
+  collectionFeeMinor: string;
+  durationDiscount: {
+    amountMinor: string;
+    applied: boolean;
+    basisPoints: number;
+    tier: string | null;
+  };
+  deliveryFeeMinor: string;
+  endMethod: CanonicalAmendmentProposal['endMethod'];
+  fulfillmentMinor: string;
+  rentalEnd: string;
+  rentalMinor: string;
+  rentalStart: string;
+  startMethod: CanonicalAmendmentProposal['startMethod'];
 }
 
 export interface CanonicalAmendmentProposal {
@@ -130,6 +164,11 @@ export class AmendmentPreviewService {
     };
     const financialDigest = digest(privateFinancialAuthority);
     const claims: AmendmentPreviewClaims = {
+      authority: {
+        current: authority.currentResponse,
+        fulfillmentPolicyVersionId: authority.fulfillmentPolicyVersionId,
+        proposed: authority.proposedResponse,
+      },
       bookingId: booking!.id,
       bookingReference: booking!.publicReference,
       currentFingerprint: authority.currentFingerprint,
@@ -173,9 +212,7 @@ export class AmendmentPreviewService {
     evaluatedAt = new Date(),
     expected: AmendmentPreviewVerificationAuthority = {},
   ): Promise<AmendmentPreviewClaims> {
-    const claims = this.verifySignature(token);
-    if (claims.renterUserId !== renterUserId) this.invalidToken();
-    if (claims.bookingReference !== reference) this.invalidToken();
+    const claims = this.inspectPreviewToken(token, renterUserId, reference);
     if (new Date(claims.expiresAt) <= evaluatedAt)
       this.fail('QUOTE_EXPIRED', 'Amendment preview expired.', HttpStatus.CONFLICT);
     const booking = await this.findAuthorized(renterUserId, reference);
@@ -188,6 +225,42 @@ export class AmendmentPreviewService {
       this.invalidToken();
     if (expected.policyDigest && expected.policyDigest !== claims.policyDigest) this.invalidToken();
     return claims;
+  }
+
+  inspectPreviewToken(token: string, renterUserId: string, reference: string) {
+    const claims = this.verifySignature(token);
+    if (claims.renterUserId !== renterUserId || claims.bookingReference !== reference)
+      this.invalidToken();
+    return claims;
+  }
+
+  assertSubmissionAuthority(
+    claims: AmendmentPreviewClaims,
+    booking: PreviewBooking,
+    evaluatedAt: Date,
+  ) {
+    if (booking.id !== claims.bookingId || booking.renterUserId !== claims.renterUserId)
+      this.invalidToken();
+    if (this.fingerprint(booking) !== claims.currentFingerprint)
+      this.fail('BOOKING_STATE_CHANGED', 'Booking authority changed.', HttpStatus.CONFLICT);
+    this.assertEligible(booking, evaluatedAt);
+  }
+
+  assertSubmissionFulfillmentRemovalAllowed(
+    booking: PreviewBooking,
+    proposal: CanonicalAmendmentProposal,
+  ) {
+    const latestApplied = booking.amendments
+      .filter((item) => item.status === BookingAmendmentStatus.APPLIED)
+      .toSorted(compareAppliedAmendments)
+      .at(-1);
+    this.assertFulfillmentRemovalAllowed(
+      booking,
+      latestApplied?.proposedStartMethod ?? booking.fulfillmentSnapshot!.startMethod,
+      latestApplied?.proposedEndMethod ?? booking.fulfillmentSnapshot!.endMethod,
+      proposal.startMethod,
+      proposal.endMethod,
+    );
   }
 
   private async authority(
@@ -441,6 +514,7 @@ export class AmendmentPreviewService {
       proposal,
       proposedResponse: {
         chargeableDays,
+        collectionFeeMinor: proposedCollectionFee.toString(),
         durationDiscount: {
           amountMinor: proposedDiscount.amountMinor.toString(),
           applied: proposedDiscount.amountMinor > 0,
@@ -448,6 +522,7 @@ export class AmendmentPreviewService {
           tier: proposedDiscount.tier,
         },
         endMethod,
+        deliveryFeeMinor: proposedDeliveryFee.toString(),
         fulfillmentMinor: proposedFulfillment.toString(),
         rentalEnd: proposedEnd.toISOString(),
         rentalMinor: proposedRental.toString(),
@@ -697,7 +772,7 @@ export class AmendmentPreviewService {
 
   private findAuthorized(renterUserId: string, reference: string) {
     return this.database.client.booking.findFirst({
-      include: INCLUDE,
+      include: AMENDMENT_PREVIEW_INCLUDE,
       where: {
         renterUserId,
         OR: [{ publicReference: reference }, ...(isUuid(reference) ? [{ id: reference }] : [])],
@@ -838,7 +913,7 @@ export class AmendmentPreviewService {
   }
 }
 
-function calculateCommission(gross: bigint, snapshot: CommissionAuthority): bigint {
+export function calculateAmendmentCommission(gross: bigint, snapshot: CommissionAuthority): bigint {
   let value = (gross * BigInt(snapshot.rateBasisPoints)) / 10_000n + snapshot.fixedAmountMinor;
   if (snapshot.minimumAmountMinor !== null && value < snapshot.minimumAmountMinor)
     value = snapshot.minimumAmountMinor;
@@ -866,7 +941,7 @@ export function reconcileAmendmentPreviewFinancials(input: {
   const delta = policyAdjustedTotal - input.currentTotal;
   const additionalPaymentMinor = delta > 0n ? delta : 0n;
   const refundMinor = delta < 0n ? -delta : 0n;
-  const proposedCommission = calculateCommission(policyAdjustedRental, input.commission);
+  const proposedCommission = calculateAmendmentCommission(policyAdjustedRental, input.commission);
   const proposedOwnerEarnings =
     policyAdjustedRental - proposedCommission + input.proposedFulfillment;
   return {

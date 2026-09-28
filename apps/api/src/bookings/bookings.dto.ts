@@ -51,6 +51,10 @@ export class BookingAmendmentPreviewDto {
   proposedCollectionDestination?: AmendmentDestinationDto | null;
 }
 
+export class SubmitBookingAmendmentDto {
+  @ApiProperty() @IsString() @MinLength(16) @MaxLength(20_000) previewToken!: string;
+}
+
 export const cancellationReasons = [
   'CHANGE_OF_PLANS',
   'BOOKED_ANOTHER_VEHICLE',
