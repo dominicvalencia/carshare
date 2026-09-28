@@ -240,6 +240,43 @@ enum VehicleOccupancyType {
   OWNER_BLOCK
   BOOKING_RESERVATION
   MAINTENANCE
+  AMENDMENT_HOLD
+}
+
+enum BookingAmendmentScope {
+  PRE_TRIP
+  ACTIVE_EXTENSION
+}
+
+enum BookingAmendmentStatus {
+  PENDING_OWNER
+  OWNER_ACCEPTED_PAYMENT_PENDING
+  APPLIED
+  DECLINED
+  WITHDRAWN
+  EXPIRED
+  FAILED
+}
+
+enum BookingAmendmentHoldStatus {
+  ACTIVE
+  RELEASED
+  CONVERTED
+  EXPIRED
+}
+
+enum BookingAmendmentSettlementStatus {
+  PENDING
+  PROCESSING
+  RECONCILIATION_REQUIRED
+  COMPLETED
+  FAILED
+}
+
+enum BookingAmendmentFinancialDirection {
+  ADDITIONAL_PAYMENT
+  REFUND
+  NONE
 }
 
 enum BookingActorType {
@@ -1027,6 +1064,8 @@ model User {
   supportTicketsCreated             SupportTicket[]                          @relation("SupportTicketCreator")
   supportTicketsAssigned            SupportTicket[]                          @relation("SupportTicketAssignee")
   supportMessages                   SupportTicketMessage[]
+  bookingAmendmentsRequested        BookingAmendment[]                       @relation("BookingAmendmentRequester")
+  bookingAmendmentHistoryActions    BookingAmendmentStatusHistory[]          @relation("BookingAmendmentHistoryActor")
   moderationReportsCreated          ModerationReport[]                       @relation("ModerationReporter")
   moderationReportsAgainst          ModerationReport[]                       @relation("ModerationReportedUser")
   moderationReportsResolved         ModerationReport[]                       @relation("ModerationResolver")
@@ -1665,6 +1704,7 @@ model Vehicle {
   analyticsEvents AnalyticsEvent[]
   bookings        Booking[]
   occupancies     VehicleOccupancy[]
+  amendmentHolds  BookingAmendmentHold[]
   reviews         Review[]
   knownIssues     VehicleKnownIssue[]
 
@@ -1804,11 +1844,14 @@ model VehiclePolicyVersion {
   createdByUserId                 String                 @map("created_by_user_id") @db.Uuid
   createdAt                       DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  vehicle              Vehicle                      @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  createdBy            User                         @relation("VehiclePolicyCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  pricingQuotes        PricingQuote[]
-  quoteFulfillments    PricingQuoteFulfillment[]
-  fulfillmentSnapshots BookingFulfillmentSnapshot[]
+  vehicle                       Vehicle                               @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  createdBy                     User                                  @relation("VehiclePolicyCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  pricingQuotes                 PricingQuote[]
+  quoteFulfillments             PricingQuoteFulfillment[]
+  fulfillmentSnapshots          BookingFulfillmentSnapshot[]
+  amendmentSourcePolicies       BookingAmendment[]
+  amendmentPricingSnapshots     BookingAmendmentPricingSnapshot[]
+  amendmentFulfillmentSnapshots BookingAmendmentFulfillmentSnapshot[]
 
   @@unique([vehicleId, version])
   @@index([vehicleId, createdAt])
@@ -2078,6 +2121,7 @@ model Booking {
   overdueHandoverRecoveryResponses   BookingOverdueHandoverRecoveryResponse[]
   overdueHandoverRecoveryAcceptances BookingOverdueHandoverRecoveryAcceptance[]
   pickupOperationsResolutions        PickupHandoverOperationsResolution[]
+  amendments                         BookingAmendment[]
 
   @@index([renterUserId, createdAt])
   @@index([ownerUserId, status, createdAt])
@@ -2087,6 +2131,168 @@ model Booking {
   @@index([status, pickupWindowStart])
   @@index([status, claimDeadlineAt])
   @@map("bookings")
+}
+
+model BookingAmendment {
+  id                           String                               @id @default(uuid()) @db.Uuid
+  bookingId                    String                               @map("booking_id") @db.Uuid
+  requesterUserId              String                               @map("requester_user_id") @db.Uuid
+  scope                        BookingAmendmentScope
+  status                       BookingAmendmentStatus               @default(PENDING_OWNER)
+  policyVersion                String                               @map("policy_version") @db.VarChar(100)
+  sourcePricingPolicyVersionId String                               @map("source_pricing_policy_version_id") @db.Uuid
+  proposedRentalStart          DateTime                             @map("proposed_rental_start") @db.Timestamptz(3)
+  proposedRentalEnd            DateTime                             @map("proposed_rental_end") @db.Timestamptz(3)
+  proposedStartMethod          StartFulfillmentMethod               @map("proposed_start_method")
+  proposedEndMethod            EndFulfillmentMethod                 @map("proposed_end_method")
+  expiresAt                    DateTime                             @map("expires_at") @db.Timestamptz(3)
+  paymentDeadlineAt            DateTime?                            @map("payment_deadline_at") @db.Timestamptz(3)
+  paymentInitiatedAt           DateTime?                            @map("payment_initiated_at") @db.Timestamptz(3)
+  acceptedAt                   DateTime?                            @map("accepted_at") @db.Timestamptz(3)
+  appliedAt                    DateTime?                            @map("applied_at") @db.Timestamptz(3)
+  declinedAt                   DateTime?                            @map("declined_at") @db.Timestamptz(3)
+  withdrawnAt                  DateTime?                            @map("withdrawn_at") @db.Timestamptz(3)
+  expiredAt                    DateTime?                            @map("expired_at") @db.Timestamptz(3)
+  failedAt                     DateTime?                            @map("failed_at") @db.Timestamptz(3)
+  reasonCode                   String?                              @map("reason_code") @db.VarChar(100)
+  failureCode                  String?                              @map("failure_code") @db.VarChar(100)
+  correlationId                String?                              @map("correlation_id") @db.VarChar(100)
+  idempotencyKey               String                               @map("idempotency_key") @db.VarChar(200)
+  requestHash                  String                               @map("request_hash") @db.Char(64)
+  createdAt                    DateTime                             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                    DateTime                             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  booking                      Booking                              @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  requester                    User                                 @relation("BookingAmendmentRequester", fields: [requesterUserId], references: [id], onDelete: Restrict)
+  sourcePricingPolicy          VehiclePolicyVersion                 @relation(fields: [sourcePricingPolicyVersionId], references: [id], onDelete: Restrict)
+  pricingSnapshot              BookingAmendmentPricingSnapshot?
+  fulfillmentSnapshot          BookingAmendmentFulfillmentSnapshot?
+  holds                        BookingAmendmentHold[]
+  settlement                   BookingAmendmentSettlement?
+  statusHistory                BookingAmendmentStatusHistory[]
+
+  @@unique([requesterUserId, idempotencyKey])
+  @@index([bookingId, createdAt])
+  @@index([status, expiresAt])
+  @@index([status, paymentDeadlineAt])
+  @@map("booking_amendments")
+}
+
+model BookingAmendmentPricingSnapshot {
+  amendmentId                   String               @id @map("amendment_id") @db.Uuid
+  sourceBookingPolicyVersionId  String               @map("source_booking_policy_version_id") @db.Uuid
+  pricingEngineVersion          String               @map("pricing_engine_version") @db.VarChar(100)
+  commissionCalculationVersion  String               @map("commission_calculation_version") @db.VarChar(100)
+  currency                      String               @db.Char(3)
+  currentTotalMinor             BigInt               @map("current_total_minor")
+  proposedBaseRentalAmountMinor BigInt               @map("proposed_base_rental_amount_minor")
+  proposedDailyRateMinor        BigInt               @map("proposed_daily_rate_minor")
+  proposedChargeableDays        Int                  @map("proposed_chargeable_days")
+  durationDiscountTier          String?              @map("duration_discount_tier") @db.VarChar(30)
+  durationDiscountBps           Int                  @default(0) @map("duration_discount_bps")
+  durationDiscountAmountMinor   BigInt               @default(0) @map("duration_discount_amount_minor")
+  proposedRentalSubtotalMinor   BigInt               @map("proposed_rental_subtotal_minor")
+  proposedFulfillmentTotalMinor BigInt               @default(0) @map("proposed_fulfillment_total_minor")
+  proposedTotalMinor            BigInt               @map("proposed_total_minor")
+  renterFinancialDeltaMinor     BigInt               @map("renter_financial_delta_minor")
+  currentCommissionMinor        BigInt               @map("current_commission_minor")
+  proposedCommissionMinor       BigInt               @map("proposed_commission_minor")
+  commissionDeltaMinor          BigInt               @map("commission_delta_minor")
+  commissionRuleId              String               @map("commission_rule_id") @db.Uuid
+  commissionRuleVersion         Int                  @map("commission_rule_version")
+  currentOwnerEarningsMinor     BigInt               @map("current_owner_earnings_minor")
+  proposedOwnerEarningsMinor    BigInt               @map("proposed_owner_earnings_minor")
+  ownerEarningsDeltaMinor       BigInt               @map("owner_earnings_delta_minor")
+  finalizedAt                   DateTime?            @map("finalized_at") @db.Timestamptz(3)
+  createdAt                     DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  amendment                     BookingAmendment     @relation(fields: [amendmentId], references: [id], onDelete: Restrict)
+  sourceBookingPolicy           VehiclePolicyVersion @relation(fields: [sourceBookingPolicyVersionId], references: [id], onDelete: Restrict)
+
+  @@map("booking_amendment_pricing_snapshots")
+}
+
+model BookingAmendmentFulfillmentSnapshot {
+  amendmentId                      String                 @id @map("amendment_id") @db.Uuid
+  currentStartMethod               StartFulfillmentMethod @map("current_start_method")
+  currentEndMethod                 EndFulfillmentMethod   @map("current_end_method")
+  proposedStartMethod              StartFulfillmentMethod @map("proposed_start_method")
+  proposedEndMethod                EndFulfillmentMethod   @map("proposed_end_method")
+  destinationSnapshot              Json                   @map("destination_snapshot")
+  sourceFulfillmentPolicyVersionId String                 @map("source_fulfillment_policy_version_id") @db.Uuid
+  serviceabilitySnapshot           Json                   @map("serviceability_snapshot")
+  currentFulfillmentTotalMinor     BigInt                 @map("current_fulfillment_total_minor")
+  proposedFulfillmentTotalMinor    BigInt                 @map("proposed_fulfillment_total_minor")
+  fulfillmentDeltaMinor            BigInt                 @map("fulfillment_delta_minor")
+  currency                         String                 @db.Char(3)
+  calculationVersion               String                 @map("calculation_version") @db.VarChar(100)
+  finalizedAt                      DateTime?              @map("finalized_at") @db.Timestamptz(3)
+  createdAt                        DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  amendment                        BookingAmendment       @relation(fields: [amendmentId], references: [id], onDelete: Restrict)
+  sourceFulfillmentPolicy          VehiclePolicyVersion   @relation(fields: [sourceFulfillmentPolicyVersionId], references: [id], onDelete: Restrict)
+
+  @@map("booking_amendment_fulfillment_snapshots")
+}
+
+model BookingAmendmentHold {
+  id             String                     @id @default(uuid()) @db.Uuid
+  amendmentId    String                     @map("amendment_id") @db.Uuid
+  vehicleId      String                     @map("vehicle_id") @db.Uuid
+  occupancyId    String                     @unique @map("occupancy_id") @db.Uuid
+  protectedStart DateTime                   @map("protected_start") @db.Timestamptz(3)
+  protectedEnd   DateTime                   @map("protected_end") @db.Timestamptz(3)
+  status         BookingAmendmentHoldStatus @default(ACTIVE)
+  expiresAt      DateTime                   @map("expires_at") @db.Timestamptz(3)
+  releasedAt     DateTime?                  @map("released_at") @db.Timestamptz(3)
+  releaseReason  String?                    @map("release_reason") @db.VarChar(100)
+  correlationId  String?                    @map("correlation_id") @db.VarChar(100)
+  idempotencyKey String                     @unique @map("idempotency_key") @db.VarChar(200)
+  createdAt      DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+  amendment      BookingAmendment           @relation(fields: [amendmentId], references: [id], onDelete: Restrict)
+  vehicle        Vehicle                    @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  occupancy      VehicleOccupancy           @relation(fields: [occupancyId], references: [id], onDelete: Restrict)
+
+  @@index([amendmentId, status])
+  @@index([status, expiresAt])
+  @@map("booking_amendment_holds")
+}
+
+model BookingAmendmentStatusHistory {
+  id             String                  @id @default(uuid()) @db.Uuid
+  amendmentId    String                  @map("amendment_id") @db.Uuid
+  fromStatus     BookingAmendmentStatus? @map("from_status")
+  toStatus       BookingAmendmentStatus  @map("to_status")
+  actorType      BookingActorType        @map("actor_type")
+  actorUserId    String?                 @map("actor_user_id") @db.Uuid
+  reasonCode     String?                 @map("reason_code") @db.VarChar(100)
+  correlationId  String?                 @map("correlation_id") @db.VarChar(100)
+  idempotencyKey String                  @unique @map("idempotency_key") @db.VarChar(200)
+  occurredAt     DateTime                @default(now()) @map("occurred_at") @db.Timestamptz(3)
+  amendment      BookingAmendment        @relation(fields: [amendmentId], references: [id], onDelete: Restrict)
+  actorUser      User?                   @relation("BookingAmendmentHistoryActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([amendmentId, occurredAt])
+  @@map("booking_amendment_status_history")
+}
+
+model BookingAmendmentSettlement {
+  id                     String                             @id @default(uuid()) @db.Uuid
+  amendmentId            String                             @unique @map("amendment_id") @db.Uuid
+  status                 BookingAmendmentSettlementStatus   @default(PENDING)
+  direction              BookingAmendmentFinancialDirection
+  currency               String                             @db.Char(3)
+  currentTotalMinor      BigInt                             @map("current_total_minor")
+  proposedTotalMinor     BigInt                             @map("proposed_total_minor")
+  financialDeltaMinor    BigInt                             @map("financial_delta_minor")
+  additionalPaymentId    String?                            @unique @map("additional_payment_id") @db.Uuid
+  refundId               String?                            @unique @map("refund_id") @db.Uuid
+  ledgerTransactionId    String?                            @unique @map("ledger_transaction_id") @db.Uuid
+  idempotencyKey         String                             @unique @map("idempotency_key") @db.VarChar(200)
+  reconciliationRequired Boolean                            @default(false) @map("reconciliation_required")
+  createdAt              DateTime                           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  completedAt            DateTime?                          @map("completed_at") @db.Timestamptz(3)
+  amendment              BookingAmendment                   @relation(fields: [amendmentId], references: [id], onDelete: Restrict)
+
+  @@map("booking_amendment_settlements")
 }
 
 model BookingHandoverTravelEvent {
@@ -2782,6 +2988,7 @@ model VehicleOccupancy {
   vehicle       Vehicle               @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
   booking       Booking?              @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   blockedPeriod VehicleBlockedPeriod?
+  amendmentHold BookingAmendmentHold?
 
   @@index([vehicleId, active, occupiedStart, occupiedEnd])
   @@index([active, expiresAt])

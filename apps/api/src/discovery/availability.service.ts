@@ -10,6 +10,7 @@ export type UnavailableReason =
   | 'OUTSIDE_WEEKLY_AVAILABILITY'
   | 'OWNER_BLOCKED'
   | 'BOOKING_RESERVED'
+  | 'AMENDMENT_HELD'
   | 'MAINTENANCE'
   | 'MINIMUM_DURATION'
   | 'MAXIMUM_DURATION';
@@ -41,9 +42,11 @@ export class AvailabilityService {
     const { chargeableDays, end, start } = this.duration.calculate(startInput, endInput);
     const ids = vehicles.map(({ id }) => id);
     if (ids.length) {
-      await this.database.client.$queryRaw(
-        Prisma.sql`SELECT "expire_stale_bookings"() AS "expired"`,
-      );
+      await this.database.client.$queryRaw(Prisma.sql`
+        SELECT
+          "expire_stale_bookings"() AS "expiredBookings",
+          "expire_stale_booking_amendments"() AS "expiredAmendments"
+      `);
     }
     const occupancies = ids.length
       ? await this.database.client.vehicleOccupancy.findMany({
@@ -76,9 +79,11 @@ export class AvailabilityService {
         const reason =
           occupancy.type === VehicleOccupancyType.BOOKING_RESERVATION
             ? 'BOOKING_RESERVED'
-            : occupancy.type === VehicleOccupancyType.MAINTENANCE
-              ? 'MAINTENANCE'
-              : 'OWNER_BLOCKED';
+            : occupancy.type === VehicleOccupancyType.AMENDMENT_HOLD
+              ? 'AMENDMENT_HELD'
+              : occupancy.type === VehicleOccupancyType.MAINTENANCE
+                ? 'MAINTENANCE'
+                : 'OWNER_BLOCKED';
         if (!reasons.includes(reason)) reasons.push(reason);
       }
       results.set(vehicle.id, {
@@ -101,6 +106,7 @@ export class AvailabilityService {
       OUTSIDE_WEEKLY_AVAILABILITY: DiscoveryErrorCode.VEHICLE_UNAVAILABLE,
       OWNER_BLOCKED: DiscoveryErrorCode.VEHICLE_UNAVAILABLE,
       BOOKING_RESERVED: DiscoveryErrorCode.VEHICLE_UNAVAILABLE,
+      AMENDMENT_HELD: DiscoveryErrorCode.VEHICLE_UNAVAILABLE,
       MAINTENANCE: DiscoveryErrorCode.VEHICLE_UNAVAILABLE,
     } as const;
     throw new ApplicationException(

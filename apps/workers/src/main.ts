@@ -96,10 +96,20 @@ async function bootstrap(): Promise<void> {
     LIFECYCLE_QUEUE,
     async (job) => {
       if (job.name === 'expire-stale-bookings') {
-        const rows = await database.$queryRaw<Array<{ expired: number }>>(
-          Prisma.sql`SELECT "expire_stale_bookings"() AS "expired"`,
+        const rows = await database.$queryRaw<
+          Array<{ expiredAmendments: number; expiredBookings: number }>
+        >(Prisma.sql`
+          SELECT
+            "expire_stale_bookings"() AS "expiredBookings",
+            "expire_stale_booking_amendments"() AS "expiredAmendments"
+        `);
+        logger.info(
+          {
+            expiredAmendments: rows[0]?.expiredAmendments ?? 0,
+            expiredBookings: rows[0]?.expiredBookings ?? 0,
+          },
+          'Booking and amendment expiration sweep completed',
         );
-        logger.info({ expired: rows[0]?.expired ?? 0 }, 'Booking expiration sweep completed');
         return;
       }
       if (job.name === 'dispatch-outbox') {

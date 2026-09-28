@@ -147,6 +147,8 @@ const apiEnvironmentSchema = commonSchema
     OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(30).max(600).default(60),
     QUOTE_TTL_MINUTES: z.coerce.number().int().min(5).max(60).default(15),
     BOOKING_HOLD_TTL_MINUTES: z.coerce.number().int().min(1).max(30).default(10),
+    AMENDMENT_OWNER_RESPONSE_TTL_MINUTES: z.coerce.number().int().min(5).max(240).default(60),
+    AMENDMENT_PAYMENT_DEADLINE_MINUTES: z.coerce.number().int().min(1).max(60).default(10),
     OWNER_RESPONSE_TTL_MINUTES: z.coerce.number().int().min(5).max(240).default(60),
     AUTH_DELIVERY_PROVIDER: z.enum(['development', 'external']).default('development'),
     AUTH_DELIVERY_ENABLED: z
