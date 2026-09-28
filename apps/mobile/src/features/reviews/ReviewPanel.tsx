@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
+import { invalidateReviewAuthorities } from '../../query/invalidate-review-authorities';
 import { colors, spacing } from '../../theme/tokens';
 import { dateTimeLabel, domainLabel } from '../../ui/format';
 export function ReviewPanel({ bookingReference }: { readonly bookingReference: string }) {
@@ -26,8 +27,7 @@ export function ReviewPanel({ bookingReference }: { readonly bookingReference: s
         method: 'POST',
         body: JSON.stringify(input),
       }),
-    onSuccess: () =>
-      void client.invalidateQueries({ queryKey: ['review-eligibility', bookingReference] }),
+    onSuccess: () => void invalidateReviewAuthorities(client, bookingReference),
   });
   if (!eligibility.data?.eligible) return null;
   return (

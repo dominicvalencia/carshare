@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import type { RootStackParamList } from '../../navigation/routes';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import { colors, spacing } from '../../theme/tokens';
 import { dateTimeLabel, money } from '../../ui/format';
 import { BackControl, Button, Card, Screen, StateView } from '../../ui/primitives';
@@ -35,6 +36,7 @@ export function PublicReviewsScreen({
       ),
     getNextPageParam: (page) => page.pageInfo.nextCursor ?? undefined,
   });
+  useRefreshOnFocusAndForeground(() => void reviews.refetch());
   const items = reviews.data?.pages.flatMap((page) => page.items) ?? [];
   return (
     <Screen
@@ -105,6 +107,7 @@ export function HostProfileScreen({
     queryKey: ['public-host', route.params.hostReference],
     queryFn: () => apiClient.request<HostProfile>(`/hosts/${route.params.hostReference}`),
   });
+  useRefreshOnFocusAndForeground(() => void profile.refetch());
   if (profile.isPending)
     return (
       <Screen leading={<BackControl onPress={navigation.goBack} />} title="Host profile">

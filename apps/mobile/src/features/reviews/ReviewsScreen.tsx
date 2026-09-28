@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import { colors, spacing } from '../../theme/tokens';
 import { dateLabel, titleCase } from '../../ui/format';
 import { Card, NestedScreen, SectionHeader, StateView, StatusBadge } from '../../ui/primitives';
@@ -35,6 +36,7 @@ export function ReviewsScreen() {
     queryKey: ['my-reviews'],
     queryFn: () => apiClient.request<ReviewsResponse>('/me/reviews'),
   });
+  useRefreshOnFocusAndForeground(() => void reviews.refetch());
   return (
     <NestedScreen
       backLabel="Back to profile"

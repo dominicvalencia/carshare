@@ -1019,6 +1019,9 @@ export function DiscoveryScreen({
     if (mode === 'detail' || mode === 'quote') {
       reserve.reset();
       void invalidateRenterVerification(client);
+      void detail.refetch();
+      void client.invalidateQueries({ queryKey: ['public-review-preview'] });
+      void client.invalidateQueries({ queryKey: ['public-host'] });
       return;
     }
     if (mode === 'results') {

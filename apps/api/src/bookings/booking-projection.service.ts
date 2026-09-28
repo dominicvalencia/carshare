@@ -98,7 +98,11 @@ export const bookingInclude = {
       status: true,
       subjectReviews: {
         select: { rating: true },
-        where: { moderationStatus: 'PUBLISHED' as const, type: 'RENTER' as const },
+        where: {
+          moderationStatus: 'PUBLISHED' as const,
+          publicationStatus: 'PUBLISHED' as const,
+          type: 'RENTER' as const,
+        },
       },
       verifications: { select: { expiresAt: true, status: true, type: true } },
     },
