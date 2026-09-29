@@ -565,6 +565,7 @@ export class AmendmentPreviewService {
       booking.amendments.some(
         (item) =>
           item.status === BookingAmendmentStatus.PENDING_OWNER ||
+          item.status === BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING ||
           item.status === BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
       )
     )

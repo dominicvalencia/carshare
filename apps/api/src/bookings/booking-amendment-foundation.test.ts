@@ -9,6 +9,9 @@ import {
 describe('booking amendment foundation', () => {
   it('keeps owner response and payment-pending amendments unresolved', () => {
     expect(isUnresolvedBookingAmendment(BookingAmendmentStatus.PENDING_OWNER)).toBe(true);
+    expect(isUnresolvedBookingAmendment(BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING)).toBe(
+      true,
+    );
     expect(
       isUnresolvedBookingAmendment(BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING),
     ).toBe(true);
@@ -16,6 +19,12 @@ describe('booking amendment foundation', () => {
   });
 
   it('prevents terminal amendment states from transitioning again', () => {
+    expect(
+      canTransitionBookingAmendment(
+        BookingAmendmentStatus.PENDING_OWNER,
+        BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+      ),
+    ).toBe(true);
     expect(
       canTransitionBookingAmendment(
         BookingAmendmentStatus.PENDING_OWNER,

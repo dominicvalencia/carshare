@@ -211,9 +211,43 @@ describe('booking request notification delivery', () => {
       notificationPreference: { findUnique: vi.fn(async () => null) },
     } as unknown as PrismaClient;
     const events = [
-      ['BOOKING_AMENDMENT_REQUESTED', { bookingId }],
-      ['BOOKING_AMENDMENT_WITHDRAWN', { bookingId }],
-      ['BOOKING_AMENDMENT_TERMINATED', { bookingId, status: 'EXPIRED' }],
+      [
+        'BOOKING_AMENDMENT_REQUESTED',
+        { amendmentId: '10000000-0000-4000-8000-000000000001', bookingId },
+      ],
+      [
+        'BOOKING_AMENDMENT_WITHDRAWN',
+        { amendmentId: '10000000-0000-4000-8000-000000000002', bookingId },
+      ],
+      [
+        'BOOKING_AMENDMENT_ACCEPTED',
+        {
+          bookingId,
+          amendmentId: '10000000-0000-4000-8000-000000000003',
+          financialOutcome: 'ADDITIONAL_PAYMENT',
+          paymentDeadlineAt: '2026-09-28T12:10:00.000Z',
+        },
+      ],
+      [
+        'BOOKING_AMENDMENT_ACCEPTED',
+        {
+          amendmentId: '10000000-0000-4000-8000-000000000004',
+          bookingId,
+          financialOutcome: 'REFUND',
+        },
+      ],
+      [
+        'BOOKING_AMENDMENT_DECLINED',
+        { amendmentId: '10000000-0000-4000-8000-000000000005', bookingId },
+      ],
+      [
+        'BOOKING_AMENDMENT_TERMINATED',
+        {
+          amendmentId: '10000000-0000-4000-8000-000000000006',
+          bookingId,
+          status: 'EXPIRED',
+        },
+      ],
     ] as const;
     for (const [index, [eventType, payload]] of events.entries()) {
       const outboxId = `${index + 1}1111111-1111-4111-8111-111111111111`.slice(0, 36);
@@ -223,12 +257,25 @@ describe('booking request notification delivery', () => {
     expect(creates.map(({ templateKey, userId }) => ({ templateKey, userId }))).toEqual([
       { templateKey: 'booking-amendment.requested', userId: ownerUserId },
       { templateKey: 'booking-amendment.withdrawn', userId: ownerUserId },
+      { templateKey: 'booking-amendment.accepted-payment-required', userId: renterUserId },
+      { templateKey: 'booking-amendment.accepted-processing', userId: renterUserId },
+      { templateKey: 'booking-amendment.declined', userId: renterUserId },
       { templateKey: 'booking-amendment.expired', userId: renterUserId },
       { templateKey: 'booking-amendment.expired', userId: ownerUserId },
     ]);
-    for (const notification of creates) {
+    for (const [index, notification] of creates.entries()) {
       expect(notification.deepLink).toBe('carrental://bookings/CR-2026-AMEND');
-      expect(notification.variables).toEqual({ reference: 'CR-2026-AMEND' });
+      expect(notification.variables).toEqual(
+        index === 2
+          ? {
+              reference: 'CR-2026-AMEND',
+              financialOutcome: 'ADDITIONAL_PAYMENT',
+              paymentDeadlineAt: '2026-09-28T12:10:00.000Z',
+            }
+          : index === 3
+            ? { reference: 'CR-2026-AMEND', financialOutcome: 'REFUND' }
+            : { reference: 'CR-2026-AMEND' },
+      );
     }
   });
 

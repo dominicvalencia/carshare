@@ -250,6 +250,7 @@ enum BookingAmendmentScope {
 
 enum BookingAmendmentStatus {
   PENDING_OWNER
+  OWNER_ACCEPTED_PROCESSING
   OWNER_ACCEPTED_PAYMENT_PENDING
   APPLIED
   DECLINED

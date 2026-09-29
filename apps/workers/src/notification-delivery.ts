@@ -52,6 +52,7 @@ export async function consumeDomainEvent(
     uuid(payload.reviewId) ??
     uuid(payload.ticketId) ??
     uuid(payload.payoutId) ??
+    uuid(payload.amendmentId) ??
     uuid(payload.aggregateId) ??
     uuid(payload.bookingId) ??
     uuid(outboxId);
@@ -78,6 +79,14 @@ export async function consumeDomainEvent(
         stableKey,
         variables: {
           ...(reference ? { reference } : {}),
+          ...(eventType === 'BOOKING_AMENDMENT_ACCEPTED' &&
+          typeof payload.financialOutcome === 'string'
+            ? { financialOutcome: payload.financialOutcome }
+            : {}),
+          ...(eventType === 'BOOKING_AMENDMENT_ACCEPTED' &&
+          typeof payload.paymentDeadlineAt === 'string'
+            ? { paymentDeadlineAt: payload.paymentDeadlineAt }
+            : {}),
           ...(eventType.startsWith('OVERDUE_HANDOVER_RECOVERY_') &&
           typeof payload.scope === 'string'
             ? { scope: payload.scope }
@@ -281,6 +290,21 @@ function policyFor(eventType: string, payload: Payload): EventPolicy | null {
       category: NotificationCategory.BOOKING_UPDATES,
       templateKey: 'booking-amendment.withdrawn',
       recipients: 'OWNER',
+    };
+  if (eventType === 'BOOKING_AMENDMENT_ACCEPTED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey:
+        payload.financialOutcome === 'ADDITIONAL_PAYMENT'
+          ? 'booking-amendment.accepted-payment-required'
+          : 'booking-amendment.accepted-processing',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'BOOKING_AMENDMENT_DECLINED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking-amendment.declined',
+      recipients: 'RENTER',
     };
   if (eventType === 'BOOKING_AMENDMENT_TERMINATED')
     return payload.status === 'EXPIRED'

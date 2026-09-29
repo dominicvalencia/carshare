@@ -34,6 +34,7 @@ import { OutboxService } from './outbox.service';
 const FULFILLMENT_CALCULATION_VERSION = 'BOOKING_AMENDMENT_FULFILLMENT_V1';
 
 const RESULT_INCLUDE = {
+  booking: { select: { publicReference: true, rentalEnd: true, rentalStart: true } },
   fulfillmentSnapshot: true,
   holds: { include: { occupancy: true }, orderBy: { protectedStart: 'asc' as const } },
   pricingSnapshot: true,
@@ -246,6 +247,24 @@ export class AmendmentSubmissionService {
     }
   }
 
+  async detailRenter(renterUserId: string, reference: string, amendmentId: string) {
+    const amendment = await this.database.client.bookingAmendment.findFirst({
+      include: RESULT_INCLUDE,
+      where: {
+        id: amendmentId,
+        requesterUserId: renterUserId,
+        booking: { publicReference: reference, renterUserId },
+      },
+    });
+    if (!amendment)
+      throw new ApplicationException(
+        BookingErrorCode.BOOKING_NOT_FOUND,
+        'Booking change request not found.',
+        HttpStatus.NOT_FOUND,
+      );
+    return this.project(amendment);
+  }
+
   private snapshotEvidence(
     booking: PreviewBooking,
     claims: AmendmentPreviewClaims,
@@ -438,8 +457,12 @@ export class AmendmentSubmissionService {
   private project(record: SubmissionResult) {
     return {
       amendmentId: record.id,
+      bookingAlreadyApplied: record.status === BookingAmendmentStatus.APPLIED,
+      bookingReference: record.booking.publicReference,
       current: {
         endMethod: record.fulfillmentSnapshot!.currentEndMethod,
+        rentalEnd: record.booking.rentalEnd.toISOString(),
+        rentalStart: record.booking.rentalStart.toISOString(),
         startMethod: record.fulfillmentSnapshot!.currentStartMethod,
         totalMinor: record.pricingSnapshot!.currentTotalMinor.toString(),
       },
@@ -455,6 +478,7 @@ export class AmendmentSubmissionService {
             ? (-record.settlement!.financialDeltaMinor).toString()
             : '0',
       },
+      paymentDeadlineAt: record.paymentDeadlineAt?.toISOString() ?? null,
       proposed: {
         chargeableDays: record.pricingSnapshot!.proposedChargeableDays,
         endMethod: record.fulfillmentSnapshot!.proposedEndMethod,

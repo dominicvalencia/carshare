@@ -81,6 +81,18 @@ export function renderNotification(
       title: 'Booking not accepted',
       body: `Booking ${reference} was declined.`,
     },
+    'booking-amendment.accepted-processing': {
+      title: 'Change request accepted',
+      body: `The owner accepted your change request for ${reference}. We're processing the change.`,
+    },
+    'booking-amendment.accepted-payment-required': {
+      title: 'Payment required for your change',
+      body: `The owner accepted your change request for ${reference}. Complete the additional payment before the deadline.`,
+    },
+    'booking-amendment.declined': {
+      title: 'Change request declined',
+      body: `Your change request for ${reference} was declined. Your original booking is unchanged.`,
+    },
     'booking.cancelled': {
       title: 'Booking cancelled',
       body: `Booking ${reference} was cancelled.`,

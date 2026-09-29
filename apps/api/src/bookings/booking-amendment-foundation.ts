@@ -4,6 +4,7 @@ export const BOOKING_AMENDMENT_POLICY_VERSION = 'CARSHARE_BOOKING_AMENDMENT_V1';
 
 export const unresolvedBookingAmendmentStatuses = [
   BookingAmendmentStatus.PENDING_OWNER,
+  BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
   BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
 ] as const;
 
@@ -14,8 +15,10 @@ const allowedTransitions: Readonly<
   DECLINED: [],
   EXPIRED: [],
   FAILED: [],
+  OWNER_ACCEPTED_PROCESSING: [BookingAmendmentStatus.APPLIED, BookingAmendmentStatus.FAILED],
   OWNER_ACCEPTED_PAYMENT_PENDING: [BookingAmendmentStatus.APPLIED, BookingAmendmentStatus.FAILED],
   PENDING_OWNER: [
+    BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
     BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
     BookingAmendmentStatus.APPLIED,
     BookingAmendmentStatus.DECLINED,

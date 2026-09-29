@@ -33,6 +33,7 @@ import {
   ExecuteCancellationDto,
   PreCustodyCancellationDto,
   RejectBookingDto,
+  OwnerAmendmentDeclineDto,
   SubmitBookingAmendmentDto,
 } from './bookings.dto';
 import { PaymentsService } from '../payments/payments.service';
@@ -40,6 +41,7 @@ import { CancellationService } from './cancellation.service';
 import { AmendmentPreviewService } from './amendment-preview.service';
 import { AmendmentSubmissionService } from './amendment-submission.service';
 import { AmendmentWithdrawalService } from './amendment-withdrawal.service';
+import { AmendmentOwnerDecisionService } from './amendment-owner-decision.service';
 
 @ApiBearerAuth()
 @ApiTags('Renter bookings')
@@ -87,6 +89,15 @@ export class RenterBookingsController {
       idempotencyKey,
       requestMetadata(request),
     );
+  }
+
+  @Get(':reference/amendments/:amendmentReference')
+  amendmentDetail(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Param('amendmentReference', new ParseUUIDPipe()) amendmentReference: string,
+  ) {
+    return this.amendmentSubmissions.detailRenter(principal.userId, reference, amendmentReference);
   }
 
   @Post(':reference/amendments/:amendmentReference/withdraw')
@@ -237,6 +248,7 @@ export class OwnerBookingsController {
     private readonly bookings: BookingsService,
     private readonly payments: PaymentsService,
     private readonly cancellations: CancellationService,
+    private readonly amendmentDecisions: AmendmentOwnerDecisionService,
   ) {}
 
   @Post(':reference/cancellation-preview')
@@ -277,6 +289,60 @@ export class OwnerBookingsController {
     return this.bookings.listOwner(principal.userId);
   }
 
+  @Get('amendments/actionable')
+  actionableAmendments(@CurrentPrincipal() principal: RequestPrincipal) {
+    return this.amendmentDecisions.list(principal.userId);
+  }
+
+  @Get(':reference/amendments/:amendmentReference')
+  amendmentDetail(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Param('amendmentReference', new ParseUUIDPipe()) amendmentReference: string,
+  ) {
+    return this.amendmentDecisions.detail(principal.userId, reference, amendmentReference);
+  }
+
+  @Post(':reference/amendments/:amendmentReference/accept')
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  acceptAmendment(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Param('amendmentReference', new ParseUUIDPipe()) amendmentReference: string,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() request: Request,
+  ) {
+    assertIdempotencyKey(idempotencyKey);
+    return this.amendmentDecisions.accept(
+      principal.userId,
+      reference,
+      amendmentReference,
+      idempotencyKey,
+      requestMetadata(request),
+    );
+  }
+
+  @Post(':reference/amendments/:amendmentReference/decline')
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  declineAmendment(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Param('amendmentReference', new ParseUUIDPipe()) amendmentReference: string,
+    @Body() input: OwnerAmendmentDeclineDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() request: Request,
+  ) {
+    assertIdempotencyKey(idempotencyKey);
+    return this.amendmentDecisions.decline(
+      principal.userId,
+      reference,
+      amendmentReference,
+      idempotencyKey,
+      input.reasonCode,
+      requestMetadata(request),
+    );
+  }
+
   @Get(':reference')
   detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('reference') reference: string) {
     return this.bookings.ownerDetail(principal.userId, reference);
@@ -306,6 +372,15 @@ export class OwnerBookingsController {
     await this.payments.processPendingForBooking(reference, metadata);
     return this.bookings.ownerDetail(principal.userId, reference);
   }
+}
+
+function assertIdempotencyKey(value: string | undefined): asserts value is string {
+  if (!value || value.length < 8 || value.length > 200)
+    throw new ApplicationException(
+      BookingErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+      'A valid Idempotency-Key header is required.',
+      HttpStatus.BAD_REQUEST,
+    );
 }
 
 @ApiBearerAuth()

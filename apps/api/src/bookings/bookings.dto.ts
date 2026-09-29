@@ -55,6 +55,19 @@ export class SubmitBookingAmendmentDto {
   @ApiProperty() @IsString() @MinLength(16) @MaxLength(20_000) previewToken!: string;
 }
 
+export const ownerAmendmentDeclineReasons = [
+  'OWNER_SCHEDULE_CONFLICT',
+  'VEHICLE_UNAVAILABLE',
+  'CHANGE_NOT_SUPPORTED',
+  'OTHER',
+] as const;
+
+export class OwnerAmendmentDeclineDto {
+  @ApiProperty({ enum: ownerAmendmentDeclineReasons })
+  @IsIn(ownerAmendmentDeclineReasons)
+  reasonCode!: (typeof ownerAmendmentDeclineReasons)[number];
+}
+
 export const cancellationReasons = [
   'CHANGE_OF_PLANS',
   'BOOKED_ANOTHER_VEHICLE',

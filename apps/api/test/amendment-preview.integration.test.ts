@@ -20,9 +20,12 @@ import {
   VerificationStatus,
   VerificationType,
   VehicleOccupancyType,
+  createDatabaseClient,
+  type PrismaClient,
 } from '@carrental/database';
 import { AppModule } from '../src/app.module';
 import { AmendmentPreviewService } from '../src/bookings/amendment-preview.service';
+import { AmendmentOwnerDecisionService } from '../src/bookings/amendment-owner-decision.service';
 import { AmendmentSubmissionService } from '../src/bookings/amendment-submission.service';
 import { AvailabilityService } from '../src/discovery/availability.service';
 import { TokenService } from '../src/auth/token.service';
@@ -38,8 +41,11 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
   let database: DatabaseService;
   let tokens: TokenService;
   let amendmentPreviews: AmendmentPreviewService;
+  let amendmentDecisions: AmendmentOwnerDecisionService;
   let amendmentSubmissions: AmendmentSubmissionService;
   let availabilityService: AvailabilityService;
+  let raceLocker: PrismaClient;
+  let raceObserver: PrismaClient;
   let renter: Actor;
   let unrelatedRenter: Actor;
   let owner: Actor;
@@ -68,8 +74,12 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
     database = app.get(DatabaseService);
     tokens = app.get(TokenService);
     amendmentPreviews = app.get(AmendmentPreviewService);
+    amendmentDecisions = app.get(AmendmentOwnerDecisionService);
     amendmentSubmissions = app.get(AmendmentSubmissionService);
     availabilityService = app.get(AvailabilityService);
+    raceLocker = createDatabaseClient(process.env.TEST_DATABASE_URL!);
+    raceObserver = createDatabaseClient(process.env.TEST_DATABASE_URL!);
+    await Promise.all([raceLocker.$connect(), raceObserver.$connect()]);
     renter = await createActor('renter', [RoleCode.RENTER]);
     unrelatedRenter = await createActor('other-renter', [RoleCode.RENTER]);
     owner = await createActor('owner', [RoleCode.OWNER]);
@@ -188,6 +198,7 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
   });
 
   afterAll(async () => {
+    await Promise.all([raceLocker.$disconnect(), raceObserver.$disconnect()]);
     await app.close();
   });
 
@@ -691,6 +702,7 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
 
   it.each([
     BookingAmendmentStatus.PENDING_OWNER,
+    BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
     BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
   ])('rejects unresolved amendment %s', async (status) => {
     const amendment = await createAmendment(status);
@@ -1099,7 +1111,7 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
       data: { expiresAt: new Date(Date.now() - 1_000) },
       where: { id: paymentSubmission.body.data.amendmentId },
     });
-    expect(await expireAmendments()).toBe(0);
+    await expireAmendments();
     expect(
       await database.client.bookingAmendment.findUniqueOrThrow({
         where: { id: paymentSubmission.body.data.amendmentId },
@@ -1520,6 +1532,728 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
     ).toBe(1);
   });
 
+  it('lets only the owning Owner review and accept zero-delta and refund requests for processing', async () => {
+    const unrelatedOwner = await createActor(`other-owner-${fixtureIndex}`, [RoleCode.OWNER]);
+    const zeroPreview = await preview(renter.token, {
+      proposedPickupAt: new Date(rentalStart.getTime() + 30 * 60_000).toISOString(),
+    }).expect(201);
+    const zero = await submit(
+      renter.token,
+      zeroPreview.body.data.previewToken,
+      `zero-submit-${randomUUID()}`,
+    ).expect(201);
+
+    await ownerAmendmentDetail(unrelatedOwner.token, zero.body.data.amendmentId).expect(404);
+    await ownerAmendmentDetail(renter.token, zero.body.data.amendmentId).expect(403);
+    const actionable = await ownerAmendments(owner.token).expect(200);
+    expect(
+      actionable.body.data.items.map(
+        (item: { amendmentReference: string }) => item.amendmentReference,
+      ),
+    ).toContain(zero.body.data.amendmentId);
+    const beforeBooking = await database.client.booking.findUniqueOrThrow({
+      where: { id: bookingId },
+    });
+    const zeroKey = `zero-accept-${randomUUID()}`;
+    const accepted = await ownerAccept(owner.token, zero.body.data.amendmentId, zeroKey).expect(
+      201,
+    );
+    const replay = await ownerAccept(owner.token, zero.body.data.amendmentId, zeroKey).expect(201);
+    expect(replay.body.data).toEqual(accepted.body.data);
+    expect(accepted.body.data).toMatchObject({
+      actionable: false,
+      paymentDeadlineAt: null,
+      status: BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+    });
+    await renterAmendmentDetail(renter.token, zero.body.data.amendmentId)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toMatchObject({
+          bookingAlreadyApplied: false,
+          financial: { additionalPaymentMinor: '0', expectedRefundMinor: '0' },
+          paymentDeadlineAt: null,
+          status: BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+        });
+        expect(body.data.financial).not.toHaveProperty('currentOwnerEarningsMinor');
+        expect(body.data).not.toHaveProperty('reasonCode');
+      });
+    expect(await database.client.booking.findUniqueOrThrow({ where: { id: bookingId } })).toEqual(
+      beforeBooking,
+    );
+    expect(
+      await database.client.bookingAmendmentStatusHistory.count({
+        where: { amendmentId: zero.body.data.amendmentId, toStatus: 'OWNER_ACCEPTED_PROCESSING' },
+      }),
+    ).toBe(1);
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: bookingId, eventType: 'BOOKING_AMENDMENT_ACCEPTED' },
+      }),
+    ).toBe(1);
+    await withdraw(renter.token, zero.body.data.amendmentId).expect(409);
+    await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 60 * 60_000).toISOString(),
+    }).expect(409);
+
+    await createBookingFixture();
+    const refundPreview = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() - 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    expect(BigInt(refundPreview.body.data.financial.expectedRefundMinor)).toBeGreaterThan(0n);
+    const refund = await submit(
+      renter.token,
+      refundPreview.body.data.previewToken,
+      `refund-submit-${randomUUID()}`,
+    ).expect(201);
+    await ownerAccept(owner.token, refund.body.data.amendmentId, `refund-accept-${randomUUID()}`)
+      .expect(201)
+      .expect(({ body }) =>
+        expect(body.data).toMatchObject({
+          paymentDeadlineAt: null,
+          status: BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+        }),
+      );
+    await renterAmendmentDetail(renter.token, refund.body.data.amendmentId)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(BigInt(body.data.financial.expectedRefundMinor)).toBeGreaterThan(0n);
+        expect(body.data).toMatchObject({
+          bookingAlreadyApplied: false,
+          paymentDeadlineAt: null,
+          status: BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+        });
+      });
+    expect(await database.client.refund.count({ where: { payment: { bookingId } } })).toBe(0);
+  });
+
+  it('accepts additional payment without execution and rebinds hold expiry exactly once', async () => {
+    const proposedEnd = new Date(rentalEnd.getTime() + 24 * 60 * 60_000);
+    const reviewed = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    expect(BigInt(reviewed.body.data.financial.additionalPaymentMinor)).toBeGreaterThan(0n);
+    const submitted = await submit(
+      renter.token,
+      reviewed.body.data.previewToken,
+      `payment-submit-${randomUUID()}`,
+    ).expect(201);
+    const beforeBooking = await database.client.booking.findUniqueOrThrow({
+      where: { id: bookingId },
+    });
+    const beforePayments = await database.client.payment.count({ where: { bookingId } });
+    const key = `payment-accept-${randomUUID()}`;
+    const accepted = await ownerAccept(owner.token, submitted.body.data.amendmentId, key).expect(
+      201,
+    );
+    const firstDeadline = accepted.body.data.paymentDeadlineAt;
+    expect(accepted.body.data.status).toBe(BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING);
+    const persisted = await database.client.bookingAmendment.findUniqueOrThrow({
+      include: { holds: { include: { occupancy: true } } },
+      where: { id: submitted.body.data.amendmentId },
+    });
+    expect(persisted.holds).toHaveLength(1);
+    expect(persisted.holds[0]?.expiresAt).toEqual(persisted.paymentDeadlineAt);
+    expect(persisted.holds[0]?.occupancy.expiresAt).toEqual(persisted.paymentDeadlineAt);
+    expect(persisted.holds[0]?.status).toBe('ACTIVE');
+    expect(persisted.holds[0]?.occupancy.active).toBe(true);
+    await renterAmendmentDetail(renter.token, submitted.body.data.amendmentId)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toMatchObject({
+          bookingAlreadyApplied: false,
+          financial: { expectedRefundMinor: '0' },
+          paymentDeadlineAt: firstDeadline,
+          status: BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
+        });
+        expect(BigInt(body.data.financial.additionalPaymentMinor)).toBeGreaterThan(0n);
+        expect(body.data.financial).not.toHaveProperty('proposedOwnerEarningsMinor');
+      });
+    await ownerAccept(owner.token, submitted.body.data.amendmentId, key)
+      .expect(201)
+      .expect(({ body }) => expect(body.data.paymentDeadlineAt).toBe(firstDeadline));
+    expect(await database.client.payment.count({ where: { bookingId } })).toBe(beforePayments);
+    expect(await database.client.booking.findUniqueOrThrow({ where: { id: bookingId } })).toEqual(
+      beforeBooking,
+    );
+  });
+
+  it('accepts and declines legitimate zero-hold amendments without inventing inventory', async () => {
+    const processingPreview = await preview(renter.token, {
+      proposedPickupAt: new Date(rentalStart.getTime() + 30 * 60_000).toISOString(),
+    }).expect(201);
+    const processing = await submit(
+      renter.token,
+      processingPreview.body.data.previewToken,
+      `zero-hold-processing-${randomUUID()}`,
+    ).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: processing.body.data.amendmentId },
+      }),
+    ).toBe(0);
+    await ownerAccept(
+      owner.token,
+      processing.body.data.amendmentId,
+      `zero-hold-processing-accept-${randomUUID()}`,
+    )
+      .expect(201)
+      .expect(({ body }) =>
+        expect(body.data.status).toBe(BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING),
+      );
+
+    await createBookingFixture();
+    const additionalPaymentPreview = await preview(renter.token, {
+      proposedDeliveryDestination: {
+        city: 'Makati City',
+        country: 'PH',
+        latitude: 14.5547,
+        longitude: 121.0244,
+        province: 'Metro Manila',
+      },
+      proposedStartMethod: 'OWNER_DELIVERY',
+    }).expect(201);
+    expect(
+      BigInt(additionalPaymentPreview.body.data.financial.additionalPaymentMinor),
+    ).toBeGreaterThan(0n);
+    const additionalPayment = await submit(
+      renter.token,
+      additionalPaymentPreview.body.data.previewToken,
+      `zero-hold-payment-${randomUUID()}`,
+    ).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: additionalPayment.body.data.amendmentId },
+      }),
+    ).toBe(0);
+    await ownerAccept(
+      owner.token,
+      additionalPayment.body.data.amendmentId,
+      `zero-hold-payment-accept-${randomUUID()}`,
+    )
+      .expect(201)
+      .expect(({ body }) =>
+        expect(body.data.status).toBe(BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING),
+      );
+
+    await createBookingFixture(BookingStatus.CONFIRMED, true);
+    const paymentPreview = await preview(renter.token, {
+      proposedDeliveryDestination: null,
+      proposedStartMethod: 'RENTER_PICKUP',
+    }).expect(201);
+    expect(BigInt(paymentPreview.body.data.financial.additionalPaymentMinor)).toBe(0n);
+    expect(BigInt(paymentPreview.body.data.financial.expectedRefundMinor)).toBeGreaterThan(0n);
+    const refundable = await submit(
+      renter.token,
+      paymentPreview.body.data.previewToken,
+      `zero-hold-refund-${randomUUID()}`,
+    ).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: refundable.body.data.amendmentId },
+      }),
+    ).toBe(0);
+    await ownerAccept(
+      owner.token,
+      refundable.body.data.amendmentId,
+      `zero-hold-refund-accept-${randomUUID()}`,
+    )
+      .expect(201)
+      .expect(({ body }) =>
+        expect(body.data.status).toBe(BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING),
+      );
+
+    await createBookingFixture();
+    const declinePreview = await preview(renter.token, {
+      proposedPickupAt: new Date(rentalStart.getTime() + 30 * 60_000).toISOString(),
+    }).expect(201);
+    const declined = await submit(
+      renter.token,
+      declinePreview.body.data.previewToken,
+      `zero-hold-decline-${randomUUID()}`,
+    ).expect(201);
+    expect(
+      await database.client.bookingAmendmentHold.count({
+        where: { amendmentId: declined.body.data.amendmentId },
+      }),
+    ).toBe(0);
+    await ownerDecline(
+      owner.token,
+      declined.body.data.amendmentId,
+      `zero-hold-decline-decision-${randomUUID()}`,
+      'OWNER_SCHEDULE_CONFLICT',
+    ).expect(201);
+  });
+
+  it('fails closed when required submitted hold authority is no longer active', async () => {
+    const reviewed = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const missingHold = await submit(
+      renter.token,
+      reviewed.body.data.previewToken,
+      `missing-hold-${randomUUID()}`,
+    ).expect(201);
+    await database.client.$queryRaw(Prisma.sql`
+      SELECT "release_booking_amendment_holds"(
+        ${missingHold.body.data.amendmentId}::uuid,
+        'RELEASED'::"BookingAmendmentHoldStatus",
+        'TEST_MISSING_HOLD_AUTHORITY'
+      )
+    `);
+    await ownerAccept(
+      owner.token,
+      missingHold.body.data.amendmentId,
+      `missing-hold-accept-${randomUUID()}`,
+    )
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('BOOKING_INVALID_STATE'));
+  });
+
+  it.each([
+    ['before', -1, BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING],
+    ['exactly', 0, BookingAmendmentStatus.EXPIRED],
+    ['after', 1, BookingAmendmentStatus.EXPIRED],
+  ] as const)(
+    'uses deterministic Owner decision semantics %s expiresAt',
+    async (_label, offsetMilliseconds, expectedStatus) => {
+      const reviewed = await preview(renter.token, {
+        proposedReturnAt: new Date(rentalEnd.getTime() + 24 * 60 * 60_000).toISOString(),
+      }).expect(201);
+      const submitted = await submit(
+        renter.token,
+        reviewed.body.data.previewToken,
+        `deadline-${offsetMilliseconds}-${randomUUID()}`,
+      ).expect(201);
+      const deadline = new Date(Date.now() + 60_000);
+      await setOwnerDeadline(submitted.body.data.amendmentId, deadline);
+      const decision = amendmentDecisions.accept(
+        owner.userId,
+        reference,
+        submitted.body.data.amendmentId,
+        `deadline-decision-${offsetMilliseconds}-${randomUUID()}`,
+        {},
+        new Date(deadline.getTime() + offsetMilliseconds),
+      );
+      if (expectedStatus === BookingAmendmentStatus.EXPIRED)
+        await expect(decision).rejects.toThrow();
+      else await expect(decision).resolves.toMatchObject({ status: expectedStatus });
+      expect(
+        await database.client.bookingAmendment.findUniqueOrThrow({
+          where: { id: submitted.body.data.amendmentId },
+        }),
+      ).toMatchObject({ status: expectedStatus });
+    },
+  );
+
+  it.each([
+    BookingAmendmentStatus.PENDING_OWNER,
+    BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+    BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
+    BookingAmendmentStatus.DECLINED,
+    BookingAmendmentStatus.WITHDRAWN,
+    BookingAmendmentStatus.EXPIRED,
+  ])('keeps Owner detail reviewable but actionable only when pending for %s', async (status) => {
+    const reviewed = await preview(renter.token, {
+      proposedPickupAt: new Date(rentalStart.getTime() + 30 * 60_000).toISOString(),
+    }).expect(201);
+    const submitted = await submit(
+      renter.token,
+      reviewed.body.data.previewToken,
+      `owner-projection-${status}-${randomUUID()}`,
+    ).expect(201);
+    const paymentDeadlineAt =
+      status === BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING
+        ? new Date(Date.now() + 10 * 60_000)
+        : null;
+    const acceptedAt =
+      status === BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING ? new Date() : null;
+    await database.client.bookingAmendment.update({
+      data: { acceptedAt, paymentDeadlineAt, status },
+      where: { id: submitted.body.data.amendmentId },
+    });
+    await ownerAmendmentDetail(owner.token, submitted.body.data.amendmentId)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toMatchObject({
+          actionable: status === BookingAmendmentStatus.PENDING_OWNER,
+          paymentDeadlineAt: paymentDeadlineAt?.toISOString() ?? null,
+          status,
+        });
+        expect(body.data.current).toBeDefined();
+        expect(body.data.proposed).toBeDefined();
+        expect(body.data.financial).toMatchObject({
+          currentOwnerEarningsMinor: expect.any(String),
+          ownerEarningsDeltaMinor: expect.any(String),
+          proposedOwnerEarningsMinor: expect.any(String),
+        });
+      });
+  });
+
+  it('keeps processing holds active beyond the old Owner deadline', async () => {
+    const reviewed = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const submitted = await submit(
+      renter.token,
+      reviewed.body.data.previewToken,
+      `processing-hold-submit-${randomUUID()}`,
+    ).expect(201);
+    await database.client.bookingAmendmentSettlement.update({
+      data: {
+        direction: 'NONE',
+        financialDeltaMinor: 0n,
+        proposedTotalMinor: reviewed.body.data.current.totalMinor,
+      },
+      where: { amendmentId: submitted.body.data.amendmentId },
+    });
+    await ownerAccept(
+      owner.token,
+      submitted.body.data.amendmentId,
+      `processing-hold-accept-${randomUUID()}`,
+    ).expect(201);
+    const past = new Date(Date.now() - 60_000);
+    const hold = await database.client.bookingAmendmentHold.findFirstOrThrow({
+      where: { amendmentId: submitted.body.data.amendmentId },
+    });
+    await database.client.vehicleOccupancy.update({
+      data: { expiresAt: past },
+      where: { id: hold.occupancyId },
+    });
+    await database.client.bookingAmendmentHold.update({
+      data: { expiresAt: past },
+      where: { id: hold.id },
+    });
+    await database.client.bookingAmendment.update({
+      data: { expiresAt: past },
+      where: { id: submitted.body.data.amendmentId },
+    });
+    await expireAmendments();
+    const persisted = await database.client.bookingAmendment.findUniqueOrThrow({
+      include: { holds: { include: { occupancy: true } } },
+      where: { id: submitted.body.data.amendmentId },
+    });
+    expect(persisted.status).toBe(BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING);
+    expect(persisted.holds[0]).toMatchObject({ status: 'ACTIVE' });
+    expect(persisted.holds[0]?.occupancy.active).toBe(true);
+  });
+
+  it('declines atomically, releases amendment-only inventory, and replays without penalty', async () => {
+    const proposedEnd = new Date(rentalEnd.getTime() + 24 * 60 * 60_000);
+    const reviewed = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    const submitted = await submit(
+      renter.token,
+      reviewed.body.data.previewToken,
+      `decline-submit-${randomUUID()}`,
+    ).expect(201);
+    const key = `decline-${randomUUID()}`;
+    const first = await ownerDecline(
+      owner.token,
+      submitted.body.data.amendmentId,
+      key,
+      'OWNER_SCHEDULE_CONFLICT',
+    ).expect(201);
+    await ownerDecline(owner.token, submitted.body.data.amendmentId, key, 'OWNER_SCHEDULE_CONFLICT')
+      .expect(201)
+      .expect(({ body }) => expect(body.data).toEqual(first.body.data));
+    const persisted = await database.client.bookingAmendment.findUniqueOrThrow({
+      include: { holds: { include: { occupancy: true } }, statusHistory: true },
+      where: { id: submitted.body.data.amendmentId },
+    });
+    expect(persisted.status).toBe(BookingAmendmentStatus.DECLINED);
+    expect(persisted.holds[0]).toMatchObject({ status: 'RELEASED' });
+    expect(persisted.holds[0]?.occupancy.active).toBe(false);
+    expect(persisted.statusHistory.filter((item) => item.toStatus === 'DECLINED')).toHaveLength(1);
+    expect(
+      await database.client.ownerFinancialObligation.count({ where: { ownerProfileId } }),
+    ).toBe(0);
+    await renterAmendmentDetail(renter.token, submitted.body.data.amendmentId)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toMatchObject({
+          bookingAlreadyApplied: false,
+          paymentDeadlineAt: null,
+          status: BookingAmendmentStatus.DECLINED,
+        });
+        expect(body.data).not.toHaveProperty('reasonCode');
+      });
+    await renterAmendmentDetail(unrelatedRenter.token, submitted.body.data.amendmentId).expect(404);
+  });
+
+  it('allows only one terminal Owner decision when accept and decline race', async () => {
+    const reviewed = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const submitted = await submit(
+      renter.token,
+      reviewed.body.data.previewToken,
+      `decision-race-submit-${randomUUID()}`,
+    ).expect(201);
+    const amendmentId = submitted.body.data.amendmentId;
+
+    const [accepted, declined] = await Promise.all([
+      ownerAccept(owner.token, amendmentId, `decision-race-accept-${randomUUID()}`),
+      ownerDecline(
+        owner.token,
+        amendmentId,
+        `decision-race-decline-${randomUUID()}`,
+        'OWNER_SCHEDULE_CONFLICT',
+      ),
+    ]);
+
+    expect([accepted.status, declined.status].sort()).toEqual([201, 409]);
+    const persisted = await database.client.bookingAmendment.findUniqueOrThrow({
+      include: { holds: { include: { occupancy: true } }, statusHistory: true },
+      where: { id: amendmentId },
+    });
+    expect([
+      BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
+      BookingAmendmentStatus.DECLINED,
+    ]).toContain(persisted.status);
+    expect(
+      persisted.statusHistory.filter(({ toStatus }) =>
+        ['OWNER_ACCEPTED_PAYMENT_PENDING', 'DECLINED'].includes(toStatus),
+      ),
+    ).toHaveLength(1);
+    expect(
+      await database.client.outboxEvent.count({
+        where: {
+          aggregateId: bookingId,
+          eventType: { in: ['BOOKING_AMENDMENT_ACCEPTED', 'BOOKING_AMENDMENT_DECLINED'] },
+        },
+      }),
+    ).toBe(1);
+    expect(persisted.holds).toHaveLength(1);
+    expect(persisted.holds[0]?.status).toBe(
+      persisted.status === BookingAmendmentStatus.DECLINED ? 'RELEASED' : 'ACTIVE',
+    );
+    expect(persisted.holds[0]?.occupancy.active).toBe(
+      persisted.status !== BookingAmendmentStatus.DECLINED,
+    );
+  });
+
+  it.each([
+    ['payment Accept', 'accept', 'PAYMENT'],
+    ['processing Accept', 'accept', 'PROCESSING'],
+    ['Decline', 'decline', 'PAYMENT'],
+  ] as const)(
+    'allows only one winner when Owner %s races renter withdrawal',
+    async (_label, decision, outcome) => {
+      const proposal =
+        outcome === 'PROCESSING'
+          ? {
+              proposedPickupAt: new Date(rentalStart.getTime() + 30 * 60_000).toISOString(),
+              proposedReturnAt: new Date(rentalEnd.getTime() + 30 * 60_000).toISOString(),
+            }
+          : { proposedReturnAt: new Date(rentalEnd.getTime() + 24 * 60 * 60_000).toISOString() };
+      const reviewed = await preview(renter.token, proposal).expect(201);
+      const submitted = await submit(
+        renter.token,
+        reviewed.body.data.previewToken,
+        `${decision}-withdraw-race-submit-${randomUUID()}`,
+      ).expect(201);
+      const amendmentId = submitted.body.data.amendmentId;
+      const [decided, withdrawn] = await raceBehindAmendmentTableLock(
+        () =>
+          decision === 'accept'
+            ? ownerAccept(owner.token, amendmentId, `${decision}-withdraw-race-${randomUUID()}`)
+            : ownerDecline(
+                owner.token,
+                amendmentId,
+                `${decision}-withdraw-race-${randomUUID()}`,
+                'OWNER_SCHEDULE_CONFLICT',
+              ),
+        () => withdraw(renter.token, amendmentId),
+      );
+
+      expect([decided.status, withdrawn.status].sort()).toEqual([201, 409]);
+      const persisted = await database.client.bookingAmendment.findUniqueOrThrow({
+        include: { holds: { include: { occupancy: true } }, statusHistory: true },
+        where: { id: amendmentId },
+      });
+      expect([
+        BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+        BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
+        BookingAmendmentStatus.DECLINED,
+        BookingAmendmentStatus.WITHDRAWN,
+      ]).toContain(persisted.status);
+      expect(
+        persisted.statusHistory.filter(({ toStatus }) =>
+          [
+            'OWNER_ACCEPTED_PROCESSING',
+            'OWNER_ACCEPTED_PAYMENT_PENDING',
+            'DECLINED',
+            'WITHDRAWN',
+          ].includes(toStatus),
+        ),
+      ).toHaveLength(1);
+      const holdsRemain =
+        persisted.status === BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING ||
+        persisted.status === BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING;
+      expect(persisted.holds[0]?.status).toBe(holdsRemain ? 'ACTIVE' : 'RELEASED');
+      expect(persisted.holds[0]?.occupancy.active).toBe(holdsRemain);
+    },
+  );
+
+  it.each([
+    ['additional payment', 'ADDITIONAL_PAYMENT'],
+    ['processing', 'PROCESSING'],
+  ] as const)(
+    'serializes %s Accept against natural expiry',
+    async (_label, outcome) => {
+      const proposedReturnAt = new Date(rentalEnd.getTime() + 24 * 60 * 60_000);
+      const proposal =
+        outcome === 'PROCESSING'
+          ? {
+              proposedPickupAt: new Date(rentalStart.getTime() + 30 * 60_000).toISOString(),
+              proposedReturnAt: new Date(rentalEnd.getTime() + 30 * 60_000).toISOString(),
+            }
+          : { proposedReturnAt };
+      const reviewed = await preview(renter.token, proposal).expect(201);
+      if (outcome === 'ADDITIONAL_PAYMENT')
+        expect(BigInt(reviewed.body.data.financial.additionalPaymentMinor)).toBeGreaterThan(0n);
+      else {
+        expect(BigInt(reviewed.body.data.financial.additionalPaymentMinor)).toBe(0n);
+        expect(BigInt(reviewed.body.data.financial.expectedRefundMinor)).toBe(0n);
+      }
+      const submitted = await submit(
+        renter.token,
+        reviewed.body.data.previewToken,
+        `accept-expiry-${outcome}-${randomUUID()}`,
+      ).expect(201);
+      const amendmentId = submitted.body.data.amendmentId;
+      const deadline = new Date(Date.now() + 2_000);
+      await setOwnerDeadline(amendmentId, deadline);
+      const original = await raceConservationSnapshot();
+
+      const [accepted, expired] = await raceAcceptAgainstExpiry(amendmentId, deadline);
+      expect([201, 409]).toContain(accepted.status);
+      expect(expired).toBeGreaterThanOrEqual(0);
+      expect(accepted.status).not.toBe(500);
+      const persisted = await raceAmendment(amendmentId);
+      const acceptedStatus =
+        outcome === 'ADDITIONAL_PAYMENT'
+          ? BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING
+          : BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING;
+      expect([acceptedStatus, BookingAmendmentStatus.EXPIRED]).toContain(persisted.status);
+      expect(accepted.status === 201).toBe(persisted.status === acceptedStatus);
+      await assertRaceWinner(persisted, persisted.status);
+      if (persisted.status === acceptedStatus) {
+        expect(persisted.acceptedAt).not.toBeNull();
+        expect(persisted.paymentDeadlineAt === null).toBe(outcome === 'PROCESSING');
+        expect(persisted.holds.every((hold) => hold.status === 'ACTIVE')).toBe(true);
+        expect(persisted.holds.every((hold) => hold.occupancy.active)).toBe(true);
+        if (outcome === 'ADDITIONAL_PAYMENT')
+          expect(
+            persisted.holds.every(
+              (hold) =>
+                hold.expiresAt.getTime() === persisted.paymentDeadlineAt?.getTime() &&
+                hold.occupancy.expiresAt?.getTime() === persisted.paymentDeadlineAt?.getTime(),
+            ),
+          ).toBe(true);
+        await expireAmendments();
+        expect((await raceAmendment(amendmentId)).status).toBe(acceptedStatus);
+      } else {
+        expect(persisted.holds.every((hold) => hold.status === 'EXPIRED')).toBe(true);
+        expect(persisted.holds.every((hold) => !hold.occupancy.active)).toBe(true);
+        await ownerAccept(owner.token, amendmentId, `post-expiry-${randomUUID()}`).expect(409);
+      }
+      expect(await raceConservationSnapshot()).toEqual(original);
+    },
+    15_000,
+  );
+
+  it('serializes Decline against natural expiry', async () => {
+    const reviewed = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const submitted = await submit(
+      renter.token,
+      reviewed.body.data.previewToken,
+      `decline-expiry-${randomUUID()}`,
+    ).expect(201);
+    const amendmentId = submitted.body.data.amendmentId;
+    const deadline = new Date(Date.now() + 2_000);
+    await setOwnerDeadline(amendmentId, deadline);
+    const original = await raceConservationSnapshot();
+    const [declined, expired] = await raceDecisionAgainstExpiry(
+      () =>
+        ownerDecline(
+          owner.token,
+          amendmentId,
+          `decline-expiry-${randomUUID()}`,
+          'OWNER_SCHEDULE_CONFLICT',
+        ),
+      deadline,
+    );
+    expect([201, 409]).toContain(declined.status);
+    expect(expired).toBeGreaterThanOrEqual(0);
+    expect(declined.status).not.toBe(500);
+    const persisted = await raceAmendment(amendmentId);
+    expect([BookingAmendmentStatus.DECLINED, BookingAmendmentStatus.EXPIRED]).toContain(
+      persisted.status,
+    );
+    expect(declined.status === 201).toBe(persisted.status === BookingAmendmentStatus.DECLINED);
+    await assertRaceWinner(persisted, persisted.status);
+    expect(persisted.holds.every((hold) => hold.status !== 'ACTIVE')).toBe(true);
+    expect(persisted.holds.every((hold) => !hold.occupancy.active)).toBe(true);
+    expect(persisted.holds.every((hold) => hold.releasedAt !== null)).toBe(true);
+    expect(await raceConservationSnapshot()).toEqual(original);
+  }, 15_000);
+
+  it.each([
+    ['additional payment', 'ADDITIONAL_PAYMENT'],
+    ['processing', 'PROCESSING'],
+  ] as const)(
+    'serializes %s Accept against Decline',
+    async (_label, outcome) => {
+      const proposal =
+        outcome === 'PROCESSING'
+          ? {
+              proposedPickupAt: new Date(rentalStart.getTime() + 30 * 60_000).toISOString(),
+              proposedReturnAt: new Date(rentalEnd.getTime() + 30 * 60_000).toISOString(),
+            }
+          : { proposedReturnAt: new Date(rentalEnd.getTime() + 24 * 60 * 60_000).toISOString() };
+      const reviewed = await preview(renter.token, proposal).expect(201);
+      const submitted = await submit(
+        renter.token,
+        reviewed.body.data.previewToken,
+        `accept-decline-${outcome}-${randomUUID()}`,
+      ).expect(201);
+      const amendmentId = submitted.body.data.amendmentId;
+      const original = await raceConservationSnapshot();
+      const [accepted, declined] = await raceBehindAmendmentTableLock(
+        () => ownerAccept(owner.token, amendmentId, `accept-race-${randomUUID()}`),
+        () =>
+          ownerDecline(
+            owner.token,
+            amendmentId,
+            `decline-race-${randomUUID()}`,
+            'OWNER_SCHEDULE_CONFLICT',
+          ),
+      );
+      expect([accepted.status, declined.status].sort()).toEqual([201, 409]);
+      const persisted = await raceAmendment(amendmentId);
+      const acceptedStatus =
+        outcome === 'ADDITIONAL_PAYMENT'
+          ? BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING
+          : BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING;
+      expect([acceptedStatus, BookingAmendmentStatus.DECLINED]).toContain(persisted.status);
+      await assertRaceWinner(persisted, persisted.status);
+      const holdsRemain = persisted.status === acceptedStatus;
+      expect(
+        persisted.holds.every((hold) => hold.status === (holdsRemain ? 'ACTIVE' : 'RELEASED')),
+      ).toBe(true);
+      expect(persisted.holds.every((hold) => hold.occupancy.active === holdsRemain)).toBe(true);
+      expect(persisted.paymentDeadlineAt === null).toBe(
+        persisted.status !== BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
+      );
+      expect(await raceConservationSnapshot()).toEqual(original);
+    },
+    15_000,
+  );
+
   function preview(token: string, input: object, bookingReference = reference) {
     return request(app.getHttpServer())
       .post(`/api/v1/bookings/${bookingReference}/amendment-preview`)
@@ -1539,6 +2273,45 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
     return request(app.getHttpServer())
       .post(`/api/v1/bookings/${reference}/amendments/${amendmentReference}/withdraw`)
       .set('Authorization', `Bearer ${token}`);
+  }
+
+  function renterAmendmentDetail(token: string, amendmentReference: string) {
+    return request(app.getHttpServer())
+      .get(`/api/v1/bookings/${reference}/amendments/${amendmentReference}`)
+      .set('Authorization', `Bearer ${token}`);
+  }
+
+  function ownerAmendments(token: string) {
+    return request(app.getHttpServer())
+      .get('/api/v1/owner/bookings/amendments/actionable')
+      .set('Authorization', `Bearer ${token}`);
+  }
+
+  function ownerAmendmentDetail(token: string, amendmentReference: string) {
+    return request(app.getHttpServer())
+      .get(`/api/v1/owner/bookings/${reference}/amendments/${amendmentReference}`)
+      .set('Authorization', `Bearer ${token}`);
+  }
+
+  function ownerAccept(token: string, amendmentReference: string, idempotencyKey: string) {
+    return request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/amendments/${amendmentReference}/accept`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', idempotencyKey)
+      .send({});
+  }
+
+  function ownerDecline(
+    token: string,
+    amendmentReference: string,
+    idempotencyKey: string,
+    reasonCode: string,
+  ) {
+    return request(app.getHttpServer())
+      .post(`/api/v1/owner/bookings/${reference}/amendments/${amendmentReference}/decline`)
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', idempotencyKey)
+      .send({ reasonCode });
   }
 
   async function expireAmendments() {
@@ -1656,6 +2429,203 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
       },
       commissionSnapshot,
       counts,
+      ownerEarning,
+      payment,
+    };
+  }
+
+  async function setOwnerDeadline(amendmentId: string, deadline: Date) {
+    const holds = await database.client.bookingAmendmentHold.findMany({
+      where: { amendmentId, status: 'ACTIVE' },
+    });
+    await database.client.$transaction(async (transaction) => {
+      await transaction.bookingAmendment.update({
+        data: { expiresAt: deadline },
+        where: { id: amendmentId },
+      });
+      for (const hold of holds) {
+        await transaction.vehicleOccupancy.update({
+          data: { expiresAt: deadline },
+          where: { id: hold.occupancyId },
+        });
+        await transaction.bookingAmendmentHold.update({
+          data: { expiresAt: deadline },
+          where: { id: hold.id },
+        });
+      }
+    });
+  }
+
+  async function raceAcceptAgainstExpiry(amendmentId: string, deadline: Date) {
+    return raceDecisionAgainstExpiry(
+      () => ownerAccept(owner.token, amendmentId, `accept-expiry-race-${randomUUID()}`),
+      deadline,
+    );
+  }
+
+  async function raceDecisionAgainstExpiry<T>(decision: () => Promise<T>, deadline: Date) {
+    let signalLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => (signalLocked = resolve));
+    const released = new Promise<void>((resolve) => (releaseLock = resolve));
+    const locker = raceLocker.$transaction(
+      async (transaction) => {
+        await transaction.$executeRawUnsafe(
+          'LOCK TABLE "booking_amendments" IN ACCESS EXCLUSIVE MODE',
+        );
+        signalLocked();
+        await released;
+      },
+      { timeout: 20_000 },
+    );
+    await locked;
+    const decisionResult = Promise.resolve(decision());
+    let expiryResult!: Promise<number>;
+    try {
+      await waitForBlockedAmendmentOperations(1);
+      await raceObserver.$queryRaw(Prisma.sql`
+        SELECT clock_timestamp() AS "waitedAt"
+        FROM pg_sleep(
+          GREATEST(EXTRACT(EPOCH FROM (${deadline}::timestamptz - clock_timestamp())), 0)
+        )
+      `);
+      expiryResult = expireAmendments();
+      await waitForBlockedAmendmentOperations(1);
+    } finally {
+      releaseLock();
+      await locker;
+    }
+    return Promise.all([decisionResult, expiryResult] as const);
+  }
+
+  async function raceBehindAmendmentTableLock<T, U>(
+    left: () => Promise<T>,
+    right: () => Promise<U>,
+  ) {
+    let signalLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => (signalLocked = resolve));
+    const released = new Promise<void>((resolve) => (releaseLock = resolve));
+    const locker = raceLocker.$transaction(
+      async (transaction) => {
+        await transaction.$executeRawUnsafe(
+          'LOCK TABLE "booking_amendments" IN ACCESS EXCLUSIVE MODE',
+        );
+        signalLocked();
+        await released;
+      },
+      { timeout: 20_000 },
+    );
+    await locked;
+    const leftResult = Promise.resolve(left());
+    const rightResult = Promise.resolve(right());
+    try {
+      await waitForBlockedAmendmentOperations(1);
+    } finally {
+      releaseLock();
+      await locker;
+    }
+    return Promise.all([leftResult, rightResult] as const);
+  }
+
+  async function waitForBlockedAmendmentOperations(expected: number) {
+    for (let attempt = 0; attempt < 10_000; attempt += 1) {
+      const rows = await raceObserver.$queryRaw<Array<{ blocked: bigint }>>(Prisma.sql`
+        SELECT COUNT(*)::bigint AS "blocked"
+        FROM pg_locks
+        WHERE relation = 'booking_amendments'::regclass
+          AND granted = false
+      `);
+      if (Number(rows[0]?.blocked ?? 0n) >= expected) return;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    throw new Error(`Timed out waiting for ${expected} blocked amendment operation(s).`);
+  }
+
+  function raceAmendment(amendmentId: string) {
+    return database.client.bookingAmendment.findUniqueOrThrow({
+      include: {
+        holds: { include: { occupancy: true } },
+        statusHistory: { orderBy: { occurredAt: 'asc' } },
+      },
+      where: { id: amendmentId },
+    });
+  }
+
+  async function assertRaceWinner(
+    amendment: Awaited<ReturnType<typeof raceAmendment>>,
+    status: BookingAmendmentStatus,
+  ) {
+    const winningStatuses = new Set([
+      BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
+      BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+      BookingAmendmentStatus.DECLINED,
+      BookingAmendmentStatus.EXPIRED,
+    ]);
+    expect(amendment.statusHistory.filter((row) => winningStatuses.has(row.toStatus))).toHaveLength(
+      1,
+    );
+    const expectedEvent =
+      status === BookingAmendmentStatus.DECLINED
+        ? 'BOOKING_AMENDMENT_DECLINED'
+        : status === BookingAmendmentStatus.EXPIRED
+          ? 'BOOKING_AMENDMENT_TERMINATED'
+          : 'BOOKING_AMENDMENT_ACCEPTED';
+    expect(
+      await database.client.outboxEvent.count({
+        where: {
+          aggregateId: { in: [bookingId, amendment.id] },
+          eventType: {
+            in: [
+              'BOOKING_AMENDMENT_ACCEPTED',
+              'BOOKING_AMENDMENT_DECLINED',
+              'BOOKING_AMENDMENT_TERMINATED',
+            ],
+          },
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await database.client.outboxEvent.count({
+        where: { aggregateId: { in: [bookingId, amendment.id] }, eventType: expectedEvent },
+      }),
+    ).toBe(1);
+  }
+
+  async function raceConservationSnapshot() {
+    const [booking, originalOccupancy, payment, ownerEarning, commissionSnapshot, counts] =
+      await Promise.all([
+        database.client.booking.findUniqueOrThrow({
+          include: { fulfillmentSnapshot: true, pricingSnapshot: true },
+          where: { id: bookingId },
+        }),
+        database.client.vehicleOccupancy.findFirstOrThrow({
+          where: { active: true, bookingId, type: VehicleOccupancyType.BOOKING },
+        }),
+        database.client.payment.findUniqueOrThrow({ where: { id: paymentId } }),
+        database.client.ownerEarning.findUniqueOrThrow({ where: { paymentId } }),
+        database.client.commissionSnapshot.findUniqueOrThrow({ where: { paymentId } }),
+        Promise.all([
+          database.client.payment.count({ where: { bookingId } }),
+          database.client.paymentOperation.count({ where: { paymentId } }),
+          database.client.refund.count({ where: { paymentId } }),
+          database.client.ledgerTransaction.count({
+            where: { sourceId: { in: [bookingId, paymentId] } },
+          }),
+          database.client.ownerFinancialObligation.count({ where: { ownerProfileId } }),
+        ]),
+      ]);
+    return {
+      booking: {
+        fulfillment: booking.fulfillmentSnapshot,
+        pricing: booking.pricingSnapshot,
+        rentalEnd: booking.rentalEnd,
+        rentalStart: booking.rentalStart,
+        status: booking.status,
+      },
+      commissionSnapshot,
+      counts,
+      originalOccupancy,
       ownerEarning,
       payment,
     };
