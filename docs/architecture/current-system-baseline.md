@@ -1,8 +1,7 @@
-# Current system baseline (Phase 12)
+# Current system baseline
 
-This document describes the repository as implemented on 4 September 2026. It is the current
-cross-domain reference; the phase guides and ADRs retain the history of how the system arrived here.
-Phase 13 is proposed and has **not started**.
+This document describes the repository as implemented on 30 September 2026. It is the current
+cross-domain reference; phase guides and ADRs retain the history of how the system arrived here.
 
 ## Runtime applications and authority
 
@@ -102,8 +101,9 @@ creation copies those values into the append-only booking pricing snapshot. Late
 cannot reprice historical quotes or bookings. Commission uses the discounted snapshot subtotal, so it
 is not charged on the pre-discount amount.
 
-Maximum duration, included/excess mileage, and turnaround rules still apply. Booking extensions are
-not implemented, and scheduled maintenance during an already-active long rental is not modeled.
+Maximum duration, included/excess mileage, and turnaround rules still apply. Change Booking supports
+pre-trip changes and bounded active return-time extensions through a durable owner-decision and
+financial workflow. See [Change Booking](change-booking.md).
 
 ## Booking and rental lifecycle
 
@@ -131,6 +131,16 @@ does not prove custody. Non-response jobs notify participants; participant no-sh
 incidents. Only the audited Admin handover-resolution command may establish custody as an operational
 fallback.
 
+Before custody, renter and owner cancellation use the versioned confirmed-cancellation policy. Advance
+bookings become rental-non-refundable at the exact final-72-hour boundary; last-minute bookings include
+the exact six-hour grace boundary, capped by pickup. Commission and fulfillment components are handled
+separately. See [booking lifecycle and cancellation](booking-lifecycle-and-cancellation.md).
+
+Change Booking never mutates this lifecycle speculatively. The original booking remains authoritative
+until an amendment is `APPLIED`; `AMENDMENT_HOLD` occupancy protects only net-new time. Additional
+payment, refund, owner response, provider reconciliation, application, and financial recovery are
+durable and independently observable.
+
 Pickup and return inspections are separate immutable participant perspectives. Optional discrepancy
 and counter-evidence are additive. Corrections use amendment requests and permissioned Admin review;
 the original evidence remains intact. Completion waits for the two-party return requirements and any
@@ -149,6 +159,12 @@ creates the commission snapshot and pending owner earning; claims/disputes may h
 and the safety deadline, eligible earnings become available for controlled, provider-independent payout.
 Payout destinations are encrypted/masked, allocations are row-locked, and provider success—not a
 redirect or submit response—establishes `PAID`.
+
+Amendment additional charges and refunds use the same provider-independent operations and immutable
+ledger. Refund suspense separates an accepted amendment's obligation from later booking application;
+uncertain outcomes remain reconcilable and can require audited Admin evidence. Owner earnings use
+adjustments rather than rewriting capture evidence. See
+[payments, refunds, ledger, and payouts](payments-refunds-ledger.md).
 
 ## Messaging, notifications, and reputation
 
@@ -206,18 +222,15 @@ viewport or end-to-end operator acceptance run.
 
 ## Verification and known limitations
 
-The latest verified baseline is recorded in
-[Phase 12 accepted baseline](../development/phase-12-accepted-baseline.md). Coverage includes booking
+The Phase 12 historical baseline is recorded in
+[Phase 12 accepted baseline](../development/phase-12-accepted-baseline.md). Current coverage includes booking
 concurrency, search pagination, duration pricing and snapshot immutability, double-blind reviews, public
 host privacy, KYC/evidence access, pickup/return, claims, payouts, Admin routing, and access grants.
 
-The repository contains 35 ordered Prisma migration directories. The latest two are
-`20260904090000_phase12_marketplace_completeness` and
-`20260904093000_duration_discount_signed_lines`. They add owner public references, duration-policy and
-immutable quote/booking snapshot fields, review publication timestamps/state, related indexes and
-constraints, and the narrowly signed discount-line rule. The marketplace migration temporarily drops
-and recreates existing append-only triggers only around its controlled backfill; append-only pricing
-protections remain active after application. Already-applied migrations must not be edited.
+The repository contains 72 ordered Prisma migration directories. Migrations 65–72 establish the
+booking-amendment foundation, correct amendment-hold release, add accepted-processing and refund
+correlation/suspense, provide operational recovery expiry, and conserve cancellation/amendment refund
+offsets. Already-applied migrations must not be edited.
 
 Remaining work includes production provider certification, physical-device biometric app-lock testing,
 physical Android acceptance, production push/email/SMS, production object storage and

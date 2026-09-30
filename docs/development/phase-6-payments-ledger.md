@@ -1,5 +1,10 @@
 # Phase 6 — Payments, ledger, commission, and pending earnings
 
+> Historical phase guide. For current amendment additional-payment, refund-suspense, provider
+> uncertainty, and recovery authority, see
+> [Payments, refunds, ledger, and payouts](../architecture/payments-refunds-ledger.md) and
+> [Change Booking](../architecture/change-booking.md).
+
 > Phase 12 pricing amendment: an authoritative quote may contain a negative `DURATION_DISCOUNT` line.
 > Its discounted subtotal is copied into the immutable booking snapshot and is the commission basis;
 > later policy changes cannot reprice the booking. See ADR-0022.

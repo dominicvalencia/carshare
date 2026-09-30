@@ -27,6 +27,12 @@
 - [ADR-0025: biometric-only local app lock](0025-biometric-only-local-app-lock.md)
 - [ADR-0026: environment separation and application identities](0026-environment-separation-and-application-identities.md)
 - [ADR-0027: secret management and provider activation](0027-secret-management-and-provider-activation.md)
+- [ADR-0028: owner analytics metric contract](0028-owner-analytics-metric-contract.md)
+- [ADR-0029: owner revenue and earnings contract](0029-owner-revenue-and-earnings-contract.md)
+- [ADR-0030: owner revenue trend series](0030-owner-revenue-trend-series.md)
+- [ADR-0031: owner marketplace performance report](0031-owner-marketplace-performance-report.md)
+- [ADR-0032: owner marketplace trend series](0032-owner-marketplace-trend-series.md)
+- [ADR-0033: server-authoritative booking amendments and durable financial recovery](0033-booking-amendment-authority-and-financial-recovery.md)
 
 ADRs 0001–0020 remain historical/current decisions as amended by later ADRs. In particular, ADR-0010's
 Phase 4 cursor/pricing scope is extended by ADRs 0021–0022, and ADR-0016's immediate-publication review

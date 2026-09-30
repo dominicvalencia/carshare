@@ -1,16 +1,18 @@
 # Car Rental Platform
 
 Production-oriented monorepo for a Philippines peer-to-peer car rental marketplace. The implemented
-Phase 12 baseline includes identity and renter/owner KYC, structured vehicle supply, privacy-safe
+current baseline includes identity and renter/owner KYC, structured vehicle supply, privacy-safe
 cursor-paginated discovery, immutable pricing and duration discounts, authoritative booking and
 occupancy, provider-independent payments/ledger/payouts, two-party pickup and return, claims,
-messaging/notifications, double-blind reviews, public Host Profiles, and routed Admin operations.
+messaging/notifications, double-blind reviews, public Host Profiles, cancellation settlement, Change
+Booking for pre-trip changes and active extensions, and routed Admin operations.
 
 Provider integrations remain abstractions or development adapters unless explicitly documented.
-Security deposits are disabled. Phase 13 is proposed and has not started. See the
-[current system baseline](docs/architecture/current-system-baseline.md) for the cross-domain design and
-the [accepted Phase 12 baseline](docs/development/phase-12-accepted-baseline.md) for verification and
-known limitations.
+Security deposits are disabled. See the
+[documentation index](docs/README.md), the
+[current system baseline](docs/architecture/current-system-baseline.md), and the
+[accepted Phase 12 baseline](docs/development/phase-12-accepted-baseline.md) for historical verification
+and known limitations.
 
 ## Applications
 
@@ -75,7 +77,7 @@ pnpm build
 
 Run the complete CI-equivalent sequence with `pnpm verify`.
 
-See [local development](docs/development/local-development.md), the
+See the [documentation index](docs/README.md), [local development](docs/development/local-development.md), the
 [new Mac setup guide](docs/development/new-mac-setup.md), the
 [current system baseline](docs/architecture/current-system-baseline.md), the
 [Phase 1 acceptance checklist](docs/development/phase-1-acceptance.md), and the
@@ -90,4 +92,7 @@ See [local development](docs/development/local-development.md), the
 [proposed Phase 13 plan](docs/development/phase-13-proposal.md), the
 [native development-build acceptance plan](docs/development/native-development-build-acceptance.md), the
 [Admin UX stabilization baseline](docs/development/admin-ux-stabilization.md), and the
-[architecture decisions](docs/decisions/README.md).
+[architecture decisions](docs/decisions/README.md). Current domain references include
+[booking lifecycle and cancellation](docs/architecture/booking-lifecycle-and-cancellation.md),
+[Change Booking](docs/architecture/change-booking.md), and
+[payments, refunds, ledger, and payouts](docs/architecture/payments-refunds-ledger.md).

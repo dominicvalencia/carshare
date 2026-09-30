@@ -1,5 +1,10 @@
 # Phase 9 owner payouts
 
+> Historical phase guide. Current payout eligibility also respects unresolved Change Booking payment,
+> refund, application, and financial-recovery blockers. Amendment economics adjust the payout-facing
+> owner earning without rewriting capture evidence. See
+> [Payments, refunds, ledger, and payouts](../architecture/payments-refunds-ledger.md).
+
 Phase 9 settles only `AVAILABLE` owner earnings. It does not expose an owner withdrawal command and it does not change security-deposit behavior.
 
 ## Local configuration
