@@ -1,11 +1,21 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ApiEnvironment } from '@carrental/config';
-import { FileAssetStatus, FileClassification, Prisma } from '@carrental/database';
+import {
+  BookingAmendmentSettlementStatus,
+  BookingAmendmentStatus,
+  FileAssetStatus,
+  FileClassification,
+  Prisma,
+} from '@carrental/database';
 import { FilesService } from '../files/files.service';
 import { workflowCompliance } from '../rentals/workflow-compliance';
 
 export const bookingInclude = {
+  amendments: {
+    include: { fulfillmentSnapshot: true, pricingSnapshot: true, settlement: true },
+    orderBy: [{ createdAt: 'desc' as const }, { id: 'desc' as const }],
+  },
   overdueHandoverRecoveries: {
     include: {
       acceptance: true,
@@ -142,6 +152,15 @@ export class BookingProjectionService {
   ) {}
 
   renter(booking: BookingRecord) {
+    const applied = booking.amendments.find(
+      (amendment) => amendment.status === BookingAmendmentStatus.APPLIED,
+    );
+    const refundRecovery = booking.amendments.find(
+      (amendment) => amendment.status === BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
+    );
+    const latestAmendment = booking.amendments[0] ?? null;
+    const rentalStart = applied?.proposedRentalStart ?? booking.rentalStart;
+    const rentalEnd = applied?.proposedRentalEnd ?? booking.rentalEnd;
     const serializeOverdueRecovery = (
       recovery: BookingRecord['overdueHandoverRecoveries'][number],
     ) => ({
@@ -175,10 +194,12 @@ export class BookingProjectionService {
       workflowCompliance: workflowCompliance(
         {
           ...booking,
+          rentalStart,
+          rentalEnd,
           pickupWindowEnd:
             booking.pickupWindowEnd ??
             new Date(
-              booking.rentalStart.getTime() +
+              rentalStart.getTime() +
                 this.configuration.getOrThrow('PICKUP_WINDOW_GRACE_MINUTES', { infer: true }) *
                   60_000,
             ),
@@ -195,6 +216,28 @@ export class BookingProjectionService {
         : null,
       cancellationSettlement: booking.cancellationSettlement
         ? this.serializeSettlement(booking.cancellationSettlement)
+        : null,
+      amendmentRefundRecovery: refundRecovery
+        ? {
+            amendmentId: refundRecovery.id,
+            operationallyExpiredAt: refundRecovery.operationallyExpiredAt,
+            state:
+              refundRecovery.settlement?.status === BookingAmendmentSettlementStatus.COMPLETED
+                ? 'REFUND_SETTLED'
+                : 'FINANCIAL_REFUND_RECOVERY',
+          }
+        : null,
+      latestAmendment: latestAmendment
+        ? {
+            amendmentId: latestAmendment.id,
+            createdAt: latestAmendment.createdAt,
+            expiresAt: latestAmendment.expiresAt,
+            paymentDeadlineAt: latestAmendment.paymentDeadlineAt,
+            reasonCode: latestAmendment.reasonCode,
+            scope: latestAmendment.scope,
+            status: latestAmendment.status,
+            withdrawable: latestAmendment.status === BookingAmendmentStatus.PENDING_OWNER,
+          }
         : null,
       createdAt: booking.createdAt,
       conversationId: booking.conversation?.id ?? null,
@@ -215,11 +258,11 @@ export class BookingProjectionService {
         : null,
       pickupWindow: {
         closesAt: new Date(
-          booking.rentalStart.getTime() +
+          rentalStart.getTime() +
             this.configuration.getOrThrow('PICKUP_WINDOW_GRACE_MINUTES', { infer: true }) * 60_000,
         ),
         opensAt: new Date(
-          booking.rentalStart.getTime() -
+          rentalStart.getTime() -
             this.configuration.getOrThrow('PICKUP_WINDOW_EARLY_MINUTES', { infer: true }) * 60_000,
         ),
       },
@@ -235,8 +278,8 @@ export class BookingProjectionService {
       })),
       pricing: this.pricing(booking),
       publicReference: booking.publicReference,
-      rentalEnd: booking.rentalEnd,
-      rentalStart: booking.rentalStart,
+      rentalEnd,
+      rentalStart,
       status: booking.status,
       statusHistory: booking.statusHistory.map((history) => ({
         actorType: history.actorType,
@@ -419,14 +462,24 @@ export class BookingProjectionService {
   private pricing(booking: BookingRecord) {
     const pricing = booking.pricingSnapshot;
     if (!pricing) return null;
+    const applied = booking.amendments.find(
+      (amendment) => amendment.status === BookingAmendmentStatus.APPLIED,
+    );
+    const amendment = applied?.pricingSnapshot;
     return {
-      baseRentalAmountMinor: pricing.baseRentalAmountMinor,
-      chargeableDays: pricing.chargeableDays,
+      baseRentalAmountMinor: amendment
+        ? Number(amendment.proposedBaseRentalAmountMinor)
+        : pricing.baseRentalAmountMinor,
+      chargeableDays: amendment?.proposedChargeableDays ?? pricing.chargeableDays,
       currency: pricing.currency,
-      discountedRentalSubtotalMinor: pricing.discountedRentalSubtotalMinor,
-      durationDiscountAmountMinor: pricing.durationDiscountAmountMinor,
-      durationDiscountBps: pricing.durationDiscountBps,
-      durationDiscountTier: pricing.durationDiscountTier,
+      discountedRentalSubtotalMinor: amendment
+        ? Number(amendment.proposedRentalSubtotalMinor)
+        : pricing.discountedRentalSubtotalMinor,
+      durationDiscountAmountMinor: amendment
+        ? Number(amendment.durationDiscountAmountMinor)
+        : pricing.durationDiscountAmountMinor,
+      durationDiscountBps: amendment?.durationDiscountBps ?? pricing.durationDiscountBps,
+      durationDiscountTier: amendment?.durationDiscountTier ?? pricing.durationDiscountTier,
       excessKilometerRateMinor: pricing.excessKilometerRateMinor,
       includedMileageKm: pricing.includedMileageKm,
       lines: pricing.lines.map((line) => ({
@@ -440,10 +493,10 @@ export class BookingProjectionService {
       policyVersionId: pricing.policyVersionId,
       pricingEngineVersion: pricing.pricingEngineVersion,
       quoteId: pricing.quoteId,
-      rentalEnd: pricing.rentalEnd,
-      rentalStart: pricing.rentalStart,
-      subtotalMinor: pricing.subtotalMinor,
-      totalMinor: pricing.totalMinor,
+      rentalEnd: applied?.proposedRentalEnd ?? pricing.rentalEnd,
+      rentalStart: applied?.proposedRentalStart ?? pricing.rentalStart,
+      subtotalMinor: amendment ? Number(amendment.proposedTotalMinor) : pricing.subtotalMinor,
+      totalMinor: amendment ? Number(amendment.proposedTotalMinor) : pricing.totalMinor,
       unlimitedMileage: pricing.unlimitedMileage,
       vehicleTimezone: pricing.vehicleTimezone,
     };
@@ -471,18 +524,55 @@ export class BookingProjectionService {
       postalCode: snapshot[`${prefix}PostalCode`],
       province: snapshot[`${prefix}Province`],
     });
+    const applied = booking.amendments.find(
+      (amendment) => amendment.status === BookingAmendmentStatus.APPLIED,
+    );
+    const amendment = applied?.fulfillmentSnapshot;
+    const destinations = jsonRecord(amendment?.destinationSnapshot);
+    const delivery = destination(destinations?.deliveryDestination) ?? location('start');
+    const collection = destination(destinations?.collectionDestination) ?? location('end');
+    const evidence = jsonRecord(amendment?.serviceabilitySnapshot);
     return {
       collectionDistanceMeters: snapshot.collectionDistanceMeters,
-      collectionFeeMinor: snapshot.collectionFeeMinor,
-      endLocation: location('end'),
-      endMethod: snapshot.endMethod,
+      collectionFeeMinor:
+        numberFromJson(evidence?.proposedCollectionFeeMinor) ?? snapshot.collectionFeeMinor,
+      endLocation: collection,
+      endMethod: applied?.proposedEndMethod ?? snapshot.endMethod,
       legacyCompatibility: false,
       minimumNoticeMinutes: snapshot.minimumNoticeMinutes,
       deliveryDistanceMeters: snapshot.deliveryDistanceMeters,
-      deliveryFeeMinor: snapshot.deliveryFeeMinor,
+      deliveryFeeMinor:
+        numberFromJson(evidence?.proposedDeliveryFeeMinor) ?? snapshot.deliveryFeeMinor,
       serviceRadiusMeters: snapshot.serviceRadiusMeters,
-      startLocation: location('start'),
-      startMethod: snapshot.startMethod,
+      startLocation: delivery,
+      startMethod: applied?.proposedStartMethod ?? snapshot.startMethod,
     };
   }
+}
+
+function jsonRecord(value: Prisma.JsonValue | null | undefined) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, Prisma.JsonValue>)
+    : null;
+}
+
+function numberFromJson(value: Prisma.JsonValue | undefined) {
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return value;
+  if (typeof value === 'string' && /^\d+$/u.test(value)) return Number(value);
+  return null;
+}
+
+function destination(value: Prisma.JsonValue | undefined) {
+  const item = jsonRecord(value);
+  if (!item || typeof item.city !== 'string' || typeof item.province !== 'string') return null;
+  return item as unknown as {
+    addressLine1?: string;
+    barangay?: string;
+    city: string;
+    country: string;
+    latitude: number;
+    longitude: number;
+    postalCode?: string;
+    province: string;
+  };
 }

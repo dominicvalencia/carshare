@@ -19,6 +19,7 @@ import { AmendmentPreviewService } from './amendment-preview.service';
 import { AmendmentSubmissionService } from './amendment-submission.service';
 import { AmendmentWithdrawalService } from './amendment-withdrawal.service';
 import { AmendmentOwnerDecisionService } from './amendment-owner-decision.service';
+import { AdminBookingAmendmentsService } from './admin-booking-amendments.service';
 
 @Module({
   controllers: [RenterBookingsController, OwnerBookingsController, AdminBookingsController],
@@ -32,6 +33,7 @@ import { AmendmentOwnerDecisionService } from './amendment-owner-decision.servic
     RenterVerificationModule,
   ],
   providers: [
+    AdminBookingAmendmentsService,
     AmendmentPreviewService,
     AmendmentSubmissionService,
     AmendmentWithdrawalService,

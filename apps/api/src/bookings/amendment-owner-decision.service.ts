@@ -1,7 +1,12 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ApiEnvironment } from '@carrental/config';
-import { BookingActorType, BookingAmendmentStatus, Prisma } from '@carrental/database';
+import {
+  BookingActorType,
+  BookingAmendmentStatus,
+  BookingStatus,
+  Prisma,
+} from '@carrental/database';
 import { BookingErrorCode } from '@carrental/api-contracts';
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
@@ -13,10 +18,14 @@ const OWNER_AMENDMENT_INCLUDE = {
   booking: {
     select: {
       id: true,
+      actualPickupAt: true,
       ownerUserId: true,
       publicReference: true,
       rentalEnd: true,
       rentalStart: true,
+      renter: { select: { profile: { select: { displayName: true, firstName: true } } } },
+      status: true,
+      vehicle: { select: { make: true, model: true } },
     },
   },
   fulfillmentSnapshot: true,
@@ -51,7 +60,7 @@ export class AmendmentOwnerDecisionService {
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
-    return { items: records.map((record) => this.project(record)) };
+    return { items: await Promise.all(records.map((record) => this.project(record))) };
   }
 
   async detail(ownerUserId: string, bookingReference: string, amendmentId: string) {
@@ -117,14 +126,20 @@ export class AmendmentOwnerDecisionService {
     try {
       outcome = await this.database.client.$transaction(
         async (transaction) => {
+          const lockedBookings = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT booking."id"
+          FROM "bookings" booking
+          WHERE booking."public_reference" = ${bookingReference}
+            AND booking."owner_user_id" = ${ownerUserId}::uuid
+          FOR UPDATE
+        `);
+          if (!lockedBookings[0]) this.notFound();
           await transaction.$queryRaw(Prisma.sql`
           SELECT amendment."id"
           FROM "booking_amendments" amendment
-          INNER JOIN "bookings" booking ON booking."id" = amendment."booking_id"
           WHERE amendment."id" = ${amendmentId}::uuid
-            AND booking."public_reference" = ${bookingReference}
-            AND booking."owner_user_id" = ${ownerUserId}::uuid
-          FOR UPDATE OF amendment
+            AND amendment."booking_id" = ${lockedBookings[0].id}::uuid
+          FOR UPDATE
         `);
           const amendment = await transaction.bookingAmendment.findFirst({
             include: OWNER_AMENDMENT_INCLUDE,
@@ -147,6 +162,23 @@ export class AmendmentOwnerDecisionService {
             throw new ApplicationException(
               BookingErrorCode.BOOKING_INVALID_STATE,
               'This change request is no longer awaiting an Owner decision.',
+              HttpStatus.CONFLICT,
+            );
+          const activeExtension = amendment.scope === 'ACTIVE_EXTENSION';
+          if (
+            activeExtension
+              ? amendment.booking.status !== BookingStatus.ACTIVE ||
+                !amendment.booking.actualPickupAt ||
+                amendment.proposedRentalStart.getTime() !==
+                  amendment.booking.rentalStart.getTime() ||
+                amendment.proposedRentalEnd <= amendment.booking.rentalEnd
+              : (amendment.booking.status !== BookingStatus.CONFIRMED &&
+                  amendment.booking.status !== BookingStatus.READY_FOR_PICKUP) ||
+                Boolean(amendment.booking.actualPickupAt)
+          )
+            throw new ApplicationException(
+              BookingErrorCode.BOOKING_INVALID_STATE,
+              'This booking can no longer accept the requested change.',
               HttpStatus.CONFLICT,
             );
 
@@ -220,17 +252,25 @@ export class AmendmentOwnerDecisionService {
           }
 
           const financial = this.classify(amendment);
+          if (activeExtension && financial === 'REFUND') this.corruptFinancialAuthority();
           const nextStatus =
             financial === 'ADDITIONAL_PAYMENT'
               ? BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING
               : BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING;
           const paymentDeadlineAt =
             financial === 'ADDITIONAL_PAYMENT'
-              ? amendmentPaymentDeadline(
-                  evaluatedAt,
-                  this.configuration.getOrThrow('AMENDMENT_PAYMENT_DEADLINE_MINUTES', {
-                    infer: true,
-                  }),
+              ? new Date(
+                  Math.min(
+                    amendmentPaymentDeadline(
+                      evaluatedAt,
+                      this.configuration.getOrThrow('AMENDMENT_PAYMENT_DEADLINE_MINUTES', {
+                        infer: true,
+                      }),
+                    ).getTime(),
+                    activeExtension
+                      ? amendment.booking.rentalEnd.getTime()
+                      : Number.POSITIVE_INFINITY,
+                  ),
                 )
               : null;
 
@@ -406,13 +446,27 @@ export class AmendmentOwnerDecisionService {
     });
   }
 
-  private project(record: OwnerAmendment) {
+  private async project(record: OwnerAmendment) {
+    const payment = record.settlement?.additionalPaymentId
+      ? await this.database.client.payment.findUnique({
+          select: { reconciliationRequired: true, status: true },
+          where: { id: record.settlement.additionalPaymentId },
+        })
+      : null;
     const delta = record.settlement!.financialDeltaMinor;
     return {
       acceptedAt: record.acceptedAt?.toISOString() ?? null,
+      appliedAt: record.appliedAt?.toISOString() ?? null,
       actionable: record.status === BookingAmendmentStatus.PENDING_OWNER,
       amendmentReference: record.id,
       bookingReference: record.booking.publicReference,
+      renterDisplayName:
+        record.booking.renter.profile?.displayName ??
+        record.booking.renter.profile?.firstName ??
+        'Renter',
+      vehicleName:
+        [record.booking.vehicle.make, record.booking.vehicle.model].filter(Boolean).join(' ') ||
+        'Vehicle',
       createdAt: record.createdAt.toISOString(),
       current: {
         fulfillmentTotalMinor: record.fulfillmentSnapshot!.currentFulfillmentTotalMinor.toString(),
@@ -432,6 +486,16 @@ export class AmendmentOwnerDecisionService {
         proposedOwnerEarningsMinor: record.pricingSnapshot!.proposedOwnerEarningsMinor.toString(),
       },
       paymentDeadlineAt: record.paymentDeadlineAt?.toISOString() ?? null,
+      paymentState:
+        record.status === BookingAmendmentStatus.APPLIED
+          ? null
+          : payment?.status === 'CAPTURED'
+            ? 'PAYMENT_RECEIVED_AWAITING_APPLICATION'
+            : payment
+              ? payment.reconciliationRequired
+                ? 'PAYMENT_VERIFYING'
+                : 'WAITING_FOR_PAYMENT'
+              : null,
       proposed: {
         fulfillmentTotalMinor: record.fulfillmentSnapshot!.proposedFulfillmentTotalMinor.toString(),
         rentalEnd: record.proposedRentalEnd.toISOString(),
@@ -442,6 +506,13 @@ export class AmendmentOwnerDecisionService {
       },
       reasonCode: record.reasonCode,
       status: record.status,
+      history: record.statusHistory.map((item) => ({
+        actorType: item.actorType,
+        fromStatus: item.fromStatus,
+        occurredAt: item.occurredAt.toISOString(),
+        reasonCode: item.reasonCode,
+        toStatus: item.toStatus,
+      })),
     };
   }
 

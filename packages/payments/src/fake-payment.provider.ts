@@ -28,6 +28,7 @@ export class FakePaymentProvider implements PaymentProvider {
     supportsWebhooks: true,
   });
   private readonly states = new Map<string, ProviderPaymentStatus>();
+  private readonly refundResults = new Map<string, ProviderOperationResult>();
 
   constructor(private outcome: FakePaymentOutcome = 'succeed') {}
 
@@ -77,12 +78,24 @@ export class FakePaymentProvider implements PaymentProvider {
   }
 
   async refund(input: RefundPaymentInput): Promise<ProviderOperationResult> {
+    const replay = this.refundResults.get(input.idempotencyKey);
+    if (replay) return replay;
     if (this.outcome !== 'succeed') return this.nonSuccess();
-    return {
+    const prior = this.states.get(input.externalPaymentId);
+    this.states.set(input.externalPaymentId, {
+      ...prior,
+      externalPaymentId: input.externalPaymentId,
+      providerState: 'CAPTURED',
+      refundedAmountMinor: (prior?.refundedAmountMinor ?? 0n) + input.amountMinor,
+      state: 'CAPTURED',
+    });
+    const result = {
       externalOperationId: `refund_${digest(input.idempotencyKey).slice(0, 20)}`,
-      kind: 'SUCCEEDED',
+      kind: 'SUCCEEDED' as const,
       providerState: 'REFUNDED',
     };
+    this.refundResults.set(input.idempotencyKey, result);
+    return result;
   }
 
   async retrievePayment(externalPaymentId: string): Promise<ProviderPaymentStatus> {

@@ -28,4 +28,22 @@ describe('payment provider contract', () => {
     });
     expect(result.kind).toBe('UNKNOWN');
   });
+
+  it('replays one logical refund without increasing provider movement twice', async () => {
+    const provider = new FakePaymentProvider();
+    const input = {
+      amountMinor: 10_000n,
+      currency: 'PHP',
+      externalPaymentId: 'fake-payment-refund',
+      idempotencyKey: 'amendment:refund:v1',
+      reason: 'Accepted amendment',
+      requestReference: 'refund-request-one',
+    };
+    const first = await provider.refund(input);
+    const replay = await provider.refund(input);
+    expect(replay).toEqual(first);
+    expect((await provider.retrievePayment(input.externalPaymentId)).refundedAmountMinor).toBe(
+      input.amountMinor,
+    );
+  });
 });

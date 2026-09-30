@@ -33,6 +33,7 @@ import {
   PickupDiscrepancyResolutionDecision,
   PickupHandoverOperationsOutcome,
   VehicleKnownIssueStatus,
+  terminateActiveExtensionForReturn,
 } from '@carrental/database';
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
@@ -87,6 +88,7 @@ const inspectionCorrectionAdminInclude = {
 } satisfies Prisma.InspectionAmendmentInclude;
 import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata, RequestPrincipal } from '../security/security-context';
+import { hasBlockingAcceptedBookingAmendment } from '../bookings/booking-amendment-lifecycle-guard';
 import type {
   CreateClaimDto,
   HandoverEvidenceWaiverDto,
@@ -1881,6 +1883,7 @@ export class RentalsService {
       });
       if (booking.renterUserId !== renterUserId) this.denied();
       booking = await this.ensureReady(transaction, booking);
+      await this.assertNoBlockingAcceptedAmendment(transaction, booking.id);
       this.assertPickupWindow(booking);
       if (booking.status !== BookingStatus.READY_FOR_PICKUP) {
         this.invalidState('Pickup confirmation requires a booking ready for pickup.');
@@ -1993,6 +1996,7 @@ export class RentalsService {
       });
       if (booking.ownerUserId !== ownerUserId) this.denied();
       if (booking.ownerProfile.status !== OwnerProfileStatus.VERIFIED) this.denied();
+      await this.assertNoBlockingAcceptedAmendment(transaction, booking.id);
       if (booking.status === BookingStatus.ACTIVE) {
         return { error: 'PICKUP_CODE_REUSED' as const };
       }
@@ -2143,6 +2147,7 @@ export class RentalsService {
       if (booking.status !== BookingStatus.ACTIVE) {
         this.invalidState('Only an active rental can begin return.');
       }
+      await terminateActiveExtensionForReturn(transaction, booking.id);
       await transaction.booking.update({
         data: { status: BookingStatus.RETURN_PENDING },
         where: { id: booking.id },
@@ -3443,6 +3448,14 @@ export class RentalsService {
         'Booking was not found.',
         HttpStatus.NOT_FOUND,
       );
+  }
+
+  private async assertNoBlockingAcceptedAmendment(
+    transaction: Prisma.TransactionClient,
+    bookingId: string,
+  ) {
+    if (await hasBlockingAcceptedBookingAmendment(transaction, bookingId))
+      this.invalidState('An accepted booking change is still processing.');
   }
 
   private history(

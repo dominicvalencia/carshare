@@ -19,6 +19,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
   let database: DatabaseService;
   const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const password = 'correct horse battery staple';
+  const vehicleModel = `Fortuner-${unique}`;
   const ownerEmail = `vehicle-owner-${unique}@example.test`;
   const ownerMobile = `+63917${String(Math.floor(Math.random() * 10_000_000)).padStart(7, '0')}`;
   let ownerToken = '';
@@ -135,7 +136,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v1/owner/vehicles')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ categoryId, make: 'Toyota', model: 'Fortuner' })
+      .send({ categoryId, make: 'Toyota', model: vehicleModel })
       .expect(201);
     vehicleId = created.body.data.id;
     expect(created.body.data.status).toBe('DRAFT');
@@ -178,7 +179,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
         doorCount: 5,
         fuelType: 'DIESEL',
         make: 'Toyota',
-        model: 'Fortuner',
+        model: vehicleModel,
         modelYear: 2025,
         plateNumber: `ABC-${unique.slice(-12).toUpperCase()}`,
         powertrain: 'ICE',
@@ -681,6 +682,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
           handover,
           latitude: '14.5547',
           longitude: '121.0244',
+          model: vehicleModel,
           radius: 100,
           sort: 'NEWEST',
           start: '2027-01-04T09:00:00+08:00',
@@ -712,6 +714,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
             handover,
             latitude: '14.5547',
             longitude: '121.0244',
+            model: vehicleModel,
             mode,
             radius: 100,
             returnHandover,
@@ -736,6 +739,7 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
         handover: 'DELIVERY_AVAILABLE',
         latitude: '14.8547',
         longitude: '121.0244',
+        model: vehicleModel,
         radius: 100,
         sort: 'NEWEST',
         start: '2027-01-04T09:00:00+08:00',

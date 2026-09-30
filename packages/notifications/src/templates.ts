@@ -93,6 +93,34 @@ export function renderNotification(
       title: 'Change request declined',
       body: `Your change request for ${reference} was declined. Your original booking is unchanged.`,
     },
+    'booking-amendment.applied': {
+      title: 'Booking change applied',
+      body: `Your booking change for ${reference} has been applied.`,
+    },
+    'booking-amendment.refund-completed-awaiting-application': {
+      title: 'Refund completed',
+      body: `Your refund for ${reference} is complete. We're finishing your booking change.`,
+    },
+    'booking-amendment.financial-recovery-refund-completed': {
+      title: 'Refund completed',
+      body: `Your refund for ${reference} is complete. Your original booking details remain unchanged.`,
+    },
+    'booking-amendment.active-extension-recovery-pending': {
+      title: 'Extension could not be applied',
+      body: `Your extension for ${reference} could not be applied. A refund is being processed.`,
+    },
+    'booking-amendment.active-extension-operationally-expired': {
+      title: 'Extension could not be applied',
+      body: `Your extension for ${reference} could not be applied. We are resolving its payment status.`,
+    },
+    'booking-amendment.active-extension-recovery-completed': {
+      title: 'Extension refund completed',
+      body: `Your extension for ${reference} was not applied, and its payment has been refunded.`,
+    },
+    'booking-amendment.payment-window-expired': {
+      title: 'Booking change not applied',
+      body: `The additional-payment window for ${reference} expired. Your original booking is unchanged.`,
+    },
     'booking.cancelled': {
       title: 'Booking cancelled',
       body: `Booking ${reference} was cancelled.`,

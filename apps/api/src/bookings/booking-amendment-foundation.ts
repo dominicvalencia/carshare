@@ -15,8 +15,17 @@ const allowedTransitions: Readonly<
   DECLINED: [],
   EXPIRED: [],
   FAILED: [],
-  OWNER_ACCEPTED_PROCESSING: [BookingAmendmentStatus.APPLIED, BookingAmendmentStatus.FAILED],
-  OWNER_ACCEPTED_PAYMENT_PENDING: [BookingAmendmentStatus.APPLIED, BookingAmendmentStatus.FAILED],
+  FINANCIAL_RECOVERY_PENDING: [],
+  OWNER_ACCEPTED_PROCESSING: [
+    BookingAmendmentStatus.APPLIED,
+    BookingAmendmentStatus.FAILED,
+    BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
+  ],
+  OWNER_ACCEPTED_PAYMENT_PENDING: [
+    BookingAmendmentStatus.APPLIED,
+    BookingAmendmentStatus.FAILED,
+    BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
+  ],
   PENDING_OWNER: [
     BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
     BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,

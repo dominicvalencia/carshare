@@ -475,7 +475,11 @@ function OwnerBookingDestination({
 }) {
   const booking = useQuery({
     queryKey: ['owner-booking-destination', reference],
-    queryFn: () => apiClient.request<{ status: string }>(`/owner/bookings/${reference}`),
+    queryFn: () =>
+      apiClient.request<{
+        latestAmendment?: { amendmentId: string; status: string } | null;
+        status: string;
+      }>(`/owner/bookings/${reference}`),
   });
   if (booking.isPending)
     return (
@@ -495,9 +499,16 @@ function OwnerBookingDestination({
         />
       </Screen>
     );
-  return ownerBookingSurface(booking.data.status) === 'rental' ? (
+  return ownerBookingSurface(booking.data.status) === 'rental' &&
+    booking.data.latestAmendment?.status !== 'PENDING_OWNER' ? (
     <OwnerRentalsScreen initialBookingReference={reference} onClose={onClose} />
   ) : (
-    <OwnerBookingRequestsScreen initialBookingReference={reference} onClose={onClose} />
+    <OwnerBookingRequestsScreen
+      {...(booking.data.latestAmendment?.status === 'PENDING_OWNER'
+        ? { initialAmendmentReference: booking.data.latestAmendment.amendmentId }
+        : {})}
+      initialBookingReference={reference}
+      onClose={onClose}
+    />
   );
 }

@@ -57,6 +57,7 @@ export interface ProviderPaymentStatus {
   readonly capturedAmountMinor?: bigint;
   readonly externalPaymentId: string;
   readonly providerState: string;
+  readonly refundedAmountMinor?: bigint;
   readonly state: ProviderPaymentState;
 }
 

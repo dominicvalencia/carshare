@@ -303,6 +303,61 @@ button.compact {
   display: none;
 }
 
+.filter-grid,
+.comparison-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.filter-grid {
+  margin-bottom: 1.5rem;
+}
+
+.filter-grid label,
+.admin-form label {
+  display: grid;
+  gap: 0.4rem;
+  font-weight: 650;
+}
+
+.filter-grid input,
+.filter-grid select,
+.admin-form input,
+.admin-form select,
+.admin-form textarea {
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  font: inherit;
+  padding: 0.72rem 0.8rem;
+}
+
+.pagination {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.admin-form {
+  display: grid;
+  gap: 1rem;
+  max-width: 48rem;
+}
+
+.warning-panel {
+  background: #fff7e7;
+  border: 1px solid #e4bd67;
+  border-radius: 0.8rem;
+  padding: 1rem;
+}
+
+.success-text {
+  color: var(--success, #147557);
+  font-weight: 700;
+}
+
 .admin-console[data-module='vehicles'] .module-vehicles,
 .admin-console[data-module='rentals'] .module-rentals,
 .admin-console[data-module='claims'] .module-claims,

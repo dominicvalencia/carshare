@@ -48,6 +48,7 @@ import {
   type OwnerMarketplaceReport,
   type OwnerMarketplaceTrends,
 } from './OwnerMarketplaceReportsDashboard';
+import { BookingAmendmentsAdminPanel } from './BookingAmendmentsAdminPanel';
 
 import { API_URL, adminEnvironment } from './admin-environment';
 interface Envelope<T> {
@@ -503,6 +504,7 @@ interface AdminPayout {
 
 export type AdminModule =
   | 'audit'
+  | 'booking-amendments'
   | 'bookings'
   | 'claims'
   | 'commissions'
@@ -559,6 +561,11 @@ const moduleTitles: Record<AdminModule, { eyebrow: string; title: string; descri
     eyebrow: 'BOOKINGS',
     title: 'Booking diagnostics',
     description: 'Inspect authoritative lifecycle, occupancy, and financial timelines.',
+  },
+  'booking-amendments': {
+    eyebrow: 'CHANGE BOOKING',
+    title: 'Booking amendments',
+    description: 'Find and investigate amendment lifecycle, payment, refund, and recovery cases.',
   },
   rentals: {
     eyebrow: 'RENTAL OPERATIONS',
@@ -669,6 +676,7 @@ export function AdminConsole({
   const requiredPermission: Partial<Record<AdminModule, string>> = {
     audit: 'audit.read',
     bookings: 'vehicles.read',
+    'booking-amendments': 'rentals.read',
     claims: 'claims.read',
     commissions: 'commissions.read',
     'inspection-corrections': 'inspections.read',
@@ -1069,6 +1077,9 @@ export function AdminConsole({
         />
       )}
       {activeModule === 'owner-staff-activity' && <OwnerStaffActivityPanel />}
+      {activeModule === 'booking-amendments' && (
+        <BookingAmendmentsAdminPanel can={can} {...(detailId ? { detailId } : {})} request={api} />
+      )}
       {activeModule === 'staff-new' && <StaffCreatePanel />}
       {activeModule === 'staff-detail' && detailId && <StaffDetailPanel id={detailId} />}
       <div className="admin-grid">

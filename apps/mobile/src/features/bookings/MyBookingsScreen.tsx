@@ -33,6 +33,7 @@ import { RenterRentalPanel } from '../rentals/RentalOperationsPanels';
 import { ReviewPanel } from '../reviews/ReviewPanel';
 import { bookingGroup, type BookingGroup } from './booking-presentation';
 import { BookingCancellationSheet } from './BookingCancellationSheet';
+import { BookingAmendmentSheet } from './BookingAmendmentSheet';
 
 interface ContentGrant {
   readonly contentPath: string;
@@ -40,6 +41,16 @@ interface ContentGrant {
 }
 
 export interface BookingView {
+  readonly latestAmendment?: {
+    readonly amendmentId: string;
+    readonly createdAt: string;
+    readonly expiresAt: string;
+    readonly paymentDeadlineAt: string | null;
+    readonly reasonCode: string | null;
+    readonly scope: 'PRE_TRIP' | 'ACTIVE_EXTENSION';
+    readonly status: string;
+    readonly withdrawable: boolean;
+  } | null;
   readonly workflowCompliance?: {
     readonly start: { readonly overdue: boolean };
     readonly return: { readonly overdue: boolean };
@@ -469,6 +480,7 @@ function BookingDetail({
   const [now, setNow] = useState(0);
   const [bookingDetailsOpen, setBookingDetailsOpen] = useState(false);
   const [cancellationOpen, setCancellationOpen] = useState(false);
+  const [amendmentOpen, setAmendmentOpen] = useState(false);
   useEffect(() => {
     const initialize = setTimeout(() => setNow(Date.now()), 0);
     const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -867,6 +879,23 @@ function BookingDetail({
         />
       )}
       {!pickupHasBegun && rentalOperations}
+      {['CONFIRMED', 'READY_FOR_PICKUP', 'ACTIVE'].includes(booking.status) && (
+        <Button
+          icon="calendar-outline"
+          label={
+            booking.latestAmendment &&
+            !['APPLIED', 'DECLINED', 'WITHDRAWN', 'EXPIRED', 'FAILED'].includes(
+              booking.latestAmendment.status,
+            )
+              ? 'View booking change'
+              : booking.status === 'ACTIVE'
+                ? 'Extend Trip'
+                : 'Change Booking'
+          }
+          onPress={() => setAmendmentOpen(true)}
+          variant="secondary"
+        />
+      )}
       <RenterClaimsPanel bookingReference={booking.publicReference} />
       {booking.status === 'COMPLETED' && <ReviewPanel bookingReference={booking.publicReference} />}
       <SectionHeader title="Trip timeline" />
@@ -942,6 +971,12 @@ function BookingDetail({
         onCompleted={onCancellationCompleted}
         role="RENTER"
         visible={cancellationOpen}
+      />
+      <BookingAmendmentSheet
+        key={`${booking.latestAmendment?.amendmentId ?? 'new'}-${booking.latestAmendment?.status ?? 'none'}`}
+        booking={booking}
+        onClose={() => setAmendmentOpen(false)}
+        visible={amendmentOpen}
       />
     </Screen>
   );

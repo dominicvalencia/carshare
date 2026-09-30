@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import type { ApiEnvironment } from '@carrental/config';
 import {
   BookingActorType,
+  BookingAmendmentFinancialDirection,
+  BookingAmendmentStatus,
   BookingStatus,
   CancellationActorType,
   CancellationReasonCode,
@@ -28,6 +30,7 @@ import { DatabaseService } from '../infrastructure/database/database.service';
 import { PAYMENT_PROVIDER } from '../payments/payment-provider.factory';
 import type { RequestMetadata } from '../security/security-context';
 import type { ExecuteCancellationDto } from './bookings.dto';
+import { hasBlockingAcceptedBookingAmendment } from './booking-amendment-lifecycle-guard';
 import {
   CANCELLATION_POLICY_VERSION,
   evaluateConfirmedCancellation,
@@ -38,6 +41,19 @@ const PREVIEW_VERSION = 'CANCELLATION_PREVIEW_V1';
 const PREVIEW_TTL_MS = 5 * 60 * 1000;
 
 const CANCELLATION_INCLUDE = {
+  amendments: {
+    include: { fulfillmentSnapshot: true, pricingSnapshot: true, settlement: true },
+    orderBy: [{ appliedAt: 'desc' as const }, { id: 'desc' as const }],
+    where: {
+      status: {
+        in: [
+          BookingAmendmentStatus.APPLIED,
+          BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+          BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
+        ],
+      },
+    },
+  },
   cancellationSettlement: { include: { refund: true, ownerFinancialObligations: true } },
   commissionSnapshot: true,
   fulfillmentSnapshot: true,
@@ -53,6 +69,59 @@ const CANCELLATION_INCLUDE = {
 } satisfies Prisma.BookingInclude;
 
 type CancellationBooking = Prisma.BookingGetPayload<{ include: typeof CANCELLATION_INCLUDE }>;
+
+function cancellationAuthority(booking: CancellationBooking) {
+  const applied = booking.amendments.find(
+    (amendment) => amendment.status === BookingAmendmentStatus.APPLIED,
+  );
+  const pricing = applied?.pricingSnapshot;
+  const fulfillment = applied?.fulfillmentSnapshot;
+  const evidence = jsonRecord(fulfillment?.serviceabilitySnapshot);
+  return {
+    collectionFeeMinor:
+      fulfillment && applied.proposedEndMethod === 'OWNER_COLLECTION'
+        ? (bigintFromJson(evidence?.proposedCollectionFeeMinor) ?? 0n)
+        : fulfillment
+          ? 0n
+          : BigInt(booking.fulfillmentSnapshot!.collectionFeeMinor),
+    commissionMinor:
+      pricing?.proposedCommissionMinor ?? booking.commissionSnapshot!.calculatedCommissionMinor,
+    deliveryFeeMinor:
+      fulfillment && applied.proposedStartMethod === 'OWNER_DELIVERY'
+        ? (bigintFromJson(evidence?.proposedDeliveryFeeMinor) ?? 0n)
+        : fulfillment
+          ? 0n
+          : BigInt(booking.fulfillmentSnapshot!.deliveryFeeMinor),
+    rentalComponentMinor:
+      pricing?.proposedRentalSubtotalMinor ?? booking.commissionSnapshot!.commissionableBaseMinor,
+    rentalStart: applied?.proposedRentalStart ?? booking.rentalStart,
+  };
+}
+
+function survivingAmendmentRefundObligation(booking: CancellationBooking): bigint {
+  const recoveries = booking.amendments.filter(
+    (amendment) =>
+      (amendment.status === BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING ||
+        amendment.status === BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING) &&
+      amendment.settlement?.direction === BookingAmendmentFinancialDirection.REFUND &&
+      amendment.settlement.financialDeltaMinor < 0n,
+  );
+  if (recoveries.length > 1) throw new Error('AMBIGUOUS_SURVIVING_AMENDMENT_REFUND_OBLIGATION');
+  const recovery = recoveries[0];
+  return recovery?.settlement ? -recovery.settlement.financialDeltaMinor : 0n;
+}
+
+function jsonRecord(value: Prisma.JsonValue | null | undefined) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, Prisma.JsonValue>)
+    : null;
+}
+
+function bigintFromJson(value: Prisma.JsonValue | undefined) {
+  if (typeof value === 'string' && /^\d+$/u.test(value)) return BigInt(value);
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  return null;
+}
 
 interface PreviewClaims {
   actor: CancellationActorType;
@@ -131,7 +200,12 @@ export class CancellationService {
     const booking = await this.findAuthorized(this.database.client, userId, reference, actor);
     if (!booking) this.notFound();
     const evaluatedAt = new Date();
-    const { blockers, payment, result } = this.evaluate(booking, actor, evaluatedAt);
+    const { amendmentRefundObligationOffsetMinor, blockers, payment, result } = this.evaluate(
+      booking,
+      actor,
+      evaluatedAt,
+    );
+    const authority = cancellationAuthority(booking);
     const expiresAt = new Date(evaluatedAt.getTime() + PREVIEW_TTL_MS);
     const claims: PreviewClaims = {
       actor,
@@ -177,8 +251,9 @@ export class CancellationService {
       previewVersion: PREVIEW_VERSION,
       refundableRentalMinor: result.refundableRentalMinor,
       responsibility: result.responsibility,
-      scheduledPickupAt: booking.rentalStart,
+      scheduledPickupAt: authority.rentalStart,
       totalRefundMinor: result.totalRefundMinor,
+      amendmentRefundObligationOffsetMinor,
     });
   }
 
@@ -210,8 +285,18 @@ export class CancellationService {
       });
       if (booking.cancellationSettlement)
         return { existing: booking.cancellationSettlement } as const;
+      if (await hasBlockingAcceptedBookingAmendment(transaction, booking.id))
+        this.conflict(
+          'BOOKING_INVALID_STATE',
+          'Cancellation is unavailable while an accepted booking change is processing.',
+        );
       const evaluatedAt = new Date();
-      const { blockers, payment, result } = this.evaluate(booking, actor, evaluatedAt);
+      const { amendmentRefundObligationOffsetMinor, blockers, payment, result } = this.evaluate(
+        booking,
+        actor,
+        evaluatedAt,
+      );
+      const authority = cancellationAuthority(booking);
       if (blockers.length > 0)
         this.conflict('CANCELLATION_BLOCKED', `Cancellation is blocked: ${blockers.join(', ')}.`);
       if (
@@ -265,12 +350,13 @@ export class CancellationService {
         data: {
           actorType: actor,
           applicableDeadlineAt: result.applicableDeadlineAt,
+          amendmentRefundObligationOffsetMinor,
           bookingCancellationId: cancellation.id,
           bookingId: booking.id,
           calculationVersion: CANCELLATION_POLICY_VERSION,
           cancellationFeeMinor: result.cancellationFeeMinor,
           capturedAmountMinor: payment.capturedAmountMinor,
-          collectionFeeMinor: BigInt(booking.fulfillmentSnapshot!.collectionFeeMinor),
+          collectionFeeMinor: authority.collectionFeeMinor,
           collectionRefundedMinor: result.collectionRefundedMinor,
           commissionRetainedMinor: result.commissionRetainedMinor,
           commissionSnapshotId: booking.commissionSnapshot!.id,
@@ -282,11 +368,12 @@ export class CancellationService {
             result.deliveryRetainedMinor > 0n
               ? 'OWNER_DELIVERY_START_ARRIVED'
               : 'NO_COMPLETED_SERVICE_EVIDENCE',
-          deliveryFeeMinor: BigInt(booking.fulfillmentSnapshot!.deliveryFeeMinor),
+          deliveryFeeMinor: authority.deliveryFeeMinor,
           deliveryRefundedMinor: result.deliveryRefundedMinor,
           deliveryRetainedMinor: result.deliveryRetainedMinor,
           evaluatedAt,
           fulfillmentTreatment: {
+            amendmentRefundObligationOffsetMinor: amendmentRefundObligationOffsetMinor.toString(),
             collection: 'UNPERFORMED_REFUNDED',
             delivery:
               result.deliveryRetainedMinor > 0n ? 'COMPLETED_RETAINED' : 'UNPERFORMED_REFUNDED',
@@ -301,9 +388,9 @@ export class CancellationService {
           refundableRentalMinor: result.refundableRentalMinor,
           refundAmountMinor: result.totalRefundMinor,
           refundId: refund?.id ?? null,
-          rentalComponentMinor: booking.commissionSnapshot!.commissionableBaseMinor,
+          rentalComponentMinor: authority.rentalComponentMinor,
           responsibility: result.responsibility,
-          scheduledPickupAt: booking.rentalStart,
+          scheduledPickupAt: authority.rentalStart,
           structuredReason: input.reasonCode,
         },
       });
@@ -457,20 +544,21 @@ export class CancellationService {
       (event) =>
         event.phase === HandoverPhase.START && event.status === HandoverTravelStatus.ARRIVED,
     );
+    const authority = cancellationAuthority(booking);
     let result: ConfirmedCancellationPolicyResult;
     try {
       result = evaluateConfirmedCancellation({
         actor: actor as Exclude<CancellationActorType, 'LEGACY_UNSPECIFIED'>,
         capturedAmountMinor: payment.capturedAmountMinor,
-        collectionFeeMinor: BigInt(booking.fulfillmentSnapshot.collectionFeeMinor),
-        commissionMinor: booking.commissionSnapshot.calculatedCommissionMinor,
+        collectionFeeMinor: authority.collectionFeeMinor,
+        commissionMinor: authority.commissionMinor,
         confirmedAt: payment.capturedAt,
         custodyStarted,
-        deliveryFeeMinor: BigInt(booking.fulfillmentSnapshot.deliveryFeeMinor),
+        deliveryFeeMinor: authority.deliveryFeeMinor,
         deliveryPerformed,
         evaluatedAt,
-        rentalComponentMinor: booking.commissionSnapshot.commissionableBaseMinor,
-        scheduledPickupAt: booking.rentalStart,
+        rentalComponentMinor: authority.rentalComponentMinor,
+        scheduledPickupAt: authority.rentalStart,
       });
     } catch (error) {
       this.conflict(
@@ -478,7 +566,16 @@ export class CancellationService {
         error instanceof Error ? error.message : 'Cancellation snapshots do not reconcile.',
       );
     }
-    return { blockers, payment, result: result! };
+    const amendmentRefundObligationOffsetMinor = survivingAmendmentRefundObligation(booking);
+    const grossCancellationRefundMinor = result!.totalRefundMinor;
+    result = {
+      ...result!,
+      totalRefundMinor:
+        grossCancellationRefundMinor > amendmentRefundObligationOffsetMinor
+          ? grossCancellationRefundMinor - amendmentRefundObligationOffsetMinor
+          : 0n,
+    };
+    return { amendmentRefundObligationOffsetMinor, blockers, payment, result };
   }
 
   private findAuthorized(

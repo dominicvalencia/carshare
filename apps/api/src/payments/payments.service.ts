@@ -5,6 +5,8 @@ import { PaymentErrorCode } from '@carrental/api-contracts';
 import type { ApiEnvironment } from '@carrental/config';
 import {
   BookingActorType,
+  BookingAmendmentFinancialDirection,
+  BookingAmendmentStatus,
   BookingStatus,
   CommissionScope,
   FinancialAccountType,
@@ -22,6 +24,10 @@ import {
   Prisma,
   RefundStatus,
   SecurityDepositStatus,
+  executeBookingAmendmentRefund,
+  finalizeBookingAmendmentPaymentCapture,
+  isBookingAmendmentReadyForPaidApplication,
+  resolveAmendmentRefundManually,
 } from '@carrental/database';
 import {
   type PaymentProvider,
@@ -34,6 +40,7 @@ import { DatabaseService } from '../infrastructure/database/database.service';
 import type { RequestMetadata } from '../security/security-context';
 import { RenterEligibilityService } from '../renter-verification/renter-eligibility.service';
 import { PAYMENT_PROVIDER } from './payment-provider.factory';
+import type { ResolveAmendmentRefundDto } from './payments.dto';
 
 const PAYMENT_INCLUDE = {
   operations: { orderBy: { createdAt: 'asc' as const } },
@@ -137,6 +144,201 @@ export class PaymentsService {
     @Inject(ConfigService) private readonly configuration: ConfigService<ApiEnvironment, true>,
     private readonly renterEligibility: RenterEligibilityService,
   ) {}
+
+  resolveAmendmentRefundManually(
+    actorUserId: string,
+    amendmentSettlementId: string,
+    input: ResolveAmendmentRefundDto,
+  ) {
+    return resolveAmendmentRefundManually(this.database.client, {
+      actorType: BookingActorType.ADMIN,
+      actorUserId,
+      amendmentId: input.amendmentId,
+      amendmentSettlementId,
+      currency: input.currency,
+      evidenceAt: new Date(input.evidenceAt),
+      evidenceType: input.evidenceType,
+      externalReference: input.externalReference,
+      idempotencyKey: input.idempotencyKey,
+      originalPaymentId: input.originalPaymentId,
+      outcome: input.outcome,
+      provider: input.provider,
+      refundId: input.refundId,
+      resolutionNote: input.resolutionNote,
+      resolvedAmountMinor: BigInt(input.resolvedAmountMinor),
+    });
+  }
+
+  async refundBookingAmendment(userId: string, reference: string, amendmentId: string) {
+    const amendment = await this.database.client.bookingAmendment.findFirst({
+      select: { id: true },
+      where: {
+        id: amendmentId,
+        booking: { renterUserId: userId, ...this.bookingIdentity(reference) },
+      },
+    });
+    if (!amendment) this.notFound();
+    if (!this.provider.capabilities.supportsRefund)
+      this.invalidState('Provider refunds are not enabled.');
+    return executeBookingAmendmentRefund(this.database.client, this.provider, amendment.id, {
+      unknownGraceMinutes: this.configuration.getOrThrow('PAYMENT_UNKNOWN_GRACE_MINUTES', {
+        infer: true,
+      }),
+    });
+  }
+
+  async payBookingAmendment(
+    userId: string,
+    reference: string,
+    amendmentId: string,
+    request: RequestMetadata,
+  ) {
+    const prepared = await this.database.client.$transaction(async (transaction) => {
+      await transaction.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "booking_amendments" WHERE "id" = ${amendmentId}::uuid FOR UPDATE`,
+      );
+      const amendment = await transaction.bookingAmendment.findFirst({
+        include: {
+          booking: { include: { renter: { select: { email: true } } } },
+          pricingSnapshot: true,
+          settlement: true,
+        },
+        where: {
+          id: amendmentId,
+          booking: { renterUserId: userId, ...this.bookingIdentity(reference) },
+        },
+      });
+      if (!amendment) this.notFound();
+      const settlement = amendment.settlement;
+      const pricing = amendment.pricingSnapshot;
+      if (
+        amendment.status !== BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING ||
+        !settlement ||
+        settlement.direction !== BookingAmendmentFinancialDirection.ADDITIONAL_PAYMENT ||
+        settlement.financialDeltaMinor <= 0n ||
+        !pricing ||
+        pricing.renterFinancialDeltaMinor !== settlement.financialDeltaMinor ||
+        pricing.currency !== settlement.currency
+      )
+        this.invalidState('The booking amendment is not awaiting an additional payment.');
+      if (settlement.additionalPaymentId) {
+        const existing = await transaction.payment.findUniqueOrThrow({
+          include: PAYMENT_INCLUDE,
+          where: { id: settlement.additionalPaymentId },
+        });
+        this.assertAmendmentPaymentCorrelation(amendment, existing);
+        return { amendment, existing: true, operation: null, payment: existing };
+      }
+      const evaluatedAt = new Date();
+      if (!amendment.paymentDeadlineAt || evaluatedAt >= amendment.paymentDeadlineAt)
+        this.invalidState('The additional-payment deadline has passed.');
+      const providerRequestReference = randomUUID();
+      const payment = await transaction.payment.create({
+        data: {
+          amountMinor: settlement.financialDeltaMinor,
+          bookingId: amendment.bookingId,
+          currency: settlement.currency,
+          provider: this.providerCode(),
+          providerRequestReference,
+          purpose: PaymentPurpose.ADDITIONAL_CHARGE,
+          status: PaymentStatus.AUTHORIZING,
+        },
+      });
+      await transaction.bookingAmendmentSettlement.update({
+        data: { additionalPaymentId: payment.id, status: 'PROCESSING' },
+        where: { id: settlement.id },
+      });
+      await transaction.bookingAmendment.updateMany({
+        data: { paymentInitiatedAt: evaluatedAt },
+        where: { id: amendment.id, paymentInitiatedAt: null },
+      });
+      const operation = await transaction.paymentOperation.create({
+        data: {
+          amountMinor: payment.amountMinor,
+          attemptCount: 1,
+          currency: payment.currency,
+          idempotencyKey: `booking-amendment:${amendment.id}:authorize:v1`,
+          paymentId: payment.id,
+          providerRequestReference,
+          startedAt: evaluatedAt,
+          status: PaymentOperationStatus.PROCESSING,
+          type: PaymentOperationType.AUTHORIZE,
+        },
+      });
+      return {
+        amendment,
+        existing: false,
+        operation,
+        payment: { ...payment, operations: [], refunds: [] },
+      };
+    });
+    if (prepared.existing || !prepared.operation)
+      return this.amendmentPaymentProjection(prepared.amendment.id, prepared.payment);
+    let result: ProviderOperationResult;
+    try {
+      result = await this.provider.authorize({
+        amountMinor: prepared.payment.amountMinor,
+        ...(prepared.amendment.booking.renter.email
+          ? { customerEmail: prepared.amendment.booking.renter.email }
+          : {}),
+        currency: prepared.payment.currency,
+        description: `Booking amendment ${prepared.amendment.id}`,
+        idempotencyKey: prepared.operation.idempotencyKey,
+        requestReference: prepared.operation.providerRequestReference,
+      });
+    } catch (error) {
+      await this.recordUnknown(prepared.payment.id, prepared.operation.id, error);
+      return this.getAmendmentPayment(userId, reference, amendmentId);
+    }
+    if (result.kind === 'SUCCEEDED') {
+      await this.finalizeAuthorization(prepared.payment.id, prepared.operation.id, result, request);
+      const payment = await this.database.client.payment.findUniqueOrThrow({
+        include: PAYMENT_INCLUDE,
+        where: { id: prepared.payment.id },
+      });
+      if (payment.status === PaymentStatus.CAPTURING)
+        await this.executePendingOperation(payment, PaymentOperationType.CAPTURE, request);
+    } else if (result.kind === 'ACTION_REQUIRED') {
+      await this.database.client.$transaction([
+        this.database.client.payment.update({
+          data: {
+            customerActionUrl: result.customerActionUrl ?? null,
+            externalPaymentId: result.externalPaymentId ?? null,
+            providerState: result.providerState ?? null,
+            reconcileAfter: new Date(Date.now() + 15_000),
+            reconciliationRequired: true,
+          },
+          where: { id: prepared.payment.id },
+        }),
+        this.database.client.paymentOperation.update({
+          data: { completedAt: new Date(), status: PaymentOperationStatus.SUCCEEDED },
+          where: { id: prepared.operation.id },
+        }),
+      ]);
+    } else if (result.kind === 'DECLINED') {
+      await this.failAuthorization(prepared.payment.id, prepared.operation.id, result, request);
+    } else {
+      await this.recordUnknown(prepared.payment.id, prepared.operation.id, undefined, result);
+    }
+    return this.getAmendmentPayment(userId, reference, amendmentId);
+  }
+
+  async getAmendmentPayment(userId: string, reference: string, amendmentId: string) {
+    const amendment = await this.database.client.bookingAmendment.findFirst({
+      include: { settlement: true },
+      where: {
+        id: amendmentId,
+        booking: { renterUserId: userId, ...this.bookingIdentity(reference) },
+      },
+    });
+    if (!amendment?.settlement?.additionalPaymentId) this.notFound();
+    const payment = await this.database.client.payment.findUniqueOrThrow({
+      include: PAYMENT_INCLUDE,
+      where: { id: amendment.settlement.additionalPaymentId },
+    });
+    this.assertAmendmentPaymentCorrelation(amendment, payment);
+    return this.amendmentPaymentProjection(amendment.id, payment);
+  }
 
   async previewPreCustodyCancellation(userId: string, reference: string) {
     const booking = await this.database.client.booking.findFirst({
@@ -914,6 +1116,9 @@ export class PaymentsService {
         where: { id: operationId },
       });
       if (payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE) {
+        const amendmentSettlement = await transaction.bookingAmendmentSettlement.findUnique({
+          where: { additionalPaymentId: payment.id },
+        });
         await transaction.payment.update({
           data: {
             authorizedAmountMinor: payment.amountMinor,
@@ -926,7 +1131,13 @@ export class PaymentsService {
           },
           where: { id: payment.id },
         });
-        if (payment.additionalChargeId) {
+        if (amendmentSettlement) {
+          if (
+            amendmentSettlement.financialDeltaMinor !== payment.amountMinor ||
+            amendmentSettlement.currency !== payment.currency
+          )
+            throw new Error('AMENDMENT_PAYMENT_CORRELATION_INVALID');
+        } else if (payment.additionalChargeId) {
           await transaction.additionalCharge.update({
             data: { status: 'PROCESSING' },
             where: { id: payment.additionalChargeId },
@@ -1045,9 +1256,21 @@ export class PaymentsService {
     externalOperationId?: string,
   ) {
     await this.database.client.$transaction(async (transaction) => {
+      const identity = await transaction.payment.findUniqueOrThrow({ where: { id: paymentId } });
+      if (identity.purpose === PaymentPurpose.ADDITIONAL_CHARGE) {
+        const amendmentHandled = await finalizeBookingAmendmentPaymentCapture(transaction, {
+          ...(request.correlationId ? { correlationId: request.correlationId } : {}),
+          ...(externalOperationId ? { externalOperationId } : {}),
+          ...(operationId ? { operationId } : {}),
+          paymentId: identity.id,
+          providerState,
+        });
+        if (amendmentHandled) return;
+      }
       const payment = await this.lockPayment(transaction, paymentId);
       if (payment.status === PaymentStatus.CAPTURED) return;
       if (payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE) {
+        if (!payment.additionalChargeId) throw new Error('ADDITIONAL_CHARGE_CORRELATION_INVALID');
         await transaction.$executeRaw(
           Prisma.sql`SELECT "finalize_additional_charge_payment"(${payment.id}::uuid, ${operationId ?? null}::uuid, ${providerState}, ${externalOperationId ?? null}, ${request.correlationId ?? null})`,
         );
@@ -1393,8 +1616,8 @@ export class PaymentsService {
           : PaymentFailureCategory.PROVIDER_UNAVAILABLE
         : PaymentFailureCategory.UNKNOWN;
     const grace = this.configuration.getOrThrow('PAYMENT_UNKNOWN_GRACE_MINUTES', { infer: true });
-    await this.database.client.$transaction([
-      this.database.client.paymentOperation.update({
+    await this.database.client.$transaction(async (transaction) => {
+      await transaction.paymentOperation.update({
         data: {
           failureCategory,
           failureCode: result?.failureCode ?? null,
@@ -1404,18 +1627,24 @@ export class PaymentsService {
           status: PaymentOperationStatus.UNKNOWN,
         },
         where: { id: operationId },
-      }),
-      this.database.client.payment.update({
+      });
+      const payment = await transaction.payment.findUniqueOrThrow({
+        select: { unknownExpiresAt: true },
+        where: { id: paymentId },
+      });
+      await transaction.payment.update({
         data: {
           ...(result?.externalPaymentId ? { externalPaymentId: result.externalPaymentId } : {}),
           providerState: result?.providerState ?? null,
           reconcileAfter: new Date(Date.now() + 15_000),
           reconciliationRequired: true,
-          unknownExpiresAt: new Date(Date.now() + grace * 60_000),
+          ...(payment.unknownExpiresAt
+            ? {}
+            : { unknownExpiresAt: new Date(Date.now() + grace * 60_000) }),
         },
         where: { id: paymentId },
-      }),
-    ]);
+      });
+    });
   }
 
   private async deferReconciliation(paymentId: string) {
@@ -1438,10 +1667,17 @@ export class PaymentsService {
     type: PaymentOperationType,
   ) {
     const label = type.toLowerCase();
-    const prefix =
-      payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE
-        ? `additional-charge:${payment.additionalChargeId}`
-        : `booking:${payment.bookingId}`;
+    let prefix = `booking:${payment.bookingId}`;
+    if (payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE) {
+      const settlement = await transaction.bookingAmendmentSettlement.findUnique({
+        select: { amendmentId: true },
+        where: { additionalPaymentId: payment.id },
+      });
+      if (settlement) prefix = `booking-amendment:${settlement.amendmentId}`;
+      else if (payment.additionalChargeId)
+        prefix = `additional-charge:${payment.additionalChargeId}`;
+      else throw new Error('ADDITIONAL_CHARGE_CORRELATION_INVALID');
+    }
     return transaction.paymentOperation.upsert({
       create: {
         amountMinor: payment.amountMinor,
@@ -1734,6 +1970,50 @@ export class PaymentsService {
       refundedAmountMinor: this.minor(payment.refundedAmountMinor),
       status: payment.status,
     };
+  }
+
+  private async amendmentPaymentProjection(amendmentId: string, payment: PaymentRecord) {
+    const eligibleForApplication = await this.database.client.$transaction((transaction) =>
+      isBookingAmendmentReadyForPaidApplication(transaction, amendmentId),
+    );
+    return {
+      ...this.paymentProjection(payment),
+      amendmentId,
+      amendmentState: eligibleForApplication
+        ? 'PAYMENT_RECEIVED_AWAITING_APPLICATION'
+        : payment.reconciliationRequired
+          ? 'PAYMENT_VERIFYING'
+          : 'WAITING_FOR_PAYMENT',
+      eligibleForApplication,
+    };
+  }
+
+  private assertAmendmentPaymentCorrelation(
+    amendment: {
+      bookingId: string;
+      settlement: {
+        additionalPaymentId: string | null;
+        currency: string;
+        direction: BookingAmendmentFinancialDirection;
+        financialDeltaMinor: bigint;
+      } | null;
+    },
+    payment: PaymentRecord,
+  ) {
+    if (
+      !amendment.settlement ||
+      amendment.settlement.additionalPaymentId !== payment.id ||
+      amendment.settlement.direction !== BookingAmendmentFinancialDirection.ADDITIONAL_PAYMENT ||
+      amendment.bookingId !== payment.bookingId ||
+      payment.purpose !== PaymentPurpose.ADDITIONAL_CHARGE ||
+      amendment.settlement.financialDeltaMinor !== payment.amountMinor ||
+      amendment.settlement.currency !== payment.currency
+    )
+      throw new ApplicationException(
+        PaymentErrorCode.PAYMENT_INVALID_STATE,
+        'The amendment payment correlation is invalid.',
+        HttpStatus.CONFLICT,
+      );
   }
 
   private snapshotProjection(snapshot: {

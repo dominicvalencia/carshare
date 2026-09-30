@@ -13,7 +13,11 @@ import {
 import { PolicyGuard } from '../authorization/policy.guard';
 import type { RequestPrincipal } from '../security/security-context';
 import { CommissionService } from './commission.service';
-import { DisableCommissionRuleDto, CreateCommissionRuleDto } from './payments.dto';
+import {
+  DisableCommissionRuleDto,
+  CreateCommissionRuleDto,
+  ResolveAmendmentRefundDto,
+} from './payments.dto';
 import { PaymentProviderCapabilitiesService } from './payment-provider.factory';
 import { PaymentsService } from './payments.service';
 
@@ -85,6 +89,16 @@ export class AdminFinanceController {
     @Param('reference') reference: string,
   ) {
     return this.payments.adminFinancialDetail(reference);
+  }
+
+  @Post('amendment-refunds/:settlementId/manual-resolution')
+  @RequirePermissions('refunds.approve')
+  resolveAmendmentRefund(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('settlementId') settlementId: string,
+    @Body() input: ResolveAmendmentRefundDto,
+  ) {
+    return this.payments.resolveAmendmentRefundManually(principal.userId, settlementId, input);
   }
 
   @Get('commission-rules') @RequirePermissions('commissions.read') rules() {

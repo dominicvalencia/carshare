@@ -11,6 +11,7 @@ import {
   PaymentWebhookStatus,
   Prisma,
   type PrismaClient,
+  finalizeBookingAmendmentPaymentCapture,
 } from '@carrental/database';
 import {
   FakePaymentProvider,
@@ -61,22 +62,42 @@ export async function reconcilePayments(
     },
   });
   for (const payment of payments) {
-    const correlationId = `reconcile:${randomUUID()}`;
-    if (payment.status === PaymentStatus.CAPTURING) {
-      const operation = payment.operations.find(
-        (item) => item.type === PaymentOperationType.CAPTURE,
-      );
-      if (operation)
-        await executeOrRetrieve(database, provider, payment, operation, correlationId, environment);
-      continue;
+    try {
+      const correlationId = `reconcile:${randomUUID()}`;
+      if (payment.status === PaymentStatus.CAPTURING) {
+        const operation = payment.operations.find(
+          (item) => item.type === PaymentOperationType.CAPTURE,
+        );
+        if (operation)
+          await executeOrRetrieve(
+            database,
+            provider,
+            payment,
+            operation,
+            correlationId,
+            environment,
+          );
+        continue;
+      }
+      if (payment.status === PaymentStatus.VOID_PENDING) {
+        const operation = payment.operations.find(
+          (item) => item.type === PaymentOperationType.VOID,
+        );
+        if (operation)
+          await executeOrRetrieve(
+            database,
+            provider,
+            payment,
+            operation,
+            correlationId,
+            environment,
+          );
+        continue;
+      }
+      await retrieveAndApply(database, provider, payment, undefined, correlationId, environment);
+    } catch {
+      await defer(database, payment.id);
     }
-    if (payment.status === PaymentStatus.VOID_PENDING) {
-      const operation = payment.operations.find((item) => item.type === PaymentOperationType.VOID);
-      if (operation)
-        await executeOrRetrieve(database, provider, payment, operation, correlationId, environment);
-      continue;
-    }
-    await retrieveAndApply(database, provider, payment, undefined, correlationId, environment);
   }
   await processWebhookBacklog(database, provider, environment);
   return payments.length;
@@ -125,7 +146,7 @@ async function executeOrRetrieve(
         ? await provider.capture(input)
         : await provider.voidAuthorization(input);
   } catch (error) {
-    await markUnknown(database, payment.id, operation.id, error);
+    await markUnknown(database, payment.id, operation.id, environment, error);
     return;
   }
   if (result.kind === 'SUCCEEDED') {
@@ -156,7 +177,7 @@ async function executeOrRetrieve(
       result.failureCode,
     );
   } else {
-    await markUnknown(database, payment.id, operation.id, undefined, result);
+    await markUnknown(database, payment.id, operation.id, environment, undefined, result);
   }
 }
 
@@ -200,6 +221,14 @@ async function retrieveAndApply(
       );
     } else if (truth.state === 'VOIDED') {
       await finalizeVoid(database, payment.id, operationId, truth.providerState, undefined);
+    } else if (truth.state === 'FAILED') {
+      const handled = await failAmendmentPaymentFromProvider(
+        database,
+        payment.id,
+        operationId,
+        truth.providerState,
+      );
+      if (!handled) await defer(database, payment.id);
     } else {
       await defer(database, payment.id);
     }
@@ -221,6 +250,21 @@ async function finalizeCapture(
     where: { id: paymentId },
   });
   if (payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE) {
+    const handled = await database.$transaction((transaction) =>
+      finalizeBookingAmendmentPaymentCapture(transaction, {
+        correlationId,
+        ...(externalOperationId ? { externalOperationId } : {}),
+        ...(operationId ? { operationId } : {}),
+        paymentId,
+        providerState,
+      }),
+    );
+    if (handled) return;
+    const claimPayment = await database.payment.findUniqueOrThrow({
+      select: { additionalChargeId: true },
+      where: { id: paymentId },
+    });
+    if (!claimPayment.additionalChargeId) throw new Error('ADDITIONAL_CHARGE_CORRELATION_INVALID');
     await database.$executeRaw(
       Prisma.sql`SELECT "finalize_additional_charge_payment"(${paymentId}::uuid, ${operationId ?? null}::uuid, ${providerState}, ${externalOperationId ?? null}, ${correlationId})`,
     );
@@ -243,6 +287,9 @@ async function prepareAdditionalChargeCapture(
       where: { id: paymentId },
     });
     if (payment.status !== PaymentStatus.AUTHORIZING) return;
+    const amendmentSettlement = await transaction.bookingAmendmentSettlement.findUnique({
+      where: { additionalPaymentId: payment.id },
+    });
     const authorization = payment.operations.find(
       (item) => item.type === PaymentOperationType.AUTHORIZE,
     );
@@ -263,24 +310,36 @@ async function prepareAdditionalChargeCapture(
       },
       where: { id: payment.id },
     });
-    if (payment.additionalChargeId) {
+    if (amendmentSettlement) {
+      if (
+        amendmentSettlement.financialDeltaMinor !== payment.amountMinor ||
+        amendmentSettlement.currency !== payment.currency
+      )
+        throw new Error('AMENDMENT_PAYMENT_CORRELATION_INVALID');
+    } else if (payment.additionalChargeId) {
       await transaction.additionalCharge.update({
         data: { status: 'PROCESSING' },
         where: { id: payment.additionalChargeId },
       });
     }
+    const prefix = amendmentSettlement
+      ? `booking-amendment:${amendmentSettlement.amendmentId}`
+      : payment.additionalChargeId
+        ? `additional-charge:${payment.additionalChargeId}`
+        : null;
+    if (!prefix) throw new Error('ADDITIONAL_CHARGE_CORRELATION_INVALID');
     await transaction.paymentOperation.upsert({
       create: {
         amountMinor: payment.amountMinor,
         currency: payment.currency,
-        idempotencyKey: `additional-charge:${payment.additionalChargeId}:capture:v1`,
+        idempotencyKey: `${prefix}:capture:v1`,
         paymentId: payment.id,
         providerRequestReference: randomUUID(),
         status: PaymentOperationStatus.PENDING,
         type: PaymentOperationType.CAPTURE,
       },
       update: {},
-      where: { idempotencyKey: `additional-charge:${payment.additionalChargeId}:capture:v1` },
+      where: { idempotencyKey: `${prefix}:capture:v1` },
     });
   });
 }
@@ -358,11 +417,13 @@ async function markUnknown(
   database: PrismaClient,
   paymentId: string,
   operationId: string,
+  environment: WorkerEnvironment,
   error?: unknown,
   result?: ProviderOperationResult,
 ) {
-  await database.$transaction([
-    database.paymentOperation.update({
+  const grace = environment.PAYMENT_UNKNOWN_GRACE_MINUTES;
+  await database.$transaction(async (transaction) => {
+    await transaction.paymentOperation.update({
       data: {
         failureCategory: PaymentFailureCategory.UNKNOWN,
         failureCode: result?.failureCode ?? null,
@@ -371,12 +432,63 @@ async function markUnknown(
         status: PaymentOperationStatus.UNKNOWN,
       },
       where: { id: operationId },
-    }),
-    database.payment.update({
-      data: { reconcileAfter: new Date(Date.now() + 15_000), reconciliationRequired: true },
+    });
+    const payment = await transaction.payment.findUniqueOrThrow({
+      select: { unknownExpiresAt: true },
       where: { id: paymentId },
-    }),
-  ]);
+    });
+    await transaction.payment.update({
+      data: {
+        reconcileAfter: new Date(Date.now() + 15_000),
+        reconciliationRequired: true,
+        ...(payment.unknownExpiresAt
+          ? {}
+          : { unknownExpiresAt: new Date(Date.now() + grace * 60_000) }),
+      },
+      where: { id: paymentId },
+    });
+  });
+}
+
+async function failAmendmentPaymentFromProvider(
+  database: PrismaClient,
+  paymentId: string,
+  operationId: string | undefined,
+  providerState: string,
+): Promise<boolean> {
+  return database.$transaction(async (transaction) => {
+    const settlement = await transaction.bookingAmendmentSettlement.findUnique({
+      where: { additionalPaymentId: paymentId },
+    });
+    if (!settlement) return false;
+    await transaction.paymentOperation.updateMany({
+      data: {
+        completedAt: new Date(),
+        failureCategory: PaymentFailureCategory.DEFINITIVE,
+        failureCode: 'PROVIDER_PAYMENT_FAILED',
+        status: PaymentOperationStatus.FAILED,
+      },
+      where: operationId
+        ? { id: operationId, status: { not: PaymentOperationStatus.SUCCEEDED } }
+        : {
+            paymentId,
+            status: {
+              in: [PaymentOperationStatus.PROCESSING, PaymentOperationStatus.UNKNOWN],
+            },
+          },
+    });
+    await transaction.payment.update({
+      data: {
+        providerState,
+        reconcileAfter: null,
+        reconciliationRequired: false,
+        status: PaymentStatus.FAILED,
+        unknownExpiresAt: null,
+      },
+      where: { id: paymentId },
+    });
+    return true;
+  });
 }
 
 function defer(database: PrismaClient, paymentId: string) {

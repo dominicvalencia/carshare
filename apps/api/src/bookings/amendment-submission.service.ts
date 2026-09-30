@@ -38,7 +38,7 @@ const RESULT_INCLUDE = {
   fulfillmentSnapshot: true,
   holds: { include: { occupancy: true }, orderBy: { protectedStart: 'asc' as const } },
   pricingSnapshot: true,
-  settlement: true,
+  settlement: { include: { refund: { include: { operation: true } } } },
   statusHistory: { orderBy: { occurredAt: 'asc' as const } },
 } satisfies Prisma.BookingAmendmentInclude;
 
@@ -117,7 +117,10 @@ export class AmendmentSubmissionService {
             {
               end: new Date(claims.proposal.rentalEnd),
               excludeBookingId: booking.id,
-              start: new Date(claims.proposal.rentalStart),
+              start:
+                booking.status === 'ACTIVE'
+                  ? new Date(claims.authority.current.rentalEnd)
+                  : new Date(claims.proposal.rentalStart),
               turnaroundMinutes: originalPolicy.turnaroundMinutes,
               vehicleId: booking.vehicleId,
             },
@@ -153,7 +156,7 @@ export class AmendmentSubmissionService {
               proposedStartMethod: claims.proposal.startMethod,
               requestHash,
               requesterUserId: renterUserId,
-              scope: 'PRE_TRIP',
+              scope: booking.status === 'ACTIVE' ? 'ACTIVE_EXTENSION' : 'PRE_TRIP',
               sourcePricingPolicyVersionId: booking.pricingSnapshot!.policyVersionId,
               status: BookingAmendmentStatus.PENDING_OWNER,
               fulfillmentSnapshot: { create: evidence.fulfillment },
@@ -297,7 +300,11 @@ export class AmendmentSubmissionService {
     );
     const currentOwnerEarnings = BigInt(
       latestApplied?.pricingSnapshot?.proposedOwnerEarningsMinor ??
-        booking.ownerEarning!.netEarningAmountMinor,
+        booking.ownerEarning!.netEarningAmountMinor +
+          (booking.ownerEarning!.deliveryEarningMinor ?? 0n) +
+          (booking.ownerEarning!.collectionEarningMinor ?? 0n) +
+          (booking.ownerEarning!.additionalCompensationMinor ?? 0n) +
+          (booking.ownerEarning!.adjustmentAmountMinor ?? 0n),
     );
     const proposedCommission = calculateAmendmentCommission(
       policyAdjustedRental,
@@ -405,7 +412,7 @@ export class AmendmentSubmissionService {
     evaluatedAt: Date,
   ) {
     const base = booking.vehicle.location!;
-    for (const candidate of [
+    const candidates = [
       {
         destination: claims.proposal.deliveryDestination,
         method: claims.proposal.startMethod,
@@ -416,7 +423,8 @@ export class AmendmentSubmissionService {
         method: claims.proposal.endMethod,
         scheduledAt: new Date(claims.proposal.rentalEnd),
       },
-    ]) {
+    ];
+    for (const candidate of booking.status === 'ACTIVE' ? candidates.slice(1) : candidates) {
       const result = await this.fulfillment.evaluate(
         {
           destinationLatitude: candidate.destination?.latitude ?? Number(base.latitude),
@@ -454,17 +462,39 @@ export class AmendmentSubmissionService {
       });
   }
 
-  private project(record: SubmissionResult) {
+  private async project(record: SubmissionResult) {
+    const payment = record.settlement?.additionalPaymentId
+      ? await this.database.client.payment.findUnique({
+          select: { reconciliationRequired: true, status: true },
+          where: { id: record.settlement.additionalPaymentId },
+        })
+      : null;
     return {
       amendmentId: record.id,
+      appliedAt: record.appliedAt?.toISOString() ?? null,
       bookingAlreadyApplied: record.status === BookingAmendmentStatus.APPLIED,
       bookingReference: record.booking.publicReference,
       current: {
-        endMethod: record.fulfillmentSnapshot!.currentEndMethod,
-        rentalEnd: record.booking.rentalEnd.toISOString(),
-        rentalStart: record.booking.rentalStart.toISOString(),
-        startMethod: record.fulfillmentSnapshot!.currentStartMethod,
-        totalMinor: record.pricingSnapshot!.currentTotalMinor.toString(),
+        endMethod:
+          record.status === BookingAmendmentStatus.APPLIED
+            ? record.fulfillmentSnapshot!.proposedEndMethod
+            : record.fulfillmentSnapshot!.currentEndMethod,
+        rentalEnd:
+          record.status === BookingAmendmentStatus.APPLIED
+            ? record.proposedRentalEnd.toISOString()
+            : record.booking.rentalEnd.toISOString(),
+        rentalStart:
+          record.status === BookingAmendmentStatus.APPLIED
+            ? record.proposedRentalStart.toISOString()
+            : record.booking.rentalStart.toISOString(),
+        startMethod:
+          record.status === BookingAmendmentStatus.APPLIED
+            ? record.fulfillmentSnapshot!.proposedStartMethod
+            : record.fulfillmentSnapshot!.currentStartMethod,
+        totalMinor:
+          record.status === BookingAmendmentStatus.APPLIED
+            ? record.pricingSnapshot!.proposedTotalMinor.toString()
+            : record.pricingSnapshot!.currentTotalMinor.toString(),
       },
       expiresAt: record.expiresAt.toISOString(),
       financial: {
@@ -479,6 +509,29 @@ export class AmendmentSubmissionService {
             : '0',
       },
       paymentDeadlineAt: record.paymentDeadlineAt?.toISOString() ?? null,
+      paymentState:
+        record.status === BookingAmendmentStatus.APPLIED
+          ? null
+          : payment?.status === 'CAPTURED'
+            ? 'PAYMENT_RECEIVED_AWAITING_APPLICATION'
+            : payment
+              ? payment.reconciliationRequired
+                ? 'PAYMENT_VERIFYING'
+                : 'WAITING_FOR_PAYMENT'
+              : null,
+      refundState:
+        record.settlement!.financialDeltaMinor >= 0n ||
+        record.status === BookingAmendmentStatus.APPLIED
+          ? null
+          : record.settlement?.refund?.status === 'COMPLETED'
+            ? record.status === BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING
+              ? 'FINANCIAL_RECOVERY_SETTLED'
+              : 'REFUND_COMPLETED_AWAITING_APPLICATION'
+            : record.settlement?.refund?.operation?.status === 'UNKNOWN'
+              ? 'REFUND_VERIFYING'
+              : record.settlement?.refund?.operation?.status === 'FAILED'
+                ? 'MANUAL_RECONCILIATION_REQUIRED'
+                : 'REFUND_PROCESSING',
       proposed: {
         chargeableDays: record.pricingSnapshot!.proposedChargeableDays,
         endMethod: record.fulfillmentSnapshot!.proposedEndMethod,
@@ -488,6 +541,13 @@ export class AmendmentSubmissionService {
         totalMinor: record.pricingSnapshot!.proposedTotalMinor.toString(),
       },
       status: record.status,
+      history: record.statusHistory.map((item) => ({
+        actorType: item.actorType,
+        fromStatus: item.fromStatus,
+        occurredAt: item.occurredAt.toISOString(),
+        reasonCode: item.reasonCode,
+        toStatus: item.toStatus,
+      })),
     };
   }
 

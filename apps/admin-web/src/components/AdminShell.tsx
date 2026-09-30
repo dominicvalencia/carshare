@@ -23,6 +23,12 @@ const navigation = [
   },
   { href: '/admin/vehicles', icon: '▱', label: 'Vehicles', permission: 'vehicles.read' },
   { href: '/admin/bookings', icon: '▤', label: 'Bookings', permission: 'rentals.read' },
+  {
+    href: '/admin/booking-amendments',
+    icon: '⇄',
+    label: 'Change Booking',
+    permission: 'rentals.read',
+  },
   { href: '/admin/rentals', icon: '↔', label: 'Rental operations', permission: 'rentals.read' },
   { href: '/admin/claims', icon: '⚑', label: 'Claims & disputes', permission: 'claims.read' },
   { href: '/admin/payouts', icon: '₱', label: 'Payments & payouts', permission: 'payouts.read' },

@@ -37,6 +37,7 @@ interface MayaResponse {
   id?: string;
   updatedAt?: string;
   amount?: { value?: number; currency?: string };
+  refundedAmount?: { value?: number; currency?: string };
 }
 
 export interface MayaProviderDiagnostics {
@@ -187,6 +188,9 @@ export class MayaPaymentProvider implements PaymentProvider {
     return {
       externalPaymentId: response.paymentId ?? response.id ?? externalPaymentId,
       providerState,
+      ...(response.refundedAmount?.value !== undefined
+        ? { refundedAmountMinor: BigInt(Math.round(response.refundedAmount.value * 100)) }
+        : {}),
       state: this.normalizeState(providerState),
     };
   }

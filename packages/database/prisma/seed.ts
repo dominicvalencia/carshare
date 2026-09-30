@@ -443,6 +443,11 @@ async function seed(): Promise<void> {
       ],
       ['REFUND_PAYABLE', FinancialAccountType.REFUND_PAYABLE, 'Refund payable'],
       [
+        'AMENDMENT_REFUND_SUSPENSE',
+        FinancialAccountType.AMENDMENT_REFUND_SUSPENSE,
+        'Accepted amendment refunds awaiting final economic allocation',
+      ],
+      [
         'PAYOUT_PROVIDER_CLEARING',
         FinancialAccountType.PAYOUT_PROVIDER_CLEARING,
         'Payout provider clearing',

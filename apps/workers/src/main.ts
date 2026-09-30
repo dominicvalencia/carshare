@@ -2,7 +2,12 @@ import { resolve } from 'node:path';
 import { config as loadEnvironment } from 'dotenv';
 import { Queue, Worker } from 'bullmq';
 import { parseWorkerEnvironment } from '@carrental/config';
-import { createDatabaseClient, Prisma } from '@carrental/database';
+import {
+  createDatabaseClient,
+  expireDueBookingAmendmentPayments,
+  findEscalatedUnknownAmendmentPayments,
+  Prisma,
+} from '@carrental/database';
 import { createLogger } from '@carrental/logger';
 import { parseRedisConnection } from './redis-connection';
 import { reconcilePayments, workerPaymentProvider } from './payment-reconciliation';
@@ -22,6 +27,8 @@ import {
 import { publishDueReviews } from './review-publication';
 import { processDueRecoveryReminders, recoveryReminderProviders } from './recovery-reminders';
 import { initializeWorkerSentry } from './sentry';
+import { reconcileBookingAmendmentApplications } from './amendment-application';
+import { reconcileBookingAmendmentRefunds } from './amendment-refund-execution';
 
 loadEnvironment({ path: resolve(__dirname, '../../../.env'), quiet: true });
 
@@ -103,9 +110,12 @@ async function bootstrap(): Promise<void> {
             "expire_stale_bookings"() AS "expiredBookings",
             "expire_stale_booking_amendments"() AS "expiredAmendments"
         `);
+        const failedPaymentAmendments = await expireDueBookingAmendmentPayments(database);
+        const escalatedUnknownPayments = await findEscalatedUnknownAmendmentPayments(database);
         logger.info(
           {
-            expiredAmendments: rows[0]?.expiredAmendments ?? 0,
+            escalatedUnknownAmendments: escalatedUnknownPayments.length,
+            expiredAmendments: (rows[0]?.expiredAmendments ?? 0) + failedPaymentAmendments,
             expiredBookings: rows[0]?.expiredBookings ?? 0,
           },
           'Booking and amendment expiration sweep completed',
@@ -158,7 +168,13 @@ async function bootstrap(): Promise<void> {
       }
       if (job.name === 'reconcile-payments') {
         const reconciled = await reconcilePayments(database, paymentProvider, environment);
-        if (reconciled) logger.info({ reconciled }, 'Payment reconciliation sweep completed');
+        const amendmentRefunds = await reconcileBookingAmendmentRefunds(
+          database,
+          paymentProvider,
+          environment,
+        );
+        if (reconciled || amendmentRefunds)
+          logger.info({ amendmentRefunds, reconciled }, 'Payment reconciliation sweep completed');
       }
       if (job.name === 'publish-due-reviews') {
         const published = await publishDueReviews(database);
@@ -176,6 +192,7 @@ async function bootstrap(): Promise<void> {
           );
       }
       if (job.name === 'advance-rental-operations') {
+        const amendments = await reconcileBookingAmendmentApplications(database);
         const rows = await database.$queryRaw<
           Array<{
             claimNotifications: number;
@@ -208,6 +225,8 @@ async function bootstrap(): Promise<void> {
           ready: 0,
         };
         if (
+          amendments.applied ||
+          amendments.failed ||
           result.ready ||
           result.notifications ||
           result.claimNotifications ||
@@ -215,7 +234,10 @@ async function bootstrap(): Promise<void> {
           result.earningsAvailable ||
           result.overdueRecoveriesAccepted
         ) {
-          logger.info(result, 'Rental operations sweep completed');
+          logger.info(
+            { ...result, amendmentApplications: amendments },
+            'Rental operations sweep completed',
+          );
         }
       }
       if (job.name === 'deliver-notifications') {

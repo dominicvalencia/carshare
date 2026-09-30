@@ -1,7 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { CommissionScope } from '@carrental/database';
+import {
+  AmendmentRefundEvidenceOutcome,
+  AmendmentRefundEvidenceType,
+  CommissionScope,
+  PaymentProviderCode,
+} from '@carrental/database';
 import {
   IsEnum,
+  IsISO8601,
   IsInt,
   IsOptional,
   IsString,
@@ -10,7 +16,29 @@ import {
   MaxLength,
   Min,
   MinLength,
+  Matches,
 } from 'class-validator';
+
+export class ResolveAmendmentRefundDto {
+  @ApiProperty() @IsUUID() amendmentId!: string;
+  @ApiProperty() @IsUUID() refundId!: string;
+  @ApiProperty() @IsUUID() originalPaymentId!: string;
+  @ApiProperty({ enum: PaymentProviderCode })
+  @IsEnum(PaymentProviderCode)
+  provider!: PaymentProviderCode;
+  @ApiProperty() @IsString() @MinLength(1) @MaxLength(255) externalReference!: string;
+  @ApiProperty({ enum: AmendmentRefundEvidenceType })
+  @IsEnum(AmendmentRefundEvidenceType)
+  evidenceType!: AmendmentRefundEvidenceType;
+  @ApiProperty() @IsISO8601() evidenceAt!: string;
+  @ApiProperty() @IsString() @Matches(/^\d+$/) resolvedAmountMinor!: string;
+  @ApiProperty() @IsString() @Matches(/^[A-Z]{3}$/) currency!: string;
+  @ApiProperty({ enum: AmendmentRefundEvidenceOutcome })
+  @IsEnum(AmendmentRefundEvidenceOutcome)
+  outcome!: AmendmentRefundEvidenceOutcome;
+  @ApiProperty() @IsString() @MinLength(3) @MaxLength(1000) resolutionNote!: string;
+  @ApiProperty() @IsString() @MinLength(8) @MaxLength(200) idempotencyKey!: string;
+}
 
 export class CreateCommissionRuleDto {
   @ApiProperty({ enum: CommissionScope }) @IsEnum(CommissionScope) scope!: CommissionScope;

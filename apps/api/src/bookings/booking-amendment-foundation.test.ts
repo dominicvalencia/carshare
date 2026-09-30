@@ -16,9 +16,18 @@ describe('booking amendment foundation', () => {
       isUnresolvedBookingAmendment(BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING),
     ).toBe(true);
     expect(isUnresolvedBookingAmendment(BookingAmendmentStatus.APPLIED)).toBe(false);
+    expect(isUnresolvedBookingAmendment(BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING)).toBe(
+      false,
+    );
   });
 
   it('prevents terminal amendment states from transitioning again', () => {
+    expect(
+      canTransitionBookingAmendment(
+        BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+        BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
+      ),
+    ).toBe(true);
     expect(
       canTransitionBookingAmendment(
         BookingAmendmentStatus.PENDING_OWNER,
@@ -35,6 +44,12 @@ describe('booking amendment foundation', () => {
       canTransitionBookingAmendment(
         BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
         BookingAmendmentStatus.FAILED,
+      ),
+    ).toBe(true);
+    expect(
+      canTransitionBookingAmendment(
+        BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
+        BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
       ),
     ).toBe(true);
     expect(

@@ -190,7 +190,11 @@ describe('Maya sandbox adapter', () => {
       { status: 'CAPTURED', paymentId: 'pay-1', id: 'capture-1' },
       { status: 'VOIDED', paymentId: 'pay-1', id: 'void-1' },
       { status: 'PAYMENT_SUCCESS', paymentId: 'pay-1', id: 'refund-1' },
-      { status: 'FOR_AUTHENTICATION', paymentId: 'pay-1' },
+      {
+        status: 'FOR_AUTHENTICATION',
+        paymentId: 'pay-1',
+        refundedAmount: { currency: 'PHP', value: 123.45 },
+      },
       { status: 'PAYMENT_FAILED', paymentId: 'pay-1' },
       { status: 'VENDOR_NEW_STATE', paymentId: 'pay-1' },
     ];
@@ -210,7 +214,10 @@ describe('Maya sandbox adapter', () => {
     await expect(
       provider.refund({ ...referenced, reason: 'approved refund' }),
     ).resolves.toMatchObject({ kind: 'SUCCEEDED' });
-    await expect(provider.retrievePayment('pay-1')).resolves.toMatchObject({ state: 'PENDING' });
+    await expect(provider.retrievePayment('pay-1')).resolves.toMatchObject({
+      refundedAmountMinor: 12_345n,
+      state: 'PENDING',
+    });
     await expect(provider.retrievePayment('pay-1')).resolves.toMatchObject({ state: 'FAILED' });
     await expect(provider.retrievePayment('pay-1')).resolves.toMatchObject({ state: 'UNKNOWN' });
   });

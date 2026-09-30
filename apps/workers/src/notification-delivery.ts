@@ -306,18 +306,60 @@ function policyFor(eventType: string, payload: Payload): EventPolicy | null {
       templateKey: 'booking-amendment.declined',
       recipients: 'RENTER',
     };
+  if (eventType === 'BOOKING_AMENDMENT_APPLIED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking-amendment.applied',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'BOOKING_AMENDMENT_REFUND_COMPLETED_AWAITING_APPLICATION')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking-amendment.refund-completed-awaiting-application',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'BOOKING_AMENDMENT_FINANCIAL_RECOVERY_REFUND_COMPLETED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking-amendment.financial-recovery-refund-completed',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'BOOKING_AMENDMENT_ACTIVE_EXTENSION_RECOVERY_PENDING')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking-amendment.active-extension-recovery-pending',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'BOOKING_AMENDMENT_ACTIVE_EXTENSION_OPERATIONALLY_EXPIRED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking-amendment.active-extension-operationally-expired',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'BOOKING_AMENDMENT_ACTIVE_EXTENSION_RECOVERY_COMPLETED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'booking-amendment.active-extension-recovery-completed',
+      recipients: 'RENTER',
+    };
   if (eventType === 'BOOKING_AMENDMENT_TERMINATED')
-    return payload.status === 'EXPIRED'
+    return payload.reasonCode === 'RENTER_PAYMENT_DEADLINE_EXPIRED'
       ? {
           category: NotificationCategory.BOOKING_UPDATES,
-          templateKey: 'booking-amendment.expired',
-          recipients: 'BOTH',
-        }
-      : {
-          category: NotificationCategory.BOOKING_UPDATES,
-          templateKey: 'payment.updated',
+          templateKey: 'booking-amendment.payment-window-expired',
           recipients: 'RENTER',
-        };
+        }
+      : payload.status === 'EXPIRED'
+        ? {
+            category: NotificationCategory.BOOKING_UPDATES,
+            templateKey: 'booking-amendment.expired',
+            recipients: 'BOTH',
+          }
+        : {
+            category: NotificationCategory.BOOKING_UPDATES,
+            templateKey: 'payment.updated',
+            recipients: 'RENTER',
+          };
   if (eventType === 'OVERDUE_HANDOVER_RECOVERY_MIDPOINT_REMINDER')
     return {
       category: NotificationCategory.RENTAL_REMINDERS,

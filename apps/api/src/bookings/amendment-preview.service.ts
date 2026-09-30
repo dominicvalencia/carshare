@@ -3,6 +3,7 @@ import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ApiEnvironment } from '@carrental/config';
 import {
+  BookingAmendmentFinancialDirection,
   BookingAmendmentStatus,
   BookingStatus,
   HandoverPhase,
@@ -97,6 +98,7 @@ export interface AmendmentCurrentResponse {
 }
 
 export interface AmendmentProposedResponse {
+  addedDurationMinutes: number;
   chargeableDays: number;
   collectionFeeMinor: string;
   durationDiscount: {
@@ -112,6 +114,7 @@ export interface AmendmentProposedResponse {
   rentalMinor: string;
   rentalStart: string;
   startMethod: CanonicalAmendmentProposal['startMethod'];
+  totalDurationMinutes: number;
 }
 
 export interface CanonicalAmendmentProposal {
@@ -189,6 +192,7 @@ export class AmendmentPreviewService {
       version: PREVIEW_VERSION,
     };
     return {
+      availability: { available: true as const },
       bookingReference: booking!.publicReference,
       current: authority.currentResponse,
       evaluatedAt: evaluatedAt.toISOString(),
@@ -300,6 +304,21 @@ export class AmendmentPreviewService {
       this.snapshotDestination(booking.fulfillmentSnapshot!, 'end');
     const proposedStart = input.proposedPickupAt ? new Date(input.proposedPickupAt) : currentStart;
     const proposedEnd = input.proposedReturnAt ? new Date(input.proposedReturnAt) : currentEnd;
+    const activeExtension = booking.status === BookingStatus.ACTIVE;
+    if (
+      activeExtension &&
+      (proposedStart.getTime() !== currentStart.getTime() ||
+        proposedEnd <= currentEnd ||
+        input.proposedStartMethod !== undefined ||
+        input.proposedEndMethod !== undefined ||
+        input.proposedDeliveryDestination !== undefined ||
+        input.proposedCollectionDestination !== undefined)
+    )
+      this.fail(
+        'UNSUPPORTED_CHANGE',
+        'An active trip can only be extended to a later return time.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
     if (
       localDate(proposedStart, booking.pricingSnapshot!.vehicleTimezone) !==
       localDate(currentStart, booking.pricingSnapshot!.vehicleTimezone)
@@ -410,9 +429,20 @@ export class AmendmentPreviewService {
         booking.fulfillmentSnapshot!.deliveryFeeMinor +
           booking.fulfillmentSnapshot!.collectionFeeMinor,
     );
-    const currentTotal = BigInt(
+    const grossCurrentTotal = BigInt(
       latestApplied?.settlement?.proposedTotalMinor ?? currentRental + currentFulfillment,
     );
+    const survivingRefundObligation = booking.amendments.find(
+      (item) =>
+        item.status === BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING &&
+        item.settlement?.direction === BookingAmendmentFinancialDirection.REFUND &&
+        item.settlement.financialDeltaMinor < 0n,
+    )?.settlement;
+    const committedRefundMinor = survivingRefundObligation
+      ? -survivingRefundObligation.financialDeltaMinor
+      : 0n;
+    const currentTotal =
+      grossCurrentTotal > committedRefundMinor ? grossCurrentTotal - committedRefundMinor : 0n;
     const fulfillmentUnchanged =
       startMethod === currentStartMethod &&
       endMethod === currentEndMethod &&
@@ -465,12 +495,22 @@ export class AmendmentPreviewService {
     });
     const { additionalPaymentMinor, proposedCommission, proposedOwnerEarnings, refundMinor } =
       reconciled;
+    if (activeExtension && refundMinor > 0n)
+      this.fail(
+        'BOOKING_STATE_CHANGED',
+        'An active trip extension cannot produce a refund.',
+        HttpStatus.CONFLICT,
+      );
     const currentCommission =
       latestApplied?.pricingSnapshot?.proposedCommissionMinor ??
       booking.commissionSnapshot!.calculatedCommissionMinor;
     const currentOwnerEarnings =
       latestApplied?.pricingSnapshot?.proposedOwnerEarningsMinor ??
-      booking.ownerEarning!.netEarningAmountMinor;
+      booking.ownerEarning!.netEarningAmountMinor +
+        (booking.ownerEarning!.deliveryEarningMinor ?? 0n) +
+        (booking.ownerEarning!.collectionEarningMinor ?? 0n) +
+        (booking.ownerEarning!.additionalCompensationMinor ?? 0n) +
+        (booking.ownerEarning!.adjustmentAmountMinor ?? 0n);
     const warnings: AmendmentPreviewWarning[] = [];
     const currentDiscountTier =
       latestApplied?.pricingSnapshot?.durationDiscountTier ??
@@ -513,6 +553,10 @@ export class AmendmentPreviewService {
       },
       proposal,
       proposedResponse: {
+        addedDurationMinutes: Math.max(
+          0,
+          Math.round((proposedEnd.getTime() - currentEnd.getTime()) / 60_000),
+        ),
         chargeableDays,
         collectionFeeMinor: proposedCollectionFee.toString(),
         durationDiscount: {
@@ -528,21 +572,32 @@ export class AmendmentPreviewService {
         rentalMinor: proposedRental.toString(),
         rentalStart: proposedStart.toISOString(),
         startMethod,
+        totalDurationMinutes: Math.round(
+          (proposedEnd.getTime() - proposedStart.getTime()) / 60_000,
+        ),
       },
       warnings,
     };
   }
 
   private assertEligible(booking: PreviewBooking, evaluatedAt: Date) {
+    const activeExtension = booking.status === BookingStatus.ACTIVE;
     if (
+      !activeExtension &&
       booking.status !== BookingStatus.CONFIRMED &&
       booking.status !== BookingStatus.READY_FOR_PICKUP
     )
       this.fail('BOOKING_STATE_CHANGED', 'Booking cannot be changed.', HttpStatus.CONFLICT);
+    if (activeExtension ? !booking.actualPickupAt : Boolean(booking.actualPickupAt))
+      this.fail(
+        'BOOKING_STATE_CHANGED',
+        'Booking lifecycle authority is unavailable.',
+        HttpStatus.CONFLICT,
+      );
     if (
-      booking.actualPickupAt ||
-      booking.pickupChallenges.some((item) => item.consumedAt) ||
-      evaluatedAt >= booking.rentalStart
+      !activeExtension &&
+      (booking.pickupChallenges.some((item) => item.consumedAt) ||
+        evaluatedAt >= booking.rentalStart)
     )
       this.fail(
         'BOOKING_STATE_CHANGED',
@@ -605,7 +660,7 @@ export class AmendmentPreviewService {
     evaluatedAt: Date,
   ) {
     const base = booking.vehicle.location!;
-    for (const candidate of [
+    const candidates = [
       {
         destination: proposal.deliveryDestination,
         method: proposal.startMethod,
@@ -616,7 +671,10 @@ export class AmendmentPreviewService {
         method: proposal.endMethod,
         scheduledAt: new Date(proposal.rentalEnd),
       },
-    ]) {
+    ];
+    for (const candidate of booking.status === BookingStatus.ACTIVE
+      ? candidates.slice(1)
+      : candidates) {
       let result: Awaited<ReturnType<FulfillmentServiceabilityService['evaluate']>>;
       try {
         result = await this.fulfillment.evaluate({
@@ -653,10 +711,11 @@ export class AmendmentPreviewService {
     currentStart: Date,
     currentEnd: Date,
   ) {
+    const activeExtension = booking.status === BookingStatus.ACTIVE;
     const conflict = await this.availability.occupancyConflict({
       end,
       excludeBookingId: booking.id,
-      start,
+      start: activeExtension ? currentEnd : start,
       turnaroundMinutes,
       vehicleId: booking.vehicleId,
     });

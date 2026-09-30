@@ -6,6 +6,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -42,6 +43,8 @@ import { AmendmentPreviewService } from './amendment-preview.service';
 import { AmendmentSubmissionService } from './amendment-submission.service';
 import { AmendmentWithdrawalService } from './amendment-withdrawal.service';
 import { AmendmentOwnerDecisionService } from './amendment-owner-decision.service';
+import { AdminBookingAmendmentsService } from './admin-booking-amendments.service';
+import { AdminBookingAmendmentQueryDto } from './admin-booking-amendments.dto';
 
 @ApiBearerAuth()
 @ApiTags('Renter bookings')
@@ -113,6 +116,38 @@ export class RenterBookingsController {
       amendmentReference,
       requestMetadata(request),
     );
+  }
+
+  @Post(':reference/amendments/:amendmentReference/payment')
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  payAmendment(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Param('amendmentReference', new ParseUUIDPipe()) amendmentReference: string,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Req() request: Request,
+  ) {
+    if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 200)
+      throw new ApplicationException(
+        BookingErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+        'A valid Idempotency-Key header is required.',
+        HttpStatus.BAD_REQUEST,
+      );
+    return this.payments.payBookingAmendment(
+      principal.userId,
+      reference,
+      amendmentReference,
+      requestMetadata(request),
+    );
+  }
+
+  @Post(':reference/amendments/:amendmentReference/refund')
+  refundAmendment(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Param('amendmentReference', new ParseUUIDPipe()) amendmentReference: string,
+  ) {
+    return this.payments.refundBookingAmendment(principal.userId, reference, amendmentReference);
   }
 
   @Post()
@@ -389,7 +424,22 @@ function assertIdempotencyKey(value: string | undefined): asserts value is strin
 @RequirePermissions('vehicles.read')
 @UseGuards(AccessTokenGuard, PolicyGuard)
 export class AdminBookingsController {
-  constructor(private readonly bookings: BookingsService) {}
+  constructor(
+    private readonly bookings: BookingsService,
+    private readonly amendments: AdminBookingAmendmentsService,
+  ) {}
+
+  @Get('amendments')
+  @RequirePermissions('rentals.read')
+  amendmentList(@Query() query: AdminBookingAmendmentQueryDto) {
+    return this.amendments.list(query);
+  }
+
+  @Get('amendments/:id')
+  @RequirePermissions('rentals.read')
+  amendmentDetail(@Param('id') id: string) {
+    return this.amendments.detail(id);
+  }
 
   @Get()
   list() {

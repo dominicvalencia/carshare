@@ -241,11 +241,24 @@ describe('booking request notification delivery', () => {
         { amendmentId: '10000000-0000-4000-8000-000000000005', bookingId },
       ],
       [
+        'BOOKING_AMENDMENT_APPLIED',
+        { amendmentId: '10000000-0000-4000-8000-000000000007', bookingId },
+      ],
+      [
         'BOOKING_AMENDMENT_TERMINATED',
         {
           amendmentId: '10000000-0000-4000-8000-000000000006',
           bookingId,
           status: 'EXPIRED',
+        },
+      ],
+      [
+        'BOOKING_AMENDMENT_TERMINATED',
+        {
+          amendmentId: '10000000-0000-4000-8000-000000000008',
+          bookingId,
+          reasonCode: 'RENTER_PAYMENT_DEADLINE_EXPIRED',
+          status: 'FAILED',
         },
       ],
     ] as const;
@@ -260,8 +273,10 @@ describe('booking request notification delivery', () => {
       { templateKey: 'booking-amendment.accepted-payment-required', userId: renterUserId },
       { templateKey: 'booking-amendment.accepted-processing', userId: renterUserId },
       { templateKey: 'booking-amendment.declined', userId: renterUserId },
+      { templateKey: 'booking-amendment.applied', userId: renterUserId },
       { templateKey: 'booking-amendment.expired', userId: renterUserId },
       { templateKey: 'booking-amendment.expired', userId: ownerUserId },
+      { templateKey: 'booking-amendment.payment-window-expired', userId: renterUserId },
     ]);
     for (const [index, notification] of creates.entries()) {
       expect(notification.deepLink).toBe('carrental://bookings/CR-2026-AMEND');

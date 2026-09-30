@@ -18,6 +18,13 @@ import {
 } from '../../ui/primitives';
 import type { BookingView } from './MyBookingsScreen';
 import { BookingCancellationSheet } from './BookingCancellationSheet';
+import {
+  amendmentErrorMessage,
+  amendmentStatusCopy,
+  idempotencyKey,
+  transientAmendmentStatuses,
+  type AmendmentDetail,
+} from './booking-amendment';
 
 interface OwnerBookingView extends BookingView {
   readonly renter: {
@@ -39,18 +46,41 @@ interface OwnerBookingView extends BookingView {
 type Filter = 'Needs response' | 'Upcoming' | 'All';
 
 export function OwnerBookingRequestsScreen({
+  initialAmendmentReference,
   initialBookingReference,
   onClose,
 }: {
+  readonly initialAmendmentReference?: string;
   readonly initialBookingReference?: string;
   readonly onClose?: () => void;
 } = {}) {
   const client = useQueryClient();
-  const [selected, setSelected] = useState<string | null>(initialBookingReference ?? null);
+  const [selected, setSelected] = useState<string | null>(
+    initialAmendmentReference ? null : (initialBookingReference ?? null),
+  );
+  const [selectedAmendment, setSelectedAmendment] = useState<{
+    bookingReference: string;
+    amendmentReference: string;
+  } | null>(
+    initialAmendmentReference && initialBookingReference
+      ? {
+          amendmentReference: initialAmendmentReference,
+          bookingReference: initialBookingReference,
+        }
+      : null,
+  );
   const [filter, setFilter] = useState<Filter>('Needs response');
   const requests = useQuery({
     queryKey: ['owner-booking-requests'],
     queryFn: () => apiClient.request<OwnerBookingView[]>('/owner/bookings/requests'),
+  });
+  const amendments = useQuery({
+    queryKey: ['owner-amendments'],
+    queryFn: () =>
+      apiClient.request<{ items: readonly AmendmentDetail[] }>(
+        '/owner/bookings/amendments/actionable',
+      ),
+    refetchInterval: 10_000,
   });
   const detail = useQuery({
     enabled: Boolean(selected),
@@ -66,8 +96,10 @@ export function OwnerBookingRequestsScreen({
   });
   useRefreshOnFocusAndForeground(() => {
     void requests.refetch();
+    void amendments.refetch();
     if (selected) void detail.refetch();
   });
+
   const decision = useMutation({
     mutationFn: ({ reference, action }: { reference: string; action: 'accept' | 'reject' }) =>
       apiClient.request(`/owner/bookings/${reference}/${action}`, {
@@ -84,6 +116,18 @@ export function OwnerBookingRequestsScreen({
       void client.invalidateQueries({ queryKey: ['public-search'] });
     },
   });
+
+  if (selectedAmendment)
+    return (
+      <OwnerAmendmentDetail
+        target={selectedAmendment}
+        onClose={() => {
+          setSelectedAmendment(null);
+          void amendments.refetch();
+          void requests.refetch();
+        }}
+      />
+    );
 
   if (selected) {
     return (
@@ -116,6 +160,58 @@ export function OwnerBookingRequestsScreen({
       title="Booking requests"
       subtitle="Requests arrive only after the renter has authorized the rental payment."
     >
+      {(amendments.data?.items.length ?? 0) > 0 && (
+        <>
+          <Text accessibilityRole="header" style={styles.title}>
+            Booking changes
+          </Text>
+          {amendments.data!.items.map((amendment) => {
+            const booking = (requests.data ?? []).find(
+              (item) => item.publicReference === amendment.bookingReference,
+            );
+            return (
+              <Pressable
+                key={amendment.amendmentReference ?? amendment.amendmentId}
+                accessibilityRole="button"
+                onPress={() =>
+                  setSelectedAmendment({
+                    amendmentReference: (amendment.amendmentReference ?? amendment.amendmentId)!,
+                    bookingReference: amendment.bookingReference,
+                  })
+                }
+              >
+                <Card style={styles.notice}>
+                  <Text style={styles.title}>Change requested</Text>
+                  <Text style={styles.body}>
+                    {amendment.renterDisplayName && amendment.vehicleName
+                      ? `${amendment.renterDisplayName} · ${amendment.vehicleName}`
+                      : booking
+                        ? `${booking.renter.displayName} · ${booking.vehicle.make} ${booking.vehicle.model}`
+                        : amendment.bookingReference}
+                  </Text>
+                  <Text style={styles.body}>
+                    {dateTimeLabel(amendment.current.rentalStart)} →{' '}
+                    {dateTimeLabel(amendment.current.rentalEnd)}
+                  </Text>
+                  <Text style={styles.body}>
+                    Requested: {dateTimeLabel(amendment.proposed.rentalStart)} →{' '}
+                    {dateTimeLabel(amendment.proposed.rentalEnd)}
+                  </Text>
+                  <Text style={styles.body}>
+                    Earnings change:{' '}
+                    {Number(amendment.financial.ownerEarningsDeltaMinor ?? 0) >= 0 ? '+' : ''}
+                    {money(
+                      Number(amendment.financial.ownerEarningsDeltaMinor ?? 0),
+                      amendment.financial.currency,
+                    )}
+                  </Text>
+                  <Text style={styles.body}>Respond by {dateTimeLabel(amendment.expiresAt)}</Text>
+                </Card>
+              </Pressable>
+            );
+          })}
+        </>
+      )}
       <View style={styles.filters}>
         {(['Needs response', 'Upcoming', 'All'] as const).map((value) => (
           <Chip
@@ -177,6 +273,195 @@ export function OwnerBookingRequestsScreen({
           </Card>
         </Pressable>
       ))}
+    </Screen>
+  );
+}
+
+function OwnerAmendmentDetail({
+  target,
+  onClose,
+}: {
+  readonly target: { readonly bookingReference: string; readonly amendmentReference: string };
+  readonly onClose: () => void;
+}) {
+  const client = useQueryClient();
+  const detail = useQuery({
+    queryKey: ['owner-amendment', target.amendmentReference],
+    queryFn: () =>
+      apiClient.request<AmendmentDetail>(
+        `/owner/bookings/${target.bookingReference}/amendments/${target.amendmentReference}`,
+      ),
+    refetchInterval: (query) =>
+      query.state.data && transientAmendmentStatuses.has(query.state.data.status) ? 5_000 : false,
+  });
+  useRefreshOnFocusAndForeground(() => void detail.refetch());
+  const decide = useMutation({
+    mutationFn: ({ action, reasonCode }: { action: 'accept' | 'decline'; reasonCode?: string }) =>
+      apiClient.request<AmendmentDetail>(
+        `/owner/bookings/${target.bookingReference}/amendments/${target.amendmentReference}/${action}`,
+        {
+          ...(reasonCode ? { body: JSON.stringify({ reasonCode }) } : {}),
+          headers: {
+            'Idempotency-Key': idempotencyKey(`owner-${action}`, target.amendmentReference),
+          },
+          method: 'POST',
+        },
+      ),
+    onSuccess: (value) => {
+      client.setQueryData(['owner-amendment', target.amendmentReference], value);
+      void client.invalidateQueries({ queryKey: ['owner-amendments'] });
+      void client.invalidateQueries({ queryKey: ['owner-booking-requests'] });
+      void client.invalidateQueries({ queryKey: ['owner-booking', target.bookingReference] });
+      void client.invalidateQueries({ queryKey: ['owner-rentals'] });
+      void client.invalidateQueries({ queryKey: ['owner-earnings'] });
+    },
+  });
+  if (detail.isPending)
+    return (
+      <Screen
+        leading={<BackControl label="Booking changes" onPress={onClose} />}
+        title="Change request"
+      >
+        <StateView loading title="Loading change request…" />
+      </Screen>
+    );
+  if (detail.isError || !detail.data)
+    return (
+      <Screen
+        leading={<BackControl label="Booking changes" onPress={onClose} />}
+        title="Change request"
+      >
+        <StateView
+          icon="cloud-offline-outline"
+          title="Change request unavailable"
+          message={detail.error?.message}
+          actionLabel="Retry"
+          onAction={() => void detail.refetch()}
+        />
+      </Screen>
+    );
+  const amendment = detail.data;
+  const [statusTitle, statusCopy] = amendmentStatusCopy(amendment);
+  const ownerDelta = Number(amendment.financial.ownerEarningsDeltaMinor ?? 0);
+  const additional = Number(amendment.financial.additionalPaymentMinor);
+  return (
+    <Screen
+      leading={<BackControl label="Booking changes" onPress={onClose} />}
+      eyebrow="Booking change request"
+      title={amendment.actionable ? 'Review requested change' : statusTitle}
+      subtitle={
+        amendment.actionable ? `Respond by ${dateTimeLabel(amendment.expiresAt)}` : statusCopy
+      }
+    >
+      <Card>
+        <Text accessibilityRole="header" style={styles.title}>
+          Current
+        </Text>
+        <Info
+          icon="calendar-outline"
+          label="Pickup"
+          value={dateTimeLabel(amendment.current.rentalStart)}
+        />
+        <Info
+          icon="return-down-back-outline"
+          label="Return"
+          value={dateTimeLabel(amendment.current.rentalEnd)}
+        />
+        <Info
+          icon="navigate-outline"
+          label="Handover"
+          value={`${titleCase(amendment.current.startMethod)} / ${titleCase(amendment.current.endMethod)}`}
+        />
+        <Text accessibilityRole="header" style={styles.title}>
+          Proposed
+        </Text>
+        <Info
+          icon="calendar-outline"
+          label="Pickup"
+          value={dateTimeLabel(amendment.proposed.rentalStart)}
+        />
+        <Info
+          icon="return-down-back-outline"
+          label="Return"
+          value={dateTimeLabel(amendment.proposed.rentalEnd)}
+        />
+        <Info
+          icon="navigate-outline"
+          label="Handover"
+          value={`${titleCase(amendment.proposed.startMethod)} / ${titleCase(amendment.proposed.endMethod)}`}
+        />
+      </Card>
+      <Card>
+        <Text style={styles.title}>Owner earnings</Text>
+        <Text style={styles.body}>
+          Current:{' '}
+          {money(
+            Number(amendment.financial.currentOwnerEarningsMinor ?? 0),
+            amendment.financial.currency,
+          )}
+        </Text>
+        <Text style={styles.body}>
+          Proposed:{' '}
+          {money(
+            Number(amendment.financial.proposedOwnerEarningsMinor ?? 0),
+            amendment.financial.currency,
+          )}
+        </Text>
+        <Text style={styles.body}>
+          Change: {ownerDelta >= 0 ? '+' : ''}
+          {money(ownerDelta, amendment.financial.currency)}
+        </Text>
+        {additional > 0 && (
+          <Text style={styles.body}>
+            Renter additional payment: {money(additional, amendment.financial.currency)}
+          </Text>
+        )}
+      </Card>
+      {decide.isError && (
+        <Card style={styles.notice}>
+          <Text style={styles.error}>{amendmentErrorMessage(decide.error)}</Text>
+        </Card>
+      )}
+      {amendment.actionable && (
+        <>
+          <Button
+            disabled={decide.isPending}
+            label={decide.isPending ? 'Saving decision…' : 'Accept change'}
+            onPress={() =>
+              Alert.alert(
+                'Accept this change?',
+                additional > 0
+                  ? 'The renter will have to complete the additional payment before the change applies.'
+                  : 'The accepted change will begin applying immediately.',
+                [
+                  { text: 'Not now', style: 'cancel' },
+                  { text: 'Accept', onPress: () => decide.mutate({ action: 'accept' }) },
+                ],
+              )
+            }
+          />
+          <Button
+            disabled={decide.isPending}
+            label="Decline change"
+            onPress={() =>
+              Alert.alert(
+                'Decline this change?',
+                'The renter’s original booking will remain unchanged.',
+                [
+                  { text: 'Keep reviewing', style: 'cancel' },
+                  {
+                    text: 'Decline',
+                    style: 'destructive',
+                    onPress: () =>
+                      decide.mutate({ action: 'decline', reasonCode: 'OWNER_SCHEDULE_CONFLICT' }),
+                  },
+                ],
+              )
+            }
+            variant="danger"
+          />
+        </>
+      )}
     </Screen>
   );
 }
