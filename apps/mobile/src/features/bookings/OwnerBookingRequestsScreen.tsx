@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import { colors, radius, spacing } from '../../theme/tokens';
-import { bookingStatusLabel, dateTimeLabel, money, titleCase } from '../../ui/format';
+import { bookingStatusLabel, dateTimeLabel, money, timeLabel, titleCase } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import {
   BackControl,
@@ -18,10 +18,12 @@ import {
 } from '../../ui/primitives';
 import type { BookingView } from './MyBookingsScreen';
 import { BookingCancellationSheet } from './BookingCancellationSheet';
+import { tripDateSummary } from '../discovery/trip-date-policy';
 import {
   amendmentErrorMessage,
-  amendmentStatusCopy,
   idempotencyKey,
+  ownerAmendmentIsProcessing,
+  ownerAmendmentStatusCopy,
   transientAmendmentStatuses,
   type AmendmentDetail,
 } from './booking-amendment';
@@ -44,6 +46,14 @@ interface OwnerBookingView extends BookingView {
 }
 
 type Filter = 'Needs response' | 'Upcoming' | 'All';
+
+interface OwnerAmendmentPage {
+  readonly items: readonly AmendmentDetail[];
+  readonly page: number;
+  readonly pageSize: number;
+  readonly total: number;
+  readonly totalPages: number;
+}
 
 export function OwnerBookingRequestsScreen({
   initialAmendmentReference,
@@ -74,13 +84,17 @@ export function OwnerBookingRequestsScreen({
     queryKey: ['owner-booking-requests'],
     queryFn: () => apiClient.request<OwnerBookingView[]>('/owner/bookings/requests'),
   });
-  const amendments = useQuery({
-    queryKey: ['owner-amendments'],
-    queryFn: () =>
-      apiClient.request<{ items: readonly AmendmentDetail[] }>(
-        '/owner/bookings/amendments/actionable',
+  const amendmentScope = ownerAmendmentScope(filter);
+  const amendments = useInfiniteQuery({
+    queryKey: ['owner-amendments', amendmentScope],
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) =>
+      apiClient.request<OwnerAmendmentPage>(
+        `/owner/bookings/amendments?scope=${amendmentScope}&page=${pageParam}&pageSize=20`,
       ),
-    refetchInterval: 10_000,
+    getNextPageParam: (lastPage) =>
+      lastPage.page < lastPage.totalPages ? lastPage.page + 1 : undefined,
+    refetchInterval: filter === 'All' ? false : 10_000,
   });
   const detail = useQuery({
     enabled: Boolean(selected),
@@ -154,64 +168,16 @@ export function OwnerBookingRequestsScreen({
       return ['CAPTURE_PENDING', 'CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status);
     return true;
   });
+  const filteredAmendments = amendments.data?.pages.flatMap((page) => page.items) ?? [];
+  const empty = items.length === 0 && filteredAmendments.length === 0;
+  const feedPending = requests.isPending || amendments.isPending;
+  const feedError = requests.error ?? amendments.error;
   return (
     <Screen
       eyebrow="Owner mode"
       title="Booking requests"
       subtitle="Requests arrive only after the renter has authorized the rental payment."
     >
-      {(amendments.data?.items.length ?? 0) > 0 && (
-        <>
-          <Text accessibilityRole="header" style={styles.title}>
-            Booking changes
-          </Text>
-          {amendments.data!.items.map((amendment) => {
-            const booking = (requests.data ?? []).find(
-              (item) => item.publicReference === amendment.bookingReference,
-            );
-            return (
-              <Pressable
-                key={amendment.amendmentReference ?? amendment.amendmentId}
-                accessibilityRole="button"
-                onPress={() =>
-                  setSelectedAmendment({
-                    amendmentReference: (amendment.amendmentReference ?? amendment.amendmentId)!,
-                    bookingReference: amendment.bookingReference,
-                  })
-                }
-              >
-                <Card style={styles.notice}>
-                  <Text style={styles.title}>Change requested</Text>
-                  <Text style={styles.body}>
-                    {amendment.renterDisplayName && amendment.vehicleName
-                      ? `${amendment.renterDisplayName} · ${amendment.vehicleName}`
-                      : booking
-                        ? `${booking.renter.displayName} · ${booking.vehicle.make} ${booking.vehicle.model}`
-                        : amendment.bookingReference}
-                  </Text>
-                  <Text style={styles.body}>
-                    {dateTimeLabel(amendment.current.rentalStart)} →{' '}
-                    {dateTimeLabel(amendment.current.rentalEnd)}
-                  </Text>
-                  <Text style={styles.body}>
-                    Requested: {dateTimeLabel(amendment.proposed.rentalStart)} →{' '}
-                    {dateTimeLabel(amendment.proposed.rentalEnd)}
-                  </Text>
-                  <Text style={styles.body}>
-                    Earnings change:{' '}
-                    {Number(amendment.financial.ownerEarningsDeltaMinor ?? 0) >= 0 ? '+' : ''}
-                    {money(
-                      Number(amendment.financial.ownerEarningsDeltaMinor ?? 0),
-                      amendment.financial.currency,
-                    )}
-                  </Text>
-                  <Text style={styles.body}>Respond by {dateTimeLabel(amendment.expiresAt)}</Text>
-                </Card>
-              </Pressable>
-            );
-          })}
-        </>
-      )}
       <View style={styles.filters}>
         {(['Needs response', 'Upcoming', 'All'] as const).map((value) => (
           <Chip
@@ -222,21 +188,127 @@ export function OwnerBookingRequestsScreen({
           />
         ))}
       </View>
-      {requests.isPending && <StateView loading title="Loading requests…" />}
-      {requests.isError && (
+      {filteredAmendments.length > 0 && (
+        <View style={styles.changeRequests}>
+          <Text accessibilityRole="header" style={styles.sectionLabel}>
+            {filter === 'Needs response' ? 'Changes needing your response' : 'Booking changes'}
+          </Text>
+          {filteredAmendments.map((amendment) => {
+            const booking = (requests.data ?? []).find(
+              (item) => item.publicReference === amendment.bookingReference,
+            );
+            const identity =
+              amendment.renterDisplayName && amendment.vehicleName
+                ? { renter: amendment.renterDisplayName, vehicle: amendment.vehicleName }
+                : booking
+                  ? {
+                      renter: booking.renter.displayName,
+                      vehicle: `${booking.vehicle.make} ${booking.vehicle.model}`,
+                    }
+                  : { renter: 'Renter', vehicle: amendment.bookingReference };
+            const delta = safeMoneyMinor(amendment.financial.ownerEarningsDeltaMinor);
+            const [cardStatus] = ownerAmendmentStatusCopy(amendment);
+            const applied = amendment.status === 'APPLIED';
+            const activeExtension = amendment.scope === 'ACTIVE_EXTENSION';
+            return (
+              <Pressable
+                key={amendment.amendmentReference ?? amendment.amendmentId}
+                accessibilityLabel={`${cardStatus} for ${identity.renter} and ${identity.vehicle}. ${applied ? 'Updated' : `Current ${accessibleDateRange(amendment.current.rentalStart, amendment.current.rentalEnd)}. Requested`} ${accessibleDateRange(amendment.proposed.rentalStart, amendment.proposed.rentalEnd)}. ${earningsDeltaAccessibility(delta, amendment.financial.currency)}.`}
+                accessibilityRole="button"
+                onPress={() =>
+                  setSelectedAmendment({
+                    amendmentReference: (amendment.amendmentReference ?? amendment.amendmentId)!,
+                    bookingReference: amendment.bookingReference,
+                  })
+                }
+              >
+                <Card style={styles.changeCard}>
+                  <View style={styles.changeCardHeader}>
+                    <View style={styles.flex}>
+                      <Text style={styles.changeEyebrow}>{cardStatus}</Text>
+                      <Text style={styles.changeRenter}>{identity.renter}</Text>
+                      <Text style={styles.body}>{identity.vehicle}</Text>
+                    </View>
+                    <Icon color={colors.primary} name="chevron-forward" size={22} />
+                  </View>
+                  <View style={styles.rangeGrid}>
+                    {activeExtension
+                      ? !applied && (
+                          <CompactReturn
+                            compact
+                            label="Current return"
+                            value={amendment.current.rentalEnd}
+                          />
+                        )
+                      : !applied && (
+                          <CompactDateRange
+                            compactTime
+                            label="Current"
+                            start={amendment.current.rentalStart}
+                            end={amendment.current.rentalEnd}
+                          />
+                        )}
+                    {activeExtension ? (
+                      <CompactReturn
+                        compact
+                        label={applied ? 'Updated return' : 'Requested return'}
+                        value={amendment.proposed.rentalEnd}
+                      />
+                    ) : (
+                      <CompactDateRange
+                        compactTime
+                        label={applied ? 'Updated trip dates' : 'Requested'}
+                        start={amendment.proposed.rentalStart}
+                        end={amendment.proposed.rentalEnd}
+                      />
+                    )}
+                  </View>
+                  <View style={styles.changeMetaGrid}>
+                    <View style={styles.flex}>
+                      <Text style={styles.metaLabel}>Owner earnings change</Text>
+                      <Text style={styles.metaValue}>
+                        {earningsDeltaCopy(delta, amendment.financial.currency)}
+                      </Text>
+                    </View>
+                    {amendment.actionable && (
+                      <View style={styles.flex}>
+                        <Text style={styles.metaLabel}>Respond by</Text>
+                        <Text style={styles.metaValue}>{compactDeadline(amendment.expiresAt)}</Text>
+                      </View>
+                    )}
+                  </View>
+                </Card>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+      {feedPending && <StateView loading title="Loading requests…" />}
+      {feedError && (
         <StateView
           icon="cloud-offline-outline"
           title="Requests unavailable"
-          message={requests.error.message}
+          message={feedError.message}
           actionLabel="Retry"
-          onAction={() => void requests.refetch()}
+          onAction={() => {
+            void requests.refetch();
+            void amendments.refetch();
+          }}
         />
       )}
-      {!requests.isPending && !requests.isError && items.length === 0 && (
+      {!feedPending && !feedError && empty && (
         <StateView
           icon="file-tray-outline"
-          title={filter === 'Needs response' ? 'You’re all caught up' : 'No requests here'}
-          message="New authorized requests and their deadlines will appear here."
+          title={ownerAmendmentEmptyTitle(filter)}
+          message={ownerAmendmentEmptyMessage(filter)}
+        />
+      )}
+      {amendments.hasNextPage && (
+        <Button
+          disabled={amendments.isFetchingNextPage}
+          label={amendments.isFetchingNextPage ? 'Loading…' : 'Load more changes'}
+          variant="secondary"
+          onPress={() => void amendments.fetchNextPage()}
         />
       )}
       {items.map((booking) => (
@@ -341,9 +413,18 @@ function OwnerAmendmentDetail({
       </Screen>
     );
   const amendment = detail.data;
-  const [statusTitle, statusCopy] = amendmentStatusCopy(amendment);
-  const ownerDelta = Number(amendment.financial.ownerEarningsDeltaMinor ?? 0);
-  const additional = Number(amendment.financial.additionalPaymentMinor);
+  const [statusTitle, statusCopy] = ownerAmendmentStatusCopy(amendment);
+  const ownerDelta = safeMoneyMinor(amendment.financial.ownerEarningsDeltaMinor);
+  const currentEarnings = safeMoneyMinor(amendment.financial.currentOwnerEarningsMinor);
+  const proposedEarnings = safeMoneyMinor(amendment.financial.proposedOwnerEarningsMinor);
+  const additional = safeMoneyMinor(amendment.financial.additionalPaymentMinor);
+  const applied = amendment.status === 'APPLIED';
+  const activeExtension = amendment.scope === 'ACTIVE_EXTENSION';
+  const pickupUnchanged = amendment.current.rentalStart === amendment.proposed.rentalStart;
+  const handoverChanged =
+    amendment.current.startMethod !== amendment.proposed.startMethod ||
+    amendment.current.endMethod !== amendment.proposed.endMethod;
+  const processing = ownerAmendmentIsProcessing(amendment);
   return (
     <Screen
       leading={<BackControl label="Booking changes" onPress={onClose} />}
@@ -353,70 +434,145 @@ function OwnerAmendmentDetail({
         amendment.actionable ? `Respond by ${dateTimeLabel(amendment.expiresAt)}` : statusCopy
       }
     >
-      <Card>
-        <Text accessibilityRole="header" style={styles.title}>
-          Current
-        </Text>
-        <Info
-          icon="calendar-outline"
-          label="Pickup"
-          value={dateTimeLabel(amendment.current.rentalStart)}
-        />
-        <Info
-          icon="return-down-back-outline"
-          label="Return"
-          value={dateTimeLabel(amendment.current.rentalEnd)}
-        />
-        <Info
-          icon="navigate-outline"
-          label="Handover"
-          value={`${titleCase(amendment.current.startMethod)} / ${titleCase(amendment.current.endMethod)}`}
-        />
-        <Text accessibilityRole="header" style={styles.title}>
-          Proposed
-        </Text>
-        <Info
-          icon="calendar-outline"
-          label="Pickup"
-          value={dateTimeLabel(amendment.proposed.rentalStart)}
-        />
-        <Info
-          icon="return-down-back-outline"
-          label="Return"
-          value={dateTimeLabel(amendment.proposed.rentalEnd)}
-        />
-        <Info
-          icon="navigate-outline"
-          label="Handover"
-          value={`${titleCase(amendment.proposed.startMethod)} / ${titleCase(amendment.proposed.endMethod)}`}
-        />
-      </Card>
-      <Card>
-        <Text style={styles.title}>Owner earnings</Text>
-        <Text style={styles.body}>
-          Current:{' '}
-          {money(
-            Number(amendment.financial.currentOwnerEarningsMinor ?? 0),
-            amendment.financial.currency,
-          )}
-        </Text>
-        <Text style={styles.body}>
-          Proposed:{' '}
-          {money(
-            Number(amendment.financial.proposedOwnerEarningsMinor ?? 0),
-            amendment.financial.currency,
-          )}
-        </Text>
-        <Text style={styles.body}>
-          Change: {ownerDelta >= 0 ? '+' : ''}
-          {money(ownerDelta, amendment.financial.currency)}
-        </Text>
-        {additional > 0 && (
-          <Text style={styles.body}>
-            Renter additional payment: {money(additional, amendment.financial.currency)}
-          </Text>
-        )}
-      </Card>
+      {processing && (
+        <View
+          accessibilityLabel="Applying booking change. Processing."
+          accessibilityRole="progressbar"
+          style={styles.processingCue}
+        >
+          <ActivityIndicator color={colors.primary} size="small" />
+          <Text style={styles.processingText}>Processing</Text>
+        </View>
+      )}
+      {applied ? (
+        <>
+          <View accessibilityLabel="Authoritative updated booking details">
+            <Card>
+              <Text accessibilityRole="header" style={styles.cardHeading}>
+                {activeExtension ? 'Return time' : 'Trip dates'}
+              </Text>
+              {activeExtension ? (
+                <CompactReturn
+                  compact
+                  label="Updated return"
+                  value={amendment.proposed.rentalEnd}
+                />
+              ) : (
+                <CompactDateRange
+                  start={amendment.proposed.rentalStart}
+                  end={amendment.proposed.rentalEnd}
+                />
+              )}
+              <View style={styles.detailDivider} />
+              <Text style={styles.metaLabel}>Handover</Text>
+              <Text style={styles.detailValue}>
+                {handoverSummary(amendment.proposed.startMethod, amendment.proposed.endMethod)}
+              </Text>
+            </Card>
+          </View>
+          <Card>
+            <Text accessibilityRole="header" style={styles.cardHeading}>
+              Owner earnings
+            </Text>
+            <Text style={styles.earningsValue}>
+              {money(proposedEarnings, amendment.financial.currency)}
+            </Text>
+            <Text style={styles.noChange}>
+              {ownerDelta === 0
+                ? 'No change'
+                : `Changed by ${earningsDeltaCopy(ownerDelta, amendment.financial.currency)}`}
+            </Text>
+          </Card>
+        </>
+      ) : (
+        <>
+          <Card>
+            <Text accessibilityRole="header" style={styles.cardHeading}>
+              {pickupUnchanged ? 'Return change' : 'Trip dates'}
+            </Text>
+            {pickupUnchanged ? (
+              <View style={styles.rangeGrid}>
+                <CompactReturn label="Current return" value={amendment.current.rentalEnd} />
+                <CompactReturn label="Requested return" value={amendment.proposed.rentalEnd} />
+              </View>
+            ) : (
+              <View style={styles.rangeGrid}>
+                <CompactDateRange
+                  label="Current"
+                  start={amendment.current.rentalStart}
+                  end={amendment.current.rentalEnd}
+                />
+                <CompactDateRange
+                  label="Requested"
+                  start={amendment.proposed.rentalStart}
+                  end={amendment.proposed.rentalEnd}
+                />
+              </View>
+            )}
+            <View style={styles.detailDivider} />
+            <Text style={styles.metaLabel}>Handover</Text>
+            {handoverChanged ? (
+              <View style={styles.handoverChanges}>
+                {amendment.current.startMethod !== amendment.proposed.startMethod && (
+                  <Transition
+                    label="Receive the car"
+                    current={handoverMethod(amendment.current.startMethod)}
+                    requested={handoverMethod(amendment.proposed.startMethod)}
+                  />
+                )}
+                {amendment.current.endMethod !== amendment.proposed.endMethod && (
+                  <Transition
+                    label="Return the car"
+                    current={handoverMethod(amendment.current.endMethod)}
+                    requested={handoverMethod(amendment.proposed.endMethod)}
+                  />
+                )}
+              </View>
+            ) : (
+              <>
+                <Text style={styles.detailValue}>
+                  {handoverSummary(amendment.current.startMethod, amendment.current.endMethod)}
+                </Text>
+                <Text style={styles.noChange}>No change</Text>
+              </>
+            )}
+          </Card>
+          <Card>
+            <Text accessibilityRole="header" style={styles.cardHeading}>
+              Owner earnings
+            </Text>
+            {ownerDelta === 0 ? (
+              <>
+                <Text style={styles.earningsValue}>
+                  {money(currentEarnings, amendment.financial.currency)}
+                </Text>
+                <Text style={styles.noChange}>No change</Text>
+              </>
+            ) : (
+              <>
+                <FinancialRow
+                  label="Current earnings"
+                  value={money(currentEarnings, amendment.financial.currency)}
+                />
+                <FinancialRow
+                  label="Requested earnings"
+                  value={money(proposedEarnings, amendment.financial.currency)}
+                />
+                <FinancialRow
+                  label="Change"
+                  value={earningsDeltaCopy(ownerDelta, amendment.financial.currency)}
+                  emphasized
+                />
+              </>
+            )}
+            {additional > 0 && (
+              <Text style={styles.note}>
+                Renter additional payment: {money(additional, amendment.financial.currency)}
+              </Text>
+            )}
+          </Card>
+        </>
+      )}
       {decide.isError && (
         <Card style={styles.notice}>
           <Text style={styles.error}>{amendmentErrorMessage(decide.error)}</Text>
@@ -733,6 +889,155 @@ function OwnerRequestDetail({
   );
 }
 
+function CompactDateRange({
+  compactTime = false,
+  label,
+  start,
+  end,
+}: {
+  readonly compactTime?: boolean;
+  readonly label?: string;
+  readonly start: string;
+  readonly end: string;
+}) {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  return (
+    <View
+      accessibilityLabel={`${label ? `${label}. ` : ''}${accessibleDateRange(start, end)}`}
+      style={styles.compactRange}
+    >
+      {label && <Text style={styles.metaLabel}>{label}</Text>}
+      <Text style={styles.rangeValue}>
+        {tripDateSummary(startDate, endDate, { alwaysShowYear: true })}
+      </Text>
+      <Text style={styles.rangeTimes}>
+        {compactTime
+          ? `${timeLabel(startDate)} → ${timeLabel(endDate)}`
+          : `Pickup ${timeLabel(startDate)} · Return ${timeLabel(endDate)}`}
+      </Text>
+    </View>
+  );
+}
+
+function CompactReturn({
+  compact = false,
+  label,
+  value,
+}: {
+  readonly compact?: boolean;
+  readonly label: string;
+  readonly value: string;
+}) {
+  const date = new Date(value);
+  return (
+    <View accessibilityLabel={`${label}, ${dateTimeLabel(value)}`} style={styles.compactRange}>
+      <Text style={styles.metaLabel}>{label}</Text>
+      <Text style={styles.rangeValue}>
+        {compact
+          ? `${tripDateSummary(date, date, { alwaysShowYear: true })} · ${timeLabel(date)}`
+          : dateTimeLabel(value)}
+      </Text>
+    </View>
+  );
+}
+
+function FinancialRow({
+  emphasized = false,
+  label,
+  value,
+}: {
+  readonly emphasized?: boolean;
+  readonly label: string;
+  readonly value: string;
+}) {
+  return (
+    <View accessibilityLabel={`${label}, ${value}`} style={styles.financialRow}>
+      <Text style={styles.financialLabel}>{label}</Text>
+      <Text style={[styles.financialValue, emphasized && styles.financialEmphasis]}>{value}</Text>
+    </View>
+  );
+}
+
+function Transition({
+  label,
+  current,
+  requested,
+}: {
+  readonly label: string;
+  readonly current: string;
+  readonly requested: string;
+}) {
+  return (
+    <View style={styles.transition}>
+      <Text style={styles.metaLabel}>{label}</Text>
+      <Text style={styles.detailValue}>
+        {current} → {requested}
+      </Text>
+    </View>
+  );
+}
+
+function safeMoneyMinor(value: unknown) {
+  const parsed = typeof value === 'number' ? value : Number(value ?? 0);
+  return Number.isSafeInteger(parsed) && Number.isFinite(parsed) ? parsed : 0;
+}
+
+function ownerAmendmentScope(filter: Filter) {
+  return filter === 'Needs response'
+    ? 'NEEDS_RESPONSE'
+    : filter === 'Upcoming'
+      ? 'UPCOMING'
+      : 'ALL';
+}
+
+function ownerAmendmentEmptyTitle(filter: Filter) {
+  if (filter === 'Needs response') return 'No booking changes need your response';
+  if (filter === 'Upcoming') return 'No upcoming booking changes';
+  return 'No booking change history yet';
+}
+
+function ownerAmendmentEmptyMessage(filter: Filter) {
+  return filter === 'All'
+    ? 'Past and current booking changes will appear here.'
+    : 'Relevant booking changes will appear here when available.';
+}
+
+function earningsDeltaCopy(value: number, currency: string) {
+  if (value === 0) return 'No earnings change';
+  return `${value > 0 ? '+' : ''}${money(value, currency)}`;
+}
+
+function earningsDeltaAccessibility(value: number, currency: string) {
+  if (value === 0) return 'Owner earnings change, no change';
+  return `Owner earnings change, ${value < 0 ? 'minus ' : 'plus '}${money(Math.abs(value), currency)}`;
+}
+
+function accessibleDateRange(start: string, end: string) {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  return `${tripDateSummary(startDate, endDate, { alwaysShowYear: true })}. Pickup ${timeLabel(startDate)}. Return ${timeLabel(endDate)}`;
+}
+
+function compactDeadline(value: string) {
+  const date = new Date(value);
+  return `${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · ${timeLabel(date)}`;
+}
+
+function handoverMethod(value: string) {
+  return value === 'OWNER_DELIVERY'
+    ? 'Owner delivery'
+    : value === 'OWNER_COLLECTION'
+      ? 'Owner collection'
+      : value === 'RENTER_PICKUP'
+        ? 'Renter pickup'
+        : 'Renter return';
+}
+
+function handoverSummary(start: string, end: string) {
+  return `${handoverMethod(start)} · ${handoverMethod(end)}`;
+}
+
 function ownerFulfillmentLocation(location: {
   readonly addressLine1: string | null;
   readonly city: string;
@@ -776,10 +1081,50 @@ function nextStep(booking: OwnerBookingView) {
 
 const styles = StyleSheet.create({
   body: { color: colors.subtleText, fontSize: 13, lineHeight: 19, marginTop: 2 },
+  cardHeading: { color: colors.ink, fontSize: 18, fontWeight: '900', marginBottom: spacing.sm },
+  changeCard: { gap: spacing.sm },
+  changeCardHeader: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  changeEyebrow: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  changeMetaGrid: {
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.md,
+    paddingTop: spacing.sm,
+  },
+  changeRequests: { gap: spacing.sm },
+  changeRenter: { color: colors.ink, fontSize: 16, fontWeight: '900', marginTop: spacing.xxs },
+  compactRange: { flex: 1, gap: spacing.xxs, minWidth: 0 },
+  detailDivider: {
+    backgroundColor: colors.border,
+    height: StyleSheet.hairlineWidth,
+    marginVertical: spacing.md,
+  },
+  detailValue: { color: colors.ink, fontSize: 14, fontWeight: '800', marginTop: spacing.xxs },
+  earningsValue: { color: colors.ink, fontSize: 22, fontWeight: '900' },
   error: { color: colors.danger, marginTop: spacing.sm },
+  financialEmphasis: { color: colors.ink, fontWeight: '900' },
+  financialLabel: { color: colors.subtleText, flex: 1, fontSize: 13, fontWeight: '700' },
+  financialRow: {
+    alignItems: 'center',
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+  },
+  financialValue: { color: colors.ink, fontSize: 14, fontWeight: '800', textAlign: 'right' },
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   flex: { flex: 1, minWidth: 0 },
   hero: { borderRadius: radius.lg, height: 210, width: '100%' },
+  handoverChanges: { gap: spacing.sm, marginTop: spacing.sm },
   trustProfile: { borderTopColor: colors.border, borderTopWidth: 1, marginTop: spacing.sm },
   info: {
     alignItems: 'center',
@@ -804,6 +1149,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginTop: spacing.sm,
   },
+  metaLabel: { color: colors.subtleText, fontSize: 12, fontWeight: '800' },
+  metaValue: { color: colors.ink, fontSize: 14, fontWeight: '800', marginTop: spacing.xxs },
+  noChange: { color: colors.primary, fontSize: 12, fontWeight: '800', marginTop: spacing.xxs },
   notice: { backgroundColor: colors.warningSoft },
   note: { color: colors.subtleText, fontSize: 12, lineHeight: 18, marginTop: spacing.sm },
   price: {
@@ -813,7 +1161,22 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     marginLeft: 'auto',
   },
+  processingCue: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  processingText: { color: colors.primary, fontSize: 12, fontWeight: '800' },
   requestCard: { flexDirection: 'row', gap: spacing.sm },
+  rangeGrid: { flexDirection: 'row', gap: spacing.sm },
+  rangeTimes: { color: colors.subtleText, fontSize: 12, lineHeight: 17 },
+  rangeValue: { color: colors.ink, fontSize: 15, fontWeight: '900' },
+  sectionLabel: { color: colors.ink, fontSize: 16, fontWeight: '900' },
   statusSlot: { flexShrink: 1 },
   thumbnail: { borderRadius: radius.md, height: 128, width: 108 },
   timelineDot: {
@@ -826,4 +1189,5 @@ const styles = StyleSheet.create({
   timelineRow: { flexDirection: 'row', gap: spacing.sm, minHeight: 58, marginTop: spacing.sm },
   timelineTrack: { alignItems: 'center', width: 16 },
   title: { color: colors.ink, fontSize: 15, fontWeight: '800' },
+  transition: { gap: spacing.xxs },
 });

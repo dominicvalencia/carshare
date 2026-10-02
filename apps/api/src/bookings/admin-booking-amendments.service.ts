@@ -131,6 +131,10 @@ export class AdminBookingAmendmentsService {
         settlement: {
           include: {
             refund: { include: { operation: true, payment: true } },
+            refunds: {
+              include: { operation: true, payment: true },
+              orderBy: { amendmentAllocationIndex: 'asc' },
+            },
             refundResolutionEvidence: { orderBy: { evidenceAt: 'asc' } },
           },
         },
@@ -162,13 +166,16 @@ export class AdminBookingAmendmentsService {
           ...(ledgerIds.length ? [{ id: { in: ledgerIds } }] : []),
           { sourceId: amendment.id },
           ...(amendment.settlement?.refundId ? [{ sourceId: amendment.settlement.refundId }] : []),
+          ...(amendment.settlement?.refunds.length
+            ? [{ sourceId: { in: amendment.settlement.refunds.map((refund) => refund.id) } }]
+            : []),
         ],
       },
       include: { entries: { include: { account: { select: { code: true, name: true } } } } },
       orderBy: { postedAt: 'asc' },
     });
     const manualResolutionEligible = Boolean(
-      amendment.settlement?.refundId &&
+      (amendment.settlement?.refundId || amendment.settlement?.refunds.length) &&
       amendment.settlement.reconciliationRequired &&
       amendment.status === BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
     );

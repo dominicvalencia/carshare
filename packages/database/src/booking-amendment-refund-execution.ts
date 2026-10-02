@@ -81,7 +81,14 @@ export async function executeBookingAmendmentRefund(
   }
   if (result.kind === 'SUCCEEDED') {
     await finalizeSuccess(database, prepared, result, now);
-    return refundProjection(database, amendmentId, 'COMPLETED');
+    const projection = await refundProjection(database, amendmentId, 'COMPLETED');
+    if (projection.settlementStatus !== BookingAmendmentSettlementStatus.COMPLETED)
+      return executeBookingAmendmentRefund(database, provider, amendmentId, {
+        ...options,
+        allowReplay: true,
+        now,
+      });
+    return projection;
   }
   if (result.kind === 'DECLINED') {
     await finalizeFailure(database, prepared, result, now);
@@ -139,6 +146,11 @@ async function prepare(
         include: {
           booking: {
             include: {
+              amendments: {
+                include: { settlement: true },
+                orderBy: [{ appliedAt: 'desc' }, { id: 'desc' }],
+                where: { status: BookingAmendmentStatus.APPLIED },
+              },
               payments: {
                 include: { refunds: true },
                 orderBy: { createdAt: 'desc' },
@@ -146,7 +158,15 @@ async function prepare(
             },
           },
           holds: { include: { occupancy: true } },
-          settlement: { include: { refund: { include: { operation: true } } } },
+          settlement: {
+            include: {
+              refund: { include: { operation: true } },
+              refunds: {
+                include: { operation: true },
+                orderBy: { amendmentAllocationIndex: 'asc' },
+              },
+            },
+          },
         },
         where: { id: amendmentId },
       });
@@ -176,12 +196,154 @@ async function prepare(
         amendment.holds.some((hold) => hold.status !== 'ACTIVE' || !hold.occupancy.active)
       )
         throw new Error('BOOKING_AMENDMENT_REFUND_HOLD_INVALID');
-      if (
-        settlement.refund?.status === RefundStatus.COMPLETED &&
-        settlement.refund.operation?.status === PaymentOperationStatus.SUCCEEDED
-      ) {
+      let refunds = settlement.refunds.length
+        ? settlement.refunds
+        : settlement.refund
+          ? [settlement.refund]
+          : [];
+      if (!refunds.length) {
+        const eligibleAdditionalPaymentIds = new Set(
+          amendment.booking.amendments
+            .filter((item) => item.settlement?.additionalPaymentId)
+            .map((item) => item.settlement!.additionalPaymentId!),
+        );
+        const captured = (payment: (typeof amendment.booking.payments)[number]) =>
+          new Set<PaymentStatus>([
+            PaymentStatus.CAPTURED,
+            PaymentStatus.PARTIALLY_REFUNDED,
+            PaymentStatus.REFUNDED,
+          ]).has(payment.status);
+        const candidates = activeExtensionRecovery
+          ? amendment.booking.payments.filter(
+              (payment) =>
+                payment.id === settlement.additionalPaymentId &&
+                payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE &&
+                captured(payment),
+            )
+          : [
+              ...amendment.booking.amendments
+                .filter((item) => item.settlement?.additionalPaymentId)
+                .map((item) =>
+                  amendment.booking.payments.find(
+                    (payment) =>
+                      payment.id === item.settlement!.additionalPaymentId &&
+                      eligibleAdditionalPaymentIds.has(payment.id) &&
+                      payment.additionalChargeId === null &&
+                      payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE &&
+                      captured(payment),
+                  ),
+                )
+                .filter((payment): payment is NonNullable<typeof payment> => Boolean(payment)),
+              ...amendment.booking.payments.filter(
+                (payment) => payment.purpose === PaymentPurpose.RENTAL && captured(payment),
+              ),
+            ];
+        const uniqueCandidates = candidates.filter(
+          (payment, index) => candidates.findIndex((item) => item.id === payment.id) === index,
+        );
+        let remaining = amountMinor;
+        const allocations: Array<{
+          amountMinor: bigint;
+          payment: (typeof uniqueCandidates)[number];
+        }> = [];
+        for (const payment of uniqueCandidates) {
+          if (!payment.externalPaymentId || payment.currency !== settlement.currency) continue;
+          await transaction.$queryRaw(
+            Prisma.sql`SELECT "id" FROM "payments" WHERE "id" = ${payment.id}::uuid FOR UPDATE`,
+          );
+          const committed = payment.refunds
+            .filter(
+              (refund) =>
+                refund.status !== RefundStatus.FAILED && refund.status !== RefundStatus.REJECTED,
+            )
+            .reduce((sum, refund) => sum + refund.amountMinor, 0n);
+          const available = payment.capturedAmountMinor - committed;
+          if (available <= 0n) continue;
+          const allocated = available < remaining ? available : remaining;
+          allocations.push({ amountMinor: allocated, payment });
+          remaining -= allocated;
+          if (remaining === 0n) break;
+        }
+        if (remaining !== 0n) {
+          const error = new Error('BOOKING_AMENDMENT_REFUND_BALANCE_INSUFFICIENT');
+          Object.assign(error, {
+            amendmentId: amendment.id,
+            availableSourceTotalMinor: (amountMinor - remaining).toString(),
+            bookingId: amendment.booking.id,
+            candidatePayments: uniqueCandidates.map((payment) => payment.id),
+            requestedAmountMinor: amountMinor.toString(),
+            settlementId: settlement.id,
+          });
+          throw error;
+        }
+        await recognizeObligation(
+          transaction,
+          amendment.id,
+          settlement.currency,
+          amountMinor,
+          amendment.correlationId,
+          activeExtensionRecovery,
+        );
+        for (const [allocationIndex, allocation] of allocations.entries()) {
+          const providerRequestReference = randomUUID();
+          const operation = await transaction.paymentOperation.create({
+            data: {
+              amountMinor: allocation.amountMinor,
+              attemptCount: 0,
+              currency: settlement.currency,
+              idempotencyKey: `booking-amendment:${amendment.id}:refund:${allocationIndex}:v1`,
+              nextAttemptAt: now,
+              paymentId: allocation.payment.id,
+              providerRequestReference,
+              status: PaymentOperationStatus.PENDING,
+              type: PaymentOperationType.REFUND,
+            },
+          });
+          await transaction.refund.create({
+            data: {
+              amendmentAllocationIndex: allocationIndex,
+              amendmentSettlementId: settlement.id,
+              amountMinor: allocation.amountMinor,
+              currency: settlement.currency,
+              operationId: operation.id,
+              paymentId: allocation.payment.id,
+              reason: activeExtensionRecovery
+                ? `Unapplied active extension ${amendment.id}`
+                : `Accepted booking amendment ${amendment.id}`,
+              status: RefundStatus.PROCESSING,
+            },
+          });
+        }
+        await transaction.bookingAmendmentSettlement.update({
+          data: {
+            reconciliationRequired: false,
+            status: BookingAmendmentSettlementStatus.PROCESSING,
+          },
+          where: { id: settlement.id },
+        });
+        refunds = await transaction.refund.findMany({
+          include: { operation: true },
+          orderBy: { amendmentAllocationIndex: 'asc' },
+          where: { amendmentSettlementId: settlement.id },
+        });
+        // Keep the singular pointer as a deprecated compatibility alias only
+        // when the logical refund has exactly one provider allocation.
+        if (refunds.length === 1)
+          await transaction.bookingAmendmentSettlement.update({
+            data: { refundId: refunds[0]!.id },
+            where: { id: settlement.id },
+          });
+      }
+      if (refunds.reduce((sum, refund) => sum + refund.amountMinor, 0n) !== amountMinor)
+        throw new Error('BOOKING_AMENDMENT_REFUND_CORRELATION_INVALID');
+      const refund = refunds.find(
+        (item) =>
+          item.status !== RefundStatus.COMPLETED ||
+          item.operation?.status !== PaymentOperationStatus.SUCCEEDED,
+      );
+      if (!refund) {
         const completedPayment = amendment.booking.payments.find(
-          (item) => item.id === settlement.refund?.paymentId,
+          (item) => item.id === refunds[0]!.paymentId,
         );
         if (!completedPayment?.externalPaymentId)
           throw new Error('BOOKING_AMENDMENT_REFUND_PAYMENT_INVALID');
@@ -189,105 +351,25 @@ async function prepare(
           false,
           amendment,
           completedPayment,
-          settlement.refund,
+          refunds[0]!,
           settlement.id,
           'COMPLETED',
           activeExtensionRecovery,
         );
       }
-      const payment = activeExtensionRecovery
-        ? amendment.booking.payments.find(
-            (item) =>
-              item.id === settlement.additionalPaymentId &&
-              item.purpose === PaymentPurpose.ADDITIONAL_CHARGE &&
-              (item.status === PaymentStatus.CAPTURED ||
-                item.status === PaymentStatus.PARTIALLY_REFUNDED ||
-                item.status === PaymentStatus.REFUNDED),
-          )
-        : amendment.booking.payments.find(
-            (item) =>
-              item.purpose === PaymentPurpose.RENTAL &&
-              (item.status === PaymentStatus.CAPTURED ||
-                item.status === PaymentStatus.PARTIALLY_REFUNDED),
-          );
-      if (!payment?.externalPaymentId || payment.currency !== settlement.currency)
-        throw new Error('BOOKING_AMENDMENT_REFUND_PAYMENT_INVALID');
-      await transaction.$queryRaw(
-        Prisma.sql`SELECT "id" FROM "payments" WHERE "id" = ${payment.id}::uuid FOR UPDATE`,
-      );
-      const committedRefunds = payment.refunds
-        .filter(
-          (refund) => refund.status !== RefundStatus.FAILED && refund.id !== settlement.refundId,
-        )
-        .reduce((sum, refund) => sum + refund.amountMinor, 0n);
+      const payment = amendment.booking.payments.find((item) => item.id === refund.paymentId);
       if (
-        committedRefunds > payment.capturedAmountMinor ||
-        amountMinor > payment.capturedAmountMinor - committedRefunds
-      )
-        throw new Error('BOOKING_AMENDMENT_REFUND_BALANCE_INSUFFICIENT');
-
-      await recognizeObligation(
-        transaction,
-        amendment.id,
-        settlement.currency,
-        amountMinor,
-        amendment.correlationId,
-        activeExtensionRecovery,
-      );
-      let refund = settlement.refund;
-      let created = false;
-      if (!refund) {
-        const providerRequestReference = randomUUID();
-        const operation = await transaction.paymentOperation.create({
-          data: {
-            amountMinor,
-            attemptCount: 1,
-            currency: settlement.currency,
-            idempotencyKey: `booking-amendment:${amendment.id}:refund:v1`,
-            nextAttemptAt: new Date(now.getTime() + OPERATION_RETRY_DELAY_MS),
-            paymentId: payment.id,
-            providerRequestReference,
-            startedAt: now,
-            status: PaymentOperationStatus.PROCESSING,
-            type: PaymentOperationType.REFUND,
-          },
-        });
-        refund = await transaction.refund.create({
-          data: {
-            amountMinor,
-            currency: settlement.currency,
-            operationId: operation.id,
-            paymentId: payment.id,
-            reason: activeExtensionRecovery
-              ? `Unapplied active extension ${amendment.id}`
-              : `Accepted booking amendment ${amendment.id}`,
-            status: RefundStatus.PROCESSING,
-          },
-          include: { operation: true },
-        });
-        await transaction.bookingAmendmentSettlement.update({
-          data: {
-            reconciliationRequired: false,
-            refundId: refund.id,
-            status: BookingAmendmentSettlementStatus.PROCESSING,
-          },
-          where: { id: settlement.id },
-        });
-        created = true;
-      }
-      if (
-        refund.paymentId !== payment.id ||
-        refund.amountMinor !== amountMinor ||
-        refund.currency !== settlement.currency ||
+        !payment?.externalPaymentId ||
+        payment.currency !== settlement.currency ||
         !refund.operation ||
         refund.operation.paymentId !== payment.id ||
-        refund.operation.amountMinor !== amountMinor ||
+        refund.operation.amountMinor !== refund.amountMinor ||
         refund.operation.currency !== settlement.currency
       )
         throw new Error('BOOKING_AMENDMENT_REFUND_CORRELATION_INVALID');
       if (
-        refund.status === RefundStatus.COMPLETED ||
-        refund.operation.status === PaymentOperationStatus.SUCCEEDED
+        refund.status === RefundStatus.FAILED ||
+        refund.operation.status === PaymentOperationStatus.FAILED
       )
         return result(
           false,
@@ -295,7 +377,7 @@ async function prepare(
           payment,
           refund,
           settlement.id,
-          'COMPLETED',
+          'DEFINITIVE_FAILURE',
           activeExtensionRecovery,
         );
       const replayableStatuses: readonly PaymentOperationStatus[] = [
@@ -304,12 +386,14 @@ async function prepare(
         PaymentOperationStatus.PENDING,
       ];
       const replayable =
-        allowReplay &&
-        refund.operation.nextAttemptAt !== null &&
-        refund.operation.nextAttemptAt <= now &&
-        refund.operation.createdAt.getTime() + exactReplayWindowMinutes * 60_000 > now.getTime() &&
-        replayableStatuses.includes(refund.operation.status);
-      if (!created && !replayable)
+        refund.operation.status === PaymentOperationStatus.PENDING ||
+        (allowReplay &&
+          refund.operation.nextAttemptAt !== null &&
+          refund.operation.nextAttemptAt <= now &&
+          refund.operation.createdAt.getTime() + exactReplayWindowMinutes * 60_000 >
+            now.getTime() &&
+          replayableStatuses.includes(refund.operation.status));
+      if (!replayable)
         return result(
           false,
           amendment,
@@ -319,16 +403,15 @@ async function prepare(
           'IN_PROGRESS',
           activeExtensionRecovery,
         );
-      if (replayable)
-        await transaction.paymentOperation.update({
-          data: {
-            attemptCount: { increment: 1 },
-            nextAttemptAt: new Date(now.getTime() + OPERATION_RETRY_DELAY_MS),
-            startedAt: now,
-            status: PaymentOperationStatus.PROCESSING,
-          },
-          where: { id: refund.operation.id },
-        });
+      await transaction.paymentOperation.update({
+        data: {
+          attemptCount: { increment: 1 },
+          nextAttemptAt: new Date(now.getTime() + OPERATION_RETRY_DELAY_MS),
+          startedAt: now,
+          status: PaymentOperationStatus.PROCESSING,
+        },
+        where: { id: refund.operation.id },
+      });
       return result(
         true,
         amendment,
@@ -485,6 +568,10 @@ async function finalizeSuccess(
       const payable = account(FinancialAccountType.REFUND_PAYABLE);
       const receivable = account(FinancialAccountType.PAYMENT_PROVIDER_RECEIVABLE);
       if (!payable || !receivable) throw new Error('AMENDMENT_REFUND_SETTLEMENT_ACCOUNTS_MISSING');
+      const allocationCount = await transaction.refund.count({
+        where: { amendmentSettlementId: prepared.settlementId },
+      });
+      const ledgerSourceId = allocationCount === 1 ? prepared.settlementId : prepared.refundId;
       const ledger = await transaction.ledgerTransaction.upsert({
         create: {
           currency: prepared.currency,
@@ -503,7 +590,7 @@ async function finalizeSuccess(
               },
             ],
           },
-          sourceId: prepared.settlementId,
+          sourceId: ledgerSourceId,
           sourceType: 'BOOKING_AMENDMENT_REFUND',
           type: LedgerTransactionType.REFUND,
         },
@@ -511,7 +598,7 @@ async function finalizeSuccess(
         where: {
           sourceType_sourceId_type_currency: {
             currency: prepared.currency,
-            sourceId: prepared.settlementId,
+            sourceId: ledgerSourceId,
             sourceType: 'BOOKING_AMENDMENT_REFUND',
             type: LedgerTransactionType.REFUND,
           },
@@ -559,32 +646,58 @@ async function finalizeSuccess(
         },
         where: { id: payment.id },
       });
-      await transaction.bookingAmendmentSettlement.update({
-        data: {
-          completedAt,
-          ledgerTransactionId: ledger.id,
-          reconciliationRequired: false,
-          status: BookingAmendmentSettlementStatus.COMPLETED,
-        },
-        where: { amendmentId: prepared.amendmentId },
+      const settlement = await transaction.bookingAmendmentSettlement.findUniqueOrThrow({
+        include: { refunds: { include: { operation: true } } },
+        where: { id: prepared.settlementId },
       });
-      await transaction.outboxEvent.create({
-        data: {
-          aggregateId: prepared.bookingId,
-          aggregateType: 'BOOKING_AMENDMENT',
-          eventType: prepared.activeExtensionRecovery
-            ? 'BOOKING_AMENDMENT_ACTIVE_EXTENSION_RECOVERY_COMPLETED'
-            : prepared.amendmentStatus === BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING
-              ? 'BOOKING_AMENDMENT_FINANCIAL_RECOVERY_REFUND_COMPLETED'
-              : 'BOOKING_AMENDMENT_REFUND_COMPLETED_AWAITING_APPLICATION',
-          payload: {
-            amendmentId: prepared.amendmentId,
-            bookingId: prepared.bookingId,
-            recipientUserId: prepared.recipientUserId,
-            refundId: prepared.refundId,
+      const completedTotal = settlement.refunds
+        .filter(
+          (item) =>
+            item.status === RefundStatus.COMPLETED &&
+            item.operation?.status === PaymentOperationStatus.SUCCEEDED,
+        )
+        .reduce((sum, item) => sum + item.amountMinor, 0n);
+      const expectedTotal = prepared.activeExtensionRecovery
+        ? settlement.financialDeltaMinor
+        : -settlement.financialDeltaMinor;
+      if (completedTotal === expectedTotal) {
+        await transaction.bookingAmendmentSettlement.update({
+          data: {
+            completedAt,
+            ledgerTransactionId: settlement.refunds.length === 1 ? ledger.id : null,
+            reconciliationRequired: false,
+            status: BookingAmendmentSettlementStatus.COMPLETED,
           },
-        },
-      });
+          where: { id: settlement.id },
+        });
+        await transaction.outboxEvent.create({
+          data: {
+            aggregateId: prepared.bookingId,
+            aggregateType: 'BOOKING_AMENDMENT',
+            eventType: prepared.activeExtensionRecovery
+              ? 'BOOKING_AMENDMENT_ACTIVE_EXTENSION_RECOVERY_COMPLETED'
+              : prepared.amendmentStatus === BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING
+                ? 'BOOKING_AMENDMENT_FINANCIAL_RECOVERY_REFUND_COMPLETED'
+                : 'BOOKING_AMENDMENT_REFUND_COMPLETED_AWAITING_APPLICATION',
+            payload: {
+              amendmentId: prepared.amendmentId,
+              bookingId: prepared.bookingId,
+              recipientUserId: prepared.recipientUserId,
+              refundIds: settlement.refunds.map((item) => item.id),
+            },
+          },
+        });
+      } else {
+        await transaction.bookingAmendmentSettlement.update({
+          data: {
+            reconciliationRequired: settlement.refunds.some(
+              (item) => item.operation?.status === PaymentOperationStatus.UNKNOWN,
+            ),
+            status: BookingAmendmentSettlementStatus.PROCESSING,
+          },
+          where: { id: settlement.id },
+        });
+      }
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
@@ -686,9 +799,24 @@ async function lockRefundAuthority(
 
 async function refundProjection(database: PrismaClient, amendmentId: string, outcome: string) {
   const amendment = await database.bookingAmendment.findUniqueOrThrow({
-    include: { settlement: { include: { refund: { include: { operation: true } } } } },
+    include: {
+      settlement: {
+        include: {
+          refund: { include: { operation: true } },
+          refunds: {
+            include: { operation: true },
+            orderBy: { amendmentAllocationIndex: 'asc' },
+          },
+        },
+      },
+    },
     where: { id: amendmentId },
   });
+  const refunds = amendment.settlement?.refunds.length
+    ? amendment.settlement.refunds
+    : amendment.settlement?.refund
+      ? [amendment.settlement.refund]
+      : [];
   return {
     amendmentId,
     amendmentStatus: amendment.status,
@@ -696,11 +824,18 @@ async function refundProjection(database: PrismaClient, amendmentId: string, out
       amendment.status === BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING &&
       amendment.settlement?.status === BookingAmendmentSettlementStatus.COMPLETED,
     outcome,
-    refund: amendment.settlement?.refund
+    refund: refunds.length
       ? {
-          amountMinor: amendment.settlement.refund.amountMinor.toString(),
-          operationStatus: amendment.settlement.refund.operation?.status ?? null,
-          status: amendment.settlement.refund.status,
+          amountMinor: refunds.reduce((sum, item) => sum + item.amountMinor, 0n).toString(),
+          children: refunds.map((item) => ({
+            allocationIndex: item.amendmentAllocationIndex,
+            amountMinor: item.amountMinor.toString(),
+            operationStatus: item.operation?.status ?? null,
+            paymentId: item.paymentId,
+            refundId: item.id,
+            status: item.status,
+          })),
+          status: amendment.settlement?.status,
         }
       : null,
     settlementStatus: amendment.settlement?.status ?? null,
@@ -712,8 +847,6 @@ export async function findRecoverableBookingAmendmentRefunds(database: PrismaCli
     SELECT s."amendment_id" AS "amendmentId"
     FROM "booking_amendment_settlements" s
     JOIN "booking_amendments" a ON a."id" = s."amendment_id"
-    LEFT JOIN "refunds" r ON r."id" = s."refund_id"
-    LEFT JOIN "payment_operations" o ON o."id" = r."operation_id"
     WHERE (
         (
           s."direction" = 'REFUND'
@@ -730,14 +863,21 @@ export async function findRecoverableBookingAmendmentRefunds(database: PrismaCli
         )
       )
       AND (
-        s."refund_id" IS NULL
-        OR (
-          r."status" = 'PROCESSING'
-          AND o."status" IN ('PENDING', 'PROCESSING', 'UNKNOWN')
-          AND (o."next_attempt_at" IS NULL OR o."next_attempt_at" <= clock_timestamp())
+        NOT EXISTS (
+          SELECT 1 FROM "refunds" child
+          WHERE child."amendment_settlement_id" = s."id"
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM "refunds" child
+          JOIN "payment_operations" operation ON operation."id" = child."operation_id"
+          WHERE child."amendment_settlement_id" = s."id"
+            AND child."status" = 'PROCESSING'
+            AND operation."status" IN ('PENDING', 'PROCESSING', 'UNKNOWN')
+            AND (operation."next_attempt_at" IS NULL OR operation."next_attempt_at" <= clock_timestamp())
         )
       )
-    ORDER BY COALESCE(o."created_at", s."created_at")
+    ORDER BY s."created_at"
     LIMIT ${limit}
   `);
   return rows.map((row) => row.amendmentId);
@@ -748,16 +888,24 @@ export async function finalizeBookingAmendmentRefundFromProviderEvidence(
   amendmentId: string,
   externalOperationId: string,
   completedAt = new Date(),
+  refundId?: string,
 ) {
   const amendment = await database.bookingAmendment.findUniqueOrThrow({
     include: {
       booking: { include: { payments: true } },
-      settlement: { include: { refund: { include: { operation: true } } } },
+      settlement: {
+        include: {
+          refund: { include: { operation: true } },
+          refunds: { include: { operation: true } },
+        },
+      },
     },
     where: { id: amendmentId },
   });
   const settlement = amendment.settlement;
-  const refund = settlement?.refund;
+  const refund = refundId
+    ? settlement?.refunds.find((item) => item.id === refundId)
+    : (settlement?.refunds[0] ?? settlement?.refund);
   const operation = refund?.operation;
   const activeExtensionRecovery =
     amendment.scope === 'ACTIVE_EXTENSION' &&
@@ -774,8 +922,9 @@ export async function finalizeBookingAmendmentRefundFromProviderEvidence(
         payment.purpose !== PaymentPurpose.ADDITIONAL_CHARGE ||
         refund.amountMinor !== settlement.financialDeltaMinor
       : settlement.direction !== BookingAmendmentFinancialDirection.REFUND ||
-        payment.purpose !== PaymentPurpose.RENTAL ||
-        refund.amountMinor !== -settlement.financialDeltaMinor) ||
+        (payment.purpose !== PaymentPurpose.RENTAL &&
+          payment.purpose !== PaymentPurpose.ADDITIONAL_CHARGE) ||
+        refund.amendmentSettlementId !== settlement.id) ||
     refund.currency !== settlement.currency
   )
     throw new Error('BOOKING_AMENDMENT_REFUND_CORRELATION_INVALID');

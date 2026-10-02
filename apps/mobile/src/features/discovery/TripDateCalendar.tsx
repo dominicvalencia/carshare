@@ -26,12 +26,14 @@ export function TripDateCalendar({
   appliedStart,
   appliedEnd,
   preselect,
+  showClear = true,
   onApply,
   onClear,
 }: {
   readonly appliedStart: Date;
   readonly appliedEnd: Date;
   readonly preselect: boolean;
+  readonly showClear?: boolean;
   readonly onApply: (start: Date, end: Date) => void;
   readonly onClear: () => void;
 }) {
@@ -181,16 +183,18 @@ export function TripDateCalendar({
           if (draftStart && draftEnd) onApply(draftStart, draftEnd);
         }}
       />
-      <Button
-        label="Clear dates"
-        onPress={() => {
-          setDraftStart(null);
-          setDraftEnd(null);
-          setRangeError('');
-          onClear();
-        }}
-        variant="ghost"
-      />
+      {showClear && (
+        <Button
+          label="Clear dates"
+          onPress={() => {
+            setDraftStart(null);
+            setDraftEnd(null);
+            setRangeError('');
+            onClear();
+          }}
+          variant="ghost"
+        />
+      )}
     </View>
   );
 }

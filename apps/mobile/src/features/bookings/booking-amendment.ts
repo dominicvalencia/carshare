@@ -21,6 +21,8 @@ export interface AmendmentValues {
   readonly fulfillmentTotalMinor?: string;
 }
 
+export type AmendmentPreviewValues = Omit<AmendmentValues, 'totalMinor'>;
+
 export interface AmendmentFinancial {
   readonly additionalPaymentMinor: string;
   readonly currency: string;
@@ -35,13 +37,82 @@ export interface AmendmentFinancial {
 export interface AmendmentPreview {
   readonly availability: { readonly available: true };
   readonly bookingReference: string;
+  readonly bookingStatus?: string;
+  readonly closedAt?: string | null;
   readonly current: AmendmentValues;
   readonly evaluatedAt: string;
   readonly expiresAt: string;
   readonly financial: AmendmentFinancial;
   readonly previewToken: string;
-  readonly proposed: AmendmentValues;
+  readonly proposed: AmendmentPreviewValues;
   readonly warnings: readonly string[];
+}
+
+export type AmendmentPreviewFinancialSummary =
+  | {
+      readonly valid: true;
+      readonly additionalPaymentMinor: number;
+      readonly currency: string;
+      readonly currentTotalMinor: number;
+      readonly differenceMinor: number;
+      readonly expectedRefundMinor: number;
+      readonly proposedTotalMinor: number;
+      readonly direction: 'ADDITIONAL_PAYMENT' | 'REFUND' | 'ZERO_DELTA';
+    }
+  | { readonly valid: false; readonly message: string };
+
+export function amendmentPreviewFinancialSummary(
+  preview: AmendmentPreview,
+): AmendmentPreviewFinancialSummary {
+  const currentTotalMinor = safeMinor(preview.current.totalMinor);
+  const proposedTotalMinor = safeMinor(preview.financial.proposedEconomicTotalMinor);
+  const additionalPaymentMinor = safeMinor(preview.financial.additionalPaymentMinor);
+  const expectedRefundMinor = safeMinor(preview.financial.expectedRefundMinor);
+  const currency = preview.financial.currency?.trim();
+  if (
+    currentTotalMinor === null ||
+    proposedTotalMinor === null ||
+    additionalPaymentMinor === null ||
+    expectedRefundMinor === null ||
+    !currency ||
+    (additionalPaymentMinor > 0 && expectedRefundMinor > 0)
+  )
+    return {
+      valid: false,
+      message: 'The latest price could not be verified. Edit the change or retry the preview.',
+    };
+  const signedDifference = proposedTotalMinor - currentTotalMinor;
+  const direction =
+    additionalPaymentMinor > 0
+      ? 'ADDITIONAL_PAYMENT'
+      : expectedRefundMinor > 0
+        ? 'REFUND'
+        : 'ZERO_DELTA';
+  if (
+    (direction === 'ADDITIONAL_PAYMENT' && signedDifference !== additionalPaymentMinor) ||
+    (direction === 'REFUND' && signedDifference !== -expectedRefundMinor) ||
+    (direction === 'ZERO_DELTA' && signedDifference !== 0)
+  )
+    return {
+      valid: false,
+      message: 'The latest price could not be verified. Edit the change or retry the preview.',
+    };
+  return {
+    additionalPaymentMinor,
+    currency,
+    currentTotalMinor,
+    differenceMinor: Math.abs(signedDifference),
+    direction,
+    expectedRefundMinor,
+    proposedTotalMinor,
+    valid: true,
+  };
+}
+
+function safeMinor(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 export interface AmendmentDetail {
@@ -62,8 +133,9 @@ export interface AmendmentDetail {
     readonly toStatus: AmendmentStatus;
   }[];
   readonly paymentDeadlineAt: string | null;
+  readonly paymentInitiationAllowed: boolean;
   readonly paymentState:
-    'WAITING_FOR_PAYMENT' | 'PAYMENT_VERIFYING' | 'PAYMENT_RECEIVED_AWAITING_APPLICATION' | null;
+    'PAYMENT_PROCESSING' | 'PAYMENT_VERIFYING' | 'PAYMENT_RECEIVED_AWAITING_APPLICATION' | null;
   readonly proposed: AmendmentValues;
   readonly reasonCode?: string | null;
   readonly refundState:
@@ -74,6 +146,7 @@ export interface AmendmentDetail {
     | 'FINANCIAL_RECOVERY_SETTLED'
     | null;
   readonly renterDisplayName?: string;
+  readonly scope?: 'PRE_TRIP' | 'ACTIVE_EXTENSION';
   readonly status: AmendmentStatus;
   readonly vehicleName?: string;
 }
@@ -86,6 +159,8 @@ export const transientAmendmentStatuses = new Set<AmendmentStatus>([
 ]);
 
 export function amendmentStatusCopy(amendment: AmendmentDetail) {
+  if (amendment.paymentState === 'PAYMENT_PROCESSING')
+    return ['Payment processing', 'Your payment is being processed. Do not pay again.'];
   if (amendment.paymentState === 'PAYMENT_VERIFYING')
     return ['Payment being verified', 'We are confirming the payment result. Do not pay again.'];
   if (amendment.paymentState === 'PAYMENT_RECEIVED_AWAITING_APPLICATION')
@@ -134,6 +209,61 @@ export function amendmentStatusCopy(amendment: AmendmentDetail) {
       FAILED: ['Change could not be completed', 'Your original booking remains unchanged.'],
     } as const
   )[amendment.status];
+}
+
+export function ownerAmendmentStatusCopy(amendment: AmendmentDetail): readonly [string, string] {
+  if (amendment.status === 'PENDING_OWNER')
+    return ['Review requested change', 'Review the request before its response deadline.'];
+  if (amendment.status === 'OWNER_ACCEPTED_PAYMENT_PENDING')
+    return [
+      'Waiting for renter payment',
+      'The requested details remain pending until payment succeeds.',
+    ];
+  if (
+    amendment.status === 'OWNER_ACCEPTED_PROCESSING' &&
+    Number(amendment.financial.expectedRefundMinor) > 0
+  )
+    return [
+      'Refund processing',
+      'The requested details remain pending while the refund is processed.',
+    ];
+  if (
+    amendment.status === 'OWNER_ACCEPTED_PROCESSING' &&
+    (amendment.paymentState === 'PAYMENT_VERIFYING' ||
+      amendment.paymentState === 'PAYMENT_RECEIVED_AWAITING_APPLICATION' ||
+      amendment.refundState === 'REFUND_VERIFYING' ||
+      amendment.refundState === 'REFUND_COMPLETED_AWAITING_APPLICATION')
+  )
+    return [
+      'Applying booking change',
+      'The requested details remain pending while the financial result is confirmed.',
+    ];
+  return (
+    {
+      OWNER_ACCEPTED_PROCESSING: [
+        'Applying booking change',
+        'The requested details remain pending while the booking is updated.',
+      ],
+      FINANCIAL_RECOVERY_PENDING: [
+        'Booking change could not be applied',
+        'Financial recovery is in progress. The original booking remains current.',
+      ],
+      APPLIED: ['Booking updated successfully', 'These are now the booking details.'],
+      DECLINED: ['Change request declined', 'The original booking remains current.'],
+      WITHDRAWN: ['Change request withdrawn', 'The original booking remains current.'],
+      EXPIRED: ['Change request expired', 'The original booking remains current.'],
+      FAILED: ['Change could not be completed', 'The original booking remains current.'],
+    } as const
+  )[amendment.status];
+}
+
+export function ownerAmendmentIsProcessing(amendment: AmendmentDetail) {
+  if (amendment.status === 'OWNER_ACCEPTED_PROCESSING') return true;
+  if (amendment.status !== 'OWNER_ACCEPTED_PAYMENT_PENDING') return false;
+  return (
+    amendment.paymentState === 'PAYMENT_PROCESSING' ||
+    amendment.paymentState === 'PAYMENT_VERIFYING'
+  );
 }
 
 export function amendmentErrorMessage(error: unknown): string {

@@ -31,8 +31,9 @@ There is at most one unresolved amendment per booking. Submission atomically per
 before/proposed snapshots, pricing/fulfillment calculations, status history, required net-new
 `AMENDMENT_HOLD` occupancy, and an outbox event. PostgreSQL exclusion constraints remain the final
 overlap authority, including racing booking and amendment submissions. Shortening does not release the
-original booking occupancy early; extension holds only the new interval. Search LIST and MAP treat
-active amendment holds as unavailable.
+original booking occupancy early. A PRE_TRIP range may move either boundary: temporary holds protect
+only a net-new earlier-start head and/or later-end tail, while application atomically replaces the
+canonical range and occupancy. Search LIST and MAP treat active amendment holds as unavailable.
 
 ## Preview, submission, and decisions
 
@@ -40,6 +41,22 @@ Preview is read-only. It validates ownership/state, timing, fulfillment, availab
 complete-trip repricing, then returns a signed, expiring token. Submission revalidates the token and
 current authority; stale or altered inputs fail. Idempotency keys replay the same request and reject a
 different payload. Owner accept/decline is also idempotent and object-authorized.
+
+PRE_TRIP proposals may change pickup and return together, subject to a coherent range and the accepted
+minimum/maximum duration, availability, buffer, and full-trip repricing authorities. ACTIVE proposals
+keep pickup immutable and may only extend return. Cancellation-equivalent refundability uses the
+original captured-payment and scheduled-pickup clock, including after an applied amendment.
+
+The booking read model exposes allowed start/end fulfillment methods and separate lifecycle
+changeability flags. The allowed sets come from the latest vehicle policy but always retain the current
+booked method under historical policy drift. Clients show one method read-only and offer selection only
+for multiple supported, changeable methods; preview still performs final policy and serviceability
+validation.
+
+The renter editor presents PRE_TRIP dates as one range and read-only fulfillment as compact summaries.
+Review shows only changed trip or handover fields plus the server-authoritative current total, proposed
+economic total, and difference. Invalid or expired financial preview data cannot be submitted and is
+shown as a recoverable preview error rather than being coerced to a zero amount.
 
 The financial delta is `proposed renter total - current renter total`, in integer PHP minor units with
 the same pricing/rounding authority as bookings. Positive is `ADDITIONAL_PAYMENT`, negative is
@@ -96,8 +113,13 @@ Renter routes below `/api/v1/bookings/:reference` are:
 - `GET amendments/:amendmentReference`, `POST .../withdraw`
 - `POST .../payment` (requires `Idempotency-Key`), `POST .../refund`
 
-Owner routes below `/api/v1/owner/bookings` include `GET amendments/actionable`, amendment detail, and
-idempotent `accept`/`decline`. Admin uses `GET /api/v1/admin/bookings/amendments` and `.../:id`.
+Owner routes below `/api/v1/owner/bookings` include the unchanged `GET amendments/actionable`,
+amendment detail, and idempotent `accept`/`decline`. The bounded `GET amendments` read model supports
+`NEEDS_RESPONSE`, `UPCOMING`, and `ALL`: Needs response is exactly `PENDING_OWNER`; Upcoming is an
+accepted in-progress, applied, or recovery amendment whose booking is capture-pending, confirmed,
+ready for pickup, active, or return-pending; All is the complete Owner-visible state set. Results are
+ownership-scoped and ordered by newest amendment activity. Admin uses
+`GET /api/v1/admin/bookings/amendments` and `.../:id`.
 Relevant stable booking errors include `AMENDMENT_ALREADY_PENDING`, `AMENDMENT_PREVIEW_INVALID`,
 `NO_CHANGES`, `UNSUPPORTED_CHANGE`, `BOOKING_STATE_CHANGED`, `DATES_UNAVAILABLE`,
 `FULFILLMENT_UNAVAILABLE`, `PREPARATION_TIME_CONFLICT`, and idempotency errors.

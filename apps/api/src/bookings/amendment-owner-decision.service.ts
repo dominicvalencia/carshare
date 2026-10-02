@@ -13,6 +13,10 @@ import { DatabaseService } from '../infrastructure/database/database.service';
 import type { RequestMetadata } from '../security/security-context';
 import { amendmentPaymentDeadline } from './booking-amendment-foundation';
 import { OutboxService } from './outbox.service';
+import {
+  OwnerAmendmentListScope,
+  type OwnerBookingAmendmentQueryDto,
+} from './owner-booking-amendments.dto';
 
 const OWNER_AMENDMENT_INCLUDE = {
   booking: {
@@ -31,7 +35,7 @@ const OWNER_AMENDMENT_INCLUDE = {
   fulfillmentSnapshot: true,
   holds: { include: { occupancy: true }, orderBy: { protectedStart: 'asc' as const } },
   pricingSnapshot: true,
-  settlement: true,
+  settlement: { include: { refund: { include: { operation: true } } } },
   statusHistory: { orderBy: { occurredAt: 'asc' as const } },
 } satisfies Prisma.BookingAmendmentInclude;
 
@@ -39,6 +43,33 @@ type OwnerAmendment = Prisma.BookingAmendmentGetPayload<{
   include: typeof OWNER_AMENDMENT_INCLUDE;
 }>;
 type Decision = 'ACCEPT' | 'DECLINE';
+
+export const ownerVisibleAmendmentStatuses: readonly BookingAmendmentStatus[] = [
+  BookingAmendmentStatus.PENDING_OWNER,
+  BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
+  BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+  BookingAmendmentStatus.APPLIED,
+  BookingAmendmentStatus.DECLINED,
+  BookingAmendmentStatus.WITHDRAWN,
+  BookingAmendmentStatus.EXPIRED,
+  BookingAmendmentStatus.FAILED,
+  BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
+];
+
+export const ownerUpcomingAmendmentStatuses: readonly BookingAmendmentStatus[] = [
+  BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
+  BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+  BookingAmendmentStatus.APPLIED,
+  BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
+];
+
+export const ownerUpcomingBookingStatuses: readonly BookingStatus[] = [
+  BookingStatus.CAPTURE_PENDING,
+  BookingStatus.CONFIRMED,
+  BookingStatus.READY_FOR_PICKUP,
+  BookingStatus.ACTIVE,
+  BookingStatus.RETURN_PENDING,
+];
 
 @Injectable()
 export class AmendmentOwnerDecisionService {
@@ -61,6 +92,42 @@ export class AmendmentOwnerDecisionService {
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
     return { items: await Promise.all(records.map((record) => this.project(record))) };
+  }
+
+  async listOwnerHistory(ownerUserId: string, query: OwnerBookingAmendmentQueryDto) {
+    const where: Prisma.BookingAmendmentWhereInput = {
+      booking: {
+        ownerUserId,
+        ...(query.scope === OwnerAmendmentListScope.UPCOMING
+          ? { status: { in: [...ownerUpcomingBookingStatuses] } }
+          : {}),
+      },
+      fulfillmentSnapshot: { isNot: null },
+      pricingSnapshot: { isNot: null },
+      settlement: { isNot: null },
+      ...(query.scope === OwnerAmendmentListScope.NEEDS_RESPONSE
+        ? { status: BookingAmendmentStatus.PENDING_OWNER }
+        : query.scope === OwnerAmendmentListScope.UPCOMING
+          ? { status: { in: [...ownerUpcomingAmendmentStatuses] } }
+          : { status: { in: [...ownerVisibleAmendmentStatuses] } }),
+    };
+    const [total, records] = await this.database.client.$transaction([
+      this.database.client.bookingAmendment.count({ where }),
+      this.database.client.bookingAmendment.findMany({
+        include: OWNER_AMENDMENT_INCLUDE,
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+        where,
+      }),
+    ]);
+    return {
+      items: await Promise.all(records.map((record) => this.project(record))),
+      page: query.page,
+      pageSize: query.pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
+    };
   }
 
   async detail(ownerUserId: string, bookingReference: string, amendmentId: string) {
@@ -460,6 +527,7 @@ export class AmendmentOwnerDecisionService {
       actionable: record.status === BookingAmendmentStatus.PENDING_OWNER,
       amendmentReference: record.id,
       bookingReference: record.booking.publicReference,
+      bookingStatus: record.booking.status,
       renterDisplayName:
         record.booking.renter.profile?.displayName ??
         record.booking.renter.profile?.firstName ??
@@ -468,6 +536,12 @@ export class AmendmentOwnerDecisionService {
         [record.booking.vehicle.make, record.booking.vehicle.model].filter(Boolean).join(' ') ||
         'Vehicle',
       createdAt: record.createdAt.toISOString(),
+      closedAt:
+        record.declinedAt?.toISOString() ??
+        record.withdrawnAt?.toISOString() ??
+        record.expiredAt?.toISOString() ??
+        record.failedAt?.toISOString() ??
+        null,
       current: {
         fulfillmentTotalMinor: record.fulfillmentSnapshot!.currentFulfillmentTotalMinor.toString(),
         rentalEnd: record.booking.rentalEnd.toISOString(),
@@ -486,6 +560,7 @@ export class AmendmentOwnerDecisionService {
         proposedOwnerEarningsMinor: record.pricingSnapshot!.proposedOwnerEarningsMinor.toString(),
       },
       paymentDeadlineAt: record.paymentDeadlineAt?.toISOString() ?? null,
+      paymentInitiationAllowed: false,
       paymentState:
         record.status === BookingAmendmentStatus.APPLIED
           ? null
@@ -494,8 +569,20 @@ export class AmendmentOwnerDecisionService {
             : payment
               ? payment.reconciliationRequired
                 ? 'PAYMENT_VERIFYING'
-                : 'WAITING_FOR_PAYMENT'
+                : 'PAYMENT_PROCESSING'
               : null,
+      refundState:
+        delta >= 0n || record.status === BookingAmendmentStatus.APPLIED
+          ? null
+          : record.settlement?.refund?.status === 'COMPLETED'
+            ? record.status === BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING
+              ? 'FINANCIAL_RECOVERY_SETTLED'
+              : 'REFUND_COMPLETED_AWAITING_APPLICATION'
+            : record.settlement?.refund?.operation?.status === 'UNKNOWN'
+              ? 'REFUND_VERIFYING'
+              : record.settlement?.refund?.operation?.status === 'FAILED'
+                ? 'MANUAL_RECONCILIATION_REQUIRED'
+                : 'REFUND_PROCESSING',
       proposed: {
         fulfillmentTotalMinor: record.fulfillmentSnapshot!.proposedFulfillmentTotalMinor.toString(),
         rentalEnd: record.proposedRentalEnd.toISOString(),
@@ -505,6 +592,7 @@ export class AmendmentOwnerDecisionService {
         totalMinor: record.pricingSnapshot!.proposedTotalMinor.toString(),
       },
       reasonCode: record.reasonCode,
+      scope: record.scope,
       status: record.status,
       history: record.statusHistory.map((item) => ({
         actorType: item.actorType,

@@ -17,6 +17,7 @@ import { FulfillmentServiceabilityService } from '../fulfillment/fulfillment-ser
 import { DatabaseService } from '../infrastructure/database/database.service';
 import type { RequestMetadata } from '../security/security-context';
 import { amendmentHoldDifference } from './amendment-hold-difference';
+import { canInitiateBookingAmendmentPayment } from './amendment-payment-actionability';
 import {
   AMENDMENT_PREVIEW_INCLUDE,
   AmendmentPreviewService,
@@ -132,7 +133,7 @@ export class AmendmentSubmissionService {
             booking,
             claims,
             originalPolicy.dailyRateMinor,
-            requestHash,
+            idempotencyKey,
           );
           const submittedAt = evaluatedAt;
           const expiresAt = new Date(
@@ -272,7 +273,7 @@ export class AmendmentSubmissionService {
     booking: PreviewBooking,
     claims: AmendmentPreviewClaims,
     dailyRateMinor: number,
-    requestHash: string,
+    submissionIdempotencyKey: string,
   ) {
     const latestApplied = booking.amendments
       .filter((item) => item.status === BookingAmendmentStatus.APPLIED)
@@ -397,7 +398,10 @@ export class AmendmentSubmissionService {
         currentTotalMinor: currentTotal,
         direction,
         financialDeltaMinor: delta,
-        idempotencyKey: `${booking.id}:${requestHash}:settlement`,
+        idempotencyKey: `booking-amendment-settlement:${digest({
+          bookingId: booking.id,
+          submissionIdempotencyKey,
+        })}`,
         proposedTotalMinor: proposedTotal,
         reconciliationRequired: false,
         status: 'PENDING' as const,
@@ -509,6 +513,16 @@ export class AmendmentSubmissionService {
             : '0',
       },
       paymentDeadlineAt: record.paymentDeadlineAt?.toISOString() ?? null,
+      paymentInitiationAllowed: canInitiateBookingAmendmentPayment({
+        additionalPaymentId: record.settlement?.additionalPaymentId ?? null,
+        direction: record.settlement?.direction ?? null,
+        financialDeltaMinor: record.settlement?.financialDeltaMinor ?? null,
+        paymentDeadlineAt: record.paymentDeadlineAt,
+        pricingCurrency: record.pricingSnapshot?.currency ?? null,
+        renterFinancialDeltaMinor: record.pricingSnapshot?.renterFinancialDeltaMinor ?? null,
+        settlementCurrency: record.settlement?.currency ?? null,
+        status: record.status,
+      }),
       paymentState:
         record.status === BookingAmendmentStatus.APPLIED
           ? null
@@ -517,7 +531,7 @@ export class AmendmentSubmissionService {
             : payment
               ? payment.reconciliationRequired
                 ? 'PAYMENT_VERIFYING'
-                : 'WAITING_FOR_PAYMENT'
+                : 'PAYMENT_PROCESSING'
               : null,
       refundState:
         record.settlement!.financialDeltaMinor >= 0n ||
@@ -580,10 +594,7 @@ export class AmendmentSubmissionService {
     const value = String(
       error instanceof Error ? `${error.name} ${error.message} ${JSON.stringify(error)}` : error,
     );
-    return (
-      value.includes('booking_amendments_one_unresolved_per_booking_idx') ||
-      (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
-    );
+    return value.includes('booking_amendments_one_unresolved_per_booking_idx');
   }
 
   private isSerializationFailure(error: unknown) {

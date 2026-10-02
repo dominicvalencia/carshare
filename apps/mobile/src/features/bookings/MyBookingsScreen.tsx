@@ -85,6 +85,10 @@ export interface BookingView {
   readonly pickupWindow?: { readonly closesAt: string; readonly opensAt: string };
   readonly pricing: { totalMinor: number; currency: string };
   readonly fulfillment: {
+    readonly allowedStartMethods: readonly ('RENTER_PICKUP' | 'OWNER_DELIVERY')[];
+    readonly allowedEndMethods: readonly ('RENTER_RETURN' | 'OWNER_COLLECTION')[];
+    readonly startFulfillmentChangeable: boolean;
+    readonly endFulfillmentChangeable: boolean;
     readonly startMethod: 'RENTER_PICKUP' | 'OWNER_DELIVERY';
     readonly endMethod: 'RENTER_RETURN' | 'OWNER_COLLECTION';
     readonly startLocation?: {

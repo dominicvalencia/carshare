@@ -96,6 +96,27 @@ const originalPolicy = {
 };
 
 describe('AmendmentPreviewService', () => {
+  it.each([
+    ['pickup earlier', '2026-09-30T01:00:00.000Z', '2026-10-03T01:00:00.000Z'],
+    ['pickup later', '2026-10-02T01:00:00.000Z', '2026-10-03T01:00:00.000Z'],
+    ['return earlier', '2026-10-01T01:00:00.000Z', '2026-10-02T01:00:00.000Z'],
+    ['return later', '2026-10-01T01:00:00.000Z', '2026-10-04T01:00:00.000Z'],
+    ['both shifted', '2026-10-02T01:00:00.000Z', '2026-10-04T01:00:00.000Z'],
+  ])('previews a valid PRE_TRIP range with %s', async (_, proposedPickupAt, proposedReturnAt) => {
+    const { service } = makeService(booking);
+    const result = await service.previewRenter(
+      '55555555-5555-4555-8555-555555555555',
+      booking.publicReference,
+      { proposedPickupAt, proposedReturnAt },
+      new Date('2026-09-20T00:00:00.000Z'),
+    );
+
+    expect(result.proposed).toMatchObject({
+      rentalEnd: proposedReturnAt,
+      rentalStart: proposedPickupAt,
+    });
+  });
+
   it('returns a signed complete-trip preview without durable writes', async () => {
     const database = {
       client: {

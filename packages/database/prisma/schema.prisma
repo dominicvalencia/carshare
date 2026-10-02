@@ -2310,6 +2310,7 @@ model BookingAmendmentSettlement {
   completedAt              DateTime?                                  @map("completed_at") @db.Timestamptz(3)
   amendment                BookingAmendment                           @relation(fields: [amendmentId], references: [id], onDelete: Restrict)
   refund                   Refund?                                    @relation("BookingAmendmentSettlementRefund", fields: [refundId], references: [id], onDelete: Restrict)
+  refunds                  Refund[]                                   @relation("BookingAmendmentSettlementRefundAllocations")
   refundResolutionEvidence BookingAmendmentRefundResolutionEvidence[]
 
   @@map("booking_amendment_settlements")
@@ -2318,6 +2319,7 @@ model BookingAmendmentSettlement {
 model BookingAmendmentRefundResolutionEvidence {
   id                    String                         @id @default(uuid()) @db.Uuid
   amendmentSettlementId String                         @map("amendment_settlement_id") @db.Uuid
+  refundId              String?                        @map("refund_id") @db.Uuid
   provider              PaymentProviderCode
   externalReference     String                         @map("external_reference") @db.VarChar(255)
   evidenceType          AmendmentRefundEvidenceType    @map("evidence_type")
@@ -2332,9 +2334,11 @@ model BookingAmendmentRefundResolutionEvidence {
   idempotencyKey        String                         @unique @map("idempotency_key") @db.VarChar(200)
   createdAt             DateTime                       @default(now()) @map("created_at") @db.Timestamptz(3)
   amendmentSettlement   BookingAmendmentSettlement     @relation(fields: [amendmentSettlementId], references: [id], onDelete: Restrict)
+  refund                Refund?                        @relation(fields: [refundId], references: [id], onDelete: Restrict)
   actorUser             User?                          @relation("BookingAmendmentRefundEvidenceActor", fields: [actorUserId], references: [id], onDelete: Restrict)
 
   @@index([amendmentSettlementId, evidenceAt])
+  @@index([refundId, evidenceAt])
   @@index([provider, externalReference])
   @@map("booking_amendment_refund_resolution_evidence")
 }
@@ -3885,25 +3889,32 @@ model EarningHold {
 }
 
 model Refund {
-  id               String       @id @default(uuid()) @db.Uuid
-  paymentId        String       @map("payment_id") @db.Uuid
-  operationId      String?      @unique @map("operation_id") @db.Uuid
-  amountMinor      BigInt       @map("amount_minor")
-  currency         String       @db.Char(3)
-  status           RefundStatus @default(REQUESTED)
-  reason           String       @db.VarChar(1000)
-  externalRefundId String?      @map("external_refund_id") @db.VarChar(255)
-  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
-  completedAt      DateTime?    @map("completed_at") @db.Timestamptz(3)
+  id                       String       @id @default(uuid()) @db.Uuid
+  paymentId                String       @map("payment_id") @db.Uuid
+  operationId              String?      @unique @map("operation_id") @db.Uuid
+  amendmentSettlementId    String?      @map("amendment_settlement_id") @db.Uuid
+  amendmentAllocationIndex Int?         @map("amendment_allocation_index")
+  amountMinor              BigInt       @map("amount_minor")
+  currency                 String       @db.Char(3)
+  status                   RefundStatus @default(REQUESTED)
+  reason                   String       @db.VarChar(1000)
+  externalRefundId         String?      @map("external_refund_id") @db.VarChar(255)
+  createdAt                DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  completedAt              DateTime?    @map("completed_at") @db.Timestamptz(3)
 
-  payment                Payment                        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  operation              PaymentOperation?              @relation(fields: [operationId], references: [id], onDelete: Restrict)
-  disputes               Dispute[]
-  cancellationSettlement BookingCancellationSettlement?
-  amendmentSettlement    BookingAmendmentSettlement?    @relation("BookingAmendmentSettlementRefund")
+  payment                       Payment                                    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  operation                     PaymentOperation?                          @relation(fields: [operationId], references: [id], onDelete: Restrict)
+  disputes                      Dispute[]
+  cancellationSettlement        BookingCancellationSettlement?
+  amendmentSettlement           BookingAmendmentSettlement?                @relation("BookingAmendmentSettlementRefund")
+  amendmentAllocationSettlement BookingAmendmentSettlement?                @relation("BookingAmendmentSettlementRefundAllocations", fields: [amendmentSettlementId], references: [id], onDelete: Restrict)
+  amendmentResolutionEvidence   BookingAmendmentRefundResolutionEvidence[]
 
+  @@unique([amendmentSettlementId, amendmentAllocationIndex])
+  @@unique([amendmentSettlementId, paymentId])
   @@index([paymentId, status])
+  @@index([amendmentSettlementId])
   @@map("refunds")
 }
 

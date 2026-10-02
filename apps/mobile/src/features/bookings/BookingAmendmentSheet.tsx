@@ -1,18 +1,34 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  type LayoutChangeEvent,
+  useWindowDimensions,
+  View,
+} from 'react-native';
+import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiClient } from '../../auth/api-client';
 import { LocationPicker } from '../../location/LocationPicker';
 import type { CarShareLocation } from '../../location/booking-location-provider';
 import { locationLabel } from '../../location/booking-location-provider';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
-import { colors, spacing } from '../../theme/tokens';
-import { dateTimeLabel, money } from '../../ui/format';
-import { BackControl, Button, Card, Chip, Screen, StateView } from '../../ui/primitives';
+import { colors, radius, spacing } from '../../theme/tokens';
+import { DateTimeField } from '../../ui/DateTimeField';
+import { dateTimeLabel, money, timeLabel } from '../../ui/format';
+import { BackControl, Button, Card, Chip, Icon, Screen, StateView } from '../../ui/primitives';
 import type { BookingView } from './MyBookingsScreen';
+import { TripDateCalendar } from '../discovery/TripDateCalendar';
+import { tripDateSummary } from '../discovery/trip-date-policy';
 import {
   amendmentErrorMessage,
+  amendmentPreviewFinancialSummary,
   amendmentStatusCopy,
   idempotencyKey,
   transientAmendmentStatuses,
@@ -48,11 +64,21 @@ export function BookingAmendmentSheet({
   const [endMethod, setEndMethod] = useState(booking.fulfillment.endMethod);
   const [delivery, setDelivery] = useState<CarShareLocation>();
   const [collection, setCollection] = useState<CarShareLocation>();
-  const [picker, setPicker] = useState<'pickup' | 'return' | null>(null);
+  const [picker, setPicker] = useState<'dates' | 'calendar' | 'return' | null>(null);
+  const [pickerDraft, setPickerDraft] = useState<Date | null>(null);
+  const [rangeDraft, setRangeDraft] = useState<{ pickup: Date; returnAt: Date } | null>(null);
   const [locationKind, setLocationKind] = useState<'delivery' | 'collection' | null>(null);
   const [preview, setPreview] = useState<AmendmentPreview | null>(null);
   const submitKey = useRef('');
   const payKey = useRef('');
+  const payRequest = useRef<Promise<AmendmentDetail> | null>(null);
+  const wasVisible = useRef(false);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
+  const [detailHeaderHeight, setDetailHeaderHeight] = useState(0);
+  const [detailContentHeight, setDetailContentHeight] = useState(0);
+  const sheetHeight = useSharedValue(viewportHeight * 0.78);
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
 
   const detail = useQuery({
     enabled: visible && Boolean(amendmentId),
@@ -67,6 +93,38 @@ export function BookingAmendmentSheet({
   useRefreshOnFocusAndForeground(() => {
     if (visible && amendmentId) void detail.refetch();
   });
+
+  useEffect(() => {
+    const fixedHeightRatio = picker
+      ? picker === 'calendar'
+        ? 0.65
+        : picker === 'dates'
+          ? 0.51
+          : 0.86
+      : stage === 'REVIEW'
+        ? 1
+        : stage === 'EDIT'
+          ? 0.72
+          : null;
+    const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+    const measuredDetailHeight = detailHeaderHeight + detailContentHeight;
+    const nextHeight =
+      fixedHeightRatio === null
+        ? Math.min(measuredDetailHeight || sheetHeight.value, maximumHeight)
+        : viewportHeight * fixedHeightRatio;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    sheetHeight.value = withTiming(nextHeight, { duration: 280 });
+  }, [
+    detail.data,
+    detailContentHeight,
+    detailHeaderHeight,
+    picker,
+    safeArea.top,
+    sheetHeight,
+    stage,
+    viewportHeight,
+  ]);
 
   const requestBody = useMemo(
     () => ({
@@ -121,170 +179,558 @@ export function BookingAmendmentSheet({
     },
   });
   const pay = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
+      if (payRequest.current) return payRequest.current;
       payKey.current ||= idempotencyKey('pay-amendment', booking.publicReference);
-      return apiClient.request<AmendmentDetail>(
+      payRequest.current = apiClient.request<AmendmentDetail>(
         `/bookings/${booking.publicReference}/amendments/${amendmentId}/payment`,
         { headers: { 'Idempotency-Key': payKey.current }, method: 'POST' },
       );
+      try {
+        return await payRequest.current;
+      } finally {
+        payRequest.current = null;
+      }
     },
-    onSuccess: () => {
-      void detail.refetch();
+    onError: async () => {
+      await detail.refetch();
+    },
+    onSuccess: async () => {
+      await detail.refetch();
       refresh(client, booking.publicReference);
     },
   });
 
-  const close = () => {
+  useEffect(() => {
+    const justOpened = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    if (!justOpened) return;
+
+    previewMutation.reset();
+    submit.reset();
+    withdraw.reset();
+    pay.reset();
+    submitKey.current = '';
+    payKey.current = '';
+    payRequest.current = null;
+    setPicker(null);
+    setPickerDraft(null);
+    setRangeDraft(null);
     setPreview(null);
+    setAmendmentId(restoredId);
+    setStage(restoredId ? 'DETAIL' : 'EDIT');
+    setPickup(new Date(booking.rentalStart));
+    setReturnAt(new Date(booking.rentalEnd));
+    setStartMethod(booking.fulfillment.startMethod);
+    setEndMethod(booking.fulfillment.endMethod);
+    setDelivery(undefined);
+    setCollection(undefined);
+    // Mutation reset functions are stable; this effect intentionally responds only to visibility.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  const close = () => {
+    previewMutation.reset();
+    submit.reset();
+    withdraw.reset();
+    pay.reset();
+    submitKey.current = '';
+    payKey.current = '';
+    payRequest.current = null;
+    setPicker(null);
+    setPickerDraft(null);
+    setRangeDraft(null);
+    setPreview(null);
+    setAmendmentId(restoredId);
+    setStage(restoredId ? 'DETAIL' : 'EDIT');
+    setPickup(new Date(booking.rentalStart));
+    setReturnAt(new Date(booking.rentalEnd));
+    setStartMethod(booking.fulfillment.startMethod);
+    setEndMethod(booking.fulfillment.endMethod);
+    setDelivery(undefined);
+    setCollection(undefined);
     onClose();
+  };
+  const openDates = () => {
+    setRangeDraft({ pickup: new Date(pickup), returnAt: new Date(returnAt) });
+    setPicker('dates');
+  };
+  const openReturn = () => {
+    setPickerDraft(new Date(returnAt));
+    setPicker('return');
+  };
+  const cancelPicker = () => {
+    setPicker(null);
+    setPickerDraft(null);
+    setRangeDraft(null);
+  };
+  const saveReturn = () => {
+    if (!pickerDraft) return;
+    setReturnAt(pickerDraft);
+    setPicker(null);
+    setPickerDraft(null);
   };
   return (
     <Modal
       animationType="slide"
       onRequestClose={close}
-      presentationStyle="pageSheet"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      transparent
       visible={visible}
     >
-      {stage === 'EDIT' ? (
-        <Screen
-          leading={<BackControl label="Close" onPress={close} />}
-          eyebrow="Booking change"
-          title={active ? 'Extend Trip' : 'Change Booking'}
-          subtitle={
-            active
-              ? 'Choose a later return time.'
-              : 'Update the supported trip details, then review the live price.'
-          }
-        >
-          {!active && (
-            <DateControl label="Pickup" value={pickup} onPress={() => setPicker('pickup')} />
-          )}
-          <DateControl label="Return" value={returnAt} onPress={() => setPicker('return')} />
-          {!active && (
-            <>
-              <Text accessibilityRole="header" style={styles.heading}>
-                Receive the car
-              </Text>
-              <View style={styles.chips}>
-                <Chip
-                  label="Pick up"
-                  selected={startMethod === 'RENTER_PICKUP'}
-                  onPress={() => setStartMethod('RENTER_PICKUP')}
-                />
-                <Chip
-                  label="Owner delivery"
-                  selected={startMethod === 'OWNER_DELIVERY'}
-                  onPress={() => setStartMethod('OWNER_DELIVERY')}
-                />
-              </View>
-              {startMethod === 'OWNER_DELIVERY' && (
-                <Button
-                  label={
-                    delivery
-                      ? `Delivery: ${locationLabel(delivery)}`
-                      : 'Choose delivery destination'
-                  }
-                  onPress={() => setLocationKind('delivery')}
-                  variant="secondary"
-                />
-              )}
-              <Text accessibilityRole="header" style={styles.heading}>
-                Return the car
-              </Text>
-              <View style={styles.chips}>
-                <Chip
-                  label="Return it"
-                  selected={endMethod === 'RENTER_RETURN'}
-                  onPress={() => setEndMethod('RENTER_RETURN')}
-                />
-                <Chip
-                  label="Owner collection"
-                  selected={endMethod === 'OWNER_COLLECTION'}
-                  onPress={() => setEndMethod('OWNER_COLLECTION')}
-                />
-              </View>
-              {endMethod === 'OWNER_COLLECTION' && (
-                <Button
-                  label={
-                    collection
-                      ? `Collection: ${locationLabel(collection)}`
-                      : 'Choose collection destination'
-                  }
-                  onPress={() => setLocationKind('collection')}
-                  variant="secondary"
-                />
-              )}
-            </>
-          )}
-          {previewMutation.isError && (
-            <InlineError message={amendmentErrorMessage(previewMutation.error)} />
-          )}
-          <Button
-            disabled={
-              previewMutation.isPending ||
-              returnAt <= (active ? new Date(booking.rentalEnd) : pickup)
-            }
-            label={previewMutation.isPending ? 'Checking availability and price…' : 'Review change'}
-            onPress={() => previewMutation.mutate()}
-          />
-          {picker && (
-            <DateTimePicker
-              display={Platform.OS === 'ios' ? 'inline' : 'default'}
-              minimumDate={
-                picker === 'return' ? (active ? new Date(booking.rentalEnd) : pickup) : new Date()
-              }
-              mode="datetime"
-              onChange={(_, value) => {
-                if (value) (picker === 'pickup' ? setPickup : setReturnAt)(value);
-                if (Platform.OS !== 'ios') setPicker(null);
+      <View style={styles.modalRoot}>
+        <Pressable
+          accessibilityLabel="Close booking change sheet"
+          accessibilityRole="button"
+          onPress={close}
+          style={styles.backdrop}
+        />
+        <Reanimated.View accessibilityViewIsModal style={[styles.sheet, animatedSheetStyle]}>
+          {stage === 'EDIT' && (picker === 'dates' || picker === 'calendar') && rangeDraft ? (
+            <DateRangeEditor
+              calendarOpen={picker === 'calendar'}
+              pickup={rangeDraft.pickup}
+              returnAt={rangeDraft.returnAt}
+              onCancel={cancelPicker}
+              onChange={setRangeDraft}
+              onCloseCalendar={() => setPicker('dates')}
+              onOpenCalendar={() => setPicker('calendar')}
+              onSave={() => {
+                if (rangeDraft.returnAt <= rangeDraft.pickup) return;
+                setPickup(rangeDraft.pickup);
+                setReturnAt(rangeDraft.returnAt);
+                setPicker(null);
+                setRangeDraft(null);
               }}
-              value={picker === 'pickup' ? pickup : returnAt}
+            />
+          ) : stage === 'EDIT' && picker === 'return' && pickerDraft ? (
+            <DateTimeEditor
+              active={active}
+              kind="return"
+              minimumDate={new Date(booking.rentalEnd)}
+              value={pickerDraft}
+              onCancel={cancelPicker}
+              onChange={setPickerDraft}
+              onSave={saveReturn}
+            />
+          ) : stage === 'EDIT' ? (
+            <Screen
+              leading={<BackControl label="Close" onPress={close} />}
+              scroll={false}
+              eyebrow="Booking change"
+              title={active ? 'Extend Trip' : 'Change Booking'}
+              subtitle={
+                active
+                  ? 'Choose a later return time.'
+                  : 'Update the supported trip details, then review the live price.'
+              }
+            >
+              <View style={styles.editBody}>
+                {!active ? (
+                  <DateRangeControl
+                    changed={
+                      pickup.getTime() !== new Date(booking.rentalStart).getTime() ||
+                      returnAt.getTime() !== new Date(booking.rentalEnd).getTime()
+                    }
+                    pickup={pickup}
+                    returnAt={returnAt}
+                    onPress={openDates}
+                  />
+                ) : (
+                  <DateControl
+                    changed={returnAt.getTime() !== new Date(booking.rentalEnd).getTime()}
+                    label="Return"
+                    value={returnAt}
+                    onPress={openReturn}
+                  />
+                )}
+                {!active && (
+                  <>
+                    <FulfillmentControl
+                      allowed={booking.fulfillment.allowedStartMethods}
+                      changeable={booking.fulfillment.startFulfillmentChangeable}
+                      changed={startMethod !== booking.fulfillment.startMethod}
+                      kind="start"
+                      label="Receive the car"
+                      value={startMethod}
+                      onChange={setStartMethod}
+                    />
+                    {startMethod === 'OWNER_DELIVERY' && (
+                      <Button
+                        label={
+                          delivery
+                            ? `Delivery: ${locationLabel(delivery)}`
+                            : 'Choose delivery destination'
+                        }
+                        onPress={() => setLocationKind('delivery')}
+                        variant="secondary"
+                      />
+                    )}
+                    <FulfillmentControl
+                      allowed={booking.fulfillment.allowedEndMethods}
+                      changeable={booking.fulfillment.endFulfillmentChangeable}
+                      changed={endMethod !== booking.fulfillment.endMethod}
+                      kind="end"
+                      label="Return the car"
+                      value={endMethod}
+                      onChange={setEndMethod}
+                    />
+                    {endMethod === 'OWNER_COLLECTION' && (
+                      <Button
+                        label={
+                          collection
+                            ? `Collection: ${locationLabel(collection)}`
+                            : 'Choose collection destination'
+                        }
+                        onPress={() => setLocationKind('collection')}
+                        variant="secondary"
+                      />
+                    )}
+                  </>
+                )}
+                {previewMutation.isError && (
+                  <InlineError message={amendmentErrorMessage(previewMutation.error)} />
+                )}
+                <View style={styles.bottomAction}>
+                  <Button
+                    disabled={
+                      previewMutation.isPending ||
+                      returnAt <= (active ? new Date(booking.rentalEnd) : pickup)
+                    }
+                    label={
+                      previewMutation.isPending
+                        ? 'Checking availability and price…'
+                        : 'Review change'
+                    }
+                    onPress={() => {
+                      submit.reset();
+                      submitKey.current = '';
+                      previewMutation.mutate();
+                    }}
+                  />
+                </View>
+              </View>
+              <LocationPicker
+                kind={locationKind ?? 'delivery'}
+                visible={Boolean(locationKind)}
+                initial={locationKind === 'delivery' ? delivery : collection}
+                onCancel={() => setLocationKind(null)}
+                onConfirm={(value) => {
+                  if (locationKind === 'delivery') setDelivery(value);
+                  else setCollection(value);
+                  setLocationKind(null);
+                }}
+              />
+            </Screen>
+          ) : stage === 'REVIEW' && preview ? (
+            <Review
+              active={active}
+              error={submit.isError ? amendmentErrorMessage(submit.error) : null}
+              pending={submit.isPending}
+              preview={preview}
+              onBack={() => {
+                submit.reset();
+                submitKey.current = '';
+                setStage('EDIT');
+              }}
+              onClose={close}
+              onSubmit={() => submit.mutate()}
+            />
+          ) : (
+            <AmendmentState
+              amendment={detail.data}
+              actionError={withdraw.error ?? pay.error}
+              error={detail.error}
+              loading={detail.isPending}
+              paying={pay.isPending}
+              bottomPadding={Math.max(safeArea.bottom, spacing.lg)}
+              withdrawing={withdraw.isPending}
+              onClose={close}
+              onContentSizeChange={(_, height) => setDetailContentHeight(height)}
+              onHeaderLayout={(event) => setDetailHeaderHeight(event.nativeEvent.layout.height)}
+              onPay={() => pay.mutate()}
+              onRetry={() => void detail.refetch()}
+              onWithdraw={() =>
+                Alert.alert(
+                  'Withdraw this request?',
+                  'Your original booking will remain unchanged.',
+                  [
+                    { text: 'Keep request', style: 'cancel' },
+                    { text: 'Withdraw', style: 'destructive', onPress: () => withdraw.mutate() },
+                  ],
+                )
+              }
             />
           )}
-          {picker && Platform.OS === 'ios' && (
-            <Button label="Done" onPress={() => setPicker(null)} variant="secondary" />
-          )}
-          <LocationPicker
-            kind={locationKind ?? 'delivery'}
-            visible={Boolean(locationKind)}
-            initial={locationKind === 'delivery' ? delivery : collection}
-            onCancel={() => setLocationKind(null)}
-            onConfirm={(value) => {
-              if (locationKind === 'delivery') setDelivery(value);
-              else setCollection(value);
-              setLocationKind(null);
-            }}
-          />
-        </Screen>
-      ) : stage === 'REVIEW' && preview ? (
-        <Review
-          active={active}
-          error={submit.isError ? amendmentErrorMessage(submit.error) : null}
-          pending={submit.isPending}
-          preview={preview}
-          onBack={() => setStage('EDIT')}
-          onClose={close}
-          onSubmit={() => submit.mutate()}
-        />
-      ) : (
-        <AmendmentState
-          amendment={detail.data}
-          error={detail.error ?? withdraw.error ?? pay.error}
-          loading={detail.isPending}
-          paying={pay.isPending}
-          withdrawing={withdraw.isPending}
-          onClose={close}
-          onPay={() => pay.mutate()}
-          onRetry={() => void detail.refetch()}
-          onWithdraw={() =>
-            Alert.alert('Withdraw this request?', 'Your original booking will remain unchanged.', [
-              { text: 'Keep request', style: 'cancel' },
-              { text: 'Withdraw', style: 'destructive', onPress: () => withdraw.mutate() },
-            ])
-          }
-        />
-      )}
+        </Reanimated.View>
+      </View>
     </Modal>
+  );
+}
+
+function DateTimeEditor({
+  active,
+  kind,
+  minimumDate,
+  value,
+  onCancel,
+  onChange,
+  onSave,
+}: {
+  readonly active: boolean;
+  readonly kind: 'pickup' | 'return';
+  readonly minimumDate: Date;
+  readonly value: Date;
+  readonly onCancel: () => void;
+  readonly onChange: (value: Date) => void;
+  readonly onSave: () => void;
+}) {
+  const title = kind === 'pickup' ? 'Change pickup' : active ? 'Extend return' : 'Change return';
+  return (
+    <Screen
+      action={
+        <Pressable
+          accessibilityLabel="Save date and time"
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={onSave}
+        >
+          <Text style={styles.save}>Done</Text>
+        </Pressable>
+      }
+      leading={<BackControl label="Cancel" onPress={onCancel} />}
+      scroll={false}
+      title={title}
+      subtitle={
+        active
+          ? 'Choose a later return date and time. Your current return remains unchanged until approval.'
+          : `Choose the proposed ${kind} date and time.`
+      }
+    >
+      <View style={styles.editorBody}>
+        <Card>
+          <Text style={styles.editorLabel}>Selected {kind}</Text>
+          <Text accessibilityLiveRegion="polite" style={styles.editorValue}>
+            {dateTimeLabel(value.toISOString())}
+          </Text>
+        </Card>
+        <View accessibilityLabel={`${title} calendar and time selector`} style={styles.pickerCard}>
+          <Text accessibilityRole="header" style={styles.pickerHeading}>
+            Date and time
+          </Text>
+          <DateTimePicker
+            display={Platform.OS === 'ios' ? 'inline' : 'default'}
+            minimumDate={minimumDate}
+            mode="datetime"
+            onChange={(_, selected) => {
+              if (selected) onChange(selected);
+            }}
+            value={value}
+            {...(Platform.OS === 'ios' ? { themeVariant: 'light' as const } : {})}
+          />
+        </View>
+        <Button label="Done" onPress={onSave} />
+        <Button label="Cancel" onPress={onCancel} variant="ghost" />
+      </View>
+    </Screen>
+  );
+}
+
+function DateRangeEditor({
+  calendarOpen,
+  pickup,
+  returnAt,
+  onCancel,
+  onChange,
+  onCloseCalendar,
+  onOpenCalendar,
+  onSave,
+}: {
+  readonly calendarOpen: boolean;
+  readonly pickup: Date;
+  readonly returnAt: Date;
+  readonly onCancel: () => void;
+  readonly onChange: (value: { pickup: Date; returnAt: Date }) => void;
+  readonly onCloseCalendar: () => void;
+  readonly onOpenCalendar: () => void;
+  readonly onSave: () => void;
+}) {
+  const valid = returnAt > pickup;
+  if (calendarOpen)
+    return (
+      <Screen
+        leading={<BackControl label="Back" onPress={onCloseCalendar} />}
+        scroll={false}
+        title="Trip dates"
+      >
+        <TripDateCalendar
+          appliedEnd={returnAt}
+          appliedStart={pickup}
+          preselect
+          showClear={false}
+          onApply={(start, end) => {
+            const nextPickup = new Date(start);
+            const nextReturn = new Date(end);
+            nextPickup.setHours(pickup.getHours(), pickup.getMinutes(), 0, 0);
+            nextReturn.setHours(returnAt.getHours(), returnAt.getMinutes(), 0, 0);
+            onChange({ pickup: nextPickup, returnAt: nextReturn });
+            onCloseCalendar();
+          }}
+          onClear={() => undefined}
+        />
+      </Screen>
+    );
+  return (
+    <Screen
+      leading={<BackControl label="Cancel" onPress={onCancel} />}
+      scroll={false}
+      title="Change dates"
+      subtitle="Choose the proposed pickup and return. Your booking stays unchanged until the change is approved."
+    >
+      <View style={styles.dateEditorBody}>
+        <View style={styles.tripDateRange}>
+          <View style={styles.dateControlCopy}>
+            <Text style={styles.editorLabel}>Trip dates</Text>
+            <Text accessibilityLiveRegion="polite" style={styles.editorValue}>
+              {tripDateSummary(pickup, returnAt)}
+            </Text>
+          </View>
+          <Button compact label="Change dates" onPress={onOpenCalendar} variant="secondary" />
+        </View>
+        <View style={styles.dateGrid}>
+          <DateTimeField
+            dismissLabel="Close"
+            label="Pickup time"
+            mode="time"
+            value={pickup}
+            onChange={(value) => onChange({ pickup: value, returnAt })}
+          />
+          <DateTimeField
+            dismissLabel="Close"
+            label="Return time"
+            mode="time"
+            value={returnAt}
+            onChange={(value) => onChange({ pickup, returnAt: value })}
+          />
+        </View>
+        {!valid && (
+          <Text accessibilityRole="alert" style={styles.errorText}>
+            Return must be after pickup.
+          </Text>
+        )}
+        <View style={styles.bottomAction}>
+          <Button disabled={!valid} label="Done" onPress={onSave} />
+        </View>
+      </View>
+    </Screen>
+  );
+}
+
+type StartMethod = 'RENTER_PICKUP' | 'OWNER_DELIVERY';
+type EndMethod = 'RENTER_RETURN' | 'OWNER_COLLECTION';
+
+function FulfillmentControl(
+  props:
+    | {
+        readonly allowed: readonly StartMethod[];
+        readonly changeable: boolean;
+        readonly changed: boolean;
+        readonly kind: 'start';
+        readonly label: string;
+        readonly value: StartMethod;
+        readonly onChange: (value: StartMethod) => void;
+      }
+    | {
+        readonly allowed: readonly EndMethod[];
+        readonly changeable: boolean;
+        readonly changed: boolean;
+        readonly kind: 'end';
+        readonly label: string;
+        readonly value: EndMethod;
+        readonly onChange: (value: EndMethod) => void;
+      },
+) {
+  const showSelector = props.changeable && props.allowed.length > 1;
+  if (!showSelector)
+    return (
+      <View
+        accessibilityLabel={`${props.label}. ${methodLabel(props.value)}`}
+        style={styles.fulfillmentSummary}
+      >
+        <Text style={styles.summaryLabel}>{props.label}</Text>
+        <View style={styles.summaryValueRow}>
+          <Text style={styles.fulfillmentValue}>{methodLabel(props.value)}</Text>
+          {props.changed && <Text style={styles.changed}>Changed</Text>}
+        </View>
+      </View>
+    );
+  return (
+    <View style={styles.fulfillmentGroup}>
+      <View style={styles.dateLabelRow}>
+        <Text accessibilityRole="header" style={styles.summaryLabel}>
+          {props.label}
+        </Text>
+        {props.changed && <Text style={styles.changed}>Changed</Text>}
+      </View>
+      <View style={styles.chips}>
+        {props.kind === 'start'
+          ? props.allowed.map((method) => (
+              <Chip
+                key={method}
+                label={methodLabel(method)}
+                selected={props.value === method}
+                onPress={() => props.onChange(method)}
+              />
+            ))
+          : props.allowed.map((method) => (
+              <Chip
+                key={method}
+                label={methodLabel(method)}
+                selected={props.value === method}
+                onPress={() => props.onChange(method)}
+              />
+            ))}
+      </View>
+    </View>
+  );
+}
+
+function DateRangeControl({
+  changed,
+  pickup,
+  returnAt,
+  onPress,
+}: {
+  readonly changed: boolean;
+  readonly pickup: Date;
+  readonly returnAt: Date;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityHint="Opens the pickup and return date editor"
+      accessibilityLabel={`Dates. Pickup ${dateTimeLabel(pickup.toISOString())}. Return ${dateTimeLabel(returnAt.toISOString())}${changed ? '. Changed' : ''}`}
+      accessibilityRole="button"
+      onPress={onPress}
+    >
+      <Card>
+        <View style={styles.dateLabelRow}>
+          <Text style={styles.dateSectionTitle}>Dates</Text>
+          {changed && <Text style={styles.changed}>Changed</Text>}
+        </View>
+        <Text style={styles.dateRangePrimary}>
+          {tripDateSummary(pickup, returnAt, { alwaysShowYear: true })}
+        </Text>
+        <Text style={styles.dateRangeSecondary}>
+          Pickup {timeLabel(pickup)} · Return {timeLabel(returnAt)}
+        </Text>
+        <View style={styles.changeDatesAction}>
+          <Text style={styles.changeDatesText}>Change dates</Text>
+          <Icon color={colors.primary} name="chevron-forward" size={20} />
+        </View>
+      </Card>
+    </Pressable>
   );
 }
 
@@ -305,8 +751,11 @@ function Review({
   readonly onClose: () => void;
   readonly onSubmit: () => void;
 }) {
-  const additional = Number(preview.financial.additionalPaymentMinor);
-  const refund = Number(preview.financial.expectedRefundMinor);
+  const [reviewedAt] = useState(() => Date.now());
+  const financial = amendmentPreviewFinancialSummary(preview);
+  const expiresAt = Date.parse(preview.expiresAt);
+  const expired = !Number.isFinite(expiresAt) || expiresAt <= reviewedAt;
+  const trustworthy = financial.valid && !expired;
   return (
     <Screen
       leading={<BackControl label="Edit change" onPress={onBack} />}
@@ -314,66 +763,95 @@ function Review({
       title="Confirm your request"
       subtitle="The Owner must approve this change before it takes effect."
     >
-      <Comparison
-        current={preview.current}
-        proposed={preview.proposed}
-        currency={preview.financial.currency}
-      />
-      <Card>
-        <Text style={styles.heading}>
-          {additional > 0
-            ? 'Additional payment required'
-            : refund > 0
-              ? 'Refund due'
-              : 'No additional charge / no refund'}
-        </Text>
-        {additional > 0 && (
-          <Row label="Amount to pay" value={money(additional, preview.financial.currency)} />
-        )}
-        {refund > 0 && (
-          <Row label="Expected refund" value={money(refund, preview.financial.currency)} />
-        )}
-        <Row
-          label="New total booking price"
-          value={money(Number(preview.proposed.totalMinor), preview.financial.currency)}
-        />
-        <Text style={styles.body}>
-          Price and availability are valid until {dateTimeLabel(preview.expiresAt)}.
-        </Text>
-        {active && (
-          <Text style={styles.body}>
-            Your original return time remains in effect until this extension is applied.
+      <Comparison active={active} current={preview.current} proposed={preview.proposed} />
+      {financial.valid ? (
+        <Card>
+          <Text accessibilityRole="header" style={styles.cardTitle}>
+            Price summary
           </Text>
-        )}
-      </Card>
+          <Row
+            accessibilityLabel={`Current total ${money(financial.currentTotalMinor, financial.currency)}`}
+            label="Current total"
+            value={money(financial.currentTotalMinor, financial.currency)}
+          />
+          <Row
+            accessibilityLabel={`New total ${money(financial.proposedTotalMinor, financial.currency)}`}
+            label="New total"
+            value={money(financial.proposedTotalMinor, financial.currency)}
+          />
+          <Row
+            accessibilityLabel={`Difference ${financial.direction === 'ADDITIONAL_PAYMENT' ? 'plus ' : ''}${money(financial.differenceMinor, financial.currency)}`}
+            label="Difference"
+            value={`${financial.direction === 'ADDITIONAL_PAYMENT' ? '+' : ''}${money(financial.differenceMinor, financial.currency)}`}
+          />
+          <View accessibilityLiveRegion="polite" style={styles.outcome}>
+            <Text style={styles.outcomeTitle}>
+              {financial.direction === 'ADDITIONAL_PAYMENT'
+                ? 'Additional payment'
+                : financial.direction === 'REFUND'
+                  ? 'Refund due'
+                  : 'No price difference'}
+            </Text>
+            <Text style={styles.body}>
+              {financial.direction === 'ADDITIONAL_PAYMENT'
+                ? `${money(financial.additionalPaymentMinor, financial.currency)} is due only after the Owner approves this request.`
+                : financial.direction === 'REFUND'
+                  ? `${money(financial.expectedRefundMinor, financial.currency)} will follow the accepted refund process after approval.`
+                  : 'Your total booking price stays the same.'}
+            </Text>
+          </View>
+          <Text style={styles.validity}>
+            Price and availability are valid until {dateTimeLabel(preview.expiresAt)}.
+          </Text>
+          {active && (
+            <Text style={styles.body}>
+              Your original return time remains in effect until this extension is applied.
+            </Text>
+          )}
+        </Card>
+      ) : (
+        <InlineError message={financial.message} />
+      )}
+      {expired && (
+        <InlineError message="This preview expired. Edit the change and check the latest price." />
+      )}
       {error && <InlineError message={error} />}
       <Button
-        disabled={pending}
+        disabled={pending || !trustworthy}
         label={pending ? 'Sending request…' : 'Request Owner approval'}
         onPress={onSubmit}
       />
-      <Button label="Keep booking unchanged" onPress={onClose} variant="secondary" />
+      <Button label="Edit change" onPress={onBack} variant="secondary" />
+      <Button label="Discard changes" onPress={onClose} variant="ghost" />
     </Screen>
   );
 }
 
 function AmendmentState({
   amendment,
+  actionError,
+  bottomPadding,
   error,
   loading,
   paying,
   withdrawing,
   onClose,
+  onContentSizeChange,
+  onHeaderLayout,
   onPay,
   onRetry,
   onWithdraw,
 }: {
   readonly amendment: AmendmentDetail | undefined;
+  readonly actionError: Error | null;
+  readonly bottomPadding: number;
   readonly error: Error | null;
   readonly loading: boolean;
   readonly paying: boolean;
   readonly withdrawing: boolean;
   readonly onClose: () => void;
+  readonly onContentSizeChange: (width: number, height: number) => void;
+  readonly onHeaderLayout: (event: LayoutChangeEvent) => void;
   readonly onPay: () => void;
   readonly onRetry: () => void;
   readonly onWithdraw: () => void;
@@ -399,32 +877,57 @@ function AmendmentState({
   const [title, copy] = amendmentStatusCopy(amendment);
   const additional = Number(amendment.financial.additionalPaymentMinor);
   const refund = Number(amendment.financial.expectedRefundMinor);
+  const applied = amendment.status === 'APPLIED';
+  const showPaymentDeadline = !applied && Boolean(amendment.paymentDeadlineAt);
+  const showStatusMeta =
+    additional > 0 || refund > 0 || showPaymentDeadline || amendment.status === 'PENDING_OWNER';
   return (
     <Screen
+      contentBottomPadding={bottomPadding}
+      contentGrows={false}
       leading={<BackControl label="Close" onPress={onClose} />}
+      onContentSizeChange={onContentSizeChange}
+      onHeaderLayout={onHeaderLayout}
       eyebrow="Booking change"
       title={title}
       subtitle={copy}
     >
-      <Comparison
-        current={amendment.current}
-        proposed={amendment.proposed}
-        currency={amendment.financial.currency}
-      />
-      <Card>
-        {additional > 0 && (
-          <Row label="Additional payment" value={money(additional, amendment.financial.currency)} />
-        )}
-        {refund > 0 && (
-          <Row label="Expected refund" value={money(refund, amendment.financial.currency)} />
-        )}
-        {amendment.paymentDeadlineAt && (
-          <Text style={styles.body}>Payment due {dateTimeLabel(amendment.paymentDeadlineAt)}</Text>
-        )}
-        <Text style={styles.body}>Owner response due {dateTimeLabel(amendment.expiresAt)}</Text>
-      </Card>
-      {amendment.status === 'OWNER_ACCEPTED_PAYMENT_PENDING' &&
-        amendment.paymentState === 'WAITING_FOR_PAYMENT' && (
+      {applied ? (
+        <AppliedSummary current={amendment.current} />
+      ) : (
+        <Comparison active={false} current={amendment.current} proposed={amendment.proposed} />
+      )}
+      {showStatusMeta && (
+        <Card style={styles.statusMetaCard}>
+          {additional > 0 && (
+            <Row
+              label={applied ? 'Payment completed' : 'Additional payment'}
+              value={money(additional, amendment.financial.currency)}
+            />
+          )}
+          {refund > 0 && (
+            <Row
+              label={applied ? 'Refund completed' : 'Expected refund'}
+              value={money(refund, amendment.financial.currency)}
+            />
+          )}
+          {showPaymentDeadline && amendment.paymentDeadlineAt && (
+            <DeadlineRow
+              label="Payment deadline"
+              value={dateTimeLabel(amendment.paymentDeadlineAt)}
+            />
+          )}
+          {amendment.status === 'PENDING_OWNER' && (
+            <DeadlineRow
+              label="Owner response deadline"
+              value={dateTimeLabel(amendment.expiresAt)}
+            />
+          )}
+        </Card>
+      )}
+      {actionError && <InlineError message={amendmentErrorMessage(actionError)} />}
+      <View style={styles.statusActions}>
+        {amendment.paymentInitiationAllowed && (
           <Button
             disabled={paying}
             label={
@@ -435,75 +938,199 @@ function AmendmentState({
             onPress={onPay}
           />
         )}
-      {amendment.status === 'PENDING_OWNER' && (
-        <Button
-          disabled={withdrawing}
-          label={withdrawing ? 'Withdrawing…' : 'Withdraw request'}
-          onPress={onWithdraw}
-          variant="danger"
-        />
-      )}
-      <Button label="Close" onPress={onClose} variant="secondary" />
+        {amendment.status === 'PENDING_OWNER' && (
+          <Button
+            disabled={withdrawing}
+            label={withdrawing ? 'Withdrawing…' : 'Withdraw request'}
+            onPress={onWithdraw}
+            variant="danger"
+          />
+        )}
+        <Button label="Close" onPress={onClose} variant="secondary" />
+      </View>
     </Screen>
   );
 }
 
-function Comparison({
-  current,
-  proposed,
-  currency,
-}: {
-  readonly current: AmendmentDetail['current'];
-  readonly proposed: AmendmentDetail['proposed'];
-  readonly currency: string;
-}) {
+function AppliedSummary({ current }: { readonly current: AmendmentDetail['current'] }) {
+  const start = new Date(current.rentalStart);
+  const end = new Date(current.rentalEnd);
   return (
     <Card>
-      <Text accessibilityRole="header" style={styles.heading}>
-        Current
+      <Text accessibilityRole="header" style={styles.cardTitle}>
+        Trip dates
       </Text>
-      <Row label="Pickup" value={dateTimeLabel(current.rentalStart)} />
-      <Row label="Return" value={dateTimeLabel(current.rentalEnd)} />
-      <Row
-        label="Handover"
-        value={`${methodLabel(current.startMethod)} / ${methodLabel(current.endMethod)}`}
-      />
-      <Row label="Total" value={money(Number(current.totalMinor), currency)} />
-      <Text accessibilityRole="header" style={styles.heading}>
-        Proposed
+      <Text style={styles.appliedDateRange}>
+        {tripDateSummary(start, end, { alwaysShowYear: true })}
       </Text>
-      <Row label="Pickup" value={dateTimeLabel(proposed.rentalStart)} />
-      <Row label="Return" value={dateTimeLabel(proposed.rentalEnd)} />
-      <Row
-        label="Handover"
-        value={`${methodLabel(proposed.startMethod)} / ${methodLabel(proposed.endMethod)}`}
-      />
-      <Row label="Total" value={money(Number(proposed.totalMinor), currency)} />
+      <Text style={styles.dateRangeSecondary}>
+        Pickup {timeLabel(start)} · Return {timeLabel(end)}
+      </Text>
+      <View style={styles.reviewSection}>
+        <Text style={styles.summaryLabel}>Handover</Text>
+        <Text style={styles.fulfillmentValue}>
+          {methodLabel(current.startMethod)} · {methodLabel(current.endMethod)}
+        </Text>
+      </View>
     </Card>
   );
 }
+
+function DeadlineRow({ label, value }: { readonly label: string; readonly value: string }) {
+  return (
+    <View accessibilityLabel={`${label}, ${value}`} style={styles.deadlineRow}>
+      <View style={styles.deadlineIcon}>
+        <Icon color={colors.primary} name="time-outline" size={20} />
+      </View>
+      <View style={styles.deadlineCopy}>
+        <Text style={styles.deadlineLabel}>{label}</Text>
+        <Text style={styles.deadlineValue}>{value}</Text>
+      </View>
+    </View>
+  );
+}
+
+function Comparison({
+  active,
+  current,
+  proposed,
+}: {
+  readonly active: boolean;
+  readonly current: AmendmentDetail['current'];
+  readonly proposed: AmendmentPreview['proposed'];
+}) {
+  const datesChanged =
+    current.rentalStart !== proposed.rentalStart || current.rentalEnd !== proposed.rentalEnd;
+  const startChanged = current.startMethod !== proposed.startMethod;
+  const endChanged = current.endMethod !== proposed.endMethod;
+  return (
+    <Card>
+      <Text accessibilityRole="header" style={styles.cardTitle}>
+        {active ? 'Return change' : 'Trip dates'}
+      </Text>
+      {datesChanged && active ? (
+        <TransitionRow
+          label="Return"
+          current={dateTimeLabel(current.rentalEnd)}
+          proposed={dateTimeLabel(proposed.rentalEnd)}
+        />
+      ) : datesChanged ? (
+        <View style={styles.comparisonGrid}>
+          <DateComparison label="Current" start={current.rentalStart} end={current.rentalEnd} />
+          <Icon color={colors.subtleText} name="arrow-forward" size={20} />
+          <DateComparison label="Proposed" start={proposed.rentalStart} end={proposed.rentalEnd} />
+        </View>
+      ) : (
+        <Text style={styles.body}>Trip dates · No change</Text>
+      )}
+      {(startChanged || endChanged) && (
+        <View style={styles.reviewSection}>
+          <Text style={styles.summaryLabel}>Handover</Text>
+          {startChanged && (
+            <TransitionRow
+              label="Receive the car"
+              current={methodLabel(current.startMethod)}
+              proposed={methodLabel(proposed.startMethod)}
+            />
+          )}
+          {endChanged && (
+            <TransitionRow
+              label="Return the car"
+              current={methodLabel(current.endMethod)}
+              proposed={methodLabel(proposed.endMethod)}
+            />
+          )}
+        </View>
+      )}
+    </Card>
+  );
+}
+function DateComparison({
+  label,
+  start,
+  end,
+}: {
+  readonly label: string;
+  readonly start: string;
+  readonly end: string;
+}) {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  return (
+    <View style={styles.comparisonColumn}>
+      <Text style={styles.summaryLabel}>{label}</Text>
+      <Text style={styles.comparisonValue}>
+        {tripDateSummary(startDate, endDate, { alwaysShowYear: true })}
+      </Text>
+      <Text style={styles.dateRangeSecondary}>
+        Pickup {timeLabel(startDate)} · Return {timeLabel(endDate)}
+      </Text>
+    </View>
+  );
+}
+function TransitionRow({
+  label,
+  current,
+  proposed,
+}: {
+  readonly label: string;
+  readonly current: string;
+  readonly proposed: string;
+}) {
+  return (
+    <View style={styles.transitionRow}>
+      <Text style={styles.summaryLabel}>{label}</Text>
+      <Text style={styles.transitionValue}>
+        {current} → {proposed}
+      </Text>
+    </View>
+  );
+}
 function DateControl({
+  changed,
   label,
   value,
   onPress,
 }: {
+  readonly changed: boolean;
   readonly label: string;
   readonly value: Date;
   readonly onPress: () => void;
 }) {
   return (
-    <Pressable accessibilityRole="button" onPress={onPress}>
+    <Pressable
+      accessibilityHint={`Opens the ${label.toLowerCase()} date and time editor`}
+      accessibilityLabel={`${label}, ${dateTimeLabel(value.toISOString())}${changed ? ', changed' : ''}`}
+      accessibilityRole="button"
+      onPress={onPress}
+    >
       <Card>
-        <Row label={label} value={dateTimeLabel(value.toISOString())} />
-        <Text style={styles.link}>Change date and time</Text>
+        <View style={styles.dateControl}>
+          <View style={styles.dateControlCopy}>
+            <View style={styles.dateLabelRow}>
+              <Text style={styles.dateLabel}>{label}</Text>
+              {changed && <Text style={styles.changed}>Changed</Text>}
+            </View>
+            <Text style={styles.dateValue}>{dateTimeLabel(value.toISOString())}</Text>
+          </View>
+          <Icon color={colors.primary} name="chevron-forward" size={22} />
+        </View>
       </Card>
     </Pressable>
   );
 }
-function Row({ label, value }: { readonly label: string; readonly value: string }) {
+function Row({
+  accessibilityLabel,
+  label,
+  value,
+}: {
+  readonly accessibilityLabel?: string;
+  readonly label: string;
+  readonly value: string;
+}) {
   return (
-    <View style={styles.row}>
-      <Text style={styles.body}>{label}</Text>
+    <View accessibilityLabel={accessibilityLabel} style={styles.row}>
+      <Text style={styles.rowLabel}>{label}</Text>
       <Text style={styles.value}>{value}</Text>
     </View>
   );
@@ -525,8 +1152,8 @@ function methodLabel(
     : value === 'OWNER_COLLECTION'
       ? 'Owner collection'
       : value === 'RENTER_PICKUP'
-        ? 'Renter pickup'
-        : 'Renter return';
+        ? 'Pick up'
+        : 'Return it';
 }
 function refresh(client: ReturnType<typeof useQueryClient>, reference: string) {
   void client.invalidateQueries({ queryKey: ['bookings'] });
@@ -535,10 +1162,74 @@ function refresh(client: ReturnType<typeof useQueryClient>, reference: string) {
   void client.invalidateQueries({ queryKey: ['owner-rentals'] });
 }
 const styles = StyleSheet.create({
-  body: { color: colors.muted, fontSize: 16, lineHeight: 23 },
+  appliedDateRange: { color: colors.ink, fontSize: 20, fontWeight: '900' },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(8, 24, 18, 0.32)',
+  },
+  body: { color: colors.subtleText, fontSize: 16, lineHeight: 23 },
+  bottomAction: { marginTop: 'auto', paddingBottom: spacing.xxl },
+  cardTitle: { color: colors.ink, fontSize: 19, fontWeight: '900', marginBottom: spacing.sm },
+  changed: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    color: colors.primaryDark,
+    fontSize: 12,
+    fontWeight: '700',
+    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  changeDatesAction: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingTop: spacing.sm,
+  },
+  changeDatesText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  dateGrid: { flexDirection: 'row', gap: spacing.md },
+  dateEditorBody: { flex: 1, gap: spacing.md },
+  dateControl: { alignItems: 'center', flexDirection: 'row', gap: spacing.md },
+  dateControlCopy: { flex: 1, gap: spacing.xs },
+  dateLabel: { color: colors.subtleText, fontSize: 14, fontWeight: '700' },
+  dateLabelRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  dateSectionTitle: { color: colors.ink, fontSize: 16, fontWeight: '900' },
+  dateRangePrimary: { color: colors.ink, fontSize: 18, fontWeight: '900', marginTop: spacing.xs },
+  dateRangeSecondary: {
+    color: colors.subtleText,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: spacing.xs,
+  },
+  dateValue: { color: colors.ink, fontSize: 18, fontWeight: '800' },
+  deadlineCopy: { flex: 1, gap: spacing.xxs },
+  deadlineIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  deadlineLabel: { color: colors.subtleText, fontSize: 13, fontWeight: '700' },
+  deadlineRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  deadlineValue: { color: colors.ink, fontSize: 16, fontWeight: '800' },
+  editorBody: { flex: 1, gap: spacing.md },
+  editorLabel: { color: colors.subtleText, fontSize: 14, fontWeight: '700' },
+  editorValue: { color: colors.ink, fontSize: 20, fontWeight: '800', marginTop: spacing.xs },
+  disabled: { opacity: 0.4 },
+  editBody: { flex: 1, gap: spacing.md, paddingBottom: spacing.sm },
   error: { borderColor: colors.danger },
   errorText: { color: colors.danger, fontSize: 16 },
+  fulfillmentGroup: { gap: spacing.sm, paddingVertical: spacing.xs },
+  fulfillmentSummary: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+  },
+  fulfillmentValue: { color: colors.ink, fontSize: 17, fontWeight: '800' },
   heading: {
     color: colors.ink,
     fontSize: 19,
@@ -546,7 +1237,27 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     marginTop: spacing.sm,
   },
-  link: { color: colors.primary, fontSize: 15, fontWeight: '700' },
+  modalRoot: { flex: 1, justifyContent: 'flex-end' },
+  pickerCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    padding: spacing.md,
+  },
+  pickerHeading: { color: colors.ink, fontSize: 17, fontWeight: '800' },
+  comparisonColumn: { flex: 1, gap: spacing.xs },
+  comparisonGrid: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  comparisonValue: { color: colors.ink, fontSize: 16, fontWeight: '800' },
+  outcome: { gap: spacing.xs, paddingTop: spacing.md },
+  outcomeTitle: { color: colors.ink, fontSize: 18, fontWeight: '900' },
+  reviewSection: {
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+  },
   row: {
     alignItems: 'flex-start',
     borderBottomColor: colors.border,
@@ -556,5 +1267,22 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: spacing.sm,
   },
+  rowLabel: { color: colors.subtleText, fontSize: 16, fontWeight: '700' },
+  summaryLabel: { color: colors.subtleText, fontSize: 14, fontWeight: '800' },
+  summaryValueRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  statusActions: { gap: spacing.sm },
+  statusMetaCard: { gap: spacing.md },
+  transitionRow: { gap: spacing.xs, paddingVertical: spacing.sm },
+  transitionValue: { color: colors.ink, fontSize: 16, fontWeight: '800' },
+  validity: { color: colors.subtleText, fontSize: 14, lineHeight: 20, marginTop: spacing.md },
   value: { color: colors.ink, flexShrink: 1, fontSize: 16, fontWeight: '700', textAlign: 'right' },
+  save: { color: colors.primary, fontSize: 16, fontWeight: '800' },
+  sheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  tripDateRange: { alignItems: 'center', flexDirection: 'row', gap: spacing.md },
 });

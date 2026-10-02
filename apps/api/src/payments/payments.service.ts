@@ -6,7 +6,6 @@ import type { ApiEnvironment } from '@carrental/config';
 import {
   BookingActorType,
   BookingAmendmentFinancialDirection,
-  BookingAmendmentStatus,
   BookingStatus,
   CommissionScope,
   FinancialAccountType,
@@ -39,6 +38,7 @@ import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import type { RequestMetadata } from '../security/security-context';
 import { RenterEligibilityService } from '../renter-verification/renter-eligibility.service';
+import { canInitiateBookingAmendmentPayment } from '../bookings/amendment-payment-actionability';
 import { PAYMENT_PROVIDER } from './payment-provider.factory';
 import type { ResolveAmendmentRefundDto } from './payments.dto';
 
@@ -211,15 +211,7 @@ export class PaymentsService {
       if (!amendment) this.notFound();
       const settlement = amendment.settlement;
       const pricing = amendment.pricingSnapshot;
-      if (
-        amendment.status !== BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING ||
-        !settlement ||
-        settlement.direction !== BookingAmendmentFinancialDirection.ADDITIONAL_PAYMENT ||
-        settlement.financialDeltaMinor <= 0n ||
-        !pricing ||
-        pricing.renterFinancialDeltaMinor !== settlement.financialDeltaMinor ||
-        pricing.currency !== settlement.currency
-      )
+      if (!settlement || !pricing)
         this.invalidState('The booking amendment is not awaiting an additional payment.');
       if (settlement.additionalPaymentId) {
         const existing = await transaction.payment.findUniqueOrThrow({
@@ -230,8 +222,26 @@ export class PaymentsService {
         return { amendment, existing: true, operation: null, payment: existing };
       }
       const evaluatedAt = new Date();
-      if (!amendment.paymentDeadlineAt || evaluatedAt >= amendment.paymentDeadlineAt)
-        this.invalidState('The additional-payment deadline has passed.');
+      if (
+        !canInitiateBookingAmendmentPayment(
+          {
+            additionalPaymentId: settlement.additionalPaymentId,
+            direction: settlement.direction,
+            financialDeltaMinor: settlement.financialDeltaMinor,
+            paymentDeadlineAt: amendment.paymentDeadlineAt,
+            pricingCurrency: pricing.currency,
+            renterFinancialDeltaMinor: pricing.renterFinancialDeltaMinor,
+            settlementCurrency: settlement.currency,
+            status: amendment.status,
+          },
+          evaluatedAt,
+        )
+      )
+        this.invalidState(
+          !amendment.paymentDeadlineAt || evaluatedAt >= amendment.paymentDeadlineAt
+            ? 'The additional-payment deadline has passed.'
+            : 'The booking amendment is not awaiting an additional payment.',
+        );
       const providerRequestReference = randomUUID();
       const payment = await transaction.payment.create({
         data: {

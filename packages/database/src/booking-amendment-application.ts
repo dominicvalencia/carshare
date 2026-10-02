@@ -33,7 +33,12 @@ const APPLICATION_INCLUDE = {
   fulfillmentSnapshot: true,
   holds: { include: { occupancy: true }, orderBy: { protectedStart: 'asc' as const } },
   pricingSnapshot: true,
-  settlement: { include: { refund: { include: { operation: true } } } },
+  settlement: {
+    include: {
+      refund: { include: { operation: true } },
+      refunds: { include: { operation: true } },
+    },
+  },
 } satisfies Prisma.BookingAmendmentInclude;
 
 type ApplicationRecord = Prisma.BookingAmendmentGetPayload<{
@@ -243,8 +248,9 @@ async function applyInTransaction(
       injectFailure(options, 'AFTER_OCCUPANCY_CONVERSION');
       await transaction.booking.update({
         data: {
-          ...(amendment.scope === BookingAmendmentScope.ACTIVE_EXTENSION
-            ? { rentalEnd: amendment.proposedRentalEnd }
+          rentalEnd: amendment.proposedRentalEnd,
+          ...(amendment.scope === BookingAmendmentScope.PRE_TRIP
+            ? { rentalStart: amendment.proposedRentalStart }
             : {}),
           updatedAt: evaluatedAt,
         },
@@ -497,10 +503,25 @@ async function refundApplicationAuthority(
 ) {
   const settlement = amendment.settlement;
   const pricing = amendment.pricingSnapshot;
-  const refund = settlement?.refund;
-  const originalPayment = amendment.booking.payments.find(
-    (payment) => payment.purpose === PaymentPurpose.RENTAL && payment.id === refund?.paymentId,
-  );
+  const refunds = settlement?.refunds.length
+    ? settlement.refunds
+    : settlement?.refund
+      ? [settlement.refund]
+      : [];
+  const refundTotal = refunds.reduce((sum, refund) => sum + refund.amountMinor, 0n);
+  const sourcePaymentsValid = refunds.every((refund) => {
+    const payment = amendment.booking.payments.find((item) => item.id === refund.paymentId);
+    return (
+      payment &&
+      (payment.purpose === PaymentPurpose.RENTAL ||
+        payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE) &&
+      new Set<PaymentStatus>([
+        PaymentStatus.CAPTURED,
+        PaymentStatus.PARTIALLY_REFUNDED,
+        PaymentStatus.REFUNDED,
+      ]).has(payment.status)
+    );
+  });
   if (
     amendment.status !== BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING ||
     amendment.operationallyExpiredAt ||
@@ -509,28 +530,27 @@ async function refundApplicationAuthority(
     settlement.direction !== BookingAmendmentFinancialDirection.REFUND ||
     settlement.financialDeltaMinor >= 0n ||
     settlement.status !== 'COMPLETED' ||
-    !settlement.refundId ||
-    !settlement.ledgerTransactionId ||
-    !refund ||
-    refund.status !== RefundStatus.COMPLETED ||
-    refund.amountMinor !== -settlement.financialDeltaMinor ||
-    refund.amountMinor !== -pricing.renterFinancialDeltaMinor ||
-    refund.currency !== settlement.currency ||
-    refund.currency !== pricing.currency ||
-    !refund.operation ||
-    refund.operation.status !== 'SUCCEEDED' ||
-    !originalPayment ||
-    !new Set<PaymentStatus>([
-      PaymentStatus.CAPTURED,
-      PaymentStatus.PARTIALLY_REFUNDED,
-      PaymentStatus.REFUNDED,
-    ]).has(originalPayment.status)
+    !refunds.length ||
+    refundTotal !== -settlement.financialDeltaMinor ||
+    refundTotal !== -pricing.renterFinancialDeltaMinor ||
+    refunds.some(
+      (refund) =>
+        refund.status !== RefundStatus.COMPLETED ||
+        refund.currency !== settlement.currency ||
+        refund.currency !== pricing.currency ||
+        !refund.operation ||
+        refund.operation.status !== 'SUCCEEDED',
+    ) ||
+    !sourcePaymentsValid
   )
     return false;
-  const providerSettlement = await transaction.ledgerTransaction.findFirst({
+  const providerSettlements = await transaction.ledgerTransaction.findMany({
     where: {
-      id: settlement.ledgerTransactionId,
-      sourceId: settlement.id,
+      currency: settlement.currency,
+      OR: [
+        { sourceId: { in: refunds.map((refund) => refund.id) } },
+        ...(settlement.refundId ? [{ sourceId: settlement.id }] : []),
+      ],
       sourceType: 'BOOKING_AMENDMENT_REFUND',
       type: LedgerTransactionType.REFUND,
     },
@@ -543,7 +563,7 @@ async function refundApplicationAuthority(
       type: LedgerTransactionType.ADJUSTMENT,
     },
   });
-  return Boolean(providerSettlement && obligation);
+  return Boolean(providerSettlements.length === refunds.length && obligation);
 }
 
 async function paidApplicationAuthority(

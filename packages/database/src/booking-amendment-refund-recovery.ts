@@ -202,6 +202,7 @@ export interface AmendmentRefundResolutionEvidenceInput {
   idempotencyKey: string;
   outcome: AmendmentRefundEvidenceOutcome;
   provider: PaymentProviderCode;
+  refundId?: string;
   resolutionNote: string;
   resolvedAmountMinor: bigint;
 }
@@ -219,7 +220,11 @@ export async function resolveAmendmentRefundManually(
   return database.$transaction(
     async (transaction) => {
       const settlement = await transaction.bookingAmendmentSettlement.findUniqueOrThrow({
-        include: { amendment: true, refund: { include: { operation: true, payment: true } } },
+        include: {
+          amendment: true,
+          refund: { include: { operation: true, payment: true } },
+          refunds: { include: { operation: true, payment: true } },
+        },
         where: { id: input.amendmentSettlementId },
       });
       await transaction.$queryRaw(Prisma.sql`
@@ -236,10 +241,16 @@ export async function resolveAmendmentRefundManually(
       `);
 
       const current = await transaction.bookingAmendmentSettlement.findUniqueOrThrow({
-        include: { amendment: true, refund: { include: { operation: true, payment: true } } },
+        include: {
+          amendment: true,
+          refund: { include: { operation: true, payment: true } },
+          refunds: { include: { operation: true, payment: true } },
+        },
         where: { id: input.amendmentSettlementId },
       });
-      const refund = current.refund;
+      const loadedChildRefunds = current.refunds ?? [];
+      const refund =
+        loadedChildRefunds.find((item) => item.id === input.refundId) ?? current.refund;
       const activeExtensionRecovery =
         current.amendment.scope === BookingAmendmentScope.ACTIVE_EXTENSION &&
         current.amendment.reasonCode === ACTIVE_EXTENSION_CAPTURE_RECOVERY_REASON &&
@@ -254,19 +265,21 @@ export async function resolveAmendmentRefundManually(
         refund.id !== input.refundId ||
         refund.paymentId !== input.originalPaymentId ||
         refund.payment.bookingId !== current.amendment.bookingId ||
-        refund.amountMinor !==
-          (activeExtensionRecovery ? current.financialDeltaMinor : -current.financialDeltaMinor) ||
         refund.amountMinor !== input.resolvedAmountMinor ||
         refund.currency !== current.currency ||
         refund.currency !== input.currency ||
         refund.payment.provider !== input.provider ||
-        !input.externalReference.trim()
+        !input.externalReference.trim() ||
+        (!activeExtensionRecovery &&
+          refund.amendmentSettlementId !== current.id &&
+          current.refundId !== refund.id)
       )
         throw new Error('AMENDMENT_REFUND_MANUAL_RESOLUTION_AUTHORITY_MISMATCH');
 
       const priorResolution = await transaction.bookingAmendmentRefundResolutionEvidence.findFirst({
         where: {
           amendmentSettlementId: current.id,
+          refundId: refund.id,
           outcome: {
             in: [
               AmendmentRefundEvidenceOutcome.SUCCEEDED,
@@ -314,7 +327,7 @@ export async function resolveAmendmentRefundManually(
               },
             ],
           },
-          sourceId: current.id,
+          sourceId: loadedChildRefunds.length > 1 ? refund.id : current.id,
           sourceType: 'BOOKING_AMENDMENT_REFUND',
           type: LedgerTransactionType.REFUND,
         },
@@ -322,7 +335,7 @@ export async function resolveAmendmentRefundManually(
         where: {
           sourceType_sourceId_type_currency: {
             currency: current.currency,
-            sourceId: current.id,
+            sourceId: loadedChildRefunds.length > 1 ? refund.id : current.id,
             sourceType: 'BOOKING_AMENDMENT_REFUND',
             type: LedgerTransactionType.REFUND,
           },
@@ -363,20 +376,42 @@ export async function resolveAmendmentRefundManually(
         },
         where: { id: refund.paymentId },
       });
+      const childRefunds = await transaction.refund.findMany({
+        include: { operation: true },
+        where: { amendmentSettlementId: current.id },
+      });
+      const successfulTotal = childRefunds
+        .filter(
+          (item) =>
+            item.status === RefundStatus.COMPLETED &&
+            item.operation?.status === PaymentOperationStatus.SUCCEEDED,
+        )
+        .reduce((sum, item) => sum + item.amountMinor, 0n);
+      const expectedTotal = activeExtensionRecovery
+        ? current.financialDeltaMinor
+        : -current.financialDeltaMinor;
+      const logicallyComplete = successfulTotal === expectedTotal;
       await transaction.bookingAmendmentSettlement.update({
-        data: {
-          completedAt,
-          ledgerTransactionId: ledger.id,
-          reconciliationRequired: false,
-          status: BookingAmendmentSettlementStatus.COMPLETED,
-        },
+        data: logicallyComplete
+          ? {
+              completedAt,
+              ledgerTransactionId: childRefunds.length === 1 ? ledger.id : null,
+              reconciliationRequired: false,
+              status: BookingAmendmentSettlementStatus.COMPLETED,
+            }
+          : {
+              reconciliationRequired: true,
+              status: BookingAmendmentSettlementStatus.RECONCILIATION_REQUIRED,
+            },
         where: { id: current.id },
       });
       await transaction.outboxEvent.create({
         data: {
           aggregateId: current.amendment.bookingId,
           aggregateType: 'BOOKING_AMENDMENT',
-          eventType: 'BOOKING_AMENDMENT_REFUND_MANUALLY_RECONCILED',
+          eventType: logicallyComplete
+            ? 'BOOKING_AMENDMENT_REFUND_MANUALLY_RECONCILED'
+            : 'BOOKING_AMENDMENT_REFUND_CHILD_MANUALLY_RECONCILED',
           payload: {
             amendmentId: current.amendmentId,
             evidenceId: evidence.id,
@@ -388,7 +423,9 @@ export async function resolveAmendmentRefundManually(
       return {
         evidence,
         refundStatus: RefundStatus.COMPLETED,
-        settlementStatus: BookingAmendmentSettlementStatus.COMPLETED,
+        settlementStatus: logicallyComplete
+          ? BookingAmendmentSettlementStatus.COMPLETED
+          : BookingAmendmentSettlementStatus.RECONCILIATION_REQUIRED,
       };
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
@@ -413,6 +450,7 @@ export async function recordAmendmentRefundResolutionEvidence(
       actorType: input.actorType,
       actorUserId: input.actorUserId ?? null,
       amendmentSettlementId: input.amendmentSettlementId,
+      refundId: input.refundId ?? null,
       currency: input.currency,
       evidenceAt: input.evidenceAt,
       evidenceHash,

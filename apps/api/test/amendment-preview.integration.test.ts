@@ -817,9 +817,17 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
     }
   });
 
-  it('rejects start-date movement and canonical no-op without mutation', async () => {
+  it('allows valid PRE_TRIP range movement and rejects canonical no-op without mutation', async () => {
+    const shifted = await preview(renter.token, {
+      proposedPickupAt: new Date(rentalStart.getTime() + 86_400_000).toISOString(),
+      proposedReturnAt: new Date(rentalEnd.getTime() + 86_400_000).toISOString(),
+    });
+    expect(shifted.status).toBe(201);
+    expect(shifted.body.data.proposed).toMatchObject({
+      rentalStart: new Date(rentalStart.getTime() + 86_400_000).toISOString(),
+      rentalEnd: new Date(rentalEnd.getTime() + 86_400_000).toISOString(),
+    });
     for (const input of [
-      { proposedPickupAt: new Date(rentalStart.getTime() + 86_400_000).toISOString() },
       { proposedReturnAt: rentalEnd.toISOString() },
       {
         proposedEndMethod: 'RENTER_RETURN',
@@ -831,7 +839,7 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
       const before = await mutationSnapshot();
       const response = await preview(renter.token, input);
       expect(response.status).toBe(422);
-      expect(['NO_CHANGES', 'UNSUPPORTED_CHANGE']).toContain(response.body.error.code);
+      expect(response.body.error.code).toBe('NO_CHANGES');
       expect(await mutationSnapshot()).toEqual(before);
     }
   });
@@ -1410,6 +1418,44 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
       .expect(({ body }) => expect(body.error.code).toBe('AMENDMENT_ALREADY_PENDING'));
   });
 
+  it('allows the same proposal to be submitted again after the prior amendment terminates', async () => {
+    const proposal = {
+      proposedReturnAt: new Date(rentalEnd.getTime() + 4 * 60 * 60_000).toISOString(),
+    };
+    const firstPreview = await preview(renter.token, proposal).expect(201);
+    const firstSubmission = await submit(
+      renter.token,
+      firstPreview.body.data.previewToken,
+      `terminal-retry-first-${randomUUID()}`,
+    ).expect(201);
+    const firstAmendmentId = firstSubmission.body.data.amendmentId as string;
+    const holds = await database.client.bookingAmendmentHold.findMany({
+      select: { occupancyId: true },
+      where: { amendmentId: firstAmendmentId },
+    });
+    await database.client.$transaction([
+      database.client.vehicleOccupancy.updateMany({
+        data: { active: false, releaseReason: 'TEST_TERMINAL_RETRY', releasedAt: new Date() },
+        where: { id: { in: holds.map(({ occupancyId }) => occupancyId) } },
+      }),
+      database.client.bookingAmendmentHold.updateMany({
+        data: { releaseReason: 'TEST_TERMINAL_RETRY', releasedAt: new Date(), status: 'RELEASED' },
+        where: { amendmentId: firstAmendmentId },
+      }),
+      database.client.bookingAmendment.update({
+        data: { failedAt: new Date(), failureCode: 'TEST_TERMINAL_RETRY', status: 'FAILED' },
+        where: { id: firstAmendmentId },
+      }),
+    ]);
+
+    const retryPreview = await preview(renter.token, proposal).expect(201);
+    await submit(
+      renter.token,
+      retryPreview.body.data.previewToken,
+      `terminal-retry-second-${randomUUID()}`,
+    ).expect(201);
+  });
+
   it('rejects stale and post-preview inventory changes with zero partial submission artifacts', async () => {
     const stalePreview = await preview(renter.token, {
       proposedReturnAt: new Date(rentalEnd.getTime() + 60 * 60_000).toISOString(),
@@ -1627,6 +1673,30 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
       paymentDeadlineAt: null,
       status: BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
     });
+    const needsResponse = await ownerAmendmentHistory(owner.token, 'NEEDS_RESPONSE').expect(200);
+    expect(
+      needsResponse.body.data.items.map(
+        (item: { amendmentReference: string }) => item.amendmentReference,
+      ),
+    ).not.toContain(zero.body.data.amendmentId);
+    const upcoming = await ownerAmendmentHistory(owner.token, 'UPCOMING').expect(200);
+    expect(upcoming.body.data).toMatchObject({ page: 1, pageSize: 1 });
+    expect(upcoming.body.data.items).toContainEqual(
+      expect.objectContaining({
+        actionable: false,
+        amendmentReference: zero.body.data.amendmentId,
+        bookingReference: reference,
+        status: BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+      }),
+    );
+    const all = await ownerAmendmentHistory(owner.token, 'ALL').expect(200);
+    expect(
+      all.body.data.items.map((item: { amendmentReference: string }) => item.amendmentReference),
+    ).toContain(zero.body.data.amendmentId);
+    const hiddenFromOtherOwner = await ownerAmendmentHistory(unrelatedOwner.token, 'ALL').expect(
+      200,
+    );
+    expect(hiddenFromOtherOwner.body.data).toMatchObject({ items: [], total: 0 });
     await renterAmendmentDetail(renter.token, zero.body.data.amendmentId)
       .expect(200)
       .expect(({ body }) => {
@@ -1912,6 +1982,385 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
       });
   });
 
+  it('refunds a sequential paid amendment from the newest captured amendment payment', async () => {
+    const extendedEnd = new Date(rentalEnd.getTime() + 3 * 24 * 60 * 60_000);
+    const extensionPreview = await preview(renter.token, {
+      proposedReturnAt: extendedEnd.toISOString(),
+    }).expect(201);
+    const extensionAmountMinor = BigInt(
+      extensionPreview.body.data.financial.additionalPaymentMinor,
+    );
+    expect(extensionAmountMinor).toBeGreaterThan(0n);
+    const extension = await submit(
+      renter.token,
+      extensionPreview.body.data.previewToken,
+      `sequential-extension-submit-${randomUUID()}`,
+    ).expect(201);
+    const extensionId = extension.body.data.amendmentId as string;
+    await ownerAccept(
+      owner.token,
+      extensionId,
+      `sequential-extension-accept-${randomUUID()}`,
+    ).expect(201);
+    await payAmendment(
+      renter.token,
+      extensionId,
+      `sequential-extension-payment-${randomUUID()}`,
+    ).expect(201);
+    await applyPaidBookingAmendment(database.client, extensionId);
+    const paidExtension = await database.client.bookingAmendment.findUniqueOrThrow({
+      include: { settlement: true },
+      where: { id: extensionId },
+    });
+    const extensionPaymentId = paidExtension.settlement!.additionalPaymentId!;
+
+    const shorteningPreview = await preview(renter.token, {
+      proposedReturnAt: rentalEnd.toISOString(),
+    }).expect(201);
+    expect(shorteningPreview.body.data.financial.expectedRefundMinor).toBe(
+      extensionAmountMinor.toString(),
+    );
+    const shortening = await submit(
+      renter.token,
+      shorteningPreview.body.data.previewToken,
+      `sequential-shortening-submit-${randomUUID()}`,
+    ).expect(201);
+    const shorteningId = shortening.body.data.amendmentId as string;
+    await ownerAccept(
+      owner.token,
+      shorteningId,
+      `sequential-shortening-accept-${randomUUID()}`,
+    ).expect(201);
+
+    const result = await executeBookingAmendmentRefund(
+      database.client,
+      paymentProvider,
+      shorteningId,
+      { unknownGraceMinutes: 60 },
+    );
+    expect(result).toMatchObject({ outcome: 'COMPLETED', settlementStatus: 'COMPLETED' });
+    const settlement = await database.client.bookingAmendmentSettlement.findUniqueOrThrow({
+      include: { refunds: { include: { operation: true } } },
+      where: { amendmentId: shorteningId },
+    });
+    expect(settlement.refunds).toEqual([
+      expect.objectContaining({
+        amendmentAllocationIndex: 0,
+        amountMinor: extensionAmountMinor,
+        paymentId: extensionPaymentId,
+        status: RefundStatus.COMPLETED,
+        operation: expect.objectContaining({ status: PaymentOperationStatus.SUCCEEDED }),
+      }),
+    ]);
+    await applyRefundBookingAmendment(database.client, shorteningId);
+    expect(
+      await database.client.bookingAmendment.findUniqueOrThrow({ where: { id: shorteningId } }),
+    ).toMatchObject({ status: BookingAmendmentStatus.APPLIED });
+    expect(
+      await database.client.booking.findUniqueOrThrow({ where: { id: bookingId } }),
+    ).toMatchObject({
+      rentalEnd,
+    });
+  }, 60_000);
+
+  it('spans a logical refund across the newest amendment charge and original rental', async () => {
+    const extension = await createCapturedPaidAmendment(
+      new Date(rentalEnd.getTime() + 3 * 24 * 60 * 60_000),
+    );
+    await applyPaidBookingAmendment(database.client, extension.amendmentId);
+    const paidExtension = await database.client.bookingAmendment.findUniqueOrThrow({
+      include: { settlement: true },
+      where: { id: extension.amendmentId },
+    });
+    const extensionPaymentId = paidExtension.settlement!.additionalPaymentId!;
+    const extensionAmountMinor = BigInt(
+      extension.reviewed.body.data.financial.additionalPaymentMinor,
+    );
+    const proposedEnd = new Date(rentalStart.getTime() + 24 * 60 * 60_000);
+    const shorteningPreview = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    const refundAmountMinor = BigInt(shorteningPreview.body.data.financial.expectedRefundMinor);
+    expect(refundAmountMinor).toBeGreaterThan(extensionAmountMinor);
+    const shortening = await submit(
+      renter.token,
+      shorteningPreview.body.data.previewToken,
+      `multi-source-shortening-submit-${randomUUID()}`,
+    ).expect(201);
+    const shorteningId = shortening.body.data.amendmentId as string;
+    await ownerAccept(
+      owner.token,
+      shorteningId,
+      `multi-source-shortening-accept-${randomUUID()}`,
+    ).expect(201);
+    const refund = vi.spyOn(paymentProvider, 'refund');
+    const result = await executeBookingAmendmentRefund(
+      database.client,
+      paymentProvider,
+      shorteningId,
+      { unknownGraceMinutes: 60 },
+    );
+    expect(result).toMatchObject({ settlementStatus: 'COMPLETED' });
+    const settlement = await database.client.bookingAmendmentSettlement.findUniqueOrThrow({
+      include: {
+        refunds: { include: { operation: true }, orderBy: { amendmentAllocationIndex: 'asc' } },
+      },
+      where: { amendmentId: shorteningId },
+    });
+    expect(settlement.refundId).toBeNull();
+    expect(settlement.refunds).toHaveLength(2);
+    expect(settlement.refunds[0]).toMatchObject({
+      amendmentAllocationIndex: 0,
+      amountMinor: extensionAmountMinor,
+      paymentId: extensionPaymentId,
+      status: RefundStatus.COMPLETED,
+    });
+    expect(settlement.refunds[1]).toMatchObject({
+      amendmentAllocationIndex: 1,
+      amountMinor: refundAmountMinor - extensionAmountMinor,
+      paymentId,
+      status: RefundStatus.COMPLETED,
+    });
+    expect(refund).toHaveBeenCalledTimes(2);
+    expect(refund.mock.calls.map(([input]) => input.amountMinor)).toEqual([
+      extensionAmountMinor,
+      refundAmountMinor - extensionAmountMinor,
+    ]);
+    refund.mockRestore();
+    await applyRefundBookingAmendment(database.client, shorteningId);
+    expect(
+      await database.client.bookingAmendment.findUniqueOrThrow({ where: { id: shorteningId } }),
+    ).toMatchObject({ status: BookingAmendmentStatus.APPLIED });
+  }, 60_000);
+
+  it('unwinds multiple applied amendment charges newest-first and honors a prior partial refund', async () => {
+    const firstExtension = await createCapturedPaidAmendment(
+      new Date(rentalEnd.getTime() + 24 * 60 * 60_000),
+    );
+    await applyPaidBookingAmendment(database.client, firstExtension.amendmentId);
+    const secondExtension = await createCapturedPaidAmendment(
+      new Date(rentalEnd.getTime() + 3 * 24 * 60 * 60_000),
+    );
+    await applyPaidBookingAmendment(database.client, secondExtension.amendmentId);
+    const [first, second] = await Promise.all(
+      [firstExtension.amendmentId, secondExtension.amendmentId].map((id) =>
+        database.client.bookingAmendment.findUniqueOrThrow({
+          include: { settlement: true },
+          where: { id },
+        }),
+      ),
+    );
+    const [firstPayment, secondPayment] = await Promise.all([
+      database.client.payment.findUniqueOrThrow({
+        where: { id: first.settlement!.additionalPaymentId! },
+      }),
+      database.client.payment.findUniqueOrThrow({
+        where: { id: second.settlement!.additionalPaymentId! },
+      }),
+    ]);
+    const priorPartialMinor = 1n;
+    await database.client.$transaction(async (transaction) => {
+      const operation = await transaction.paymentOperation.create({
+        data: {
+          amountMinor: priorPartialMinor,
+          attemptCount: 1,
+          completedAt: new Date(),
+          currency: secondPayment.currency,
+          idempotencyKey: `prior-partial-${randomUUID()}`,
+          paymentId: secondPayment.id,
+          providerRequestReference: randomUUID(),
+          startedAt: new Date(),
+          status: PaymentOperationStatus.SUCCEEDED,
+          type: PaymentOperationType.REFUND,
+        },
+      });
+      await transaction.refund.create({
+        data: {
+          amountMinor: priorPartialMinor,
+          currency: secondPayment.currency,
+          externalRefundId: `prior-partial-${randomUUID()}`,
+          operationId: operation.id,
+          paymentId: secondPayment.id,
+          reason: 'Prior authoritative partial refund',
+          status: RefundStatus.COMPLETED,
+        },
+      });
+      await transaction.payment.update({
+        data: {
+          refundedAmountMinor: priorPartialMinor,
+          status: PaymentStatus.PARTIALLY_REFUNDED,
+        },
+        where: { id: secondPayment.id },
+      });
+    });
+
+    const proposedEnd = new Date(rentalStart.getTime() + 24 * 60 * 60_000);
+    const shorteningPreview = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    const shortening = await submit(
+      renter.token,
+      shorteningPreview.body.data.previewToken,
+      `multi-prior-shortening-${randomUUID()}`,
+    ).expect(201);
+    const shorteningId = shortening.body.data.amendmentId as string;
+    await ownerAccept(owner.token, shorteningId, `multi-prior-accept-${randomUUID()}`).expect(201);
+    await executeBookingAmendmentRefund(database.client, paymentProvider, shorteningId, {
+      unknownGraceMinutes: 60,
+    });
+    const settlement = await database.client.bookingAmendmentSettlement.findUniqueOrThrow({
+      include: { refunds: { orderBy: { amendmentAllocationIndex: 'asc' } } },
+      where: { amendmentId: shorteningId },
+    });
+    expect(settlement.refunds.map((refund) => refund.paymentId)).toEqual([
+      secondPayment.id,
+      firstPayment.id,
+      paymentId,
+    ]);
+    expect(settlement.refunds[0]!.amountMinor).toBe(
+      secondPayment.capturedAmountMinor - priorPartialMinor,
+    );
+    expect(settlement.refunds[1]!.amountMinor).toBe(firstPayment.capturedAmountMinor);
+    expect(settlement.refunds.reduce((sum, refund) => sum + refund.amountMinor, 0n)).toBe(
+      -settlement.financialDeltaMinor,
+    );
+    await applyRefundBookingAmendment(database.client, shorteningId);
+    expect(
+      await database.client.bookingAmendment.findUniqueOrThrow({ where: { id: shorteningId } }),
+    ).toMatchObject({ status: BookingAmendmentStatus.APPLIED });
+  }, 60_000);
+
+  it('persists a successful child beside an UNKNOWN child and resumes without duplication', async () => {
+    const extension = await createCapturedPaidAmendment(
+      new Date(rentalEnd.getTime() + 3 * 24 * 60 * 60_000),
+    );
+    await applyPaidBookingAmendment(database.client, extension.amendmentId);
+    const proposedEnd = new Date(rentalStart.getTime() + 24 * 60 * 60_000);
+    const shorteningPreview = await preview(renter.token, {
+      proposedReturnAt: proposedEnd.toISOString(),
+    }).expect(201);
+    const shortening = await submit(
+      renter.token,
+      shorteningPreview.body.data.previewToken,
+      `partial-unknown-shortening-${randomUUID()}`,
+    ).expect(201);
+    const amendmentId = shortening.body.data.amendmentId as string;
+    await ownerAccept(owner.token, amendmentId, `partial-unknown-accept-${randomUUID()}`).expect(
+      201,
+    );
+    let call = 0;
+    const firstPassProvider = {
+      refund: vi.fn(async (input: Parameters<PaymentProvider['refund']>[0]) => {
+        call += 1;
+        if (call === 1) return paymentProvider.refund(input);
+        return {
+          kind: 'UNKNOWN' as const,
+          providerState: 'TEST_UNCERTAIN',
+          safeMetadata: { test: true },
+        };
+      }),
+    };
+    const first = await executeBookingAmendmentRefund(
+      database.client,
+      firstPassProvider,
+      amendmentId,
+      { unknownGraceMinutes: 60 },
+    );
+    expect(first).toMatchObject({ settlementStatus: 'RECONCILIATION_REQUIRED' });
+    const partial = await database.client.bookingAmendmentSettlement.findUniqueOrThrow({
+      include: {
+        refunds: {
+          include: { operation: true },
+          orderBy: { amendmentAllocationIndex: 'asc' },
+        },
+      },
+      where: { amendmentId },
+    });
+    expect(partial.refunds).toHaveLength(2);
+    expect(partial.refunds[0]).toMatchObject({
+      status: RefundStatus.COMPLETED,
+      operation: { status: PaymentOperationStatus.SUCCEEDED },
+    });
+    expect(partial.refunds[1]).toMatchObject({
+      status: RefundStatus.PROCESSING,
+      operation: { status: PaymentOperationStatus.UNKNOWN },
+    });
+    const childIds = partial.refunds.map((refund) => refund.id);
+    await database.client.paymentOperation.update({
+      data: { nextAttemptAt: new Date(Date.now() - 1_000) },
+      where: { id: partial.refunds[1]!.operation!.id },
+    });
+    const retrySpy = vi.spyOn(paymentProvider, 'refund');
+    const retried = await executeBookingAmendmentRefund(
+      database.client,
+      paymentProvider,
+      amendmentId,
+      { allowReplay: true, unknownGraceMinutes: 60 },
+    );
+    expect(retried).toMatchObject({ settlementStatus: 'COMPLETED' });
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+    retrySpy.mockRestore();
+    const completed = await database.client.bookingAmendmentSettlement.findUniqueOrThrow({
+      include: { refunds: { orderBy: { amendmentAllocationIndex: 'asc' } } },
+      where: { amendmentId },
+    });
+    expect(completed.refunds.map((refund) => refund.id)).toEqual(childIds);
+    await applyRefundBookingAmendment(database.client, amendmentId);
+    expect(
+      await database.client.bookingAmendment.findUniqueOrThrow({ where: { id: amendmentId } }),
+    ).toMatchObject({ status: BookingAmendmentStatus.APPLIED });
+  }, 60_000);
+
+  it('creates no children or provider call when aggregate refundable balance is insufficient', async () => {
+    const reviewed = await preview(renter.token, {
+      proposedReturnAt: new Date(rentalEnd.getTime() - 24 * 60 * 60_000).toISOString(),
+    }).expect(201);
+    const submitted = await submit(
+      renter.token,
+      reviewed.body.data.previewToken,
+      `insufficient-refund-${randomUUID()}`,
+    ).expect(201);
+    const amendmentId = submitted.body.data.amendmentId as string;
+    await ownerAccept(
+      owner.token,
+      amendmentId,
+      `insufficient-refund-accept-${randomUUID()}`,
+    ).expect(201);
+    await database.client.payment.update({
+      data: { capturedAmountMinor: 0n, refundedAmountMinor: 0n, status: PaymentStatus.REFUNDED },
+      where: { id: paymentId },
+    });
+    const refund = vi.spyOn(paymentProvider, 'refund');
+    await expect(
+      executeBookingAmendmentRefund(database.client, paymentProvider, amendmentId, {
+        unknownGraceMinutes: 60,
+      }),
+    ).rejects.toMatchObject({
+      amendmentId,
+      availableSourceTotalMinor: '0',
+      bookingId,
+      requestedAmountMinor: expect.any(String),
+      settlementId: expect.any(String),
+    });
+    expect(refund).not.toHaveBeenCalled();
+    refund.mockRestore();
+    expect(
+      await database.client.refund.count({
+        where: { amendmentAllocationSettlement: { amendmentId } },
+      }),
+    ).toBe(0);
+    expect(
+      await database.client.bookingAmendment.findUniqueOrThrow({
+        include: { settlement: true },
+        where: { id: amendmentId },
+      }),
+    ).toMatchObject({
+      appliedAt: null,
+      status: BookingAmendmentStatus.OWNER_ACCEPTED_PROCESSING,
+      settlement: { status: 'PENDING' },
+    });
+  });
+
   it('persists UNKNOWN durably and recovers by exact request replay after restart', async () => {
     await createBookingFixture();
     const reviewed = await preview(renter.token, {
@@ -2134,6 +2583,9 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
       where: { bookingId },
     });
     expect(occupancy.occupiedStart).toEqual(proposedStart);
+    expect(
+      await database.client.booking.findUniqueOrThrow({ where: { id: bookingId } }),
+    ).toMatchObject({ rentalStart: proposedStart, rentalEnd });
     expect(await database.client.payment.count({ where: { bookingId } })).toBe(paymentCount);
     expect(await database.client.refund.count({ where: { payment: { bookingId } } })).toBe(
       refundCount,
@@ -2746,7 +3198,7 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
         where: { id: amendmentId },
       }),
     ]);
-    expect(booking).toMatchObject({ rentalEnd: originalEnd, rentalStart: originalStart });
+    expect(booking).toMatchObject({ rentalEnd: shortenedEnd, rentalStart: originalStart });
     expect(pricing).toMatchObject({ rentalEnd: originalEnd, rentalStart: originalStart });
     expect(occupancy).toMatchObject({ occupiedStart: originalStart });
     expect(occupancy.occupiedEnd).toEqual(new Date(shortenedEnd.getTime() + 120 * 60_000));
@@ -2981,6 +3433,8 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
           bookingAlreadyApplied: false,
           financial: { expectedRefundMinor: '0' },
           paymentDeadlineAt: firstDeadline,
+          paymentInitiationAllowed: true,
+          paymentState: null,
           status: BookingAmendmentStatus.OWNER_ACCEPTED_PAYMENT_PENDING,
         });
         expect(BigInt(body.data.financial.additionalPaymentMinor)).toBeGreaterThan(0n);
@@ -3120,9 +3574,10 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
     );
     await renterAmendmentDetail(renter.token, amendmentId)
       .expect(200)
-      .expect(({ body }) =>
-        expect(body.data.paymentState).toBe('PAYMENT_RECEIVED_AWAITING_APPLICATION'),
-      );
+      .expect(({ body }) => {
+        expect(body.data.paymentInitiationAllowed).toBe(false);
+        expect(body.data.paymentState).toBe('PAYMENT_RECEIVED_AWAITING_APPLICATION');
+      });
     await ownerAmendmentDetail(owner.token, amendmentId)
       .expect(200)
       .expect(({ body }) =>
@@ -3334,7 +3789,11 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
     await renterAmendmentDetail(renter.token, amendmentId)
       .expect(200)
       .expect(({ body }) => {
-        expect(body.data).toMatchObject({ bookingAlreadyApplied: true, status: 'APPLIED' });
+        expect(body.data).toMatchObject({
+          bookingAlreadyApplied: true,
+          paymentInitiationAllowed: false,
+          status: 'APPLIED',
+        });
         expect(body.data.paymentState).not.toBe('PAYMENT_RECEIVED_AWAITING_APPLICATION');
       });
     const next = await preview(renter.token, {
@@ -3533,6 +3992,9 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
       data: { paymentDeadlineAt: new Date() },
       where: { id: amendmentId },
     });
+    await renterAmendmentDetail(renter.token, amendmentId)
+      .expect(200)
+      .expect(({ body }) => expect(body.data.paymentInitiationAllowed).toBe(false));
     await payAmendment(renter.token, amendmentId, `deadline-reject-${randomUUID()}`).expect(409);
     const persisted = await database.client.bookingAmendment.findUniqueOrThrow({
       include: { settlement: true },
@@ -3634,6 +4096,12 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
       `unknown-initiate-${randomUUID()}`,
     ).expect(201);
     expect(first.body.data.amendmentState).toBe('PAYMENT_VERIFYING');
+    await renterAmendmentDetail(renter.token, amendmentId)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data.paymentInitiationAllowed).toBe(false);
+        expect(body.data.paymentState).toBe('PAYMENT_VERIFYING');
+      });
     const amendment = await database.client.bookingAmendment.findUniqueOrThrow({
       include: { holds: { include: { occupancy: true } }, settlement: true },
       where: { id: amendmentId },
@@ -5180,6 +5648,13 @@ describe.sequential('Task 18C-2A amendment preview HTTP integration', () => {
   function ownerAmendments(token: string) {
     return request(app.getHttpServer())
       .get('/api/v1/owner/bookings/amendments/actionable')
+      .set('Authorization', `Bearer ${token}`);
+  }
+
+  function ownerAmendmentHistory(token: string, scope: string) {
+    return request(app.getHttpServer())
+      .get('/api/v1/owner/bookings/amendments')
+      .query({ page: 1, pageSize: 1, scope })
       .set('Authorization', `Bearer ${token}`);
   }
 

@@ -11,6 +11,20 @@ submission persists immutable current/proposed snapshots, inventory holds, histo
 one transaction. The original booking remains authoritative until application. PostgreSQL constraints
 decide overlap, and only server policy decides pricing, timing, fulfillment, and transitions.
 
+For PRE_TRIP changes, the proposal may move both the scheduled pickup and return as one coherent
+range. Preview validates the complete proposed occupancy, duration, immutable pricing authority, and
+current fulfillment policy; application atomically replaces the canonical booking range and occupancy.
+ACTIVE changes keep the pickup immutable and permit only an eligible return extension.
+
+The booking read model projects allowed start/end fulfillment methods separately from lifecycle
+changeability. Mobile renders a single method as read-only and offers a selector only when multiple
+methods are both supported and changeable. A historically booked method remains represented even if
+the latest vehicle policy no longer advertises it; preview remains the final serviceability authority.
+
+Refundability continues to use the original captured-payment timestamp and original scheduled pickup
+authority. Moving a proposed pickup does not rewrite that immutable cancellation/amendment timing
+clock.
+
 Owner response, renter additional-payment deadline, and provider reconciliation are distinct clocks.
 Additional payment uses a dedicated ten-minute policy. Unknown provider outcomes remain reconcilable
 instead of being treated as failure. Refund obligations are recorded through refund payable and

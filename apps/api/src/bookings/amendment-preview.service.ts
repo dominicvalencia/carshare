@@ -319,15 +319,6 @@ export class AmendmentPreviewService {
         'An active trip can only be extended to a later return time.',
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
-    if (
-      localDate(proposedStart, booking.pricingSnapshot!.vehicleTimezone) !==
-      localDate(currentStart, booking.pricingSnapshot!.vehicleTimezone)
-    )
-      this.fail(
-        'UNSUPPORTED_CHANGE',
-        'Pickup date changes are not supported.',
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
     if (proposedStart >= proposedEnd)
       this.fail(
         'DATES_UNAVAILABLE',
@@ -1044,15 +1035,6 @@ function canonicalJson(value: unknown): string {
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
-function localDate(value: Date, timezone: string): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    day: '2-digit',
-    month: '2-digit',
-    timeZone: timezone,
-    year: 'numeric',
-  }).format(value);
 }
 
 function jsonRecord(value: Prisma.JsonValue | null | undefined): Record<string, unknown> | null {

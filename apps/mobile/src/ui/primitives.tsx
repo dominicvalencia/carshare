@@ -81,7 +81,10 @@ export function Screen({
   onScroll,
   animatedScroll = false,
   onContentSizeChange,
+  onHeaderLayout,
   onScrollLayout,
+  contentGrows = true,
+  contentBottomPadding,
   constrainOverscroll = false,
   safeTop = true,
 }: ScreenProperties) {
@@ -119,7 +122,9 @@ export function Screen({
       <KeyboardAvoidingView style={styles.flex}>
         {leading ? (
           <>
-            <View style={styles.stickyNestedHeader}>{header}</View>
+            <View onLayout={onHeaderLayout} style={styles.stickyNestedHeader}>
+              {header}
+            </View>
             {scroll ? (
               <ScrollContainer
                 ref={scrollRef}
@@ -129,7 +134,13 @@ export function Screen({
                 contentInset={iosFocusInsets}
                 contentContainerStyle={[
                   styles.nestedScreenContent,
-                  { paddingBottom: keyboardAwareBottomPadding },
+                  !contentGrows && styles.intrinsicContent,
+                  {
+                    paddingBottom: Math.max(
+                      contentBottomPadding ?? keyboardAwareBottomPadding,
+                      keyboardAwareBottomPadding - screenBottomPadding,
+                    ),
+                  },
                 ]}
                 keyboardDismissMode={formKeyboardDismissMode}
                 keyboardShouldPersistTaps="handled"
@@ -196,7 +207,10 @@ interface ScreenProperties {
   readonly onScroll?: ((event: NativeSyntheticEvent<NativeScrollEvent>) => void) | undefined;
   readonly animatedScroll?: boolean | undefined;
   readonly onContentSizeChange?: ((width: number, height: number) => void) | undefined;
+  readonly onHeaderLayout?: ((event: LayoutChangeEvent) => void) | undefined;
   readonly onScrollLayout?: ((event: LayoutChangeEvent) => void) | undefined;
+  readonly contentGrows?: boolean | undefined;
+  readonly contentBottomPadding?: number | undefined;
   readonly constrainOverscroll?: boolean | undefined;
   readonly safeTop?: boolean | undefined;
 }
@@ -645,6 +659,7 @@ const styles = StyleSheet.create({
   },
   hiddenPasscodeInput: { height: 1, opacity: 0, position: 'absolute', width: 1 },
   inputError: { borderColor: colors.danger },
+  intrinsicContent: { flexGrow: 0 },
   leading: { alignItems: 'flex-start' },
   multiline: { minHeight: 112 },
   nestedScreenContent: {

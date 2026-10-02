@@ -201,6 +201,7 @@ describe('booking amendment operational refund recovery', () => {
       amendment: {
         bookingId: '11111111-1111-4111-8111-111111111111',
         correlationId: 'correlation',
+        scope: BookingAmendmentScope.PRE_TRIP,
         status: BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
       },
       amendmentId,
@@ -208,7 +209,9 @@ describe('booking amendment operational refund recovery', () => {
       direction: BookingAmendmentFinancialDirection.REFUND,
       financialDeltaMinor: -100n,
       id: settlementId,
+      refundId,
       refund: {
+        amendmentSettlementId: settlementId,
         amountMinor: 100n,
         currency: 'PHP',
         id: refundId,
@@ -245,7 +248,16 @@ describe('booking amendment operational refund recovery', () => {
       outboxEvent: { create: vi.fn().mockResolvedValue({}) },
       payment: { update: vi.fn().mockResolvedValue({}) },
       paymentOperation: { update: vi.fn().mockResolvedValue({}) },
-      refund: { update: vi.fn().mockResolvedValue({}) },
+      refund: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            amountMinor: 100n,
+            operation: { status: 'SUCCEEDED' },
+            status: RefundStatus.COMPLETED,
+          },
+        ]),
+        update: vi.fn().mockResolvedValue({}),
+      },
     };
     const database = {
       $transaction: vi.fn(async (callback) => callback(transaction)),

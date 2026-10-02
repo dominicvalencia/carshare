@@ -45,6 +45,7 @@ import { AmendmentWithdrawalService } from './amendment-withdrawal.service';
 import { AmendmentOwnerDecisionService } from './amendment-owner-decision.service';
 import { AdminBookingAmendmentsService } from './admin-booking-amendments.service';
 import { AdminBookingAmendmentQueryDto } from './admin-booking-amendments.dto';
+import { OwnerBookingAmendmentQueryDto } from './owner-booking-amendments.dto';
 
 @ApiBearerAuth()
 @ApiTags('Renter bookings')
@@ -327,6 +328,14 @@ export class OwnerBookingsController {
   @Get('amendments/actionable')
   actionableAmendments(@CurrentPrincipal() principal: RequestPrincipal) {
     return this.amendmentDecisions.list(principal.userId);
+  }
+
+  @Get('amendments')
+  amendments(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Query() query: OwnerBookingAmendmentQueryDto,
+  ) {
+    return this.amendmentDecisions.listOwnerHistory(principal.userId, query);
   }
 
   @Get(':reference/amendments/:amendmentReference')

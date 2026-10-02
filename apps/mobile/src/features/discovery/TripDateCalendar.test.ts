@@ -15,7 +15,7 @@ describe('TripDateCalendar discovery-date policy', () => {
 
   it('formats same-month, cross-month, and cross-year ranges without handover wording', () => {
     expect(tripDateSummary(new Date(2030, 8, 25, 9), new Date(2030, 8, 27, 9))).toBe(
-      'Sep 25 – 27, 2030',
+      'Sep 25–27, 2030',
     );
     expect(tripDateSummary(new Date(2030, 8, 29, 9), new Date(2030, 9, 2, 9))).toBe(
       'Sep 29 – Oct 2, 2030',

@@ -135,6 +135,16 @@ export const bookingInclude = {
         take: 1,
         where: { isCover: true, removedAt: null },
       },
+      policyVersions: {
+        orderBy: { version: 'desc' as const },
+        select: {
+          supportsOwnerCollection: true,
+          supportsOwnerDelivery: true,
+          supportsRenterPickup: true,
+          supportsRenterReturn: true,
+        },
+        take: 1,
+      },
       powertrain: true,
       transmission: true,
       variant: true,
@@ -143,6 +153,43 @@ export const bookingInclude = {
 } satisfies Prisma.BookingInclude;
 
 export type BookingRecord = Prisma.BookingGetPayload<{ include: typeof bookingInclude }>;
+
+type StartMethod = 'RENTER_PICKUP' | 'OWNER_DELIVERY';
+type EndMethod = 'RENTER_RETURN' | 'OWNER_COLLECTION';
+
+export function bookingAmendmentFulfillmentCapabilities(input: {
+  actualPickupAt: Date | null;
+  currentEndMethod: EndMethod;
+  currentStartMethod: StartMethod;
+  policy?: {
+    supportsOwnerCollection: boolean;
+    supportsOwnerDelivery: boolean;
+    supportsRenterPickup: boolean;
+    supportsRenterReturn: boolean;
+  };
+  status: string;
+}) {
+  const changeable =
+    (input.status === 'CONFIRMED' || input.status === 'READY_FOR_PICKUP') && !input.actualPickupAt;
+  const allowedStartMethods: StartMethod[] = [
+    ...(input.policy?.supportsRenterPickup ? (['RENTER_PICKUP'] as const) : []),
+    ...(input.policy?.supportsOwnerDelivery ? (['OWNER_DELIVERY'] as const) : []),
+  ];
+  const allowedEndMethods: EndMethod[] = [
+    ...(input.policy?.supportsRenterReturn ? (['RENTER_RETURN'] as const) : []),
+    ...(input.policy?.supportsOwnerCollection ? (['OWNER_COLLECTION'] as const) : []),
+  ];
+  if (!allowedStartMethods.includes(input.currentStartMethod))
+    allowedStartMethods.push(input.currentStartMethod);
+  if (!allowedEndMethods.includes(input.currentEndMethod))
+    allowedEndMethods.push(input.currentEndMethod);
+  return {
+    allowedEndMethods,
+    allowedStartMethods,
+    endFulfillmentChangeable: changeable,
+    startFulfillmentChangeable: changeable,
+  };
+}
 
 @Injectable()
 export class BookingProjectionService {
@@ -506,13 +553,17 @@ export class BookingProjectionService {
     const snapshot = booking.fulfillmentSnapshot;
     if (!snapshot)
       return {
+        allowedEndMethods: ['RENTER_RETURN'] as const,
+        allowedStartMethods: ['RENTER_PICKUP'] as const,
         collectionDistanceMeters: null,
         collectionFeeMinor: 0,
         deliveryDistanceMeters: null,
         deliveryFeeMinor: 0,
         endMethod: 'RENTER_RETURN',
+        endFulfillmentChangeable: false,
         legacyCompatibility: true,
         startMethod: 'RENTER_PICKUP',
+        startFulfillmentChangeable: false,
       };
     const location = (prefix: 'start' | 'end') => ({
       addressLine1: snapshot[`${prefix}AddressLine1`],
@@ -532,12 +583,22 @@ export class BookingProjectionService {
     const delivery = destination(destinations?.deliveryDestination) ?? location('start');
     const collection = destination(destinations?.collectionDestination) ?? location('end');
     const evidence = jsonRecord(amendment?.serviceabilitySnapshot);
+    const startMethod = applied?.proposedStartMethod ?? snapshot.startMethod;
+    const endMethod = applied?.proposedEndMethod ?? snapshot.endMethod;
+    const capabilities = bookingAmendmentFulfillmentCapabilities({
+      actualPickupAt: booking.actualPickupAt,
+      currentEndMethod: endMethod,
+      currentStartMethod: startMethod,
+      ...(booking.vehicle.policyVersions[0] ? { policy: booking.vehicle.policyVersions[0] } : {}),
+      status: booking.status,
+    });
     return {
+      ...capabilities,
       collectionDistanceMeters: snapshot.collectionDistanceMeters,
       collectionFeeMinor:
         numberFromJson(evidence?.proposedCollectionFeeMinor) ?? snapshot.collectionFeeMinor,
       endLocation: collection,
-      endMethod: applied?.proposedEndMethod ?? snapshot.endMethod,
+      endMethod,
       legacyCompatibility: false,
       minimumNoticeMinutes: snapshot.minimumNoticeMinutes,
       deliveryDistanceMeters: snapshot.deliveryDistanceMeters,
@@ -545,7 +606,7 @@ export class BookingProjectionService {
         numberFromJson(evidence?.proposedDeliveryFeeMinor) ?? snapshot.deliveryFeeMinor,
       serviceRadiusMeters: snapshot.serviceRadiusMeters,
       startLocation: delivery,
-      startMethod: applied?.proposedStartMethod ?? snapshot.startMethod,
+      startMethod,
     };
   }
 }
