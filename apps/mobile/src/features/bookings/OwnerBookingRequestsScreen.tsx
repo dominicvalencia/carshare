@@ -2,7 +2,11 @@ import { useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
-import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
+import {
+  useFocusedPollingInterval,
+  useRefreshOnFocusAndForeground,
+} from '../../query/use-query-refresh';
+import { OWNER_REQUEST_POLL_INTERVAL_MS } from '../../query/owner-request-freshness';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { bookingStatusLabel, dateTimeLabel, money, timeLabel, titleCase } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
@@ -60,6 +64,7 @@ export function OwnerBookingRequestsScreen({
   history = false,
   initialAmendmentReference,
   initialBookingReference,
+  onOpenAmendment,
   onHistory,
   onClose,
 }: {
@@ -67,6 +72,10 @@ export function OwnerBookingRequestsScreen({
   readonly history?: boolean;
   readonly initialAmendmentReference?: string;
   readonly initialBookingReference?: string;
+  readonly onOpenAmendment?: (target: {
+    readonly amendmentReference: string;
+    readonly bookingReference: string;
+  }) => void;
   readonly onHistory?: () => void;
   readonly onClose?: () => void;
 } = {}) {
@@ -87,9 +96,14 @@ export function OwnerBookingRequestsScreen({
   );
   const [filter, setFilter] = useState<Filter>(history ? 'All' : 'Needs response');
   const effectiveFilter: Filter = embedded ? 'Needs response' : filter;
+  const requestPollingInterval = useFocusedPollingInterval(
+    OWNER_REQUEST_POLL_INTERVAL_MS,
+    embedded,
+  );
   const requests = useQuery({
     queryKey: ['owner-booking-requests'],
     queryFn: () => apiClient.request<OwnerBookingView[]>('/owner/bookings/requests'),
+    refetchInterval: requestPollingInterval,
   });
   const amendmentScope = ownerAmendmentScope(effectiveFilter);
   const amendments = useInfiniteQuery({
@@ -101,7 +115,7 @@ export function OwnerBookingRequestsScreen({
       ),
     getNextPageParam: (lastPage) =>
       lastPage.page < lastPage.totalPages ? lastPage.page + 1 : undefined,
-    refetchInterval: effectiveFilter === 'All' ? false : 10_000,
+    refetchInterval: embedded ? requestPollingInterval : effectiveFilter === 'All' ? false : 10_000,
   });
   const detail = useQuery({
     enabled: Boolean(selected),
@@ -145,6 +159,10 @@ export function OwnerBookingRequestsScreen({
       <OwnerAmendmentDetail
         target={selectedAmendment}
         onClose={() => {
+          if (onClose) {
+            onClose();
+            return;
+          }
           setSelectedAmendment(null);
           void amendments.refetch();
           void requests.refetch();
@@ -238,7 +256,7 @@ export function OwnerBookingRequestsScreen({
                 accessibilityLabel={`${embedded ? 'Change requested' : cardStatus} for ${identity.renter} and ${identity.vehicle}. ${applied ? 'Updated' : `Current ${accessibleDateRange(amendment.current.rentalStart, amendment.current.rentalEnd)}. Requested`} ${accessibleDateRange(amendment.proposed.rentalStart, amendment.proposed.rentalEnd)}. ${earningsDeltaAccessibility(delta, amendment.financial.currency)}.${amendment.actionable ? ` Respond by ${dateTimeLabel(amendment.expiresAt)}.` : ''}`}
                 accessibilityRole="button"
                 onPress={() =>
-                  setSelectedAmendment({
+                  (onOpenAmendment ?? setSelectedAmendment)({
                     amendmentReference: (amendment.amendmentReference ?? amendment.amendmentId)!,
                     bookingReference: amendment.bookingReference,
                   })
@@ -448,19 +466,13 @@ function OwnerAmendmentDetail({
   });
   if (detail.isPending)
     return (
-      <Screen
-        leading={<BackControl label="Booking changes" onPress={onClose} />}
-        title="Change request"
-      >
+      <Screen leading={<BackControl label="Back" onPress={onClose} />} title="Change request">
         <StateView loading title="Loading change request…" />
       </Screen>
     );
   if (detail.isError || !detail.data)
     return (
-      <Screen
-        leading={<BackControl label="Booking changes" onPress={onClose} />}
-        title="Change request"
-      >
+      <Screen leading={<BackControl label="Back" onPress={onClose} />} title="Change request">
         <StateView
           icon="cloud-offline-outline"
           title="Change request unavailable"
@@ -485,7 +497,7 @@ function OwnerAmendmentDetail({
   const processing = ownerAmendmentIsProcessing(amendment);
   return (
     <Screen
-      leading={<BackControl label="Booking changes" onPress={onClose} />}
+      leading={<BackControl label="Back" onPress={onClose} />}
       eyebrow="Booking change request"
       title={amendment.actionable ? 'Review requested change' : statusTitle}
       subtitle={

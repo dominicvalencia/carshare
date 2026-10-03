@@ -1,9 +1,10 @@
 import type { QueryClient } from '@tanstack/react-query';
+import { refreshOwnerRequestAuthorities } from './owner-request-freshness';
 
 export function invalidateBookingLifecycle(client: QueryClient, reference?: string | null): void {
+  void refreshOwnerRequestAuthorities(client);
   const keys: readonly (readonly unknown[])[] = [
     ['bookings'],
-    ['owner-booking-requests'],
     ['owner-rentals'],
     ['owner-dashboard'],
     ['vehicles'],

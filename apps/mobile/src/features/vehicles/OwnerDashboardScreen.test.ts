@@ -18,6 +18,18 @@ const requestsSource = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '../bookings/OwnerBookingRequestsScreen.tsx'),
   'utf8',
 );
+const primitivesSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../ui/primitives.tsx'),
+  'utf8',
+);
+const navigationSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../navigation/AppNavigation.tsx'),
+  'utf8',
+);
+const queryRefreshSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../query/use-query-refresh.ts'),
+  'utf8',
+);
 
 const card = (status = 'CONFIRMED', returnAt = '2026-10-02T09:00:00.000Z'): OwnerHomeCard => ({
   bookingReference: 'CR-OWNER-HOME',
@@ -117,11 +129,45 @@ describe('Owner Today mobile UI', () => {
     expect(source).toContain('model.today.nextUpcoming');
     expect(source).toContain('View upcoming');
     expect(source).toContain('useRefreshOnFocusAndForeground');
+    expect(source).toContain('useFocusedPollingInterval(');
+    expect(source).toContain('OWNER_REQUEST_POLL_INTERVAL_MS');
+    expect(source).toContain('refetchInterval: requestPollingInterval');
+    expect(requestsSource).toContain('refetchInterval: requestPollingInterval');
+    expect(queryRefreshSource).toContain('useIsFocused()');
+    expect(queryRefreshSource).toContain("appState === 'active'");
+    expect(queryRefreshSource).toContain('AppState.addEventListener');
   });
 
   it('uses the current server-projected return timestamp for ACTIVE extensions', () => {
     expect(card('ACTIVE', '2026-10-05T09:00:00.000Z').return.at).toBe('2026-10-05T09:00:00.000Z');
     expect(source).toContain("kind === 'pickup' ? item.pickup.at : item.return.at");
+  });
+
+  it('uses the shared photo-card family for pickup, active, and return cards', () => {
+    const operationalCard = source.slice(
+      source.indexOf('function OperationalCard('),
+      source.indexOf('function AttentionCard('),
+    );
+
+    expect(operationalCard).toContain('<VehicleImage');
+    expect(operationalCard).toContain('contentPath={item.vehicle.coverPhoto?.contentPath}');
+    expect(operationalCard).toContain('style={styles.bookingImage}');
+    expect(operationalCard).toContain('{item.vehicle.make} {item.vehicle.model}');
+    expect(operationalCard).toContain('{item.renterDisplayName}');
+    expect(operationalCard).toContain("kind === 'pickup' ? item.pickup.at : item.return.at");
+    expect(operationalCard).toContain("kind === 'pickup' ? 'Pickup' : 'Returns'");
+    expect(operationalCard).toContain('bookingStatusLabel(item.status');
+    expect(operationalCard).not.toContain('styles.timeColumn');
+    expect(operationalCard).not.toContain('styles.time');
+  });
+
+  it('keeps photo cards responsive with decorative images and centered chevrons', () => {
+    expect(source).toContain('accessible={false}');
+    expect(source).toContain('accessibilityHint="Opens booking details"');
+    expect(source).toContain('bookingContent: { flex: 1, minWidth: 0 }');
+    expect(source).toContain("bookingChevron: { alignSelf: 'center', flexShrink: 0 }");
+    expect(source).toContain('bookingImage: { borderRadius: radius.md, height: 128, width: 108 }');
+    expect(source.match(/<View style={styles\.bookingChevron}>/g)).toHaveLength(2);
   });
 
   it('groups future rentals by Manila date, omits Today, orders groups, and deduplicates pages', () => {
@@ -169,10 +215,39 @@ describe('Owner Today mobile UI', () => {
     expect(source).not.toContain('title="Today"');
   });
 
-  it('centers the unverified Owner state in the available screen', () => {
-    expect(source).toContain('<Screen scroll={false}>');
-    expect(source).toContain('<View style={styles.centeredState}>');
-    expect(source).toContain("centeredState: { flex: 1, justifyContent: 'center' }");
+  it('uses one shared top spacing authority for Today, Upcoming, and Requests', () => {
+    expect(source.match(/<View style={styles\.tabPanel}>/g)).toHaveLength(3);
+    expect(source).toContain('tabPanel: { flexGrow: 1, paddingTop: spacing.sm }');
+    expect(source).toContain('<SectionHeader flush title={title} />');
+    expect(source).toContain('<SectionHeader flush title={group.label} />');
+    expect(source).toContain('section: { marginBottom: spacing.md }');
+    expect(primitivesSource).toContain('flush && styles.sectionHeaderFlush');
+    expect(primitivesSource).toContain('sectionHeaderFlush: { marginTop: 0 }');
+  });
+
+  it('centers whole-surface Owner states in the usable content viewport', () => {
+    expect(source.match(/<FullScreenState/g)).toHaveLength(3);
+    expect(source).toContain('title="Today is unavailable"');
+    expect(source).toContain('actionLabel="Retry"');
+    expect(source).toContain('onAction={() => void home.refetch()}');
+    expect(source).toContain('title="Verification required"');
+    expect(primitivesSource).toContain('export function FullScreenState');
+    expect(primitivesSource).toContain('contentContainerStyle={styles.fullScreenStateContent}');
+    expect(primitivesSource).toContain(
+      "fullScreenStateContent: {\n    flexGrow: 1,\n    justifyContent: 'center'",
+    );
+    expect(primitivesSource).toContain('style={styles.flex}');
+  });
+
+  it('uses the parent safe-area and tab layout and scrolls large full-screen state content', () => {
+    expect(primitivesSource).toContain("<SafeAreaView edges={safeTop ? ['top'] : []}");
+    expect(primitivesSource).toContain('<ScrollView');
+    expect(primitivesSource).toContain('paddingVertical: spacing.md');
+    expect(navigationSource).toContain('height: 54 + safeBottom');
+    expect(navigationSource).toContain('paddingBottom: safeBottom');
+    expect(navigationSource).toContain(
+      'screenOptions={({ route }) => tabOptions(ownerIcons[route.name], insets.bottom)}',
+    );
   });
 
   it('centers the empty Today card when no request summary follows it', () => {
@@ -202,8 +277,8 @@ describe('Owner Today mobile UI', () => {
     expect(status).toBeGreaterThan(pickup);
     expect(source).toContain('contentPath={item.vehicle.coverPhoto?.contentPath}');
     expect(source).toContain("flexDirection: 'row'");
-    expect(source).toContain('upcomingImage: { borderRadius: radius.md, height: 128, width: 108 }');
-    expect(source).toContain('upcomingStatus: { marginTop: spacing.xxs }');
+    expect(source).toContain('bookingImage: { borderRadius: radius.md, height: 128, width: 108 }');
+    expect(source).toContain('bookingStatus: { marginTop: spacing.xxs }');
     expect(source).toContain(
       "new Intl.DateTimeFormat('en-PH', { day: 'numeric', month: 'short' })",
     );
@@ -237,6 +312,25 @@ describe('Owner Today mobile UI', () => {
     expect(requestsSource).toContain('!embedded && !history');
     expect(requestsSource).toContain(
       "const effectiveFilter: Filter = embedded ? 'Needs response' : filter",
+    );
+  });
+
+  it('hoists Change Booking detail out of the Owner Home scroll surface and restores Requests', () => {
+    const detail = source.indexOf('if (selectedAmendment)');
+    const dashboardScreen = source.indexOf('<Screen\n      stickyHeader={');
+    expect(detail).toBeGreaterThan(0);
+    expect(detail).toBeLessThan(dashboardScreen);
+    expect(source).toContain('onOpenAmendment={setSelectedAmendment}');
+    expect(source).toContain('onClose={() => setSelectedAmendment(null)}');
+    expect(source).toContain('initialAmendmentReference={selectedAmendment.amendmentReference}');
+    expect(requestsSource).toContain('(onOpenAmendment ?? setSelectedAmendment)({');
+    expect(requestsSource).toContain('if (onClose) {');
+    expect(requestsSource).toContain('<BackControl label="Back" onPress={onClose} />');
+    expect(requestsSource).not.toContain(
+      '<BackControl label="Booking changes" onPress={onClose} />',
+    );
+    expect(requestsSource).toMatch(
+      /eyebrow="Booking change request"[\s\S]*title=\{amendment\.actionable \? 'Review requested change'[\s\S]*Respond by/,
     );
   });
 });

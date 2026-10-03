@@ -276,6 +276,8 @@ export function amendmentErrorMessage(error: unknown): string {
         AMENDMENT_PREVIEW_INVALID: 'This preview is no longer valid. Review the change again.',
         BOOKING_AVAILABILITY_CONFLICT:
           'Those dates are no longer available. Edit the change and try again.',
+        BOOKING_FINANCIAL_AUTHORITY_UNAVAILABLE:
+          'This booking’s financial details are unavailable, so the trip cannot be changed right now.',
         BOOKING_INVALID_STATE:
           'This booking is no longer eligible for that change. Refresh for the latest status.',
         BOOKING_STATE_CHANGED:

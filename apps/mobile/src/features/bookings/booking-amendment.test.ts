@@ -13,9 +13,14 @@ import {
   type AmendmentPreview,
 } from './booking-amendment';
 import { tripDateSummary } from '../discovery/trip-date-policy';
+import { adaptiveSheetLayout } from './booking-amendment-sheet-layout';
 
 const renter = readFileSync(
   resolve(process.cwd(), 'src/features/bookings/BookingAmendmentSheet.tsx'),
+  'utf8',
+);
+const sheetLayout = readFileSync(
+  resolve(process.cwd(), 'src/features/bookings/booking-amendment-sheet-layout.ts'),
   'utf8',
 );
 const bookings = readFileSync(
@@ -184,6 +189,9 @@ describe('booking amendment state presentation', () => {
     expect(
       amendmentErrorMessage(new ApiError('raw', 'BOOKING_AVAILABILITY_CONFLICT', 409)),
     ).toContain('no longer available');
+    expect(
+      amendmentErrorMessage(new ApiError('raw', 'BOOKING_FINANCIAL_AUTHORITY_UNAVAILABLE', 409)),
+    ).toContain('financial details are unavailable');
     expect(amendmentErrorMessage(new ApiError('raw', 'RETURN_WORKFLOW_STARTED', 409))).toContain(
       'return process',
     );
@@ -211,6 +219,27 @@ describe('renter change-booking UX integration', () => {
     expect(renter).toContain("'Idempotency-Key': submitKey.current");
   });
 
+  it('uses one Back action in review while preserving the current draft', () => {
+    const review = renter.slice(
+      renter.indexOf('function Review('),
+      renter.indexOf('function AmendmentState('),
+    );
+    const reviewTransition = renter.slice(
+      renter.indexOf("stage === 'REVIEW' && preview"),
+      renter.indexOf('onClose={close}', renter.indexOf("stage === 'REVIEW' && preview")),
+    );
+
+    expect(review).toContain('leading={<BackControl label="Back" onPress={onBack} />}');
+    expect(review).not.toContain('label="Edit change"');
+    expect(review).toContain("label={pending ? 'Sending request…' : 'Request Owner approval'}");
+    expect(review).toContain('label="Discard changes"');
+    expect(reviewTransition).toContain("setStage('EDIT')");
+    expect(reviewTransition).not.toContain('setReturnAt');
+    expect(reviewTransition).not.toContain('setPickup');
+    expect(reviewTransition).not.toContain('setDelivery');
+    expect(reviewTransition).not.toContain('setCollection');
+  });
+
   it('opens a combined PRE_TRIP range editor and retains focused ACTIVE return editing', () => {
     expect(renter).toContain("picker === 'dates'");
     expect(renter).toContain('<TripDateCalendar');
@@ -221,18 +250,39 @@ describe('renter change-booking UX integration', () => {
     expect(renter).not.toContain("openPicker('pickup')");
   });
 
-  it('measures detail content, caps it to the safe viewport, and preserves scrolling', () => {
+  it('keeps one accessible Done action and only the top-left Cancel in the date editor', () => {
+    const dateEditor = renter.slice(
+      renter.indexOf('function DateTimeEditor'),
+      renter.indexOf('function DateRangeEditor'),
+    );
+    const footer = dateEditor.slice(
+      dateEditor.indexOf('bottomAccessory={'),
+      dateEditor.indexOf('contentBottomPadding={spacing.sm}'),
+    );
+
+    expect(dateEditor.match(/label="Done"/g)).toHaveLength(1);
+    expect(dateEditor.match(/label="Cancel"/g)).toHaveLength(1);
+    expect(dateEditor).not.toContain('accessibilityLabel="Save date and time"');
+    expect(dateEditor).toContain('bottomAccessory={');
+    expect(dateEditor).toContain('leading={<BackControl label="Cancel" onPress={onCancel} />}');
+    expect(footer).not.toContain('label="Cancel"');
+    expect(dateEditor).toContain('measureBottomAccessory');
+    expect(dateEditor).toContain('paddingBottom: adaptiveScreen.contentBottomPadding');
+    expect(dateEditor).toContain('contentBottomPadding={spacing.sm}');
+  });
+
+  it('measures every state, caps it to the safe viewport, and only scrolls on overflow', () => {
     expect(renter).toContain('presentationStyle="overFullScreen"');
     expect(renter).toContain('style={[styles.sheet, animatedSheetStyle]}');
-    expect(renter).toContain('detailHeaderHeight + detailContentHeight');
+    expect(sheetLayout).toContain('headerHeight + contentHeight + safeAreaAllowance');
     expect(renter).toContain('viewportHeight - Math.max(safeArea.top, spacing.md)');
-    expect(renter).toContain('Math.min(measuredDetailHeight || sheetHeight.value, maximumHeight)');
-    expect(renter).toContain('contentGrows={false}');
+    expect(renter).toContain('adaptiveSheetLayout({');
+    expect(renter).toContain('scrollEnabled: measuredLayout.scrollEnabled');
     expect(renter).toContain('onContentSizeChange={onContentSizeChange}');
     expect(renter).toContain('contentBottomPadding={bottomPadding}');
-    expect(renter).not.toContain("stage === 'DETAIL'\n          ? 0.7");
-    expect(renter).toContain("bottomAction: { marginTop: 'auto'");
-    expect(renter).toContain('scroll={false}');
+    expect(renter).not.toContain('fixedHeightRatio');
+    expect(renter).not.toContain("bottomAction: { marginTop: 'auto'");
+    expect(renter).not.toContain('scroll={false}');
   });
 
   it('shows the exact server-authorized Pay CTA and not a payment-state inference', () => {
@@ -388,7 +438,7 @@ describe('renter change-booking UX integration', () => {
       'accessibilityHint={`Opens the ${label.toLowerCase()} date and time editor`}',
     );
     expect(renter).toContain("${changed ? ', changed' : ''}");
-    expect(renter).toContain('accessibilityLabel="Save date and time"');
+    expect(renter).toContain('<Button label="Done" onPress={onSave} />');
     expect(renter).toContain('leading={<BackControl label="Cancel"');
   });
 
@@ -404,7 +454,7 @@ describe('renter change-booking UX integration', () => {
     expect(renter).not.toContain('preview.proposed.totalMinor');
     expect(renter).toContain('amendmentPreviewFinancialSummary(preview)');
     expect(renter).toContain('disabled={pending || !trustworthy}');
-    expect(renter).toContain('label="Edit change"');
+    expect(renter).toContain('leading={<BackControl label="Back" onPress={onBack} />}');
   });
 
   it('reviews only changed fields and keeps ACTIVE pickup out of the comparison', () => {
@@ -432,6 +482,52 @@ describe('renter change-booking UX integration', () => {
     expect(renter).toContain('label="Payment deadline"');
     expect(renter).toContain('name="time-outline"');
     expect(renter).toContain('style={styles.statusActions}');
+  });
+});
+
+describe('change-booking adaptive sheet layout', () => {
+  it('keeps the short ACTIVE Extend Trip state at its intrinsic height', () => {
+    const layout = adaptiveSheetLayout({
+      contentHeight: 210,
+      headerHeight: 150,
+      maxSafeViewportHeight: 780,
+      safeAreaAllowance: 20,
+    });
+
+    expect(layout).toEqual({ height: 380, intrinsicHeight: 380, scrollEnabled: false });
+    expect(layout.height).toBeLessThan(780);
+  });
+
+  it('caps long PRE_TRIP/review content and leaves it scrollable', () => {
+    const layout = adaptiveSheetLayout({
+      contentHeight: 920,
+      headerHeight: 170,
+      maxSafeViewportHeight: 780,
+      safeAreaAllowance: 20,
+    });
+
+    expect(layout.height).toBe(780);
+    expect(layout.intrinsicHeight).toBe(1110);
+    expect(layout.scrollEnabled).toBe(true);
+  });
+
+  it('recomputes after content changes without making the CTA force maximum height', () => {
+    const compact = adaptiveSheetLayout({
+      contentHeight: 210,
+      headerHeight: 150,
+      maxSafeViewportHeight: 780,
+      safeAreaAllowance: 20,
+    });
+    const withValidation = adaptiveSheetLayout({
+      contentHeight: 290,
+      headerHeight: 150,
+      maxSafeViewportHeight: 780,
+      safeAreaAllowance: 20,
+    });
+
+    expect(withValidation.height - compact.height).toBe(80);
+    expect(withValidation.scrollEnabled).toBe(false);
+    expect(renter).toContain('bottomAction: { marginTop: spacing.xs }');
   });
 });
 

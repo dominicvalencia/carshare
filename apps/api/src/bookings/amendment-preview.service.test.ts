@@ -394,6 +394,102 @@ describe('AmendmentPreviewService', () => {
     await expect(verify()).resolves.toBeDefined();
   });
 
+  it('keeps an unchanged ACTIVE extension preview valid through review', async () => {
+    const activeBooking = {
+      ...booking,
+      actualPickupAt: new Date('2026-10-01T01:05:00.000Z'),
+      status: BookingStatus.ACTIVE,
+    };
+    const { service } = makeService(activeBooking);
+    const renter = '55555555-5555-4555-8555-555555555555';
+    const preview = await service.previewRenter(
+      renter,
+      activeBooking.publicReference,
+      { proposedReturnAt: '2026-10-04T01:00:00.000Z' },
+      new Date('2026-10-02T00:00:00.000Z'),
+    );
+
+    await expect(
+      service.verifyPreviewToken(
+        preview.previewToken,
+        renter,
+        activeBooking.publicReference,
+        new Date('2026-10-02T00:01:00.000Z'),
+      ),
+    ).resolves.toMatchObject({ bookingId: activeBooking.id });
+  });
+
+  it('does not invalidate an ACTIVE extension preview for an unrelated updatedAt write', async () => {
+    const activeBooking = {
+      ...booking,
+      actualPickupAt: new Date('2026-10-01T01:05:00.000Z'),
+      status: BookingStatus.ACTIVE,
+    };
+    const fixture = makeService(activeBooking);
+    const renter = '55555555-5555-4555-8555-555555555555';
+    const preview = await fixture.service.previewRenter(
+      renter,
+      activeBooking.publicReference,
+      { proposedReturnAt: '2026-10-04T01:00:00.000Z' },
+      new Date('2026-10-02T00:00:00.000Z'),
+    );
+    fixture.database.client.booking.findFirst.mockResolvedValue({
+      ...activeBooking,
+      updatedAt: new Date('2026-10-02T00:00:30.000Z'),
+    });
+
+    await expect(
+      fixture.service.verifyPreviewToken(
+        preview.previewToken,
+        renter,
+        activeBooking.publicReference,
+        new Date('2026-10-02T00:01:00.000Z'),
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it.each([
+    ['rentalEnd', { rentalEnd: new Date('2026-10-03T02:00:00.000Z') }],
+    ['status', { status: BookingStatus.RETURN_PENDING }],
+  ])('invalidates an ACTIVE extension preview after a material %s change', async (_, change) => {
+    const activeBooking = {
+      ...booking,
+      actualPickupAt: new Date('2026-10-01T01:05:00.000Z'),
+      status: BookingStatus.ACTIVE,
+    };
+    const fixture = makeService(activeBooking);
+    const renter = '55555555-5555-4555-8555-555555555555';
+    const preview = await fixture.service.previewRenter(
+      renter,
+      activeBooking.publicReference,
+      { proposedReturnAt: '2026-10-04T01:00:00.000Z' },
+      new Date('2026-10-02T00:00:00.000Z'),
+    );
+    fixture.database.client.booking.findFirst.mockResolvedValue({ ...activeBooking, ...change });
+
+    await expect(
+      fixture.service.verifyPreviewToken(
+        preview.previewToken,
+        renter,
+        activeBooking.publicReference,
+        new Date('2026-10-02T00:01:00.000Z'),
+      ),
+    ).rejects.toMatchObject({ code: 'BOOKING_STATE_CHANGED' });
+  });
+
+  it('reports missing financial authority without claiming the preview became stale', async () => {
+    const { service } = makeService({ ...booking, ownerEarning: null });
+
+    await expect(
+      service.previewRenter(
+        '55555555-5555-4555-8555-555555555555',
+        booking.publicReference,
+        { proposedReturnAt: '2026-10-04T01:00:00.000Z' },
+        new Date('2026-09-20T00:00:00.000Z'),
+      ),
+    ).rejects.toMatchObject({ code: 'BOOKING_FINANCIAL_AUTHORITY_UNAVAILABLE' });
+  });
+
   it('reconstructs sequential CURRENT position in appliedAt/id order and excludes terminal history', async () => {
     const appliedEarlier = appliedAmendment({
       appliedAt: '2026-09-21T00:00:00.000Z',

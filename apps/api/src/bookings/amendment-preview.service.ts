@@ -467,13 +467,16 @@ export class AmendmentPreviewService {
     const proposedEconomicTotal = proposedRental + proposedFulfillment;
     const payment = booking.payments[0]!;
     const shortening = proposedEnd < currentEnd;
-    const timing = evaluateConfirmedCancellationTiming({
-      confirmedAt: payment.capturedAt!,
-      evaluatedAt,
-      scheduledPickupAt: booking.rentalStart,
-    });
     const rentalReduction = currentRental > proposedRental ? currentRental - proposedRental : 0n;
-    const retainedRentalReduction = shortening && !timing.refundable ? rentalReduction : 0n;
+    const retainedRentalReduction =
+      shortening &&
+      !evaluateConfirmedCancellationTiming({
+        confirmedAt: payment.capturedAt!,
+        evaluatedAt,
+        scheduledPickupAt: booking.rentalStart,
+      }).refundable
+        ? rentalReduction
+        : 0n;
     // Final renter obligation = theoretical complete-trip rental + policy-retained
     // committed rental + proposed fulfillment. The delta is always against the
     // reconstructed CURRENT total, never against the original booking total.
@@ -633,7 +636,7 @@ export class AmendmentPreviewService {
       !booking.vehicle.location
     )
       this.fail(
-        'BOOKING_STATE_CHANGED',
+        'BOOKING_FINANCIAL_AUTHORITY_UNAVAILABLE',
         'Booking financial authority is unavailable.',
         HttpStatus.CONFLICT,
       );

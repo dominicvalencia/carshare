@@ -35,8 +35,17 @@ import {
   type AmendmentDetail,
   type AmendmentPreview,
 } from './booking-amendment';
+import { adaptiveSheetLayout } from './booking-amendment-sheet-layout';
 
 type Stage = 'EDIT' | 'REVIEW' | 'DETAIL';
+type AdaptiveScreenProperties = {
+  readonly contentBottomPadding: number;
+  readonly contentGrows: false;
+  readonly onContentSizeChange: (width: number, height: number) => void;
+  readonly onHeaderLayout: (event: LayoutChangeEvent) => void;
+  readonly safeTop: false;
+  readonly scrollEnabled: boolean;
+};
 
 export function BookingAmendmentSheet({
   booking,
@@ -75,10 +84,23 @@ export function BookingAmendmentSheet({
   const wasVisible = useRef(false);
   const { height: viewportHeight } = useWindowDimensions();
   const safeArea = useSafeAreaInsets();
-  const [detailHeaderHeight, setDetailHeaderHeight] = useState(0);
-  const [detailContentHeight, setDetailContentHeight] = useState(0);
-  const sheetHeight = useSharedValue(viewportHeight * 0.78);
+  const [measuredHeaderHeight, setMeasuredHeaderHeight] = useState(0);
+  const [measuredContentHeight, setMeasuredContentHeight] = useState(0);
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const bottomAllowance = Math.max(safeArea.bottom, spacing.lg);
+  const sheetHeight = useSharedValue(Math.min(480, maximumHeight));
   const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight: measuredContentHeight,
+        headerHeight: measuredHeaderHeight,
+        maxSafeViewportHeight: maximumHeight,
+        // Screen includes this allowance in its measured content padding.
+        safeAreaAllowance: 0,
+      }),
+    [maximumHeight, measuredContentHeight, measuredHeaderHeight],
+  );
 
   const detail = useQuery({
     enabled: visible && Boolean(amendmentId),
@@ -95,36 +117,29 @@ export function BookingAmendmentSheet({
   });
 
   useEffect(() => {
-    const fixedHeightRatio = picker
-      ? picker === 'calendar'
-        ? 0.65
-        : picker === 'dates'
-          ? 0.51
-          : 0.86
-      : stage === 'REVIEW'
-        ? 1
-        : stage === 'EDIT'
-          ? 0.72
-          : null;
-    const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
-    const measuredDetailHeight = detailHeaderHeight + detailContentHeight;
-    const nextHeight =
-      fixedHeightRatio === null
-        ? Math.min(measuredDetailHeight || sheetHeight.value, maximumHeight)
-        : viewportHeight * fixedHeightRatio;
+    if (measuredHeaderHeight <= 0 || measuredContentHeight <= 0) return;
     // Reanimated shared values are intentionally mutable UI-thread animation state.
     // eslint-disable-next-line react-hooks/immutability
-    sheetHeight.value = withTiming(nextHeight, { duration: 280 });
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 280 });
   }, [
     detail.data,
-    detailContentHeight,
-    detailHeaderHeight,
+    measuredContentHeight,
+    measuredHeaderHeight,
+    measuredLayout.height,
     picker,
-    safeArea.top,
     sheetHeight,
     stage,
-    viewportHeight,
   ]);
+
+  const adaptiveScreen = {
+    contentBottomPadding: bottomAllowance,
+    contentGrows: false,
+    onContentSizeChange: (_: number, height: number) => setMeasuredContentHeight(height),
+    onHeaderLayout: (event: LayoutChangeEvent) =>
+      setMeasuredHeaderHeight(event.nativeEvent.layout.height),
+    safeTop: false,
+    scrollEnabled: measuredLayout.scrollEnabled,
+  } as const;
 
   const requestBody = useMemo(
     () => ({
@@ -289,6 +304,7 @@ export function BookingAmendmentSheet({
         <Reanimated.View accessibilityViewIsModal style={[styles.sheet, animatedSheetStyle]}>
           {stage === 'EDIT' && (picker === 'dates' || picker === 'calendar') && rangeDraft ? (
             <DateRangeEditor
+              adaptiveScreen={adaptiveScreen}
               calendarOpen={picker === 'calendar'}
               pickup={rangeDraft.pickup}
               returnAt={rangeDraft.returnAt}
@@ -306,6 +322,7 @@ export function BookingAmendmentSheet({
             />
           ) : stage === 'EDIT' && picker === 'return' && pickerDraft ? (
             <DateTimeEditor
+              adaptiveScreen={adaptiveScreen}
               active={active}
               kind="return"
               minimumDate={new Date(booking.rentalEnd)}
@@ -316,8 +333,8 @@ export function BookingAmendmentSheet({
             />
           ) : stage === 'EDIT' ? (
             <Screen
+              {...adaptiveScreen}
               leading={<BackControl label="Close" onPress={close} />}
-              scroll={false}
               eyebrow="Booking change"
               title={active ? 'Extend Trip' : 'Change Booking'}
               subtitle={
@@ -425,6 +442,7 @@ export function BookingAmendmentSheet({
             </Screen>
           ) : stage === 'REVIEW' && preview ? (
             <Review
+              adaptiveScreen={adaptiveScreen}
               active={active}
               error={submit.isError ? amendmentErrorMessage(submit.error) : null}
               pending={submit.isPending}
@@ -444,11 +462,12 @@ export function BookingAmendmentSheet({
               error={detail.error}
               loading={detail.isPending}
               paying={pay.isPending}
-              bottomPadding={Math.max(safeArea.bottom, spacing.lg)}
+              bottomPadding={bottomAllowance}
               withdrawing={withdraw.isPending}
               onClose={close}
-              onContentSizeChange={(_, height) => setDetailContentHeight(height)}
-              onHeaderLayout={(event) => setDetailHeaderHeight(event.nativeEvent.layout.height)}
+              onContentSizeChange={adaptiveScreen.onContentSizeChange}
+              onHeaderLayout={adaptiveScreen.onHeaderLayout}
+              scrollEnabled={measuredLayout.scrollEnabled}
               onPay={() => pay.mutate()}
               onRetry={() => void detail.refetch()}
               onWithdraw={() =>
@@ -470,6 +489,7 @@ export function BookingAmendmentSheet({
 }
 
 function DateTimeEditor({
+  adaptiveScreen,
   active,
   kind,
   minimumDate,
@@ -478,6 +498,7 @@ function DateTimeEditor({
   onChange,
   onSave,
 }: {
+  readonly adaptiveScreen: AdaptiveScreenProperties;
   readonly active: boolean;
   readonly kind: 'pickup' | 'return';
   readonly minimumDate: Date;
@@ -489,18 +510,18 @@ function DateTimeEditor({
   const title = kind === 'pickup' ? 'Change pickup' : active ? 'Extend return' : 'Change return';
   return (
     <Screen
-      action={
-        <Pressable
-          accessibilityLabel="Save date and time"
-          accessibilityRole="button"
-          hitSlop={8}
-          onPress={onSave}
+      {...adaptiveScreen}
+      bottomAccessory={
+        <View
+          accessibilityLabel="Date and time action"
+          style={[styles.dateEditorActions, { paddingBottom: adaptiveScreen.contentBottomPadding }]}
         >
-          <Text style={styles.save}>Done</Text>
-        </Pressable>
+          <Button label="Done" onPress={onSave} />
+        </View>
       }
+      contentBottomPadding={spacing.sm}
       leading={<BackControl label="Cancel" onPress={onCancel} />}
-      scroll={false}
+      measureBottomAccessory
       title={title}
       subtitle={
         active
@@ -530,14 +551,13 @@ function DateTimeEditor({
             {...(Platform.OS === 'ios' ? { themeVariant: 'light' as const } : {})}
           />
         </View>
-        <Button label="Done" onPress={onSave} />
-        <Button label="Cancel" onPress={onCancel} variant="ghost" />
       </View>
     </Screen>
   );
 }
 
 function DateRangeEditor({
+  adaptiveScreen,
   calendarOpen,
   pickup,
   returnAt,
@@ -547,6 +567,7 @@ function DateRangeEditor({
   onOpenCalendar,
   onSave,
 }: {
+  readonly adaptiveScreen: AdaptiveScreenProperties;
   readonly calendarOpen: boolean;
   readonly pickup: Date;
   readonly returnAt: Date;
@@ -560,8 +581,8 @@ function DateRangeEditor({
   if (calendarOpen)
     return (
       <Screen
+        {...adaptiveScreen}
         leading={<BackControl label="Back" onPress={onCloseCalendar} />}
-        scroll={false}
         title="Trip dates"
       >
         <TripDateCalendar
@@ -583,8 +604,8 @@ function DateRangeEditor({
     );
   return (
     <Screen
+      {...adaptiveScreen}
       leading={<BackControl label="Cancel" onPress={onCancel} />}
-      scroll={false}
       title="Change dates"
       subtitle="Choose the proposed pickup and return. Your booking stays unchanged until the change is approved."
     >
@@ -735,6 +756,7 @@ function DateRangeControl({
 }
 
 function Review({
+  adaptiveScreen,
   active,
   error,
   pending,
@@ -743,6 +765,7 @@ function Review({
   onClose,
   onSubmit,
 }: {
+  readonly adaptiveScreen: AdaptiveScreenProperties;
   readonly active: boolean;
   readonly error: string | null;
   readonly pending: boolean;
@@ -758,7 +781,8 @@ function Review({
   const trustworthy = financial.valid && !expired;
   return (
     <Screen
-      leading={<BackControl label="Edit change" onPress={onBack} />}
+      {...adaptiveScreen}
+      leading={<BackControl label="Back" onPress={onBack} />}
       eyebrow="Review change"
       title="Confirm your request"
       subtitle="The Owner must approve this change before it takes effect."
@@ -821,7 +845,6 @@ function Review({
         label={pending ? 'Sending request…' : 'Request Owner approval'}
         onPress={onSubmit}
       />
-      <Button label="Edit change" onPress={onBack} variant="secondary" />
       <Button label="Discard changes" onPress={onClose} variant="ghost" />
     </Screen>
   );
@@ -838,6 +861,7 @@ function AmendmentState({
   onClose,
   onContentSizeChange,
   onHeaderLayout,
+  scrollEnabled,
   onPay,
   onRetry,
   onWithdraw,
@@ -852,19 +876,36 @@ function AmendmentState({
   readonly onClose: () => void;
   readonly onContentSizeChange: (width: number, height: number) => void;
   readonly onHeaderLayout: (event: LayoutChangeEvent) => void;
+  readonly scrollEnabled: boolean;
   readonly onPay: () => void;
   readonly onRetry: () => void;
   readonly onWithdraw: () => void;
 }) {
   if (loading)
     return (
-      <Screen leading={<BackControl label="Close" onPress={onClose} />} title="Booking change">
+      <Screen
+        contentBottomPadding={bottomPadding}
+        contentGrows={false}
+        leading={<BackControl label="Close" onPress={onClose} />}
+        onContentSizeChange={onContentSizeChange}
+        onHeaderLayout={onHeaderLayout}
+        scrollEnabled={scrollEnabled}
+        title="Booking change"
+      >
         <StateView loading title="Loading change request…" />
       </Screen>
     );
   if (error || !amendment)
     return (
-      <Screen leading={<BackControl label="Close" onPress={onClose} />} title="Booking change">
+      <Screen
+        contentBottomPadding={bottomPadding}
+        contentGrows={false}
+        leading={<BackControl label="Close" onPress={onClose} />}
+        onContentSizeChange={onContentSizeChange}
+        onHeaderLayout={onHeaderLayout}
+        scrollEnabled={scrollEnabled}
+        title="Booking change"
+      >
         <StateView
           icon="cloud-offline-outline"
           title="Change request unavailable"
@@ -888,6 +929,7 @@ function AmendmentState({
       leading={<BackControl label="Close" onPress={onClose} />}
       onContentSizeChange={onContentSizeChange}
       onHeaderLayout={onHeaderLayout}
+      scrollEnabled={scrollEnabled}
       eyebrow="Booking change"
       title={title}
       subtitle={copy}
@@ -1168,7 +1210,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(8, 24, 18, 0.32)',
   },
   body: { color: colors.subtleText, fontSize: 16, lineHeight: 23 },
-  bottomAction: { marginTop: 'auto', paddingBottom: spacing.xxl },
+  bottomAction: { marginTop: spacing.xs },
   cardTitle: { color: colors.ink, fontSize: 19, fontWeight: '900', marginBottom: spacing.sm },
   changed: {
     backgroundColor: colors.primarySoft,
@@ -1189,7 +1231,12 @@ const styles = StyleSheet.create({
   },
   changeDatesText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
   dateGrid: { flexDirection: 'row', gap: spacing.md },
-  dateEditorBody: { flex: 1, gap: spacing.md },
+  dateEditorActions: {
+    backgroundColor: colors.background,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  dateEditorBody: { gap: spacing.md },
   dateControl: { alignItems: 'center', flexDirection: 'row', gap: spacing.md },
   dateControlCopy: { flex: 1, gap: spacing.xs },
   dateLabel: { color: colors.subtleText, fontSize: 14, fontWeight: '700' },
@@ -1215,11 +1262,11 @@ const styles = StyleSheet.create({
   deadlineLabel: { color: colors.subtleText, fontSize: 13, fontWeight: '700' },
   deadlineRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
   deadlineValue: { color: colors.ink, fontSize: 16, fontWeight: '800' },
-  editorBody: { flex: 1, gap: spacing.md },
+  editorBody: { gap: spacing.sm },
   editorLabel: { color: colors.subtleText, fontSize: 14, fontWeight: '700' },
   editorValue: { color: colors.ink, fontSize: 20, fontWeight: '800', marginTop: spacing.xs },
   disabled: { opacity: 0.4 },
-  editBody: { flex: 1, gap: spacing.md, paddingBottom: spacing.sm },
+  editBody: { gap: spacing.md, paddingBottom: spacing.sm },
   error: { borderColor: colors.danger },
   errorText: { color: colors.danger, fontSize: 16 },
   fulfillmentGroup: { gap: spacing.sm, paddingVertical: spacing.xs },
@@ -1276,7 +1323,6 @@ const styles = StyleSheet.create({
   transitionValue: { color: colors.ink, fontSize: 16, fontWeight: '800' },
   validity: { color: colors.subtleText, fontSize: 14, lineHeight: 20, marginTop: spacing.md },
   value: { color: colors.ink, flexShrink: 1, fontSize: 16, fontWeight: '700', textAlign: 'right' },
-  save: { color: colors.primary, fontSize: 16, fontWeight: '800' },
   sheet: {
     backgroundColor: colors.background,
     borderTopLeftRadius: radius.lg,

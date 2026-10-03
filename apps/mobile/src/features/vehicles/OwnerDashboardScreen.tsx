@@ -7,13 +7,18 @@ import { apiClient } from '../../auth/api-client';
 import type { OwnerStatus } from '../../auth/auth.types';
 import { OwnerBookingRequestsScreen } from '../bookings/OwnerBookingRequestsScreen';
 import type { OwnerTabParamList, RootStackParamList } from '../../navigation/routes';
-import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
+import {
+  useFocusedPollingInterval,
+  useRefreshOnFocusAndForeground,
+} from '../../query/use-query-refresh';
+import { OWNER_REQUEST_POLL_INTERVAL_MS } from '../../query/owner-request-freshness';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { bookingStatusLabel, dateLabel, timeLabel, titleCase } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import {
   Button,
   Card,
+  FullScreenState,
   Icon,
   Screen,
   SectionHeader,
@@ -32,6 +37,10 @@ import {
 
 type OwnerHomeTab = 'Today' | 'Upcoming' | 'Requests';
 type OwnerVehicleSummary = { readonly id: string; readonly status: string };
+type OwnerAmendmentTarget = {
+  readonly amendmentReference: string;
+  readonly bookingReference: string;
+};
 
 export function OwnerDashboardScreen({
   ownerStatus,
@@ -41,10 +50,16 @@ export function OwnerDashboardScreen({
   const navigation = useNavigation<NavigationProp<OwnerTabParamList & RootStackParamList>>();
   const route = useRoute<RouteProp<OwnerTabParamList, 'Dashboard'>>();
   const [selectedTab, setSelectedTab] = useState<OwnerHomeTab>(route.params?.initialTab ?? 'Today');
+  const [selectedAmendment, setSelectedAmendment] = useState<OwnerAmendmentTarget | null>(null);
+  const requestPollingInterval = useFocusedPollingInterval(
+    OWNER_REQUEST_POLL_INTERVAL_MS,
+    ownerStatus === 'VERIFIED',
+  );
   const home = useQuery({
     enabled: ownerStatus === 'VERIFIED',
     queryFn: () => apiClient.request<OwnerHomeReadModel>('/owner/home'),
     queryKey: ownerHomeQueryKey,
+    refetchInterval: requestPollingInterval,
     retry: false,
   });
   const vehicles = useQuery({
@@ -73,27 +88,25 @@ export function OwnerDashboardScreen({
   if (ownerStatus !== 'VERIFIED')
     return (
       <Screen scroll={false}>
-        <View style={styles.centeredState}>
-          <StateView
-            actionLabel="Continue verification"
-            icon="shield-checkmark-outline"
-            message="Complete owner verification before managing operational bookings."
-            onAction={() => navigation.navigate('OwnerOnboarding')}
-            title="Verification required"
-          />
-        </View>
+        <FullScreenState
+          actionLabel="Continue verification"
+          icon="shield-checkmark-outline"
+          message="Complete owner verification before managing operational bookings."
+          onAction={() => navigation.navigate('OwnerOnboarding')}
+          title="Verification required"
+        />
       </Screen>
     );
   if (home.isPending)
     return (
-      <Screen>
-        <StateView loading title="Loading today…" />
+      <Screen scroll={false}>
+        <FullScreenState loading title="Loading today…" />
       </Screen>
     );
   if (home.isError || !home.data)
     return (
-      <Screen>
-        <StateView
+      <Screen scroll={false}>
+        <FullScreenState
           actionLabel="Retry"
           icon="cloud-offline-outline"
           message={home.error?.message ?? 'Please try again.'}
@@ -116,6 +129,14 @@ export function OwnerDashboardScreen({
         ? 'Complete your vehicle info'
         : null
     : null;
+  if (selectedAmendment)
+    return (
+      <OwnerBookingRequestsScreen
+        initialAmendmentReference={selectedAmendment.amendmentReference}
+        initialBookingReference={selectedAmendment.bookingReference}
+        onClose={() => setSelectedAmendment(null)}
+      />
+    );
   return (
     <Screen
       stickyHeader={
@@ -137,7 +158,7 @@ export function OwnerDashboardScreen({
     >
       <View style={styles.tabContent}>
         {selectedTab === 'Today' && (
-          <>
+          <View style={styles.tabPanel}>
             {model.today.attention.length > 0 && (
               <TodaySection title="Needs attention">
                 {model.today.attention.map((item) => (
@@ -241,16 +262,21 @@ export function OwnerDashboardScreen({
                 </Card>
               </Pressable>
             )}
-          </>
+          </View>
         )}
         {selectedTab === 'Upcoming' && (
-          <UpcomingTab model={model} onOpenBooking={openBooking} query={upcoming} />
+          <View style={styles.tabPanel}>
+            <UpcomingTab model={model} onOpenBooking={openBooking} query={upcoming} />
+          </View>
         )}
         {selectedTab === 'Requests' && (
-          <OwnerBookingRequestsScreen
-            embedded
-            onHistory={() => navigation.navigate('OwnerRequestHistory')}
-          />
+          <View style={styles.tabPanel}>
+            <OwnerBookingRequestsScreen
+              embedded
+              onHistory={() => navigation.navigate('OwnerRequestHistory')}
+              onOpenAmendment={setSelectedAmendment}
+            />
+          </View>
         )}
       </View>
     </Screen>
@@ -300,7 +326,7 @@ function UpcomingTab({
     <View style={styles.upcomingGroups}>
       {groups.map((group) => (
         <View key={group.key} style={styles.upcomingGroup}>
-          <SectionHeader title={group.label} />
+          <SectionHeader flush title={group.label} />
           <View style={styles.cardList}>
             {group.bookings.map((item) => (
               <UpcomingCard key={item.bookingReference} item={item} onPress={onOpenBooking} />
@@ -334,13 +360,13 @@ function UpcomingCard({
       accessibilityRole="button"
       onPress={() => onPress(item.deepLinkTarget.bookingReference)}
     >
-      <Card style={styles.upcomingCard}>
+      <Card style={styles.bookingCard}>
         <VehicleImage
           accessible={false}
           contentPath={item.vehicle.coverPhoto?.contentPath}
-          style={styles.upcomingImage}
+          style={styles.bookingImage}
         />
-        <View style={styles.upcomingContent}>
+        <View style={styles.bookingContent}>
           <Text style={styles.vehicle}>
             {item.vehicle.make} {item.vehicle.model}
           </Text>
@@ -354,11 +380,13 @@ function UpcomingCard({
               Returns · {compactDateLabel(item.return.at)}, {timeLabel(item.return.at)}
             </Text>
           </View>
-          <View style={styles.upcomingStatus}>
+          <View style={styles.bookingStatus}>
             <StatusBadge label={bookingStatusLabel(item.status, 'owner')} />
           </View>
         </View>
-        <Icon color={colors.primary} name="chevron-forward" size={20} />
+        <View style={styles.bookingChevron}>
+          <Icon color={colors.primary} name="chevron-forward" size={20} />
+        </View>
       </Card>
     </Pressable>
   );
@@ -406,7 +434,7 @@ function TodaySection({
 }) {
   return (
     <View accessibilityLabel={title} style={styles.section}>
-      <SectionHeader title={title} />
+      <SectionHeader flush title={title} />
       <View style={[styles.cardList, styles.sectionCards]}>{children}</View>
     </View>
   );
@@ -426,29 +454,36 @@ function OperationalCard({
     kind === 'pickup'
       ? `${titleCase(item.pickup.method)}${item.pickup.location ? ` · ${item.pickup.location}` : ''}`
       : titleCase(item.return.method);
-  const prefix = kind === 'pickup' ? 'Pickup' : kind === 'return' ? 'Return' : 'Returns';
+  const prefix = kind === 'pickup' ? 'Pickup' : 'Returns';
   return (
     <Pressable
-      accessibilityLabel={`${prefix} ${timeLabel(at)}. ${item.vehicle.make} ${item.vehicle.model}. ${item.renterDisplayName}. ${bookingStatusLabel(item.status, 'owner')}. View booking.`}
+      accessibilityHint="Opens booking details"
+      accessibilityLabel={`${item.vehicle.make} ${item.vehicle.model}. ${item.renterDisplayName}. ${detail}. ${prefix} ${dateLabel(at)} at ${timeLabel(at)}. ${bookingStatusLabel(item.status, 'owner')}.`}
       accessibilityRole="button"
       onPress={() => onPress(item.deepLinkTarget.bookingReference)}
     >
-      <Card style={styles.operationCard}>
-        <View style={styles.timeColumn}>
-          <Text style={styles.time}>{timeLabel(at)}</Text>
-          {kind === 'active' && <Text style={styles.date}>{dateLabel(at)}</Text>}
-        </View>
-        <View style={styles.flex}>
+      <Card style={styles.bookingCard}>
+        <VehicleImage
+          accessible={false}
+          contentPath={item.vehicle.coverPhoto?.contentPath}
+          style={styles.bookingImage}
+        />
+        <View style={styles.bookingContent}>
           <Text style={styles.vehicle}>
             {item.vehicle.make} {item.vehicle.model}
           </Text>
           <Text style={styles.renter}>{item.renterDisplayName}</Text>
-          <Text numberOfLines={2} style={styles.body}>
-            {detail}
+          <Text style={styles.upcomingMethod}>{detail}</Text>
+          <Text style={styles.scheduleText}>
+            {prefix} · {compactDateLabel(at)}, {timeLabel(at)}
           </Text>
-          <StatusBadge label={bookingStatusLabel(item.status, 'owner')} />
+          <View style={styles.bookingStatus}>
+            <StatusBadge label={bookingStatusLabel(item.status, 'owner')} />
+          </View>
         </View>
-        <Icon color={colors.primary} name="chevron-forward" size={20} />
+        <View style={styles.bookingChevron}>
+          <Icon color={colors.primary} name="chevron-forward" size={20} />
+        </View>
       </Card>
     </Pressable>
   );
@@ -523,7 +558,6 @@ const styles = StyleSheet.create({
   cardList: { gap: spacing.xs },
   cardTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
   centeredEmpty: { alignItems: 'center', flex: 1, justifyContent: 'center' },
-  centeredState: { flex: 1, justifyContent: 'center' },
   countBadge: {
     alignItems: 'center',
     backgroundColor: colors.danger,
@@ -534,24 +568,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   countBadgeText: { color: colors.onPrimary, fontSize: 12, fontWeight: '900' },
-  date: { color: colors.subtleText, fontSize: 11, marginTop: 2 },
   emptyCard: { alignItems: 'center', gap: spacing.xs, justifyContent: 'center', width: '100%' },
   emptyMessage: { color: colors.subtleText, lineHeight: 20, textAlign: 'center' },
   emptyTitle: { color: colors.ink, fontSize: 18, fontWeight: '900' },
   flex: { flex: 1, minWidth: 0 },
   link: { color: colors.primary, fontWeight: '800', marginTop: spacing.xxs },
-  operationCard: {
-    alignItems: 'flex-start',
+  bookingCard: {
+    alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.sm,
     padding: spacing.sm,
   },
+  bookingChevron: { alignSelf: 'center', flexShrink: 0 },
+  bookingContent: { flex: 1, minWidth: 0 },
+  bookingImage: { borderRadius: radius.md, height: 128, width: 108 },
+  bookingStatus: { marginTop: spacing.xxs },
   renter: { color: colors.subtleText, marginTop: 2 },
   requestSummary: {
     alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.sm,
-    marginTop: spacing.lg,
+    marginTop: spacing.xxs,
   },
   scheduleText: { color: colors.subtleText, fontSize: 12, lineHeight: 18 },
   topTab: {
@@ -568,7 +605,7 @@ const styles = StyleSheet.create({
   topTabSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
   topTabText: { color: colors.ink, fontSize: 13, fontWeight: '700' },
   topTabTextSelected: { color: colors.onPrimary },
-  section: { marginTop: spacing.md },
+  section: { marginBottom: spacing.md },
   sectionCards: { marginTop: spacing.xs },
   summaryIcon: {
     alignItems: 'center',
@@ -579,6 +616,7 @@ const styles = StyleSheet.create({
     width: 40,
   },
   tabContent: { flexGrow: 1 },
+  tabPanel: { flexGrow: 1, paddingTop: spacing.sm },
   tabs: {
     alignSelf: 'center',
     backgroundColor: colors.background,
@@ -589,20 +627,9 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     zIndex: 1,
   },
-  time: { color: colors.primaryDark, fontSize: 17, fontWeight: '900' },
-  timeColumn: { minWidth: 76 },
-  upcomingCard: {
-    alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: spacing.sm,
-    padding: spacing.sm,
-  },
-  upcomingContent: { flex: 1, minWidth: 0 },
   upcomingGroup: { gap: spacing.xs },
   upcomingGroups: { gap: spacing.lg },
-  upcomingImage: { borderRadius: radius.md, height: 128, width: 108 },
   upcomingMethod: { color: colors.subtleText, lineHeight: 18, marginTop: 2 },
   upcomingSchedule: { gap: spacing.xxs },
-  upcomingStatus: { marginTop: spacing.xxs },
   vehicle: { color: colors.ink, fontSize: 16, fontWeight: '900' },
 });

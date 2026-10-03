@@ -77,6 +77,7 @@ export function Screen({
   leading,
   action,
   scroll = true,
+  scrollEnabled = true,
   scrollRef,
   stickyHeader,
   onScroll,
@@ -87,9 +88,19 @@ export function Screen({
   contentGrows = true,
   contentBottomPadding,
   contentTopPadding,
+  measureBottomAccessory = false,
   constrainOverscroll = false,
   safeTop = true,
 }: ScreenProperties) {
+  const measuredContentSize = useRef({ height: 0, width: 0 });
+  const measuredBottomAccessoryHeight = useRef(0);
+  const reportContentSize = (width: number, height: number) => {
+    measuredContentSize.current = { height, width };
+    onContentSizeChange?.(
+      width,
+      height + (measureBottomAccessory ? measuredBottomAccessoryHeight.current : 0),
+    );
+  };
   const ScrollContainer = (
     animatedScroll ? Reanimated.ScrollView : ScrollView
   ) as typeof ScrollView;
@@ -154,9 +165,10 @@ export function Screen({
                 nestedScrollEnabled
                 overScrollMode={constrainOverscroll ? 'never' : 'auto'}
                 onScroll={onScroll}
-                onContentSizeChange={onContentSizeChange}
+                onContentSizeChange={reportContentSize}
                 onLayout={onScrollLayout}
                 scrollEventThrottle={onScroll ? 16 : undefined}
+                scrollEnabled={scrollEnabled}
                 scrollIndicatorInsets={iosFocusInsets}
                 showsVerticalScrollIndicator={false}
               >
@@ -183,9 +195,10 @@ export function Screen({
             nestedScrollEnabled
             overScrollMode={constrainOverscroll ? 'never' : 'auto'}
             onScroll={onScroll}
-            onContentSizeChange={onContentSizeChange}
+            onContentSizeChange={reportContentSize}
             onLayout={onScrollLayout}
             scrollEventThrottle={onScroll ? 16 : undefined}
+            scrollEnabled={scrollEnabled}
             scrollIndicatorInsets={iosFocusInsets}
             showsVerticalScrollIndicator={false}
           >
@@ -196,7 +209,21 @@ export function Screen({
         )}
       </KeyboardAvoidingView>
       {overlay}
-      {bottomAccessory}
+      {bottomAccessory && measureBottomAccessory ? (
+        <View
+          onLayout={(event) => {
+            measuredBottomAccessoryHeight.current = event.nativeEvent.layout.height;
+            onContentSizeChange?.(
+              measuredContentSize.current.width,
+              measuredContentSize.current.height + event.nativeEvent.layout.height,
+            );
+          }}
+        >
+          {bottomAccessory}
+        </View>
+      ) : (
+        bottomAccessory
+      )}
     </SafeAreaView>
   );
 }
@@ -211,6 +238,7 @@ interface ScreenProperties {
   readonly leading?: ReactNode | undefined;
   readonly action?: ReactNode | undefined;
   readonly scroll?: boolean | undefined;
+  readonly scrollEnabled?: boolean | undefined;
   readonly scrollRef?: RefObject<ScrollView | null> | undefined;
   readonly stickyHeader?: ReactNode | undefined;
   readonly onScroll?: ((event: NativeSyntheticEvent<NativeScrollEvent>) => void) | undefined;
@@ -221,6 +249,7 @@ interface ScreenProperties {
   readonly contentGrows?: boolean | undefined;
   readonly contentBottomPadding?: number | undefined;
   readonly contentTopPadding?: number | undefined;
+  readonly measureBottomAccessory?: boolean | undefined;
   readonly constrainOverscroll?: boolean | undefined;
   readonly safeTop?: boolean | undefined;
 }
@@ -501,17 +530,29 @@ export function StatusBadge({
 export function SectionHeader({
   title,
   action,
+  flush = false,
 }: {
   readonly title: string;
   readonly action?: ReactNode | undefined;
+  readonly flush?: boolean | undefined;
 }) {
   return (
-    <View style={styles.sectionHeader}>
+    <View style={[styles.sectionHeader, flush && styles.sectionHeaderFlush]}>
       <Text style={styles.sectionTitle}>{title}</Text>
       {action}
     </View>
   );
 }
+
+type StateViewProperties = {
+  readonly icon?: IconName | undefined;
+  readonly title: string;
+  readonly message?: string | undefined;
+  readonly loading?: boolean | undefined;
+  readonly actionLabel?: string | undefined;
+  readonly onAction?: (() => void) | undefined;
+  readonly compact?: boolean | undefined;
+};
 
 export function StateView({
   icon = 'leaf-outline',
@@ -521,15 +562,7 @@ export function StateView({
   actionLabel,
   onAction,
   compact = false,
-}: {
-  readonly icon?: IconName | undefined;
-  readonly title: string;
-  readonly message?: string | undefined;
-  readonly loading?: boolean | undefined;
-  readonly actionLabel?: string | undefined;
-  readonly onAction?: (() => void) | undefined;
-  readonly compact?: boolean | undefined;
-}) {
+}: StateViewProperties) {
   return (
     <View style={[styles.state, compact && styles.stateCompact]}>
       {loading ? (
@@ -543,6 +576,22 @@ export function StateView({
         <Button label={actionLabel} onPress={onAction} variant="secondary" />
       )}
     </View>
+  );
+}
+
+export function FullScreenState(properties: StateViewProperties) {
+  return (
+    <ScrollView
+      alwaysBounceVertical={false}
+      bounces={false}
+      contentContainerStyle={styles.fullScreenStateContent}
+      contentInset={iosFocusInsets}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+      style={styles.flex}
+    >
+      <StateView {...properties} />
+    </ScrollView>
   );
 }
 
@@ -640,6 +689,11 @@ const styles = StyleSheet.create({
   field: { gap: spacing.xs },
   fieldLabel: { color: colors.ink, fontSize: typography.label, fontWeight: '700' },
   flex: { flex: 1 },
+  fullScreenStateContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingVertical: spacing.md,
+  },
   headerCopy: { flex: 1 },
   headerRow: {
     alignItems: 'flex-start',
@@ -723,6 +777,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginTop: spacing.sm,
   },
+  sectionHeaderFlush: { marginTop: 0 },
   sectionTitle: { color: colors.ink, fontSize: typography.heading, fontWeight: '800' },
   state: {
     alignItems: 'center',

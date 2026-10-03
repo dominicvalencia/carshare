@@ -36,7 +36,6 @@ export function PushRegistration() {
       void invalidateRenterVerification(client);
       void client.refetchQueries({ queryKey: ['notification-summary'], type: 'active' });
       void client.refetchQueries({ queryKey: ['notifications'], type: 'active' });
-      void client.refetchQueries({ queryKey: ['owner-booking-requests'], type: 'active' });
       void client.refetchQueries({ queryKey: ['rental'], type: 'active' });
       void client.refetchQueries({ queryKey: ['owner-rental'], type: 'active' });
     });

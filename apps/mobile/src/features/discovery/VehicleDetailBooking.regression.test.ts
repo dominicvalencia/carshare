@@ -131,9 +131,8 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
     expect(detail).toContain('paddingBottom: Math.max(bottomSafeArea, spacing.sm)');
     expect(source).toMatch(/bookingBar:[\s\S]*flexDirection: 'row'/);
     expect(primitivesSource).toContain('readonly bottomAccessory?: ReactNode | undefined');
-    expect(primitivesSource).toMatch(
-      /<\/KeyboardAvoidingView>\s*\{overlay\}\s*\{bottomAccessory\}/,
-    );
+    expect(primitivesSource).toMatch(/<\/KeyboardAvoidingView>\s*\{overlay\}/);
+    expect(primitivesSource).toContain('bottomAccessory && measureBottomAccessory');
   });
 
   it('keeps Vehicle Detail and its overlays in the tab-hidden presentation', () => {

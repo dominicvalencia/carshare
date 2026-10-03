@@ -6,6 +6,10 @@ const source = readFileSync(
   resolve(process.cwd(), 'src/notifications/PushRegistration.tsx'),
   'utf8',
 );
+const bookingInvalidationSource = readFileSync(
+  resolve(process.cwd(), 'src/query/booking-invalidation.ts'),
+  'utf8',
+);
 
 describe('push registration safety', () => {
   it('creates the Android channel before requesting an Expo token', () => {
@@ -25,5 +29,12 @@ describe('push registration safety', () => {
     expect(source).toContain('ALLOWED_PUSH_TARGETS');
     expect(source).toContain("'notifications'");
     expect(source).toContain('parsed.protocol === `${expectedScheme}:`');
+  });
+
+  it('refreshes all Owner request authorities when a booking notification arrives', () => {
+    expect(source).toContain('invalidateBookingLifecycle(client)');
+    expect(source).toContain('addNotificationReceivedListener');
+    expect(bookingInvalidationSource).toContain('refreshOwnerRequestAuthorities(client)');
+    expect(source).not.toContain("refetchQueries({ queryKey: ['owner-booking-requests']");
   });
 });

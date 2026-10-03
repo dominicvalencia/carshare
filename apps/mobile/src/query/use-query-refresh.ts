@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
-import { AppState } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { AppState, type AppStateStatus } from 'react-native';
 
 export function useRefreshOnFocusAndForeground(refresh: () => void) {
   const latest = useRef(refresh);
@@ -18,4 +18,16 @@ export function useRefreshOnFocusAndForeground(refresh: () => void) {
     });
     return () => subscription.remove();
   }, []);
+}
+
+export function useFocusedPollingInterval(intervalMs: number, enabled = true): number | false {
+  const isFocused = useIsFocused();
+  const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', setAppState);
+    return () => subscription.remove();
+  }, []);
+
+  return enabled && isFocused && appState === 'active' ? intervalMs : false;
 }
