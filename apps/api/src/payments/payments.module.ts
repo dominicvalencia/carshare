@@ -13,6 +13,8 @@ import {
 } from './payment-provider.factory';
 import { PaymentsService } from './payments.service';
 import { RenterVerificationModule } from '../renter-verification/renter-verification.module';
+import { PayoutsModule } from '../payouts/payouts.module';
+import { OwnerFinancialReadModelService } from './owner-financial-read-model.service';
 
 @Module({
   controllers: [
@@ -22,12 +24,13 @@ import { RenterVerificationModule } from '../renter-verification/renter-verifica
     AdminFinanceController,
   ],
   exports: [PaymentsService, PAYMENT_PROVIDER],
-  imports: [RenterVerificationModule],
+  imports: [PayoutsModule, RenterVerificationModule],
   providers: [
     paymentProviderFactory,
     PaymentProviderCapabilitiesService,
     PaymentsService,
     CommissionService,
+    OwnerFinancialReadModelService,
   ],
 })
 export class PaymentsModule {}

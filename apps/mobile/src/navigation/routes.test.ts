@@ -36,6 +36,14 @@ describe('compact mobile navigation', () => {
     expect(navigationSource).toContain('<OwnerBookingRequestsScreen history />');
   });
 
+  it('prepares dedicated payout-method routes without adding a visible tab', () => {
+    expect(navigationSource).toContain('name="OwnerPayoutMethods"');
+    expect(navigationSource).toContain('name="OwnerAddPayoutMethod"');
+    expect(navigationSource).toContain('name="OwnerPayoutMethodDetail"');
+    expect(navigationSource).toContain("OwnerPayoutMethods: 'owner/payout-methods'");
+    expect(ownerTabs).not.toContain('Payout methods');
+  });
+
   it('places an Owner request deep link over Owner Home with Requests selected', () => {
     const state = withDeepLinkParent(
       { routes: [{ name: 'Booking', params: { bookingId: 'CR-OWNER' } }] },

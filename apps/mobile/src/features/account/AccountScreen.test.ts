@@ -19,6 +19,7 @@ const messagesSource = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '../communications/MessagesScreen.tsx'),
   'utf8',
 );
+const ownerMore = source.slice(source.indexOf('export function OwnerMoreScreen'));
 
 describe('contact verification presentation', () => {
   it('exposes email and Philippine mobile verification flows', () => {
@@ -85,6 +86,18 @@ describe('hosting profile persona and verification presentation', () => {
     expect(source).toContain("VERIFIED: 'Verified'");
     expect(source).toContain("REJECTED: 'Changes required'");
     expect(source).toContain("SUSPENDED: 'Account restricted'");
+  });
+
+  it('places one Payout methods destination directly after Earnings & payouts', () => {
+    const earnings = ownerMore.indexOf('label="Earnings & payouts"');
+    const methods = ownerMore.indexOf('label="Payout methods"');
+    const profile = ownerMore.indexOf('label="Owner Profile"');
+    expect(earnings).toBeGreaterThan(-1);
+    expect(methods).toBeGreaterThan(earnings);
+    expect(profile).toBeGreaterThan(methods);
+    expect(ownerMore.match(/label="Payout methods"/g)).toHaveLength(1);
+    expect(ownerMore).toContain("navigation.navigate('OwnerPayoutMethods')");
+    expect(ownerMore).toContain('Manage where your earnings are sent');
   });
 
   it('uses one Owner Profile route instead of a duplicate setup card', () => {

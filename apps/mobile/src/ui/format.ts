@@ -129,9 +129,12 @@ const payoutEligibilityLabels: Readonly<Record<string, string>> = {
 };
 
 const payoutLabels: Readonly<Record<string, string>> = {
+  APPROVED: 'Approved',
   PAID: 'Paid',
+  PENDING_APPROVAL: 'Pending approval',
   PROCESSING: 'Processing',
   PROCESSING_PAYOUT: 'Processing payout',
+  SUBMITTING: 'Sending',
 };
 
 export function domainLabel(value: string | null | undefined): string {

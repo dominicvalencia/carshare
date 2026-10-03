@@ -168,6 +168,206 @@ export const PaymentErrorCode = {
 
 export type PaymentErrorCode = (typeof PaymentErrorCode)[keyof typeof PaymentErrorCode];
 
+export const PayoutMethodErrorCode = {
+  DUPLICATE: 'PAYOUT_METHOD_DUPLICATE',
+  IN_USE: 'PAYOUT_METHOD_IN_USE',
+  NOT_FOUND: 'PAYOUT_METHOD_NOT_FOUND',
+  NOT_READY: 'PAYOUT_METHOD_NOT_READY',
+  UNSUPPORTED: 'PAYOUT_METHOD_UNSUPPORTED',
+} as const;
+
+export type PayoutMethodErrorCode =
+  (typeof PayoutMethodErrorCode)[keyof typeof PayoutMethodErrorCode];
+
+export const OwnerPayoutMethodStatus = {
+  NEEDS_ATTENTION: 'NEEDS_ATTENTION',
+  PENDING_VERIFICATION: 'PENDING_VERIFICATION',
+  READY: 'READY',
+  UNAVAILABLE: 'UNAVAILABLE',
+} as const;
+
+export type OwnerPayoutMethodStatus =
+  (typeof OwnerPayoutMethodStatus)[keyof typeof OwnerPayoutMethodStatus];
+
+export type OwnerPayoutMethodType = 'BANK_ACCOUNT' | 'E_WALLET';
+
+export interface OwnerPayoutMethodInstitution {
+  readonly code: string;
+  readonly displayName: string;
+}
+
+export interface OwnerPayoutMethodActions {
+  readonly canEdit: false;
+  readonly canRemove: boolean;
+  readonly canSetPrimary: boolean;
+  readonly removalBlockedReason: 'PAYOUT_IN_PROGRESS' | null;
+}
+
+export interface OwnerPayoutMethodListItem {
+  readonly createdAt: string;
+  readonly id: string;
+  readonly institution: OwnerPayoutMethodInstitution;
+  readonly isPrimary: boolean;
+  readonly maskedAccountIdentifier: string;
+  readonly status: OwnerPayoutMethodStatus;
+  readonly type: OwnerPayoutMethodType;
+  readonly updatedAt: string;
+}
+
+export interface OwnerPayoutMethodList {
+  readonly items: readonly OwnerPayoutMethodListItem[];
+}
+
+export interface OwnerPayoutMethodDetail extends OwnerPayoutMethodListItem {
+  readonly accountHolderName: string;
+  readonly actions: OwnerPayoutMethodActions;
+  readonly disabledAt: string | null;
+  readonly verifiedAt: string | null;
+}
+
+export interface OwnerPayoutMethodCatalogField {
+  readonly key: 'ACCOUNT_HOLDER_NAME' | 'ACCOUNT_IDENTIFIER';
+  readonly label: string;
+  readonly maxLength: number;
+  readonly minLength: number;
+}
+
+export interface OwnerPayoutMethodCatalogItem {
+  readonly code: string;
+  readonly displayName: string;
+  readonly fields: readonly OwnerPayoutMethodCatalogField[];
+  readonly supportsPrimary: true;
+  readonly supportsRemoval: true;
+  readonly type: OwnerPayoutMethodType;
+}
+
+export interface OwnerPayoutMethodCatalog {
+  readonly country: 'PH';
+  readonly currency: 'PHP';
+  readonly methods: readonly OwnerPayoutMethodCatalogItem[];
+}
+
+export const OwnerFinancialErrorCode = {
+  AUTHORITY_INCONSISTENT: 'OWNER_FINANCIAL_AUTHORITY_INCONSISTENT',
+  EARNING_NOT_FOUND: 'OWNER_EARNING_NOT_FOUND',
+} as const;
+
+export type OwnerFinancialErrorCode =
+  (typeof OwnerFinancialErrorCode)[keyof typeof OwnerFinancialErrorCode];
+
+export const OwnerFinancialActivityScope = {
+  ADJUSTMENTS: 'ADJUSTMENTS',
+  PAID: 'PAID',
+  UPCOMING: 'UPCOMING',
+} as const;
+
+export type OwnerFinancialActivityScope =
+  (typeof OwnerFinancialActivityScope)[keyof typeof OwnerFinancialActivityScope];
+
+export type OwnerFinancialActivityType =
+  'ADJUSTMENT' | 'COMPENSATION' | 'EARNING' | 'PAYOUT' | 'PENALTY' | 'REVERSAL';
+
+export interface OwnerFinancialMethodSummary {
+  readonly channel: string;
+  readonly maskedIdentifier: string;
+}
+
+export interface OwnerUpcomingPayout {
+  readonly amountMinor: number;
+  readonly currency: string;
+  readonly expectedAt: null;
+  readonly id: string;
+  readonly method: OwnerFinancialMethodSummary;
+  readonly publicReference: string;
+  readonly status: string;
+}
+
+export interface OwnerEarningsSummary {
+  readonly availableMinor: number;
+  readonly currency: string;
+  readonly heldMinor: number;
+  readonly payoutReadyMinor: number;
+  readonly pendingMinor: number;
+  readonly upcomingPayout: OwnerUpcomingPayout | null;
+}
+
+export interface OwnerFinancialActivityItem {
+  readonly amountMinor: number;
+  readonly bookingReference?: string;
+  readonly currency: string;
+  readonly detailTarget: { readonly id: string; readonly resource: 'EARNING' | 'PAYOUT' } | null;
+  readonly id: string;
+  readonly occurredAt: string;
+  readonly payoutReference?: string;
+  readonly reasonCode?: string;
+  readonly status: string;
+  readonly subtitle: string;
+  readonly title: string;
+  readonly type: OwnerFinancialActivityType;
+  readonly vehicleSummary?: string;
+}
+
+export interface OwnerFinancialActivityPage {
+  readonly items: readonly OwnerFinancialActivityItem[];
+  readonly nextPage: number | null;
+  readonly page: number;
+  readonly pageSize: number;
+}
+
+export interface OwnerEarningDetail {
+  readonly additionalCompensationMinor: number;
+  readonly adjustmentAmountMinor: number;
+  readonly booking: {
+    readonly publicReference: string;
+    readonly renterDisplayName: string;
+    readonly rentalEnd: string;
+    readonly rentalStart: string;
+    readonly vehicleSummary: string;
+  };
+  readonly collectionEarningMinor: number;
+  readonly commissionAmountMinor: number;
+  readonly currency: string;
+  readonly deliveryEarningMinor: number;
+  readonly grossRentalAmountMinor: number;
+  readonly heldAmountMinor: number;
+  readonly holds: readonly {
+    readonly amountMinor: number;
+    readonly reason: string;
+    readonly status: string;
+  }[];
+  readonly id: string;
+  readonly netEarningAmountMinor: number;
+  readonly payout: {
+    readonly id: string;
+    readonly publicReference: string;
+    readonly status: string;
+  } | null;
+  readonly projectedTotalMinor: number;
+  readonly status: string;
+}
+
+export interface OwnerPayoutDetail {
+  readonly adjustmentAmountMinor: number;
+  readonly amountMinor: number;
+  readonly approvedAt: string | null;
+  readonly cancellationPenaltyRecoveryMinor: number;
+  readonly createdAt: string;
+  readonly currency: string;
+  readonly destination: OwnerFinancialMethodSummary;
+  readonly failedAt: string | null;
+  readonly grossEligibleEarningsMinor: number;
+  readonly id: string;
+  readonly includedEarnings: readonly {
+    readonly amountMinor: number;
+    readonly bookingReference: string;
+    readonly earningId: string;
+  }[];
+  readonly paidAt: string | null;
+  readonly publicReference: string;
+  readonly status: string;
+  readonly submittedAt: string | null;
+}
+
 export const RentalErrorCode = {
   CLAIM_DEADLINE_PASSED: 'CLAIM_DEADLINE_PASSED',
   EVIDENCE_FILE_INVALID: 'EVIDENCE_FILE_INVALID',

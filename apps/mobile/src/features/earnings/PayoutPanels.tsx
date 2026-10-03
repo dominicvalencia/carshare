@@ -1,277 +1,190 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import type {
+  OwnerPayoutMethodList,
+  OwnerPayoutMethodListItem,
+  OwnerPayoutMethodStatus,
+} from '@carrental/api-contracts';
+import type { NavigationProp } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
-import { colors, spacing } from '../../theme/tokens';
+import type { RootStackParamList } from '../../navigation/routes';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
+import { colors, radius, spacing, typography } from '../../theme/tokens';
 import {
-  channelLabel,
-  domainLabel,
-  money,
-  payoutEligibilityLabel,
-  payoutStatusLabel,
-} from '../../ui/format';
+  Button,
+  Card,
+  Icon,
+  NestedScreen,
+  SectionHeader,
+  StateView,
+  StatusBadge,
+} from '../../ui/primitives';
 
-interface PayoutAccount {
-  readonly accountHolderName: string;
-  readonly destinationChannel: string;
-  readonly id: string;
-  readonly isDefault: boolean;
-  readonly maskedAccountIdentifier: string;
-  readonly status: string;
-  readonly type: string;
-  readonly validationLevel: string | null;
-}
+type Navigator = NavigationProp<RootStackParamList>;
 
-interface AccountResponse {
-  readonly eligibility: { readonly status: string };
-  readonly items: readonly PayoutAccount[];
-}
-
-interface PayoutHistoryItem {
-  readonly amountMinor: number;
-  readonly createdAt: string;
-  readonly destination: { readonly maskedIdentifier: string; readonly channel: string };
-  readonly id: string;
-  readonly paidAt: string | null;
-  readonly publicReference: string;
-  readonly status: string;
-}
-
-export function PayoutPanels() {
+export function OwnerPayoutMethodsScreen() {
+  const navigation = useNavigation<Navigator>();
   const client = useQueryClient();
-  const [showAdd, setShowAdd] = useState(false);
-  const [type, setType] = useState<'BANK_ACCOUNT' | 'E_WALLET'>('BANK_ACCOUNT');
-  const [channel, setChannel] = useState('PH_BPI');
-  const [holder, setHolder] = useState('');
-  const [identifier, setIdentifier] = useState('');
-  const accounts = useQuery({
-    queryKey: ['owner-payout-accounts'],
-    queryFn: () => apiClient.request<AccountResponse>('/owner/payout-accounts'),
+  const methods = useQuery({
+    queryKey: ['owner-payout-methods'],
+    queryFn: () => apiClient.request<OwnerPayoutMethodList>('/owner/payout-methods'),
   });
-  const payouts = useQuery({
-    queryKey: ['owner-payouts'],
-    queryFn: () => apiClient.request<readonly PayoutHistoryItem[]>('/owner/payouts'),
-  });
-  const refresh = () => {
-    void client.invalidateQueries({ queryKey: ['owner-payout-accounts'] });
-    void client.invalidateQueries({ queryKey: ['owner-payouts'] });
-    void client.invalidateQueries({ queryKey: ['owner-earnings'] });
-  };
-  const add = useMutation({
-    mutationFn: () =>
-      apiClient.request<PayoutAccount>('/owner/payout-accounts', {
-        body: JSON.stringify({
-          accountHolderName: holder,
-          accountIdentifier: identifier,
-          destinationChannel: channel,
-          type,
-        }),
-        method: 'POST',
-      }),
-    onSuccess: () => {
-      setHolder('');
-      setIdentifier('');
-      setShowAdd(false);
-      refresh();
-    },
-  });
-  const makeDefault = useMutation({
-    mutationFn: (id: string) =>
-      apiClient.request(`/owner/payout-accounts/${id}/default`, { method: 'POST' }),
-    onSuccess: refresh,
-  });
-  const processingMinor = (payouts.data ?? [])
-    .filter((payout) => ['APPROVED', 'SUBMITTING', 'PROCESSING'].includes(payout.status))
-    .reduce((sum, payout) => sum + payout.amountMinor, 0);
-  const paidMinor = (payouts.data ?? [])
-    .filter((payout) => payout.status === 'PAID')
-    .reduce((sum, payout) => sum + payout.amountMinor, 0);
+  const refresh = useCallback(() => {
+    void client.invalidateQueries({ queryKey: ['owner-payout-methods'] });
+  }, [client]);
+  useRefreshOnFocusAndForeground(refresh);
 
   return (
-    <>
-      {(accounts.isPending || payouts.isPending) && (
-        <Text style={styles.body}>Loading payout details…</Text>
-      )}
-      {(accounts.isError || payouts.isError) && (
-        <Text style={styles.error}>
-          {accounts.error?.message ?? payouts.error?.message ?? 'Payout details are unavailable.'}
-        </Text>
-      )}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Payout status</Text>
-        <Text style={styles.amount}>Processing · {money(processingMinor)}</Text>
-        <Text style={styles.body}>Paid · {money(paidMinor)}</Text>
-        <Text style={styles.body}>
-          Payout readiness ·{' '}
-          {payoutEligibilityLabel(accounts.data?.eligibility.status ?? 'NOT_READY')}
-        </Text>
-      </View>
+    <NestedScreen title="Payout methods" subtitle="Choose where your earnings are sent.">
+      <Button
+        icon="add"
+        label="Add payout method"
+        variant="secondary"
+        onPress={() => navigation.navigate('OwnerAddPayoutMethod')}
+      />
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Payout settings</Text>
-        <Text style={styles.body}>Bank and e-wallet identifiers stay masked after creation.</Text>
-        {accounts.data?.items.map((account) => (
-          <View key={account.id} style={styles.destination}>
-            <Text style={styles.destinationTitle}>
-              {channelLabel(account.destinationChannel)} · {account.maskedAccountIdentifier}
-            </Text>
-            <Text style={styles.body}>
-              {domainLabel(account.status)} ·{' '}
-              {account.isDefault ? 'Default destination' : domainLabel(account.validationLevel)}
-            </Text>
-            {account.status === 'ACTIVE' && !account.isDefault && (
-              <Pressable
-                style={styles.secondaryButton}
-                onPress={() => makeDefault.mutate(account.id)}
-              >
-                <Text style={styles.secondaryButtonText}>Set default</Text>
-              </Pressable>
-            )}
-          </View>
-        ))}
-        <Pressable style={styles.button} onPress={() => setShowAdd((value) => !value)}>
-          <Text style={styles.buttonText}>{showAdd ? 'Cancel' : 'Add bank / e-wallet'}</Text>
-        </Pressable>
-        {showAdd && (
-          <View style={styles.form}>
-            <View style={styles.row}>
-              {(['BANK_ACCOUNT', 'E_WALLET'] as const).map((value) => (
-                <Pressable
-                  key={value}
-                  style={[styles.pill, type === value && styles.pillActive]}
-                  onPress={() => {
-                    setType(value);
-                    setChannel(value === 'BANK_ACCOUNT' ? 'PH_BPI' : 'PH_GCASH');
-                  }}
-                >
-                  <Text style={type === value ? styles.buttonText : styles.secondaryButtonText}>
-                    {value === 'BANK_ACCOUNT' ? 'Bank' : 'E-wallet'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            <Text style={styles.label}>Provider</Text>
-            <View style={styles.row}>
-              {(type === 'BANK_ACCOUNT'
-                ? ['PH_BPI', 'PH_BDO', 'PH_METROBANK']
-                : ['PH_GCASH', 'PH_MAYA']
-              ).map((value) => (
-                <Pressable
-                  key={value}
-                  accessibilityRole="button"
-                  style={[styles.pill, channel === value && styles.pillActive]}
-                  onPress={() => setChannel(value)}
-                >
-                  <Text style={channel === value ? styles.buttonText : styles.secondaryButtonText}>
-                    {channelLabel(value)}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            <TextInput
-              accessibilityLabel="Account holder name"
-              style={styles.input}
-              value={holder}
-              onChangeText={setHolder}
-              placeholder="Account holder name"
-              placeholderTextColor={colors.placeholder}
+      <SectionHeader flush title="Your payout methods" />
+      {methods.isPending && <StateView compact loading title="Loading payout methods…" />}
+      {methods.isError && (
+        <StateView
+          compact
+          icon="cloud-offline-outline"
+          title="Payout methods unavailable"
+          message="We couldn't load your saved payout methods."
+          actionLabel="Retry"
+          onAction={() => void methods.refetch()}
+        />
+      )}
+      {methods.data?.items.length === 0 && (
+        <StateView
+          compact
+          icon="wallet-outline"
+          title="No payout method yet"
+          message="Add one to receive your earnings."
+        />
+      )}
+      {methods.data && methods.data.items.length > 0 && (
+        <Card style={styles.methodList}>
+          {methods.data.items.map((method, index) => (
+            <PayoutMethodRow
+              key={method.id}
+              divider={index < methods.data.items.length - 1}
+              method={method}
+              onPress={() =>
+                navigation.navigate('OwnerPayoutMethodDetail', {
+                  payoutMethodId: method.id,
+                })
+              }
             />
-            <TextInput
-              accessibilityLabel="Account or wallet number"
-              style={styles.input}
-              value={identifier}
-              onChangeText={setIdentifier}
-              placeholder="Account or wallet number"
-              placeholderTextColor={colors.placeholder}
-              keyboardType="number-pad"
-            />
-            <Pressable
-              style={[styles.button, (!holder || !identifier || add.isPending) && styles.disabled]}
-              disabled={!holder || !identifier || add.isPending}
-              onPress={() => add.mutate()}
-            >
-              <Text style={styles.buttonText}>
-                {add.isPending ? 'Validating…' : 'Validate and add'}
-              </Text>
-            </Pressable>
-          </View>
-        )}
-        {(add.error || makeDefault.error) && (
-          <Text style={styles.error}>{add.error?.message ?? makeDefault.error?.message}</Text>
-        )}
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Payout history</Text>
-        {payouts.data?.map((payout) => (
-          <View key={payout.id} style={styles.destination}>
-            <Text style={styles.destinationTitle}>
-              {money(payout.amountMinor)} · {payoutStatusLabel(payout.status)}
-            </Text>
-            <Text style={styles.body}>
-              {channelLabel(payout.destination.channel)} · {payout.destination.maskedIdentifier}
-            </Text>
-            <Text style={styles.body}>{payout.publicReference}</Text>
-          </View>
-        ))}
-        {payouts.data?.length === 0 && <Text style={styles.body}>No payout history yet.</Text>}
-      </View>
-    </>
+          ))}
+        </Card>
+      )}
+    </NestedScreen>
   );
 }
 
+function PayoutMethodRow({
+  divider,
+  method,
+  onPress,
+}: {
+  readonly divider: boolean;
+  readonly method: OwnerPayoutMethodListItem;
+  readonly onPress: () => void;
+}) {
+  const status = payoutMethodStatusPresentation(method.status);
+  const primary = method.isPrimary ? 'Primary. ' : '';
+  return (
+    <Pressable
+      accessibilityHint="Opens payout method details"
+      accessibilityLabel={`${method.institution.displayName}. ${method.maskedAccountIdentifier}. ${primary}${status.label}.`}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.methodRow,
+        divider && styles.methodRowDivider,
+        pressed && styles.pressed,
+      ]}
+    >
+      <View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={styles.icon}
+      >
+        <Icon
+          color={colors.primary}
+          name={method.type === 'BANK_ACCOUNT' ? 'business-outline' : 'phone-portrait-outline'}
+          size={21}
+        />
+      </View>
+      <View style={styles.methodCopy}>
+        <Text style={styles.institution}>{method.institution.displayName}</Text>
+        <Text style={styles.identifier}>{method.maskedAccountIdentifier}</Text>
+        <View style={styles.badges}>
+          {method.isPrimary && <StatusBadge label="Primary" tone="success" />}
+          <StatusBadge label={status.label} tone={status.tone} />
+        </View>
+      </View>
+      <View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={styles.chevron}
+      >
+        <Icon color={colors.subtleText} name="chevron-forward" size={19} />
+      </View>
+    </Pressable>
+  );
+}
+
+export function payoutMethodStatusPresentation(status: OwnerPayoutMethodStatus | string): {
+  readonly label: string;
+  readonly tone: 'success' | 'warning' | 'neutral' | 'danger';
+} {
+  if (status === 'READY') return { label: 'Ready', tone: 'success' };
+  if (status === 'PENDING_VERIFICATION') return { label: 'Pending verification', tone: 'neutral' };
+  if (status === 'NEEDS_ATTENTION') return { label: 'Needs attention', tone: 'warning' };
+  return { label: 'Unavailable', tone: 'danger' };
+}
+
 const styles = StyleSheet.create({
-  amount: { color: colors.ink, fontSize: 18, fontWeight: '800', marginTop: spacing.sm },
-  body: { color: colors.subtleText, lineHeight: 21, marginTop: spacing.xs },
-  button: {
+  badges: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xxs },
+  chevron: { alignItems: 'center', alignSelf: 'center', justifyContent: 'center' },
+  icon: {
     alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 10,
-    marginTop: spacing.md,
-    padding: spacing.md,
+    alignSelf: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.sm,
+    height: 34,
+    justifyContent: 'center',
+    width: 34,
   },
-  buttonText: { color: colors.onPrimary, fontWeight: '800' },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    marginTop: spacing.md,
-    padding: spacing.lg,
+  identifier: {
+    color: colors.subtleText,
+    fontSize: typography.body,
+    lineHeight: 20,
   },
-  cardTitle: { color: colors.ink, fontWeight: '800' },
-  destination: {
-    borderTopColor: colors.border,
-    borderTopWidth: 1,
-    marginTop: spacing.md,
-    paddingTop: spacing.md,
+  institution: { color: colors.ink, fontSize: 16, fontWeight: '800', lineHeight: 22 },
+  methodCopy: {
+    alignSelf: 'center',
+    flex: 1,
+    gap: spacing.xxs,
+    justifyContent: 'center',
+    minWidth: 0,
   },
-  destinationTitle: { color: colors.ink, fontWeight: '700' },
-  disabled: { opacity: 0.5 },
-  error: { color: '#9B1C1C', marginTop: spacing.sm },
-  form: { gap: spacing.sm, marginTop: spacing.sm },
-  input: {
-    borderColor: colors.border,
-    borderRadius: 10,
-    borderWidth: 1,
-    color: colors.ink,
-    padding: spacing.md,
-  },
-  label: { color: colors.ink, fontSize: 13, fontWeight: '700', marginTop: spacing.xs },
-  pill: {
-    borderColor: colors.primary,
-    borderRadius: 20,
-    borderWidth: 1,
+  methodList: { padding: 0 },
+  methodRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 72,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.xs,
   },
-  pillActive: { backgroundColor: colors.primary },
-  row: { flexDirection: 'row', gap: spacing.sm },
-  secondaryButton: {
-    alignSelf: 'flex-start',
-    borderColor: colors.primary,
-    borderRadius: 8,
-    borderWidth: 1,
-    marginTop: spacing.sm,
-    padding: spacing.sm,
+  methodRowDivider: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  secondaryButtonText: { color: colors.primary, fontWeight: '800' },
+  pressed: { opacity: 0.62 },
 });

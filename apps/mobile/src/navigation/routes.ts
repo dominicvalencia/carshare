@@ -40,6 +40,9 @@ export type RootStackParamList = {
   OwnerRentals: undefined;
   OwnerRequestHistory: undefined;
   OwnerEarnings: undefined;
+  OwnerPayoutMethods: undefined;
+  OwnerPayoutMethodDetail: { payoutMethodId: string };
+  OwnerAddPayoutMethod: undefined;
   Booking: { bookingId: string };
   BookingRecovery: { bookingId: string };
   Claim: { claimId: string };

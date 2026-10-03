@@ -140,8 +140,8 @@ export class PayoutEligibilityService {
     return this.eligibleEarningsSql(ownerProfileId, maximumAmountMinor);
   }
 
-  eligibleAggregateSql() {
-    const eligible = this.eligibleEarningsSql();
+  eligibleAggregateSql(ownerProfileId?: string) {
+    const eligible = this.eligibleEarningsSql(ownerProfileId);
     return Prisma.sql`
       SELECT e."currency",
         COUNT(*)::integer AS "count",

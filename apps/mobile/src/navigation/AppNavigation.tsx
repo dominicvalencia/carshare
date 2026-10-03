@@ -25,6 +25,9 @@ import { OwnerBookingRequestsScreen } from '../features/bookings/OwnerBookingReq
 import { MessagesScreen } from '../features/communications/MessagesScreen';
 import { DiscoveryScreen } from '../features/discovery/DiscoveryScreen';
 import { OwnerEarningsScreen } from '../features/earnings/OwnerEarningsScreen';
+import { OwnerAddPayoutMethodScreen } from '../features/earnings/AddPayoutMethodScreen';
+import { OwnerPayoutMethodsScreen } from '../features/earnings/PayoutPanels';
+import { OwnerPayoutMethodDetailScreen } from '../features/earnings/PayoutMethodDetailScreen';
 import { NotificationCenter } from '../features/notifications/NotificationCenter';
 import { OwnerRentalsScreen } from '../features/rentals/OwnerRentalsScreen';
 import { ReviewsScreen } from '../features/reviews/ReviewsScreen';
@@ -272,6 +275,9 @@ export function AppNavigation(properties: AppNavigationProperties) {
             BookingRecovery: 'bookings/:bookingId/handover-recovery',
             Claim: 'claims/:claimId',
             OwnerEarnings: 'earnings',
+            OwnerPayoutMethods: 'owner/payout-methods',
+            OwnerAddPayoutMethod: 'owner/payout-methods/add',
+            OwnerPayoutMethodDetail: 'owner/payout-methods/:payoutMethodId',
             Payout: 'payouts/:payoutId',
             Favorites: 'favorites',
             Reviews: 'reviews',
@@ -425,6 +431,21 @@ export function AppNavigation(properties: AppNavigationProperties) {
         <Stack.Screen
           component={OwnerEarningsScreen}
           name="OwnerEarnings"
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          component={OwnerPayoutMethodsScreen}
+          name="OwnerPayoutMethods"
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          component={OwnerAddPayoutMethodScreen}
+          name="OwnerAddPayoutMethod"
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          component={OwnerPayoutMethodDetailScreen}
+          name="OwnerPayoutMethodDetail"
           options={{ headerShown: false }}
         />
         <Stack.Screen name="Payout" options={{ headerShown: false }}>

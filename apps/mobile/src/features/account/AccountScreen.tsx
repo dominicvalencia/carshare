@@ -1876,6 +1876,13 @@ export function OwnerMoreScreen({
           }
         />
         <MenuRow
+          icon="card-outline"
+          label="Payout methods"
+          detail="Manage where your earnings are sent"
+          accessibilityLabel="Payout methods. Manage where your earnings are sent. Opens payout methods"
+          onPress={() => navigation.navigate('OwnerPayoutMethods')}
+        />
+        <MenuRow
           icon="id-card-outline"
           label="Owner Profile"
           detail={ownerStatusLabel(ownerStatus ?? 'DRAFT')}

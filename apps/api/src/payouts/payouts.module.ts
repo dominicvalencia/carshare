@@ -11,6 +11,7 @@ import {
   AdminPayoutEligibilityController,
   AdminPayoutsController,
   OwnerPayoutAccountsController,
+  OwnerPayoutMethodsController,
   OwnerPayoutsController,
   XenditPayoutWebhooksController,
 } from './payouts.controller';
@@ -19,6 +20,7 @@ import { PayoutsService } from './payouts.service';
 @Module({
   controllers: [
     OwnerPayoutAccountsController,
+    OwnerPayoutMethodsController,
     OwnerPayoutsController,
     AdminPayoutsController,
     AdminPayoutBatchesController,

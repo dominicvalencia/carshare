@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Ip, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Ip, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
@@ -20,6 +20,8 @@ import {
 } from './payments.dto';
 import { PaymentProviderCapabilitiesService } from './payment-provider.factory';
 import { PaymentsService } from './payments.service';
+import { OwnerFinancialActivityQueryDto } from './owner-financial-read-model.dto';
+import { OwnerFinancialReadModelService } from './owner-financial-read-model.service';
 
 @ApiBearerAuth()
 @ApiTags('Rental payments')
@@ -50,9 +52,30 @@ export class RenterPaymentsController {
 @RequireRoles(RoleCode.OWNER)
 @UseGuards(AccessTokenGuard, PolicyGuard)
 export class OwnerEarningsController {
-  constructor(private readonly payments: PaymentsService) {}
+  constructor(
+    private readonly payments: PaymentsService,
+    private readonly financialReadModel: OwnerFinancialReadModelService,
+  ) {}
   @Get() list(@CurrentPrincipal() principal: RequestPrincipal) {
     return this.payments.ownerEarnings(principal.userId);
+  }
+
+  @Get('summary')
+  summary(@CurrentPrincipal() principal: RequestPrincipal) {
+    return this.financialReadModel.summary(principal.userId);
+  }
+
+  @Get('activity')
+  activity(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Query() query: OwnerFinancialActivityQueryDto,
+  ) {
+    return this.financialReadModel.activity(principal.userId, query);
+  }
+
+  @Get(':id')
+  detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
+    return this.financialReadModel.earningDetail(principal.userId, id);
   }
 }
 

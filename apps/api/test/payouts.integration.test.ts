@@ -252,6 +252,21 @@ describe.sequential('Phase 9 owner payout settlement', () => {
       ),
     ).toBe(true);
 
+    const ownerDetail = await request(app.getHttpServer())
+      .get(`/api/v1/owner/payouts/${payoutId}`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .expect(200);
+    expect(ownerDetail.body.data).toMatchObject({
+      id: payoutId,
+      includedEarnings: [
+        expect.objectContaining({ bookingReference: expect.any(String), earningId: earning.id }),
+      ],
+      status: 'PAID',
+    });
+    expect(ownerDetail.body.data).not.toHaveProperty('operations');
+    expect(ownerDetail.body.data).not.toHaveProperty('providerState');
+    expect(ownerDetail.body.data).not.toHaveProperty('reconciliationRequired');
+
     await request(app.getHttpServer())
       .get(`/api/v1/owner/payouts/${payoutId}`)
       .set('Authorization', `Bearer ${secondOwner.token}`)
@@ -569,6 +584,67 @@ describe.sequential('Phase 9 owner payout settlement', () => {
     ).toBe('FAILED');
   }, 60_000);
 
+  it('serves isolated, bounded Owner financial read models', async () => {
+    const actor = await createOwner('financial-read-model');
+    const account = await addAccount(actor, '09178889999', 'PH_GCASH', 'E_WALLET');
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/payout-accounts/${account.body.data.id}/default`)
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(201);
+    const earning = await createAvailableEarning(actor, 'FinancialReadModel');
+    await database.client.ownerEarning.update({
+      data: { additionalCompensationMinor: 400n },
+      where: { id: earning.id },
+    });
+
+    const summary = await request(app.getHttpServer())
+      .get('/api/v1/owner/earnings/summary')
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(200);
+    expect(summary.body.data).toMatchObject({
+      availableMinor: 85_400,
+      currency: 'PHP',
+      heldMinor: 0,
+      payoutReadyMinor: 85_400,
+      pendingMinor: 0,
+      upcomingPayout: null,
+    });
+
+    const activity = await request(app.getHttpServer())
+      .get('/api/v1/owner/earnings/activity?scope=UPCOMING&page=1&pageSize=1')
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(200);
+    expect(activity.body.data).toMatchObject({ page: 1, pageSize: 1 });
+    expect(activity.body.data.items).toEqual([
+      expect.objectContaining({
+        amountMinor: 85_400,
+        bookingReference: expect.any(String),
+        detailTarget: { id: earning.id, resource: 'EARNING' },
+        type: 'EARNING',
+      }),
+    ]);
+
+    const adjustments = await request(app.getHttpServer())
+      .get('/api/v1/owner/earnings/activity?scope=ADJUSTMENTS&page=1&pageSize=20')
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(200);
+    expect(adjustments.body.data.items).toEqual([
+      expect.objectContaining({ amountMinor: 400, type: 'COMPENSATION' }),
+    ]);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/owner/earnings/${earning.id}`)
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toMatchObject({ id: earning.id, projectedTotalMinor: 85_400 });
+      });
+    await request(app.getHttpServer())
+      .get(`/api/v1/owner/earnings/${earning.id}`)
+      .set('Authorization', `Bearer ${secondOwner.token}`)
+      .expect(404);
+  }, 60_000);
+
   it('denies payout operations to support and keeps owner account scope isolated', async () => {
     await request(app.getHttpServer())
       .get('/api/v1/admin/payouts')
@@ -588,6 +664,100 @@ describe.sequential('Phase 9 owner payout settlement', () => {
       ),
     ).toBe(false);
     expect(JSON.stringify(ownerAccounts.body.data)).not.toContain('encryptedAccountIdentifier');
+  });
+
+  it('projects the payout-method catalog, safe list/detail, actions, and stable errors', async () => {
+    const actor = await createOwner('payout-method-contract');
+    const first = await addAccount(actor, '09175550123', 'PH_GCASH', 'E_WALLET');
+    const second = await addAccount(actor, '123456789012', 'PH_BPI', 'BANK_ACCOUNT');
+
+    const catalog = await request(app.getHttpServer())
+      .get('/api/v1/owner/payout-methods/catalog')
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(200);
+    expect(catalog.body.data).toMatchObject({ country: 'PH', currency: 'PHP' });
+    expect(catalog.body.data.methods).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'PH_BPI', displayName: 'BPI', type: 'BANK_ACCOUNT' }),
+        expect.objectContaining({ code: 'PH_GCASH', displayName: 'GCash', type: 'E_WALLET' }),
+      ]),
+    );
+    expect(JSON.stringify(catalog.body.data)).not.toContain('XENDIT_SECRET');
+
+    const list = await request(app.getHttpServer())
+      .get('/api/v1/owner/payout-methods')
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(200);
+    expect(list.body.data.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: first.body.data.id,
+          institution: { code: 'PH_GCASH', displayName: 'GCash' },
+          isPrimary: true,
+          maskedAccountIdentifier: expect.stringMatching(/0123$/),
+          status: 'READY',
+        }),
+      ]),
+    );
+    expect(JSON.stringify(list.body.data)).not.toContain('09175550123');
+    expect(JSON.stringify(list.body.data)).not.toContain('accountHolderName');
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/owner/payout-methods/${second.body.data.id}`)
+      .set('Authorization', `Bearer ${actor.token}`)
+      .expect(200);
+    expect(detail.body.data).toMatchObject({
+      actions: {
+        canEdit: false,
+        canRemove: true,
+        canSetPrimary: true,
+        removalBlockedReason: null,
+      },
+      id: second.body.data.id,
+      isPrimary: false,
+      status: 'READY',
+    });
+    expect(JSON.stringify(detail.body.data)).not.toContain('123456789012');
+    expect(JSON.stringify(detail.body.data)).not.toContain('provider');
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/owner/payout-methods/${second.body.data.id}`)
+      .set('Authorization', `Bearer ${secondOwner.token}`)
+      .expect(404)
+      .expect(({ body }) => expect(body.error.code).toBe('PAYOUT_METHOD_NOT_FOUND'));
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/payout-accounts/${second.body.data.id}/default`)
+      .set('Authorization', `Bearer ${secondOwner.token}`)
+      .expect(404);
+    await request(app.getHttpServer())
+      .post(`/api/v1/owner/payout-accounts/${second.body.data.id}/disable`)
+      .set('Authorization', `Bearer ${secondOwner.token}`)
+      .send({ reason: 'Cross-owner operation must remain unavailable.' })
+      .expect(404);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/owner/payout-accounts')
+      .set('Authorization', `Bearer ${actor.token}`)
+      .send({
+        accountHolderName: 'Unsupported Destination',
+        accountIdentifier: '1234567890',
+        destinationChannel: 'PH_UNKNOWN',
+        type: 'BANK_ACCOUNT',
+      })
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('PAYOUT_METHOD_UNSUPPORTED'));
+
+    await request(app.getHttpServer())
+      .post('/api/v1/owner/payout-accounts')
+      .set('Authorization', `Bearer ${actor.token}`)
+      .send({
+        accountHolderName: 'Duplicate Destination',
+        accountIdentifier: '09175550123',
+        destinationChannel: 'PH_GCASH',
+        type: 'E_WALLET',
+      })
+      .expect(409)
+      .expect(({ body }) => expect(body.error.code).toBe('PAYOUT_METHOD_DUPLICATE'));
   });
 
   async function createAndApprove(ownerProfileId: string): Promise<string> {

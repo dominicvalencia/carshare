@@ -72,6 +72,30 @@ export class OwnerPayoutAccountsController {
 }
 
 @ApiBearerAuth()
+@ApiTags('Owner payout methods')
+@Controller('owner/payout-methods')
+@RequireRoles(RoleCode.OWNER)
+@UseGuards(AccessTokenGuard, PolicyGuard)
+export class OwnerPayoutMethodsController {
+  constructor(private readonly payouts: PayoutsService) {}
+
+  @Get('catalog')
+  catalog() {
+    return this.payouts.ownerPayoutMethodCatalog();
+  }
+
+  @Get()
+  list(@CurrentPrincipal() principal: RequestPrincipal) {
+    return this.payouts.ownerPayoutMethods(principal.userId);
+  }
+
+  @Get(':id')
+  detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
+    return this.payouts.ownerPayoutMethodDetail(principal.userId, id);
+  }
+}
+
+@ApiBearerAuth()
 @ApiTags('Owner payouts')
 @Controller('owner/payouts')
 @RequireRoles(RoleCode.OWNER)

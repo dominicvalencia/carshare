@@ -3,6 +3,14 @@ import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ApiEnvironment } from '@carrental/config';
 import {
+  OwnerPayoutMethodStatus,
+  PayoutMethodErrorCode,
+  type OwnerPayoutMethodDetail,
+  type OwnerPayoutMethodList,
+  type OwnerPayoutMethodListItem,
+  type OwnerPayoutMethodType,
+} from '@carrental/api-contracts';
+import {
   FinancialAccountType,
   LedgerTransactionType,
   OwnerEarningStatus,
@@ -33,6 +41,7 @@ import type { CreatePayoutAccountDto, CreatePayoutBatchDto, CreatePayoutDto } fr
 import { PayoutEligibilityService } from './payout-eligibility.service';
 import { PayoutEncryptionService } from './payout-encryption.service';
 import { PAYOUT_PROVIDER } from './payout-provider.factory';
+import { ownerPayoutMethodCatalog, payoutMethodInstitution } from './payout-method-catalog';
 
 const PAYOUT_INCLUDE = {
   batch: { select: { publicReference: true, status: true } },
@@ -96,6 +105,67 @@ export class PayoutsService {
     };
   }
 
+  ownerPayoutMethodCatalog() {
+    const supportedTypes = this.provider
+      .getCapabilities()
+      .destinationTypes.filter(
+        (type): type is OwnerPayoutMethodType => type === 'BANK_ACCOUNT' || type === 'E_WALLET',
+      );
+    return ownerPayoutMethodCatalog(supportedTypes);
+  }
+
+  async ownerPayoutMethods(ownerUserId: string): Promise<OwnerPayoutMethodList> {
+    const owner = await this.ownerByUser(ownerUserId);
+    const accounts = await this.database.client.ownerPayoutAccount.findMany({
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+      take: 100,
+      where: { ownerProfileId: owner.id },
+    });
+    return { items: accounts.map((account) => this.ownerPayoutMethodProjection(account)) };
+  }
+
+  async ownerPayoutMethodDetail(
+    ownerUserId: string,
+    accountId: string,
+  ): Promise<OwnerPayoutMethodDetail> {
+    const owner = await this.ownerByUser(ownerUserId);
+    const account = await this.database.client.ownerPayoutAccount.findFirst({
+      include: {
+        _count: {
+          select: {
+            payouts: {
+              where: {
+                status: {
+                  in: [PayoutStatus.APPROVED, PayoutStatus.SUBMITTING, PayoutStatus.PROCESSING],
+                },
+              },
+            },
+          },
+        },
+      },
+      where: { id: accountId, ownerProfileId: owner.id },
+    });
+    if (!account)
+      throw new ApplicationException(
+        PayoutMethodErrorCode.NOT_FOUND,
+        'Payout method was not found.',
+        HttpStatus.NOT_FOUND,
+      );
+    const payoutInProgress = account._count.payouts > 0;
+    return {
+      ...this.ownerPayoutMethodProjection(account),
+      accountHolderName: account.accountHolderName,
+      actions: {
+        canEdit: false,
+        canRemove: account.status !== PayoutAccountStatus.DISABLED && !payoutInProgress,
+        canSetPrimary: account.status === PayoutAccountStatus.ACTIVE && !account.isDefault,
+        removalBlockedReason: payoutInProgress ? 'PAYOUT_IN_PROGRESS' : null,
+      },
+      disabledAt: account.disabledAt?.toISOString() ?? null,
+      verifiedAt: account.verifiedAt?.toISOString() ?? null,
+    };
+  }
+
   async addOwnerAccount(
     ownerUserId: string,
     input: CreatePayoutAccountDto,
@@ -116,6 +186,12 @@ export class PayoutsService {
       destinationChannel: input.destinationChannel.trim().toUpperCase(),
       type: input.type,
     };
+    const supportedMethod = this.ownerPayoutMethodCatalog().methods.some(
+      (method) =>
+        method.code === destination.destinationChannel && method.type === destination.type,
+    );
+    if (!supportedMethod)
+      this.conflict(PayoutMethodErrorCode.UNSUPPORTED, 'This payout destination is not supported.');
     const validation = await this.provider.validateDestination(destination);
     const protectedIdentifier = this.encryption.protect(destination.accountIdentifier);
     const status =
@@ -124,55 +200,62 @@ export class PayoutsService {
         : validation.kind === 'INVALID'
           ? PayoutAccountStatus.REJECTED
           : PayoutAccountStatus.REQUIRES_ACTION;
-    const account = await this.database.client.$transaction(async (transaction) => {
-      const activeCount = await transaction.ownerPayoutAccount.count({
-        where: { ownerProfileId: owner.id, status: PayoutAccountStatus.ACTIVE },
-      });
-      const created = await transaction.ownerPayoutAccount.create({
-        data: {
-          accountHolderName: destination.accountHolderName,
-          createdByUserId: ownerUserId,
-          currency: 'PHP',
-          destinationChannel: destination.destinationChannel,
-          encryptedAccountIdentifier: protectedIdentifier.ciphertext,
-          encryptionAuthTag: protectedIdentifier.authTag,
-          encryptionIv: protectedIdentifier.iv,
-          identifierFingerprint: protectedIdentifier.fingerprint,
-          isDefault: status === PayoutAccountStatus.ACTIVE && activeCount === 0,
-          maskedAccountIdentifier: protectedIdentifier.masked,
-          ownerProfileId: owner.id,
-          provider: this.providerCode(),
-          safeValidationReference: validation.safeValidationReference ?? null,
-          status,
-          type: input.type,
-          validationLevel: validation.validationLevel,
-          verifiedAt:
-            status === PayoutAccountStatus.ACTIVE && validation.validationLevel === 'PROVIDER'
-              ? new Date()
-              : null,
-        },
-      });
-      await this.audit(
-        transaction,
-        ownerUserId,
-        'PAYOUT_ACCOUNT_CREATED',
-        'OWNER_PAYOUT_ACCOUNT',
-        created.id,
-        request,
-        validation.safeReason,
-        {
+    let account: Prisma.OwnerPayoutAccountGetPayload<Record<string, never>>;
+    try {
+      account = await this.database.client.$transaction(async (transaction) => {
+        const activeCount = await transaction.ownerPayoutAccount.count({
+          where: { ownerProfileId: owner.id, status: PayoutAccountStatus.ACTIVE },
+        });
+        const created = await transaction.ownerPayoutAccount.create({
+          data: {
+            accountHolderName: destination.accountHolderName,
+            createdByUserId: ownerUserId,
+            currency: 'PHP',
+            destinationChannel: destination.destinationChannel,
+            encryptedAccountIdentifier: protectedIdentifier.ciphertext,
+            encryptionAuthTag: protectedIdentifier.authTag,
+            encryptionIv: protectedIdentifier.iv,
+            identifierFingerprint: protectedIdentifier.fingerprint,
+            isDefault: status === PayoutAccountStatus.ACTIVE && activeCount === 0,
+            maskedAccountIdentifier: protectedIdentifier.masked,
+            ownerProfileId: owner.id,
+            provider: this.providerCode(),
+            safeValidationReference: validation.safeValidationReference ?? null,
+            status,
+            type: input.type,
+            validationLevel: validation.validationLevel,
+            verifiedAt:
+              status === PayoutAccountStatus.ACTIVE && validation.validationLevel === 'PROVIDER'
+                ? new Date()
+                : null,
+          },
+        });
+        await this.audit(
+          transaction,
+          ownerUserId,
+          'PAYOUT_ACCOUNT_CREATED',
+          'OWNER_PAYOUT_ACCOUNT',
+          created.id,
+          request,
+          validation.safeReason,
+          {
+            destination: created.maskedAccountIdentifier,
+            status: created.status,
+          },
+        );
+        await this.event(transaction, created.id, 'PAYOUT_ACCOUNT_ADDED', {
+          accountId: created.id,
           destination: created.maskedAccountIdentifier,
+          ownerProfileId: owner.id,
           status: created.status,
-        },
-      );
-      await this.event(transaction, created.id, 'PAYOUT_ACCOUNT_ADDED', {
-        accountId: created.id,
-        destination: created.maskedAccountIdentifier,
-        ownerProfileId: owner.id,
-        status: created.status,
+        });
+        return created;
       });
-      return created;
-    });
+    } catch (error) {
+      if (this.isUniqueViolation(error))
+        this.conflict(PayoutMethodErrorCode.DUPLICATE, 'This payout method is already saved.');
+      throw error;
+    }
     return this.accountProjection(account);
   }
 
@@ -264,8 +347,8 @@ export class PayoutsService {
     });
     if (payoutId && !payouts.length) this.notFound('Payout was not found.');
     return payoutId
-      ? this.payoutProjection(payouts[0]!)
-      : payouts.map((item) => this.payoutProjection(item));
+      ? this.ownerPayoutProjection(payouts[0]!)
+      : payouts.map((item) => this.ownerPayoutProjection(item));
   }
 
   async setEligibility(
@@ -1424,6 +1507,40 @@ export class PayoutsService {
     };
   }
 
+  private ownerPayoutProjection(payout: PayoutRecord) {
+    return {
+      adjustmentAmountMinor: this.minor(payout.adjustmentAmountMinor),
+      amountMinor: this.minor(payout.amountMinor),
+      approvedAt: payout.approvedAt,
+      cancellationPenaltyRecoveryMinor: this.minor(
+        -payout.adjustments
+          .filter(
+            ({ type, status }) =>
+              type === 'OWNER_CANCELLATION_PENALTY_RECOVERY' && status !== 'RELEASED',
+          )
+          .reduce((sum, item) => sum + item.signedAmountMinor, 0n),
+      ),
+      createdAt: payout.createdAt,
+      currency: payout.currency,
+      destination: {
+        channel: payout.destinationChannel,
+        maskedIdentifier: payout.destinationMasked,
+      },
+      failedAt: payout.failedAt,
+      grossEligibleEarningsMinor: this.minor(payout.grossEarningMinor),
+      id: payout.id,
+      includedEarnings: payout.items.map((item) => ({
+        amountMinor: this.minor(item.amountMinor),
+        bookingReference: item.ownerEarning.booking.publicReference,
+        earningId: item.ownerEarningId,
+      })),
+      paidAt: payout.paidAt,
+      publicReference: payout.publicReference,
+      status: payout.status,
+      submittedAt: payout.submittedAt,
+    };
+  }
+
   private accountProjection(account: {
     accountHolderName: string;
     createdAt: Date;
@@ -1454,6 +1571,37 @@ export class PayoutsService {
       validationLevel: account.validationLevel,
       verifiedAt: account.verifiedAt,
     };
+  }
+
+  private ownerPayoutMethodProjection(account: {
+    createdAt: Date;
+    destinationChannel: string;
+    id: string;
+    isDefault: boolean;
+    maskedAccountIdentifier: string;
+    status: PayoutAccountStatus;
+    type: string;
+    updatedAt: Date;
+  }): OwnerPayoutMethodListItem {
+    return {
+      createdAt: account.createdAt.toISOString(),
+      id: account.id,
+      institution: payoutMethodInstitution(account.destinationChannel),
+      isPrimary: account.isDefault,
+      maskedAccountIdentifier: account.maskedAccountIdentifier,
+      status: this.ownerPayoutMethodStatus(account.status),
+      type: account.type as OwnerPayoutMethodType,
+      updatedAt: account.updatedAt.toISOString(),
+    };
+  }
+
+  private ownerPayoutMethodStatus(status: PayoutAccountStatus): OwnerPayoutMethodStatus {
+    if (status === PayoutAccountStatus.ACTIVE) return OwnerPayoutMethodStatus.READY;
+    if (status === PayoutAccountStatus.PENDING_VERIFICATION)
+      return OwnerPayoutMethodStatus.PENDING_VERIFICATION;
+    if (status === PayoutAccountStatus.REQUIRES_ACTION)
+      return OwnerPayoutMethodStatus.NEEDS_ATTENTION;
+    return OwnerPayoutMethodStatus.UNAVAILABLE;
   }
 
   private async ownerByUser(userId: string) {
