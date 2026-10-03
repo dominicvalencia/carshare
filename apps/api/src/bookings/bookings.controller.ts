@@ -44,6 +44,8 @@ import { AmendmentSubmissionService } from './amendment-submission.service';
 import { AmendmentWithdrawalService } from './amendment-withdrawal.service';
 import { AmendmentOwnerDecisionService } from './amendment-owner-decision.service';
 import { AdminBookingAmendmentsService } from './admin-booking-amendments.service';
+import { OwnerHomeService } from './owner-home.service';
+import { OwnerHomeUpcomingQueryDto } from './owner-home.dto';
 import { AdminBookingAmendmentQueryDto } from './admin-booking-amendments.dto';
 import { OwnerBookingAmendmentQueryDto } from './owner-booking-amendments.dto';
 
@@ -415,6 +417,28 @@ export class OwnerBookingsController {
     await this.bookings.ownerReject(principal.userId, reference, input.reason, metadata);
     await this.payments.processPendingForBooking(reference, metadata);
     return this.bookings.ownerDetail(principal.userId, reference);
+  }
+}
+
+@ApiBearerAuth()
+@ApiTags('Owner home')
+@Controller('owner/home')
+@RequireRoles(RoleCode.OWNER)
+@UseGuards(AccessTokenGuard, PolicyGuard)
+export class OwnerHomeController {
+  constructor(private readonly home: OwnerHomeService) {}
+
+  @Get()
+  today(@CurrentPrincipal() principal: RequestPrincipal) {
+    return this.home.today(principal.userId);
+  }
+
+  @Get('upcoming')
+  upcoming(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Query() query: OwnerHomeUpcomingQueryDto,
+  ) {
+    return this.home.upcoming(principal.userId, query);
   }
 }
 

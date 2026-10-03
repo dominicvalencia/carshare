@@ -1,236 +1,576 @@
 import type { NavigationProp } from '@react-navigation/native';
-import { useNavigation } from '@react-navigation/native';
-import { useQuery } from '@tanstack/react-query';
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
-import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import type { OwnerStatus } from '../../auth/auth.types';
+import { OwnerBookingRequestsScreen } from '../bookings/OwnerBookingRequestsScreen';
 import type { OwnerTabParamList, RootStackParamList } from '../../navigation/routes';
+import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import { colors, radius, spacing } from '../../theme/tokens';
-import { titleCase } from '../../ui/format';
-import { Card, Icon, Screen, SectionHeader, StateView, StatusBadge } from '../../ui/primitives';
+import { bookingStatusLabel, dateLabel, timeLabel, titleCase } from '../../ui/format';
+import { VehicleImage } from '../../ui/VehicleImage';
+import {
+  Button,
+  Card,
+  Icon,
+  Screen,
+  SectionHeader,
+  StateView,
+  StatusBadge,
+} from '../../ui/primitives';
+import {
+  groupOwnerUpcoming,
+  ownerHomeIsOperationallyEmpty,
+  ownerHomeQueryKey,
+  type OwnerHomeAttention,
+  type OwnerHomeCard,
+  type OwnerHomeReadModel,
+  type OwnerHomeUpcomingPage,
+} from './owner-home';
 
-interface VehicleSummary {
-  readonly id: string;
-  readonly status: string;
-}
-interface BookingSummary {
-  readonly status: string;
-  readonly workflowCompliance?: { start: { overdue: boolean }; return: { overdue: boolean } };
-}
-interface OwnerVehicleDashboardSummary {
-  readonly ownerBlockedVehiclesToday: number;
-  readonly timezone: 'Asia/Manila';
-  readonly asOf: string;
-}
+type OwnerHomeTab = 'Today' | 'Upcoming' | 'Requests';
+type OwnerVehicleSummary = { readonly id: string; readonly status: string };
+
 export function OwnerDashboardScreen({
   ownerStatus,
 }: {
   readonly ownerStatus: OwnerStatus | null;
 }) {
   const navigation = useNavigation<NavigationProp<OwnerTabParamList & RootStackParamList>>();
-  const vehicles = useQuery({
-    queryKey: ['vehicles'],
-    queryFn: () => apiClient.request<VehicleSummary[]>('/owner/vehicles'),
-  });
-  const bookings = useQuery({
-    queryKey: ['owner-booking-requests'],
-    queryFn: () => apiClient.request<BookingSummary[]>('/owner/bookings/requests'),
+  const route = useRoute<RouteProp<OwnerTabParamList, 'Dashboard'>>();
+  const [selectedTab, setSelectedTab] = useState<OwnerHomeTab>(route.params?.initialTab ?? 'Today');
+  const home = useQuery({
     enabled: ownerStatus === 'VERIFIED',
+    queryFn: () => apiClient.request<OwnerHomeReadModel>('/owner/home'),
+    queryKey: ownerHomeQueryKey,
     retry: false,
   });
-  const availability = useQuery({
-    queryKey: ['owner-vehicle-dashboard-summary'],
-    queryFn: () =>
-      apiClient.request<OwnerVehicleDashboardSummary>('/owner/vehicles/dashboard-summary'),
+  const vehicles = useQuery({
+    enabled: ownerStatus === 'VERIFIED',
+    queryFn: () => apiClient.request<OwnerVehicleSummary[]>('/owner/vehicles'),
+    queryKey: ['vehicles'],
+    retry: false,
+  });
+  const upcoming = useInfiniteQuery<OwnerHomeUpcomingPage>({
+    enabled: ownerStatus === 'VERIFIED' && selectedTab === 'Upcoming',
+    getNextPageParam: (lastPage) =>
+      lastPage.page < lastPage.totalPages ? lastPage.page + 1 : undefined,
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) =>
+      apiClient.request<OwnerHomeUpcomingPage>(
+        `/owner/home/upcoming?page=${pageParam}&pageSize=20`,
+      ),
+    queryKey: ['owner-home-upcoming'],
   });
   useRefreshOnFocusAndForeground(() => {
-    void vehicles.refetch();
-    void availability.refetch();
-    if (ownerStatus === 'VERIFIED') void bookings.refetch();
+    if (ownerStatus === 'VERIFIED') void home.refetch();
+    if (ownerStatus === 'VERIFIED') void vehicles.refetch();
+    if (ownerStatus === 'VERIFIED' && selectedTab === 'Upcoming') void upcoming.refetch();
   });
-  const dashboardError = vehicles.error ?? bookings.error ?? availability.error;
-  if (dashboardError)
+
+  if (ownerStatus !== 'VERIFIED')
     return (
-      <Screen eyebrow="Owner mode" title="Dashboard">
+      <Screen scroll={false}>
+        <View style={styles.centeredState}>
+          <StateView
+            actionLabel="Continue verification"
+            icon="shield-checkmark-outline"
+            message="Complete owner verification before managing operational bookings."
+            onAction={() => navigation.navigate('OwnerOnboarding')}
+            title="Verification required"
+          />
+        </View>
+      </Screen>
+    );
+  if (home.isPending)
+    return (
+      <Screen>
+        <StateView loading title="Loading today…" />
+      </Screen>
+    );
+  if (home.isError || !home.data)
+    return (
+      <Screen>
         <StateView
-          icon="cloud-offline-outline"
-          title="Dashboard unavailable"
-          message={dashboardError.message}
           actionLabel="Retry"
-          onAction={() => {
-            void vehicles.refetch();
-            void availability.refetch();
-            if (ownerStatus === 'VERIFIED') void bookings.refetch();
-          }}
+          icon="cloud-offline-outline"
+          message={home.error?.message ?? 'Please try again.'}
+          onAction={() => void home.refetch()}
+          title="Today is unavailable"
         />
       </Screen>
     );
-  if (
-    vehicles.isPending ||
-    availability.isPending ||
-    (ownerStatus === 'VERIFIED' && bookings.isPending)
-  )
-    return (
-      <Screen eyebrow="Owner mode" title="Dashboard">
-        <StateView loading title="Loading owner dashboard…" />
-      </Screen>
-    );
-  const counts = (vehicles.data ?? []).reduce<Record<string, number>>((result, vehicle) => {
-    result[vehicle.status] = (result[vehicle.status] ?? 0) + 1;
-    return result;
-  }, {});
-  const requests = bookings.data?.filter((item) => item.status === 'AWAITING_OWNER').length ?? 0;
-  const upcoming =
-    bookings.data?.filter((item) => ['CONFIRMED', 'READY_FOR_PICKUP'].includes(item.status))
-      .length ?? 0;
-  const active =
-    bookings.data?.filter((item) => ['ACTIVE', 'RETURN_PENDING'].includes(item.status)).length ?? 0;
-  const startNeedsAttention =
-    bookings.data?.some((item) => item.workflowCompliance?.start.overdue) ?? false;
-  const returnNeedsAttention =
-    bookings.data?.some((item) => item.workflowCompliance?.return.overdue) ?? false;
+
+  const model = home.data;
+  const openBooking = (reference: string) =>
+    navigation.navigate('Booking', { bookingId: reference });
+  const openUpcoming = () => setSelectedTab('Upcoming');
+  const openRequests = () => setSelectedTab('Requests');
+  const requestCount = model.requests.totalRequestsCount;
+  const vehicleAction = vehicles.data
+    ? vehicles.data.length === 0
+      ? 'Add your vehicle'
+      : vehicles.data.some(({ status }) => status === 'DRAFT')
+        ? 'Complete your vehicle info'
+        : null
+    : null;
   return (
     <Screen
-      eyebrow="Owner mode"
-      title="Dashboard"
-      subtitle="A quick view of your fleet and rental activity."
-      action={
-        <StatusBadge
-          label={titleCase(ownerStatus ?? 'DRAFT')}
-          tone={ownerStatus === 'VERIFIED' ? 'success' : 'warning'}
-        />
+      stickyHeader={
+        <View accessibilityRole="tablist" style={styles.tabs}>
+          <TopTab
+            label="Today"
+            onPress={() => setSelectedTab('Today')}
+            selected={selectedTab === 'Today'}
+          />
+          <TopTab label="Upcoming" onPress={openUpcoming} selected={selectedTab === 'Upcoming'} />
+          <TopTab
+            count={requestCount}
+            label="Requests"
+            onPress={openRequests}
+            selected={selectedTab === 'Requests'}
+          />
+        </View>
       }
     >
-      {ownerStatus !== 'VERIFIED' && (
-        <Card style={styles.verification}>
-          <View style={styles.row}>
-            <Icon color={colors.warning} name="shield-outline" size={28} />
-            <View style={styles.flex}>
-              <Text style={styles.cardTitle}>Complete owner verification</Text>
-              <Text style={styles.body}>
-                You can build vehicle drafts now. Publishing listings and accepting requests unlock
-                after verification.
-              </Text>
-            </View>
-          </View>
-          <Pressable onPress={() => navigation.navigate('OwnerOnboarding')}>
-            <Text style={styles.link}>Continue verification →</Text>
-          </Pressable>
-        </Card>
-      )}
-      <View style={styles.grid}>
-        <Metric icon="car-sport-outline" label="Fleet" value={vehicles.data?.length ?? 0} />
-        <Metric
-          icon="file-tray-full-outline"
-          label="Requests"
-          value={requests}
-          attention={requests > 0}
-        />
-        <Metric
-          icon="key-outline"
-          label="Active rentals"
-          value={active}
-          attention={returnNeedsAttention}
-        />
-        <Metric
-          icon="calendar-outline"
-          label="Upcoming rentals"
-          value={upcoming}
-          attention={startNeedsAttention}
-        />
-        <Metric icon="create-outline" label="Drafts" value={counts.DRAFT ?? 0} />
-        <Metric
-          icon="pause-circle-outline"
-          label="Owner-blocked today"
-          value={availability.data?.ownerBlockedVehiclesToday ?? 0}
-        />
+      <View style={styles.tabContent}>
+        {selectedTab === 'Today' && (
+          <>
+            {model.today.attention.length > 0 && (
+              <TodaySection title="Needs attention">
+                {model.today.attention.map((item) => (
+                  <AttentionCard
+                    key={`${item.type}-${item.bookingReference}`}
+                    item={item}
+                    onPress={openBooking}
+                  />
+                ))}
+              </TodaySection>
+            )}
+            {model.today.pickups.length > 0 && (
+              <TodaySection title="Pickups today">
+                {model.today.pickups.map((item) => (
+                  <OperationalCard
+                    key={item.bookingReference}
+                    item={item}
+                    kind="pickup"
+                    onPress={openBooking}
+                  />
+                ))}
+              </TodaySection>
+            )}
+            {model.today.activeRentals.length > 0 && (
+              <TodaySection title="Active rentals">
+                {model.today.activeRentals.map((item) => (
+                  <OperationalCard
+                    key={item.bookingReference}
+                    item={item}
+                    kind="active"
+                    onPress={openBooking}
+                  />
+                ))}
+              </TodaySection>
+            )}
+            {model.today.returns.length > 0 && (
+              <TodaySection title="Returns today">
+                {model.today.returns.map((item) => (
+                  <OperationalCard
+                    key={item.bookingReference}
+                    item={item}
+                    kind="return"
+                    onPress={openBooking}
+                  />
+                ))}
+              </TodaySection>
+            )}
+            {ownerHomeIsOperationallyEmpty(model) && (
+              <View style={requestCount === 0 && styles.centeredEmpty}>
+                <Card style={styles.emptyCard}>
+                  <Icon color={colors.primary} name="sunny-outline" size={28} />
+                  <Text style={styles.emptyTitle}>Nothing scheduled today</Text>
+                  {model.today.nextUpcoming ? (
+                    <>
+                      <Text style={styles.emptyMessage}>
+                        Your next rental starts {dateLabel(model.today.nextUpcoming.pickup.at)}.
+                      </Text>
+                      <Button
+                        compact
+                        label="View upcoming"
+                        onPress={openUpcoming}
+                        variant="secondary"
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.emptyMessage}>
+                        Future confirmed rentals will appear in Upcoming.
+                      </Text>
+                      {vehicleAction && (
+                        <Button
+                          compact
+                          label={vehicleAction}
+                          onPress={() => navigation.navigate('Vehicles')}
+                          variant="secondary"
+                        />
+                      )}
+                    </>
+                  )}
+                </Card>
+              </View>
+            )}
+            {requestCount > 0 && (
+              <Pressable
+                accessibilityLabel={`${requestCount} requests need your response. View requests`}
+                accessibilityRole="button"
+                onPress={openRequests}
+              >
+                <Card style={styles.requestSummary}>
+                  <View style={styles.summaryIcon}>
+                    <Icon color={colors.primary} name="file-tray-full-outline" />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text style={styles.cardTitle}>
+                      {requestCount} {requestCount === 1 ? 'request needs' : 'requests need'} your
+                      response
+                    </Text>
+                    <Text style={styles.link}>View requests</Text>
+                  </View>
+                  <Icon color={colors.primary} name="chevron-forward" />
+                </Card>
+              </Pressable>
+            )}
+          </>
+        )}
+        {selectedTab === 'Upcoming' && (
+          <UpcomingTab model={model} onOpenBooking={openBooking} query={upcoming} />
+        )}
+        {selectedTab === 'Requests' && (
+          <OwnerBookingRequestsScreen
+            embedded
+            onHistory={() => navigation.navigate('OwnerRequestHistory')}
+          />
+        )}
       </View>
-      <SectionHeader title="Quick actions" />
-      <View style={styles.actions}>
-        <Action
-          icon="car-sport-outline"
-          label="Manage fleet"
-          onPress={() => navigation.navigate('Vehicles')}
-        />
-        <Action
-          icon="file-tray-full-outline"
-          label="Booking requests"
-          onPress={() => navigation.navigate('Requests')}
-        />
-        <Action
-          icon="key-outline"
-          label="Active rentals"
-          onPress={() => navigation.navigate('OwnerRentals')}
-        />
-        <Action
-          icon="wallet-outline"
-          label="Earnings"
-          onPress={() => navigation.navigate('OwnerEarnings')}
-        />
-      </View>
-      {(counts.CHANGES_REQUIRED ?? 0) + (counts.REJECTED ?? 0) > 0 && (
-        <Card style={styles.verification}>
-          <Text style={styles.cardTitle}>Listings need attention</Text>
-          <Text style={styles.body}>
-            Review admin feedback, make the requested corrections, and resubmit when ready.
-          </Text>
-        </Card>
-      )}
     </Screen>
   );
 }
-function Metric({
-  icon,
-  label,
-  value,
-  attention = false,
+
+function UpcomingTab({
+  model,
+  onOpenBooking,
+  query,
 }: {
-  readonly icon: Parameters<typeof Icon>[0]['name'];
-  readonly label: string;
-  readonly value: number;
-  readonly attention?: boolean;
+  readonly model: OwnerHomeReadModel;
+  readonly onOpenBooking: (reference: string) => void;
+  readonly query: {
+    readonly data: { readonly pages: readonly OwnerHomeUpcomingPage[] } | undefined;
+    readonly error: Error | null;
+    readonly hasNextPage: boolean;
+    readonly isError: boolean;
+    readonly isFetchingNextPage: boolean;
+    readonly isPending: boolean;
+    readonly fetchNextPage: () => Promise<unknown>;
+    readonly refetch: () => Promise<unknown>;
+  };
 }) {
+  if (query.isPending) return <StateView loading title="Loading upcoming rentals…" />;
+  if (query.isError)
+    return (
+      <StateView
+        actionLabel="Retry"
+        icon="cloud-offline-outline"
+        message={query.error?.message}
+        onAction={() => void query.refetch()}
+        title="Upcoming rentals unavailable"
+      />
+    );
+  const items = query.data?.pages.flatMap((page) => page.items) ?? [];
+  const groups = groupOwnerUpcoming(items, model.today.startInclusive, model.timezone);
+  if (groups.length === 0)
+    return (
+      <StateView
+        icon="calendar-outline"
+        message="Future confirmed rentals will appear here."
+        title="No upcoming rentals"
+      />
+    );
   return (
-    <Card style={styles.metric}>
-      <Icon color={attention ? colors.warning : colors.primary} name={icon} />
-      <Text style={styles.metricValue}>{value}</Text>
-      <Text style={styles.body}>{label}</Text>
-    </Card>
+    <View style={styles.upcomingGroups}>
+      {groups.map((group) => (
+        <View key={group.key} style={styles.upcomingGroup}>
+          <SectionHeader title={group.label} />
+          <View style={styles.cardList}>
+            {group.bookings.map((item) => (
+              <UpcomingCard key={item.bookingReference} item={item} onPress={onOpenBooking} />
+            ))}
+          </View>
+        </View>
+      ))}
+      {query.hasNextPage && (
+        <Button
+          disabled={query.isFetchingNextPage}
+          label={query.isFetchingNextPage ? 'Loading…' : 'Load more rentals'}
+          onPress={() => void query.fetchNextPage()}
+          variant="secondary"
+        />
+      )}
+    </View>
   );
 }
-function Action({
-  icon,
-  label,
+
+function UpcomingCard({
+  item,
   onPress,
 }: {
-  readonly icon: Parameters<typeof Icon>[0]['name'];
-  readonly label: string;
-  readonly onPress: () => void;
+  readonly item: OwnerHomeCard;
+  readonly onPress: (reference: string) => void;
 }) {
   return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={styles.action}>
-      <View style={styles.actionIcon}>
-        <Icon color={colors.primary} name={icon} />
-      </View>
-      <Text style={styles.actionText}>{label}</Text>
-      <Icon color={colors.subtleText} name="chevron-forward" size={18} />
+    <Pressable
+      accessibilityHint="Opens booking details"
+      accessibilityLabel={`${item.vehicle.make} ${item.vehicle.model}. ${item.renterDisplayName}. Pickup ${dateLabel(item.pickup.at)} at ${timeLabel(item.pickup.at)}. Return ${dateLabel(item.return.at)} at ${timeLabel(item.return.at)}. ${bookingStatusLabel(item.status, 'owner')}.`}
+      accessibilityRole="button"
+      onPress={() => onPress(item.deepLinkTarget.bookingReference)}
+    >
+      <Card style={styles.upcomingCard}>
+        <VehicleImage
+          accessible={false}
+          contentPath={item.vehicle.coverPhoto?.contentPath}
+          style={styles.upcomingImage}
+        />
+        <View style={styles.upcomingContent}>
+          <Text style={styles.vehicle}>
+            {item.vehicle.make} {item.vehicle.model}
+          </Text>
+          <Text style={styles.renter}>{item.renterDisplayName}</Text>
+          <Text style={styles.upcomingMethod}>{titleCase(item.pickup.method)}</Text>
+          <View style={styles.upcomingSchedule}>
+            <Text style={styles.scheduleText}>
+              Pickup · {compactDateLabel(item.pickup.at)}, {timeLabel(item.pickup.at)}
+            </Text>
+            <Text style={styles.scheduleText}>
+              Returns · {compactDateLabel(item.return.at)}, {timeLabel(item.return.at)}
+            </Text>
+          </View>
+          <View style={styles.upcomingStatus}>
+            <StatusBadge label={bookingStatusLabel(item.status, 'owner')} />
+          </View>
+        </View>
+        <Icon color={colors.primary} name="chevron-forward" size={20} />
+      </Card>
     </Pressable>
   );
 }
+
+function TopTab({
+  count = 0,
+  label,
+  onPress,
+  selected = false,
+}: {
+  readonly count?: number;
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly selected?: boolean;
+}) {
+  const accessibilityLabel =
+    label === 'Requests' && count > 0
+      ? `Requests, ${count} items need your response`
+      : `${label}${selected ? ', selected' : ''}`;
+  return (
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="tab"
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      style={[styles.topTab, selected && styles.topTabSelected]}
+    >
+      <Text style={[styles.topTabText, selected && styles.topTabTextSelected]}>{label}</Text>
+      {count > 0 && (
+        <View style={styles.countBadge}>
+          <Text style={styles.countBadgeText}>{count}</Text>
+        </View>
+      )}
+    </Pressable>
+  );
+}
+
+function TodaySection({
+  children,
+  title,
+}: {
+  readonly children: ReactNode;
+  readonly title: string;
+}) {
+  return (
+    <View accessibilityLabel={title} style={styles.section}>
+      <SectionHeader title={title} />
+      <View style={[styles.cardList, styles.sectionCards]}>{children}</View>
+    </View>
+  );
+}
+
+function OperationalCard({
+  item,
+  kind,
+  onPress,
+}: {
+  readonly item: OwnerHomeCard;
+  readonly kind: 'pickup' | 'active' | 'return';
+  readonly onPress: (reference: string) => void;
+}) {
+  const at = kind === 'pickup' ? item.pickup.at : item.return.at;
+  const detail =
+    kind === 'pickup'
+      ? `${titleCase(item.pickup.method)}${item.pickup.location ? ` · ${item.pickup.location}` : ''}`
+      : titleCase(item.return.method);
+  const prefix = kind === 'pickup' ? 'Pickup' : kind === 'return' ? 'Return' : 'Returns';
+  return (
+    <Pressable
+      accessibilityLabel={`${prefix} ${timeLabel(at)}. ${item.vehicle.make} ${item.vehicle.model}. ${item.renterDisplayName}. ${bookingStatusLabel(item.status, 'owner')}. View booking.`}
+      accessibilityRole="button"
+      onPress={() => onPress(item.deepLinkTarget.bookingReference)}
+    >
+      <Card style={styles.operationCard}>
+        <View style={styles.timeColumn}>
+          <Text style={styles.time}>{timeLabel(at)}</Text>
+          {kind === 'active' && <Text style={styles.date}>{dateLabel(at)}</Text>}
+        </View>
+        <View style={styles.flex}>
+          <Text style={styles.vehicle}>
+            {item.vehicle.make} {item.vehicle.model}
+          </Text>
+          <Text style={styles.renter}>{item.renterDisplayName}</Text>
+          <Text numberOfLines={2} style={styles.body}>
+            {detail}
+          </Text>
+          <StatusBadge label={bookingStatusLabel(item.status, 'owner')} />
+        </View>
+        <Icon color={colors.primary} name="chevron-forward" size={20} />
+      </Card>
+    </Pressable>
+  );
+}
+
+function AttentionCard({
+  item,
+  onPress,
+}: {
+  readonly item: OwnerHomeAttention;
+  readonly onPress: (reference: string) => void;
+}) {
+  const label = attentionLabel(item);
+  const vehicleName = `${item.vehicleMake} ${item.vehicleModel}`.trim();
+  return (
+    <Pressable
+      accessibilityHint="Opens booking details"
+      accessibilityLabel={`${label}. ${vehicleName}. ${item.renterDisplayName}. Booking ${item.bookingReference}.`}
+      accessibilityRole="button"
+      onPress={() => onPress(item.deepLinkTarget.bookingReference)}
+    >
+      <Card style={styles.attentionCard}>
+        <View style={styles.attentionIcon}>
+          <Icon color={colors.warning} name="alert-circle-outline" />
+        </View>
+        <View style={styles.flex}>
+          <Text style={styles.cardTitle}>{label}</Text>
+          <Text style={styles.attentionContext}>
+            {vehicleName} · {item.renterDisplayName}
+          </Text>
+          <Text style={styles.attentionReference}>{item.bookingReference}</Text>
+        </View>
+        <Icon color={colors.warning} name="chevron-forward" size={20} />
+      </Card>
+    </Pressable>
+  );
+}
+
+function attentionLabel(item: OwnerHomeAttention): string {
+  if (item.type === 'OVERDUE_PICKUP') return 'Pickup needs attention';
+  if (item.type === 'OVERDUE_RETURN') return 'Return is overdue';
+  if (item.type === 'FINANCIAL_RECOVERY') return 'Booking update needs review';
+  if (item.titleCode === 'PICKUP_DISCREPANCY') return 'Pickup discrepancy needs review';
+  return 'Booking needs attention';
+}
+
+function compactDateLabel(value: string): string {
+  return new Intl.DateTimeFormat('en-PH', { day: 'numeric', month: 'short' }).format(
+    new Date(value),
+  );
+}
+
 const styles = StyleSheet.create({
-  action: {
+  attentionCard: {
+    alignItems: 'center',
+    backgroundColor: colors.warningSoft,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    padding: spacing.sm,
+  },
+  attentionIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.pill,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  attentionContext: { color: colors.ink, fontWeight: '700', marginTop: spacing.xxs },
+  attentionReference: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
+  body: { color: colors.subtleText, lineHeight: 20, marginTop: spacing.xxs },
+  cardList: { gap: spacing.xs },
+  cardTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
+  centeredEmpty: { alignItems: 'center', flex: 1, justifyContent: 'center' },
+  centeredState: { flex: 1, justifyContent: 'center' },
+  countBadge: {
+    alignItems: 'center',
+    backgroundColor: colors.danger,
+    borderRadius: radius.pill,
+    justifyContent: 'center',
+    minHeight: 22,
+    minWidth: 22,
+    paddingHorizontal: 6,
+  },
+  countBadgeText: { color: colors.onPrimary, fontSize: 12, fontWeight: '900' },
+  date: { color: colors.subtleText, fontSize: 11, marginTop: 2 },
+  emptyCard: { alignItems: 'center', gap: spacing.xs, justifyContent: 'center', width: '100%' },
+  emptyMessage: { color: colors.subtleText, lineHeight: 20, textAlign: 'center' },
+  emptyTitle: { color: colors.ink, fontSize: 18, fontWeight: '900' },
+  flex: { flex: 1, minWidth: 0 },
+  link: { color: colors.primary, fontWeight: '800', marginTop: spacing.xxs },
+  operationCard: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    padding: spacing.sm,
+  },
+  renter: { color: colors.subtleText, marginTop: 2 },
+  requestSummary: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.lg,
+  },
+  scheduleText: { color: colors.subtleText, fontSize: 12, lineHeight: 18 },
+  topTab: {
     alignItems: 'center',
     backgroundColor: colors.surface,
     borderColor: colors.border,
-    borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.pill,
+    borderWidth: 1,
     flexDirection: 'row',
-    gap: spacing.sm,
-    minHeight: 64,
-    padding: spacing.sm,
+    gap: 6,
+    minHeight: 44,
+    paddingHorizontal: spacing.sm,
   },
-  actionIcon: {
+  topTabSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
+  topTabText: { color: colors.ink, fontSize: 13, fontWeight: '700' },
+  topTabTextSelected: { color: colors.onPrimary },
+  section: { marginTop: spacing.md },
+  sectionCards: { marginTop: spacing.xs },
+  summaryIcon: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
     borderRadius: radius.sm,
@@ -238,15 +578,31 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: 40,
   },
-  actionText: { color: colors.ink, flex: 1, fontWeight: '800' },
-  actions: { gap: spacing.xs },
-  body: { color: colors.subtleText, lineHeight: 20, marginTop: 2 },
-  cardTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
-  flex: { flex: 1 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  link: { color: colors.primary, fontWeight: '800', marginTop: spacing.sm },
-  metric: { minWidth: '46%' },
-  metricValue: { color: colors.ink, fontSize: 28, fontWeight: '900', marginTop: spacing.xs },
-  row: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
-  verification: { backgroundColor: colors.warningSoft },
+  tabContent: { flexGrow: 1 },
+  tabs: {
+    alignSelf: 'center',
+    backgroundColor: colors.background,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    justifyContent: 'center',
+    marginBottom: spacing.xs,
+    paddingVertical: spacing.xs,
+    zIndex: 1,
+  },
+  time: { color: colors.primaryDark, fontSize: 17, fontWeight: '900' },
+  timeColumn: { minWidth: 76 },
+  upcomingCard: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    padding: spacing.sm,
+  },
+  upcomingContent: { flex: 1, minWidth: 0 },
+  upcomingGroup: { gap: spacing.xs },
+  upcomingGroups: { gap: spacing.lg },
+  upcomingImage: { borderRadius: radius.md, height: 128, width: 108 },
+  upcomingMethod: { color: colors.subtleText, lineHeight: 18, marginTop: 2 },
+  upcomingSchedule: { gap: spacing.xxs },
+  upcomingStatus: { marginTop: spacing.xxs },
+  vehicle: { color: colors.ink, fontSize: 16, fontWeight: '900' },
 });

@@ -56,12 +56,18 @@ interface OwnerAmendmentPage {
 }
 
 export function OwnerBookingRequestsScreen({
+  embedded = false,
+  history = false,
   initialAmendmentReference,
   initialBookingReference,
+  onHistory,
   onClose,
 }: {
+  readonly embedded?: boolean;
+  readonly history?: boolean;
   readonly initialAmendmentReference?: string;
   readonly initialBookingReference?: string;
+  readonly onHistory?: () => void;
   readonly onClose?: () => void;
 } = {}) {
   const client = useQueryClient();
@@ -79,12 +85,13 @@ export function OwnerBookingRequestsScreen({
         }
       : null,
   );
-  const [filter, setFilter] = useState<Filter>('Needs response');
+  const [filter, setFilter] = useState<Filter>(history ? 'All' : 'Needs response');
+  const effectiveFilter: Filter = embedded ? 'Needs response' : filter;
   const requests = useQuery({
     queryKey: ['owner-booking-requests'],
     queryFn: () => apiClient.request<OwnerBookingView[]>('/owner/bookings/requests'),
   });
-  const amendmentScope = ownerAmendmentScope(filter);
+  const amendmentScope = ownerAmendmentScope(effectiveFilter);
   const amendments = useInfiniteQuery({
     queryKey: ['owner-amendments', amendmentScope],
     initialPageParam: 1,
@@ -94,7 +101,7 @@ export function OwnerBookingRequestsScreen({
       ),
     getNextPageParam: (lastPage) =>
       lastPage.page < lastPage.totalPages ? lastPage.page + 1 : undefined,
-    refetchInterval: filter === 'All' ? false : 10_000,
+    refetchInterval: effectiveFilter === 'All' ? false : 10_000,
   });
   const detail = useQuery({
     enabled: Boolean(selected),
@@ -123,6 +130,8 @@ export function OwnerBookingRequestsScreen({
         method: 'POST',
       }),
     onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['owner-home'] });
+      void client.invalidateQueries({ queryKey: ['owner-home-upcoming'] });
       void client.invalidateQueries({ queryKey: ['owner-booking-requests'] });
       void client.invalidateQueries({ queryKey: ['owner-booking', selected] });
       void client.invalidateQueries({ queryKey: ['owner-rentals'] });
@@ -151,6 +160,8 @@ export function OwnerBookingRequestsScreen({
         loading={detail.isPending}
         onBack={onClose ?? (() => setSelected(null))}
         onCancellationCompleted={() => {
+          void client.invalidateQueries({ queryKey: ['owner-home'] });
+          void client.invalidateQueries({ queryKey: ['owner-home-upcoming'] });
           void client.invalidateQueries({ queryKey: ['owner-booking-requests'] });
           void client.invalidateQueries({ queryKey: ['owner-booking', selected] });
           void client.invalidateQueries({ queryKey: ['owner-rentals'] });
@@ -163,8 +174,8 @@ export function OwnerBookingRequestsScreen({
   }
 
   const items = (requests.data ?? []).filter((booking) => {
-    if (filter === 'Needs response') return booking.status === 'AWAITING_OWNER';
-    if (filter === 'Upcoming')
+    if (effectiveFilter === 'Needs response') return booking.status === 'AWAITING_OWNER';
+    if (effectiveFilter === 'Upcoming')
       return ['CAPTURE_PENDING', 'CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status);
     return true;
   });
@@ -172,26 +183,37 @@ export function OwnerBookingRequestsScreen({
   const empty = items.length === 0 && filteredAmendments.length === 0;
   const feedPending = requests.isPending || amendments.isPending;
   const feedError = requests.error ?? amendments.error;
-  return (
-    <Screen
-      eyebrow="Owner mode"
-      title="Booking requests"
-      subtitle="Requests arrive only after the renter has authorized the rental payment."
-    >
-      <View style={styles.filters}>
-        {(['Needs response', 'Upcoming', 'All'] as const).map((value) => (
-          <Chip
-            key={value}
-            label={value}
-            selected={filter === value}
-            onPress={() => setFilter(value)}
-          />
-        ))}
-      </View>
+  const feed = (
+    <>
+      {!embedded && !history && (
+        <View style={styles.filters}>
+          {(['Needs response', 'Upcoming', 'All'] as const).map((value) => (
+            <Chip
+              key={value}
+              label={value}
+              selected={filter === value}
+              onPress={() => setFilter(value)}
+            />
+          ))}
+        </View>
+      )}
+      {embedded && (
+        <View style={styles.embeddedHeader}>
+          <View style={styles.flex}>
+            <Text accessibilityRole="header" style={styles.sectionLabel}>
+              Needs your response
+            </Text>
+            <Text style={styles.body}>New bookings and requested booking changes.</Text>
+          </View>
+          {onHistory && <Button compact label="History" onPress={onHistory} variant="ghost" />}
+        </View>
+      )}
       {filteredAmendments.length > 0 && (
         <View style={styles.changeRequests}>
           <Text accessibilityRole="header" style={styles.sectionLabel}>
-            {filter === 'Needs response' ? 'Changes needing your response' : 'Booking changes'}
+            {effectiveFilter === 'Needs response'
+              ? 'Changes needing your response'
+              : 'Booking changes'}
           </Text>
           {filteredAmendments.map((amendment) => {
             const booking = (requests.data ?? []).find(
@@ -213,7 +235,7 @@ export function OwnerBookingRequestsScreen({
             return (
               <Pressable
                 key={amendment.amendmentReference ?? amendment.amendmentId}
-                accessibilityLabel={`${cardStatus} for ${identity.renter} and ${identity.vehicle}. ${applied ? 'Updated' : `Current ${accessibleDateRange(amendment.current.rentalStart, amendment.current.rentalEnd)}. Requested`} ${accessibleDateRange(amendment.proposed.rentalStart, amendment.proposed.rentalEnd)}. ${earningsDeltaAccessibility(delta, amendment.financial.currency)}.`}
+                accessibilityLabel={`${embedded ? 'Change requested' : cardStatus} for ${identity.renter} and ${identity.vehicle}. ${applied ? 'Updated' : `Current ${accessibleDateRange(amendment.current.rentalStart, amendment.current.rentalEnd)}. Requested`} ${accessibleDateRange(amendment.proposed.rentalStart, amendment.proposed.rentalEnd)}. ${earningsDeltaAccessibility(delta, amendment.financial.currency)}.${amendment.actionable ? ` Respond by ${dateTimeLabel(amendment.expiresAt)}.` : ''}`}
                 accessibilityRole="button"
                 onPress={() =>
                   setSelectedAmendment({
@@ -225,7 +247,11 @@ export function OwnerBookingRequestsScreen({
                 <Card style={styles.changeCard}>
                   <View style={styles.changeCardHeader}>
                     <View style={styles.flex}>
-                      <Text style={styles.changeEyebrow}>{cardStatus}</Text>
+                      {embedded ? (
+                        <Text style={styles.changeEyebrow}>Change requested</Text>
+                      ) : (
+                        <Text style={styles.changeEyebrow}>{cardStatus}</Text>
+                      )}
                       <Text style={styles.changeRenter}>{identity.renter}</Text>
                       <Text style={styles.body}>{identity.vehicle}</Text>
                     </View>
@@ -298,9 +324,16 @@ export function OwnerBookingRequestsScreen({
       )}
       {!feedPending && !feedError && empty && (
         <StateView
+          compact
           icon="file-tray-outline"
-          title={ownerAmendmentEmptyTitle(filter)}
-          message={ownerAmendmentEmptyMessage(filter)}
+          title={
+            embedded ? 'No requests need your response' : ownerAmendmentEmptyTitle(effectiveFilter)
+          }
+          message={
+            embedded
+              ? 'New booking and change requests will appear here.'
+              : ownerAmendmentEmptyMessage(effectiveFilter)
+          }
         />
       )}
       {amendments.hasNextPage && (
@@ -315,6 +348,7 @@ export function OwnerBookingRequestsScreen({
         <Pressable
           key={booking.publicReference}
           accessibilityRole="button"
+          accessibilityLabel={`New booking request for ${booking.renter.displayName}, ${booking.vehicle.make} ${booking.vehicle.model}${booking.ownerResponseDeadlineAt ? `, respond by ${dateTimeLabel(booking.ownerResponseDeadlineAt)}` : ''}.`}
           onPress={() => setSelected(booking.publicReference)}
         >
           <Card style={styles.requestCard}>
@@ -323,6 +357,7 @@ export function OwnerBookingRequestsScreen({
               style={styles.thumbnail}
             />
             <View style={styles.flex}>
+              {embedded && <Text style={styles.changeEyebrow}>New booking</Text>}
               <Text numberOfLines={1} style={styles.title}>
                 {booking.vehicle.year} {booking.vehicle.make} {booking.vehicle.model}
               </Text>
@@ -345,6 +380,27 @@ export function OwnerBookingRequestsScreen({
           </Card>
         </Pressable>
       ))}
+    </>
+  );
+  if (embedded) return <View style={styles.embeddedFeed}>{feed}</View>;
+  return (
+    <Screen
+      contentTopPadding={history ? 0 : undefined}
+      eyebrow={history ? undefined : 'Owner mode'}
+      safeTop={!history}
+      title={history ? undefined : 'Booking requests'}
+      subtitle={
+        history
+          ? undefined
+          : 'Requests arrive only after the renter has authorized the rental payment.'
+      }
+    >
+      {history && (
+        <Text style={styles.historyIntro}>
+          Review current and closed booking and Change Booking requests.
+        </Text>
+      )}
+      {feed}
     </Screen>
   );
 }
@@ -381,6 +437,8 @@ function OwnerAmendmentDetail({
       ),
     onSuccess: (value) => {
       client.setQueryData(['owner-amendment', target.amendmentReference], value);
+      void client.invalidateQueries({ queryKey: ['owner-home'] });
+      void client.invalidateQueries({ queryKey: ['owner-home-upcoming'] });
       void client.invalidateQueries({ queryKey: ['owner-amendments'] });
       void client.invalidateQueries({ queryKey: ['owner-booking-requests'] });
       void client.invalidateQueries({ queryKey: ['owner-booking', target.bookingReference] });
@@ -1108,6 +1166,13 @@ const styles = StyleSheet.create({
   },
   detailValue: { color: colors.ink, fontSize: 14, fontWeight: '800', marginTop: spacing.xxs },
   earningsValue: { color: colors.ink, fontSize: 22, fontWeight: '900' },
+  embeddedFeed: { gap: spacing.sm },
+  embeddedHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
   error: { color: colors.danger, marginTop: spacing.sm },
   financialEmphasis: { color: colors.ink, fontWeight: '900' },
   financialLabel: { color: colors.subtleText, flex: 1, fontSize: 13, fontWeight: '700' },
@@ -1124,6 +1189,7 @@ const styles = StyleSheet.create({
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   flex: { flex: 1, minWidth: 0 },
   hero: { borderRadius: radius.lg, height: 210, width: '100%' },
+  historyIntro: { color: colors.subtleText, lineHeight: 21 },
   handoverChanges: { gap: spacing.sm, marginTop: spacing.sm },
   trustProfile: { borderTopColor: colors.border, borderTopWidth: 1, marginTop: spacing.sm },
   info: {

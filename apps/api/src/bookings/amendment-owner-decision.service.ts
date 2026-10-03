@@ -13,6 +13,7 @@ import { DatabaseService } from '../infrastructure/database/database.service';
 import type { RequestMetadata } from '../security/security-context';
 import { amendmentPaymentDeadline } from './booking-amendment-foundation';
 import { OutboxService } from './outbox.service';
+import { ownerActionableAmendmentWhere } from './owner-request-actionability';
 import {
   OwnerAmendmentListScope,
   type OwnerBookingAmendmentQueryDto,
@@ -82,13 +83,7 @@ export class AmendmentOwnerDecisionService {
   async list(ownerUserId: string) {
     const records = await this.database.client.bookingAmendment.findMany({
       include: OWNER_AMENDMENT_INCLUDE,
-      where: {
-        booking: { ownerUserId },
-        fulfillmentSnapshot: { isNot: null },
-        pricingSnapshot: { isNot: null },
-        settlement: { isNot: null },
-        status: BookingAmendmentStatus.PENDING_OWNER,
-      },
+      where: ownerActionableAmendmentWhere(ownerUserId),
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
     return { items: await Promise.all(records.map((record) => this.project(record))) };

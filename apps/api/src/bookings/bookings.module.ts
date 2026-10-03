@@ -8,6 +8,7 @@ import { FulfillmentModule } from '../fulfillment/fulfillment.module';
 import {
   AdminBookingsController,
   OwnerBookingsController,
+  OwnerHomeController,
   RenterBookingsController,
 } from './bookings.controller';
 import { BookingProjectionService } from './booking-projection.service';
@@ -20,9 +21,15 @@ import { AmendmentSubmissionService } from './amendment-submission.service';
 import { AmendmentWithdrawalService } from './amendment-withdrawal.service';
 import { AmendmentOwnerDecisionService } from './amendment-owner-decision.service';
 import { AdminBookingAmendmentsService } from './admin-booking-amendments.service';
+import { OwnerHomeService } from './owner-home.service';
 
 @Module({
-  controllers: [RenterBookingsController, OwnerBookingsController, AdminBookingsController],
+  controllers: [
+    RenterBookingsController,
+    OwnerBookingsController,
+    OwnerHomeController,
+    AdminBookingsController,
+  ],
   exports: [BookingsService, OccupancyService],
   imports: [
     DiscoveryModule,
@@ -43,6 +50,7 @@ import { AdminBookingAmendmentsService } from './admin-booking-amendments.servic
     CancellationService,
     OccupancyService,
     OutboxService,
+    OwnerHomeService,
   ],
 })
 export class BookingsModule {}

@@ -1,7 +1,9 @@
 export type MobileMode = 'renter' | 'owner';
 
 export const renterTabs = ['Home', 'Wishlist', 'Bookings', 'Messages', 'Profile'] as const;
+// Requests remains a route key for legacy navigation compatibility, but is no longer a visible tab.
 export const ownerTabs = ['Dashboard', 'Vehicles', 'Requests', 'Messages', 'More'] as const;
+export const visibleOwnerTabs = ['Dashboard', 'Vehicles', 'Messages', 'More'] as const;
 
 export type RenterTab = (typeof renterTabs)[number];
 export type OwnerTab = (typeof ownerTabs)[number];
@@ -14,7 +16,7 @@ export type RenterTabParamList = {
   Profile: { ticketId?: string | undefined } | undefined;
 };
 export type OwnerTabParamList = {
-  Dashboard: undefined;
+  Dashboard: { initialTab?: 'Today' | 'Upcoming' | 'Requests' } | undefined;
   Vehicles: undefined;
   Requests: undefined;
   Messages: { conversationId?: string | undefined } | undefined;
@@ -36,6 +38,7 @@ export type RootStackParamList = {
   Support: { ticketId?: string | undefined } | undefined;
   Settings: undefined;
   OwnerRentals: undefined;
+  OwnerRequestHistory: undefined;
   OwnerEarnings: undefined;
   Booking: { bookingId: string };
   BookingRecovery: { bookingId: string };

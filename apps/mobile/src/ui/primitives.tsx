@@ -78,6 +78,7 @@ export function Screen({
   action,
   scroll = true,
   scrollRef,
+  stickyHeader,
   onScroll,
   animatedScroll = false,
   onContentSizeChange,
@@ -85,6 +86,7 @@ export function Screen({
   onScrollLayout,
   contentGrows = true,
   contentBottomPadding,
+  contentTopPadding,
   constrainOverscroll = false,
   safeTop = true,
 }: ScreenProperties) {
@@ -111,15 +113,19 @@ export function Screen({
       )}
     </>
   );
-  const content = (
-    <>
-      {header}
-      {children}
-    </>
-  );
+  const content =
+    title || eyebrow || action ? (
+      <>
+        {header}
+        {children}
+      </>
+    ) : (
+      children
+    );
   return (
     <SafeAreaView edges={safeTop ? ['top'] : []} style={styles.safeArea}>
       <KeyboardAvoidingView style={styles.flex}>
+        {stickyHeader && <View style={styles.stickyScreenHeader}>{stickyHeader}</View>}
         {leading ? (
           <>
             <View onLayout={onHeaderLayout} style={styles.stickyNestedHeader}>
@@ -135,6 +141,7 @@ export function Screen({
                 contentContainerStyle={[
                   styles.nestedScreenContent,
                   !contentGrows && styles.intrinsicContent,
+                  contentTopPadding !== undefined && { paddingTop: contentTopPadding },
                   {
                     paddingBottom: Math.max(
                       contentBottomPadding ?? keyboardAwareBottomPadding,
@@ -169,6 +176,7 @@ export function Screen({
             contentContainerStyle={[
               styles.screenContent,
               { paddingBottom: keyboardAwareBottomPadding },
+              contentTopPadding !== undefined && { paddingTop: contentTopPadding },
             ]}
             keyboardDismissMode={formKeyboardDismissMode}
             keyboardShouldPersistTaps="handled"
@@ -204,6 +212,7 @@ interface ScreenProperties {
   readonly action?: ReactNode | undefined;
   readonly scroll?: boolean | undefined;
   readonly scrollRef?: RefObject<ScrollView | null> | undefined;
+  readonly stickyHeader?: ReactNode | undefined;
   readonly onScroll?: ((event: NativeSyntheticEvent<NativeScrollEvent>) => void) | undefined;
   readonly animatedScroll?: boolean | undefined;
   readonly onContentSizeChange?: ((width: number, height: number) => void) | undefined;
@@ -211,6 +220,7 @@ interface ScreenProperties {
   readonly onScrollLayout?: ((event: LayoutChangeEvent) => void) | undefined;
   readonly contentGrows?: boolean | undefined;
   readonly contentBottomPadding?: number | undefined;
+  readonly contentTopPadding?: number | undefined;
   readonly constrainOverscroll?: boolean | undefined;
   readonly safeTop?: boolean | undefined;
 }
@@ -510,6 +520,7 @@ export function StateView({
   loading = false,
   actionLabel,
   onAction,
+  compact = false,
 }: {
   readonly icon?: IconName | undefined;
   readonly title: string;
@@ -517,9 +528,10 @@ export function StateView({
   readonly loading?: boolean | undefined;
   readonly actionLabel?: string | undefined;
   readonly onAction?: (() => void) | undefined;
+  readonly compact?: boolean | undefined;
 }) {
   return (
-    <View style={styles.state}>
+    <View style={[styles.state, compact && styles.stateCompact]}>
       {loading ? (
         <ActivityIndicator color={colors.primary} />
       ) : (
@@ -721,6 +733,7 @@ const styles = StyleSheet.create({
     minHeight: 170,
     padding: spacing.xl,
   },
+  stateCompact: { minHeight: 132, padding: spacing.lg },
   stateMessage: { color: colors.subtleText, lineHeight: 21, textAlign: 'center' },
   stateTitle: { color: colors.ink, fontSize: 17, fontWeight: '800', textAlign: 'center' },
   stickyNestedHeader: {
@@ -729,6 +742,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.xxs,
+  },
+  stickyScreenHeader: {
+    backgroundColor: colors.background,
+    paddingHorizontal: spacing.lg,
+    zIndex: 1,
   },
   subtitle: { color: colors.subtleText, lineHeight: 21, marginTop: spacing.xxs },
 });

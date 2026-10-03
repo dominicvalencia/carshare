@@ -2,12 +2,16 @@
 
 ## Information architecture
 
-The product remains one Expo/React Native application. Renter mode uses Home, Search, Bookings,
-Messages, and Profile tabs. Owner mode uses Dashboard, Vehicles, Requests, Messages, and More.
-Favorites and owner finances are intentionally secondary destinations. Profile is a menu into
+The product remains one Expo/React Native application. Renter mode uses Explore, Wishlist, Trips,
+Messages, and Profile tabs. Owner mode uses Today, Vehicles, Messages, and More. Owner Home, reached
+through Today, contains the Today, Upcoming, and Requests top tabs. Requests is actionable-first and
+links to the existing bounded request-history surface; Calendar remains deferred. Favorites and owner
+finances are intentionally secondary destinations. Profile is a menu into
 personal information, verification, active devices, notifications, support, settings, and guided
 owner onboarding. Owner More links to active rentals, earnings/payouts, owner profile, notifications,
-support, settings, and the renter-mode switch.
+support, settings, and the renter-mode switch. The former Dashboard KPI grid is intentionally not
+duplicated: fleet and draft status live in Vehicles, current operations in Today, future accepted
+rentals in Upcoming, actionable work in Requests, and financial information in Earnings & payouts.
 
 Owner role and verification remain separate. Draft owners may onboard and create vehicle drafts;
 verified status is required for publication and booking-request operations. UI gating complements,

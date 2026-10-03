@@ -210,25 +210,13 @@ function OwnerNavigation({
     <OwnerTabs.Navigator
       screenOptions={({ route }) => tabOptions(ownerIcons[route.name], insets.bottom)}
     >
-      <OwnerTabs.Screen name="Dashboard">
+      <OwnerTabs.Screen
+        name="Dashboard"
+        options={{ tabBarAccessibilityLabel: 'Today tab', tabBarLabel: 'Today' }}
+      >
         {() => <OwnerDashboardScreen ownerStatus={ownerStatus} />}
       </OwnerTabs.Screen>
       <OwnerTabs.Screen name="Vehicles" component={VehiclesScreen} />
-      <OwnerTabs.Screen name="Requests">
-        {() =>
-          ownerStatus === 'VERIFIED' ? (
-            <OwnerBookingRequestsScreen />
-          ) : (
-            <Screen eyebrow="Owner mode" title="Booking requests">
-              <StateView
-                icon="shield-checkmark-outline"
-                title="Verification required"
-                message="Complete owner verification before publishing listings or accepting booking requests."
-              />
-            </Screen>
-          )
-        }
-      </OwnerTabs.Screen>
       <OwnerTabs.Screen
         name="Messages"
         options={badges.messages ? { tabBarBadge: badges.messages } : {}}
@@ -243,6 +231,27 @@ function OwnerNavigation({
       </OwnerTabs.Screen>
       <OwnerTabs.Screen name="More">
         {() => <OwnerMoreScreen onModeChange={onModeChange} ownerStatus={ownerStatus} />}
+      </OwnerTabs.Screen>
+      <OwnerTabs.Screen
+        name="Requests"
+        options={{
+          tabBarButton: () => null,
+          tabBarItemStyle: { display: 'none' },
+        }}
+      >
+        {() =>
+          ownerStatus === 'VERIFIED' ? (
+            <OwnerBookingRequestsScreen />
+          ) : (
+            <Screen eyebrow="Owner mode" title="Booking requests">
+              <StateView
+                icon="shield-checkmark-outline"
+                title="Verification required"
+                message="Complete owner verification before publishing listings or accepting booking requests."
+              />
+            </Screen>
+          )
+        }
       </OwnerTabs.Screen>
     </OwnerTabs.Navigator>
   );
@@ -277,7 +286,7 @@ export function AppNavigation(properties: AppNavigationProperties) {
     >
       <Stack.Navigator
         screenOptions={{
-          headerBackTitle: 'Back',
+          headerBackButtonDisplayMode: 'minimal',
           headerShadowVisible: false,
           headerTintColor: colors.primary,
         }}
@@ -410,6 +419,9 @@ export function AppNavigation(properties: AppNavigationProperties) {
           name="OwnerRentals"
           options={{ headerShown: false }}
         />
+        <Stack.Screen name="OwnerRequestHistory" options={{ title: 'Request history' }}>
+          {() => <OwnerBookingRequestsScreen history />}
+        </Stack.Screen>
         <Stack.Screen
           component={OwnerEarningsScreen}
           name="OwnerEarnings"

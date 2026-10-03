@@ -7,13 +7,17 @@ export function withDeepLinkParent(state: ParsedState, mode: MobileMode): Parsed
   if (!state?.routes.length || state.routes[0]?.name === 'Marketplace') return state;
   const destination = state.routes.at(-1)?.name ?? '';
   const parentTab = parentTabFor(destination, mode);
+  const parentRoute =
+    mode === 'owner' && parentTab === 'Requests'
+      ? { name: 'Dashboard', params: { initialTab: 'Requests' } }
+      : { name: parentTab };
   return {
     ...state,
     index: state.routes.length,
     routes: [
       {
         name: 'Marketplace',
-        state: { index: 0, routes: [{ name: parentTab }], stale: true },
+        state: { index: 0, routes: [parentRoute], stale: true },
       },
       ...state.routes,
     ],
