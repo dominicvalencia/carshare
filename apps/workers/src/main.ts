@@ -29,6 +29,8 @@ import { processDueRecoveryReminders, recoveryReminderProviders } from './recove
 import { initializeWorkerSentry } from './sentry';
 import { reconcileBookingAmendmentApplications } from './amendment-application';
 import { reconcileBookingAmendmentRefunds } from './amendment-refund-execution';
+import { processSecurityDepositReminders } from './security-deposit-reminders';
+import { reconcilePaymentOperationEvidenceSweep } from './payment-operation-evidence-reconciliation';
 
 loadEnvironment({ path: resolve(__dirname, '../../../.env'), quiet: true });
 
@@ -97,6 +99,11 @@ async function bootstrap(): Promise<void> {
     'recovery-reminder-sweep',
     { every: 60_000 },
     { data: {}, name: 'deliver-recovery-reminders' },
+  );
+  await lifecycleQueue.upsertJobScheduler(
+    'security-deposit-reminder-sweep',
+    { every: 60_000 },
+    { data: {}, name: 'deliver-security-deposit-reminders' },
   );
 
   const worker = new Worker(
@@ -167,14 +174,28 @@ async function bootstrap(): Promise<void> {
         if (dispatched) logger.info({ dispatched }, 'Transactional outbox dispatch completed');
       }
       if (job.name === 'reconcile-payments') {
+        const operationEvidence = await reconcilePaymentOperationEvidenceSweep(
+          database,
+          paymentProvider,
+          environment,
+        );
         const reconciled = await reconcilePayments(database, paymentProvider, environment);
         const amendmentRefunds = await reconcileBookingAmendmentRefunds(
           database,
           paymentProvider,
           environment,
         );
-        if (reconciled || amendmentRefunds)
-          logger.info({ amendmentRefunds, reconciled }, 'Payment reconciliation sweep completed');
+        if (
+          reconciled ||
+          amendmentRefunds ||
+          operationEvidence.manualReview ||
+          operationEvidence.reconciled ||
+          operationEvidence.remapped
+        )
+          logger.info(
+            { amendmentRefunds, operationEvidence, reconciled },
+            'Payment reconciliation sweep completed',
+          );
       }
       if (job.name === 'publish-due-reviews') {
         const published = await publishDueReviews(database);
@@ -251,6 +272,14 @@ async function bootstrap(): Promise<void> {
           environment.APP_ENV,
         );
         if (handled) logger.info({ handled }, 'Recovery reminder sweep completed');
+      }
+      if (job.name === 'deliver-security-deposit-reminders') {
+        const handled = await processSecurityDepositReminders(database, {
+          applicationEnvironment: environment.APP_ENV,
+          executionEnabled: environment.SECURITY_DEPOSIT_EXECUTION_ENABLED,
+          leadHours: environment.SECURITY_DEPOSIT_LEAD_HOURS,
+        });
+        if (handled) logger.info({ handled }, 'Security deposit reminder sweep completed');
       }
       if (job.name === 'reconcile-push-receipts') {
         const reconciled = await reconcilePushReceipts(

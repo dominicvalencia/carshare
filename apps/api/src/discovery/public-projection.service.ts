@@ -5,6 +5,7 @@ import type { AdvisoryAvailability } from './availability.service';
 import type { PublicVehicleRecord } from './public-eligibility.service';
 import { publicFulfillment, publicSearchFulfillment } from './fulfillment-discovery';
 import { publicMapDistanceKm, publicMapPosition } from './public-map-position';
+import { securityDepositProjection } from '../common/security-deposit-policy';
 
 function publicDurationDiscounts(policy: PublicVehicleRecord['policyVersions'][number]) {
   return [
@@ -67,6 +68,7 @@ export class PublicProjectionService {
       make: vehicle.make,
       model: vehicle.model,
       rating: rating ?? { averageRating: null, label: 'New', reviewCount: 0 },
+      securityDeposit: securityDepositProjection(policy),
       powertrain: vehicle.powertrain,
       seats: vehicle.seatCount,
       transmission: vehicle.transmission,
@@ -149,6 +151,7 @@ export class PublicProjectionService {
         label: 'From',
       },
       rentalRequirements: vehicle.rentalRequirements,
+      securityDeposit: securityDepositProjection(policy),
       returnPolicy: {
         ev: policy.evReturnPolicy,
         evRequiredPercentage: policy.evRequiredPercentage,

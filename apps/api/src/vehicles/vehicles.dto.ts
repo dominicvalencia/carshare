@@ -162,6 +162,20 @@ export class CreateVehiclePolicyVersionDto {
   @IsString()
   @Length(3, 3)
   currency?: string;
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  securityDepositRequired?: boolean;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  securityDepositAmountMinor?: number;
+  @ApiPropertyOptional({ example: 'PHP' })
+  @IsOptional()
+  @IsString()
+  @Length(3, 3)
+  securityDepositCurrency?: string;
   @ApiProperty() @IsInt() @Min(1) @Max(365) minimumRentalDays!: number;
   @ApiProperty() @IsInt() @Min(1) @Max(365) maximumRentalDays!: number;
   @ApiProperty({ enum: MileagePolicyType })

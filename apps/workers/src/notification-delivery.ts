@@ -35,6 +35,17 @@ export function workerPushProvider(environment: WorkerEnvironment): PushProvider
     : new FakePushProvider();
 }
 
+export function notificationStableKey(
+  eventType: string,
+  userId: string,
+  audience: NotificationAudience,
+  identity: string,
+): string {
+  return createHash('sha256')
+    .update(`${eventType}:${userId}:${audience}:${identity}`)
+    .digest('hex');
+}
+
 export async function consumeDomainEvent(
   database: PrismaClient,
   eventType: string,
@@ -60,9 +71,11 @@ export async function consumeDomainEvent(
   let created = 0;
   for (const recipient of recipients) {
     const { audience, userId } = recipient;
-    const stableKey = createHash('sha256')
-      .update(`${eventType}:${userId}:${audience}:${sourceId}`)
-      .digest('hex');
+    const notificationIdentity =
+      typeof payload.notificationIdentity === 'string' && payload.notificationIdentity.trim()
+        ? payload.notificationIdentity.trim()
+        : sourceId;
+    const stableKey = notificationStableKey(eventType, userId, audience, notificationIdentity);
     const reference = await bookingReference(database, uuid(payload.bookingId));
     const notification = await database.notification.upsert({
       where: { stableKey },
@@ -279,6 +292,30 @@ async function applyResult(
 }
 
 function policyFor(eventType: string, payload: Payload): EventPolicy | null {
+  if (eventType === 'SECURITY_DEPOSIT_REQUIRED')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'security-deposit.required',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'SECURITY_DEPOSIT_24H_REMINDER')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'security-deposit.24-hour-reminder',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'SECURITY_DEPOSIT_FINAL_REMINDER')
+    return {
+      category: NotificationCategory.RENTAL_REMINDERS,
+      templateKey: 'security-deposit.final-reminder',
+      recipients: 'RENTER',
+    };
+  if (eventType === 'SECURITY_DEPOSIT_HELD')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'security-deposit.completed',
+      recipients: 'RENTER',
+    };
   if (eventType === 'BOOKING_AMENDMENT_REQUESTED')
     return {
       category: NotificationCategory.BOOKING_UPDATES,

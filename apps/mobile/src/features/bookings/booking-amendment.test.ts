@@ -19,10 +19,7 @@ const renter = readFileSync(
   resolve(process.cwd(), 'src/features/bookings/BookingAmendmentSheet.tsx'),
   'utf8',
 );
-const sheetLayout = readFileSync(
-  resolve(process.cwd(), 'src/features/bookings/booking-amendment-sheet-layout.ts'),
-  'utf8',
-);
+const sheetLayout = readFileSync(resolve(process.cwd(), 'src/ui/adaptive-sheet-layout.ts'), 'utf8');
 const bookings = readFileSync(
   resolve(process.cwd(), 'src/features/bookings/MyBookingsScreen.tsx'),
   'utf8',

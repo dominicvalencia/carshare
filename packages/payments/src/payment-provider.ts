@@ -1,6 +1,27 @@
 export type PaymentProviderCode = 'MAYA' | 'XENDIT' | 'FAKE';
 
+export type ProviderCapabilitySupport = 'SUPPORTED' | 'UNSUPPORTED' | 'UNPROVEN';
+
+export interface PaymentProviderEvidenceCapabilities {
+  readonly supportsAuthorizationExpiryLookup: ProviderCapabilitySupport;
+  readonly supportsAuthorizationRetrieval: ProviderCapabilitySupport;
+  readonly supportsFullCapture: ProviderCapabilitySupport;
+  readonly supportsFullVoid: ProviderCapabilitySupport;
+  readonly supportsIdempotentReplayAfterTimeout: ProviderCapabilitySupport;
+  readonly supportsMultipleCaptures: ProviderCapabilitySupport;
+  readonly supportsOperationSpecificRetrieval: ProviderCapabilitySupport;
+  readonly supportsPartialCapture: ProviderCapabilitySupport;
+  readonly supportsPartialRefund: ProviderCapabilitySupport;
+  readonly supportsPartialVoid: ProviderCapabilitySupport;
+  readonly supportsRefund: ProviderCapabilitySupport;
+  readonly supportsRequestReferenceRetrieval: ProviderCapabilitySupport;
+  readonly supportsSecurityDepositUtilization: ProviderCapabilitySupport;
+  readonly supportsWebhookOperationAmount: ProviderCapabilitySupport;
+  readonly supportsWebhookOperationIdentity: ProviderCapabilitySupport;
+}
+
 export interface PaymentProviderCapabilities {
+  readonly evidence: PaymentProviderEvidenceCapabilities;
   readonly authorizationHoldDurationSeconds: number | null;
   readonly supportsAuthorization: boolean;
   readonly supportsAuthorizationVoid: boolean;
@@ -20,6 +41,7 @@ export interface MoneyInput {
 }
 
 export interface AuthorizePaymentInput extends MoneyInput {
+  readonly authorizationType?: 'NORMAL' | 'PREAUTHORIZATION';
   readonly customerEmail?: string;
   readonly description: string;
   readonly idempotencyKey: string;
@@ -55,6 +77,7 @@ export type ProviderPaymentState =
 export interface ProviderPaymentStatus {
   readonly authorizedAmountMinor?: bigint;
   readonly capturedAmountMinor?: bigint;
+  readonly currency?: string;
   readonly externalPaymentId: string;
   readonly providerState: string;
   readonly refundedAmountMinor?: bigint;
@@ -82,6 +105,7 @@ export interface PaymentProvider {
   voidAuthorization(input: ReferencedPaymentInput): Promise<ProviderOperationResult>;
   refund(input: RefundPaymentInput): Promise<ProviderOperationResult>;
   retrievePayment(externalPaymentId: string): Promise<ProviderPaymentStatus>;
+  retrievePaymentByRequestReference(requestReference: string): Promise<ProviderPaymentStatus>;
   verifyWebhook(input: WebhookVerificationInput): Promise<VerifiedWebhookEvent>;
 }
 

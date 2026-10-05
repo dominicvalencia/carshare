@@ -77,6 +77,9 @@ export const VehicleErrorCode = {
   INVALID_MILEAGE_POLICY: 'INVALID_MILEAGE_POLICY',
   INVALID_PHOTO_ORDER: 'INVALID_PHOTO_ORDER',
   INVALID_PRICING: 'INVALID_PRICING',
+  SECURITY_DEPOSIT_AMOUNT_NOT_ALLOWED: 'SECURITY_DEPOSIT_AMOUNT_NOT_ALLOWED',
+  SECURITY_DEPOSIT_CURRENCY_UNSUPPORTED: 'SECURITY_DEPOSIT_CURRENCY_UNSUPPORTED',
+  SECURITY_DEPOSIT_INVALID_CONFIGURATION: 'SECURITY_DEPOSIT_INVALID_CONFIGURATION',
   INVALID_TURNAROUND: 'INVALID_TURNAROUND',
   INVALID_VEHICLE_FILE: 'INVALID_VEHICLE_FILE',
   INVALID_VEHICLE_SPECIFICATION: 'INVALID_VEHICLE_SPECIFICATION',
@@ -86,6 +89,34 @@ export const VehicleErrorCode = {
 } as const;
 
 export type VehicleErrorCode = (typeof VehicleErrorCode)[keyof typeof VehicleErrorCode];
+
+export interface SecurityDepositTerms {
+  readonly amountMinor: number | null;
+  readonly currency: string | null;
+  readonly required: boolean;
+}
+
+export interface SecurityDepositPolicyCatalog {
+  readonly allowedTiersByCurrency: Readonly<Record<string, readonly number[]>>;
+  readonly enabledForConfiguration: boolean;
+  readonly executionAvailable: boolean;
+  readonly leadHours: number;
+  readonly supportedCurrencies: readonly string[];
+}
+
+export interface BookingSecurityDepositReadModel extends SecurityDepositTerms {
+  readonly actionRequired: boolean;
+  readonly eligibleAt: string | null;
+  readonly isEligibleNow: boolean;
+  readonly blockingPickup: boolean;
+  readonly capturedMinor: number;
+  readonly executionAvailable: boolean;
+  readonly heldMinor: number;
+  readonly leadHours: number;
+  readonly releasedMinor: number;
+  readonly status: string;
+  readonly availableAt: string | null;
+}
 
 export const DiscoveryErrorCode = {
   INVALID_CURSOR: 'INVALID_CURSOR',
@@ -150,6 +181,7 @@ export const BookingErrorCode = {
   QUOTE_REQUIRED: 'QUOTE_REQUIRED',
   QUOTE_VEHICLE_UNAVAILABLE: 'QUOTE_VEHICLE_UNAVAILABLE',
   RENTER_VERIFICATION_REQUIRED: 'RENTER_VERIFICATION_REQUIRED',
+  SECURITY_DEPOSIT_SNAPSHOT_INCONSISTENT: 'SECURITY_DEPOSIT_SNAPSHOT_INCONSISTENT',
   UNSUPPORTED_CHANGE: 'UNSUPPORTED_CHANGE',
   VEHICLE_UNAVAILABLE: 'VEHICLE_UNAVAILABLE',
 } as const;
@@ -163,6 +195,9 @@ export const PaymentErrorCode = {
   PAYMENT_NOT_FOUND: 'PAYMENT_NOT_FOUND',
   PAYMENT_PROVIDER_UNAVAILABLE: 'PAYMENT_PROVIDER_UNAVAILABLE',
   PAYMENT_RECONCILIATION_REQUIRED: 'PAYMENT_RECONCILIATION_REQUIRED',
+  SECURITY_DEPOSIT_AUTH_WINDOW_UNSUPPORTED: 'SECURITY_DEPOSIT_AUTH_WINDOW_UNSUPPORTED',
+  SECURITY_DEPOSIT_EXECUTION_DISABLED: 'SECURITY_DEPOSIT_EXECUTION_DISABLED',
+  SECURITY_DEPOSIT_NOT_ELIGIBLE: 'SECURITY_DEPOSIT_NOT_ELIGIBLE',
   WEBHOOK_INVALID: 'WEBHOOK_INVALID',
 } as const;
 

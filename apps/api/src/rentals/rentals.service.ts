@@ -28,6 +28,7 @@ import {
   RentalIncidentCategory,
   RentalIncidentSeverity,
   RentalIncidentStatus,
+  SecurityDepositStatus,
   VehicleOperationalStatus,
   PickupDiscrepancyResponseType,
   PickupDiscrepancyResolutionDecision,
@@ -229,6 +230,20 @@ const rentalInclude = {
 
 type RentalRecord = Prisma.BookingGetPayload<{ include: typeof rentalInclude }>;
 
+export function securityDepositBlocksHandover(input: {
+  readonly authorizedAmountMinor: bigint;
+  readonly executionEnabled: boolean;
+  readonly required: boolean;
+  readonly requiredAmountMinor: number | null;
+  readonly status: SecurityDepositStatus | null;
+}) {
+  if (!input.executionEnabled || !input.required) return false;
+  return (
+    input.status !== SecurityDepositStatus.AUTHORIZED ||
+    input.authorizedAmountMinor < BigInt(input.requiredAmountMinor ?? 0)
+  );
+}
+
 @Injectable()
 export class RentalsService {
   private readonly pickupEarlyMinutes: number;
@@ -236,6 +251,7 @@ export class RentalsService {
   private readonly challengeTtlMinutes: number;
   private readonly challengeMaxAttempts: number;
   private readonly returnConfirmationGraceMinutes: number;
+  private readonly securityDepositExecutionEnabled: boolean;
 
   constructor(
     private readonly database: DatabaseService,
@@ -255,6 +271,10 @@ export class RentalsService {
     this.challengeMaxAttempts = configuration.getOrThrow('PICKUP_VERIFICATION_MAX_ATTEMPTS', {
       infer: true,
     });
+    this.securityDepositExecutionEnabled = configuration.getOrThrow(
+      'SECURITY_DEPOSIT_EXECUTION_ENABLED',
+      { infer: true },
+    );
     this.returnConfirmationGraceMinutes = configuration.getOrThrow(
       'RETURN_CONFIRMATION_GRACE_MINUTES',
       { infer: true },
@@ -1991,7 +2011,7 @@ export class RentalsService {
     const result = await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
       const booking = await transaction.booking.findUniqueOrThrow({
-        include: { ownerProfile: true },
+        include: { ownerProfile: true, policySnapshot: true, securityDeposit: true },
         where: { publicReference: reference },
       });
       if (booking.ownerUserId !== ownerUserId) this.denied();
@@ -2003,6 +2023,20 @@ export class RentalsService {
       if (booking.status !== BookingStatus.READY_FOR_PICKUP) {
         this.invalidState('Booking is not ready for pickup verification.');
       }
+      if (
+        securityDepositBlocksHandover({
+          authorizedAmountMinor: booking.securityDeposit?.authorizedAmountMinor ?? 0n,
+          executionEnabled: this.securityDepositExecutionEnabled,
+          required: booking.policySnapshot?.securityDepositRequired ?? false,
+          requiredAmountMinor: booking.policySnapshot?.securityDepositAmountMinor ?? null,
+          status: booking.securityDeposit?.status ?? null,
+        })
+      )
+        throw new ApplicationException(
+          'SECURITY_DEPOSIT_REQUIRED_BEFORE_HANDOVER',
+          'Place the required security deposit before pickup can be completed.',
+          HttpStatus.CONFLICT,
+        );
       this.assertPickupWindow(booking);
       const challenge = await transaction.inspectionVerificationChallenge.findFirst({
         orderBy: { createdAt: 'desc' },

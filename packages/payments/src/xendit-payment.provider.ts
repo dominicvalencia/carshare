@@ -41,6 +41,23 @@ export class XenditPaymentProvider implements PaymentProvider {
   readonly code = 'XENDIT' as const;
   readonly capabilities = Object.freeze({
     authorizationHoldDurationSeconds: null,
+    evidence: Object.freeze({
+      supportsAuthorizationExpiryLookup: 'UNSUPPORTED' as const,
+      supportsAuthorizationRetrieval: 'UNSUPPORTED' as const,
+      supportsFullCapture: 'UNSUPPORTED' as const,
+      supportsFullVoid: 'UNSUPPORTED' as const,
+      supportsIdempotentReplayAfterTimeout: 'UNPROVEN' as const,
+      supportsMultipleCaptures: 'UNSUPPORTED' as const,
+      supportsOperationSpecificRetrieval: 'UNSUPPORTED' as const,
+      supportsPartialCapture: 'UNSUPPORTED' as const,
+      supportsPartialRefund: 'UNSUPPORTED' as const,
+      supportsPartialVoid: 'UNSUPPORTED' as const,
+      supportsRefund: 'UNSUPPORTED' as const,
+      supportsRequestReferenceRetrieval: 'UNSUPPORTED' as const,
+      supportsSecurityDepositUtilization: 'UNSUPPORTED' as const,
+      supportsWebhookOperationAmount: 'UNSUPPORTED' as const,
+      supportsWebhookOperationIdentity: 'UNSUPPORTED' as const,
+    }),
     supportsAuthorization: false,
     supportsAuthorizationVoid: false,
     supportsAdditionalPaymentAuthorization: false,
@@ -108,6 +125,9 @@ export class XenditPaymentProvider implements PaymentProvider {
   }
   retrievePayment(_id: string): Promise<ProviderPaymentStatus> {
     return this.unsupported('reconciliation');
+  }
+  retrievePaymentByRequestReference(_requestReference: string): Promise<ProviderPaymentStatus> {
+    return this.unsupported('request-reference reconciliation');
   }
   verifyWebhook(_input: WebhookVerificationInput): Promise<VerifiedWebhookEvent> {
     return this.unsupported('webhook verification');

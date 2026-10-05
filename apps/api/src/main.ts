@@ -12,11 +12,13 @@ import { createLogger } from '@carrental/logger';
 import type { ApiEnvironment } from '@carrental/config';
 import { AppModule } from './app.module';
 import { apiTelemetry } from './instrument';
+import { configureProxyTrust } from './proxy-trust';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true, rawBody: true });
   const configuration = app.get<ConfigService<ApiEnvironment, true>>(ConfigService);
 
+  configureProxyTrust(app, configuration.getOrThrow('APP_ENV', { infer: true }));
   app.useLogger(app.get(Logger));
   app.use(cookieParser());
   app.use(helmet());

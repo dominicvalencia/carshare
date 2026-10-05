@@ -29,6 +29,25 @@ describe('payment provider contract', () => {
     expect(result.kind).toBe('UNKNOWN');
   });
 
+  it('recovers an authorization by its durable request reference', async () => {
+    const provider = new FakePaymentProvider();
+    const requestReference = 'fb1bc085-6f68-4a03-8005-e810a0031235';
+    await provider.authorize({
+      amountMinor: 500_000n,
+      authorizationType: 'PREAUTHORIZATION',
+      currency: 'PHP',
+      description: 'Security deposit',
+      idempotencyKey: 'booking:three:security-deposit:authorize:v1',
+      requestReference,
+    });
+
+    expect(await provider.retrievePaymentByRequestReference(requestReference)).toMatchObject({
+      authorizedAmountMinor: 500_000n,
+      currency: 'PHP',
+      state: 'AUTHORIZED',
+    });
+  });
+
   it('replays one logical refund without increasing provider movement twice', async () => {
     const provider = new FakePaymentProvider();
     const input = {

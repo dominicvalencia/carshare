@@ -18,6 +18,7 @@ export interface MayaPaymentProviderOptions {
   readonly cancelUrl: string;
   readonly failureUrl: string;
   readonly publicKey: string;
+  readonly securityDepositPreauthorizationEnabled?: boolean;
   readonly secretKey: string;
   readonly successUrl: string;
   readonly voidRefundEnabled: boolean;
@@ -25,7 +26,7 @@ export interface MayaPaymentProviderOptions {
 }
 
 export interface MayaCheckoutInput extends AuthorizePaymentInput {
-  readonly authorizationType?: 'NORMAL';
+  readonly authorizationType?: 'NORMAL' | 'PREAUTHORIZATION';
 }
 
 interface MayaResponse {
@@ -36,9 +37,12 @@ interface MayaResponse {
   rrn?: string;
   id?: string;
   updatedAt?: string;
-  amount?: { value?: number; currency?: string };
+  amount?: number | string | { value?: number; currency?: string };
+  currency?: string;
   refundedAmount?: { value?: number; currency?: string };
 }
+
+type MayaRetrievalResponse = MayaResponse | readonly MayaResponse[];
 
 export interface MayaProviderDiagnostics {
   readonly errorCode?: string;
@@ -58,7 +62,22 @@ export class MayaPaymentProviderError extends PaymentProviderError {
   }
 }
 
-const terminalFailures = new Set(['PAYMENT_FAILED', 'PAYMENT_EXPIRED', 'PAYMENT_CANCELLED']);
+const terminalFailures = new Set([
+  'AUTH_FAILED',
+  'PAYMENT_FAILED',
+  'PAYMENT_EXPIRED',
+  'PAYMENT_CANCELLED',
+]);
+
+const pendingAuthorizationStates = new Set([
+  'PENDING',
+  'PENDING_TOKEN',
+  'PENDING_PAYMENT',
+  'FOR_AUTHENTICATION',
+  'AUTHENTICATING',
+  'AUTH_SUCCESS',
+  'PAYMENT_PROCESSING',
+]);
 
 export class MayaPaymentProvider implements PaymentProvider {
   readonly code = 'MAYA' as const;
@@ -67,6 +86,31 @@ export class MayaPaymentProvider implements PaymentProvider {
   constructor(private readonly options: MayaPaymentProviderOptions) {
     this.capabilities = Object.freeze({
       authorizationHoldDurationSeconds: options.authCaptureEnabled ? 6 * 24 * 60 * 60 : null,
+      evidence: Object.freeze({
+        supportsAuthorizationExpiryLookup: 'UNPROVEN' as const,
+        supportsAuthorizationRetrieval: 'SUPPORTED' as const,
+        supportsFullCapture: options.authCaptureEnabled
+          ? ('SUPPORTED' as const)
+          : ('UNSUPPORTED' as const),
+        supportsFullVoid: options.voidRefundEnabled
+          ? ('SUPPORTED' as const)
+          : ('UNSUPPORTED' as const),
+        supportsIdempotentReplayAfterTimeout: 'UNPROVEN' as const,
+        supportsMultipleCaptures: 'UNSUPPORTED' as const,
+        supportsOperationSpecificRetrieval: 'UNPROVEN' as const,
+        supportsPartialCapture: 'UNSUPPORTED' as const,
+        supportsPartialRefund: options.voidRefundEnabled
+          ? ('SUPPORTED' as const)
+          : ('UNSUPPORTED' as const),
+        supportsPartialVoid: 'UNSUPPORTED' as const,
+        supportsRefund: options.voidRefundEnabled
+          ? ('SUPPORTED' as const)
+          : ('UNSUPPORTED' as const),
+        supportsRequestReferenceRetrieval: 'SUPPORTED' as const,
+        supportsSecurityDepositUtilization: 'UNSUPPORTED' as const,
+        supportsWebhookOperationAmount: 'UNPROVEN' as const,
+        supportsWebhookOperationIdentity: 'UNPROVEN' as const,
+      }),
       supportsAuthorization: options.authCaptureEnabled,
       supportsAuthorizationVoid: options.voidRefundEnabled,
       supportsAdditionalPaymentAuthorization: options.authCaptureEnabled,
@@ -74,7 +118,10 @@ export class MayaPaymentProvider implements PaymentProvider {
       supportsPartialCapture: false,
       supportsPartialRefund: options.voidRefundEnabled,
       supportsRefund: options.voidRefundEnabled,
-      supportsSecurityDeposit: false,
+      supportsSecurityDeposit:
+        options.authCaptureEnabled &&
+        options.voidRefundEnabled &&
+        Boolean(options.securityDepositPreauthorizationEnabled),
       supportsSecurityDepositUtilization: false,
       supportsWebhooks: true,
     });
@@ -82,7 +129,18 @@ export class MayaPaymentProvider implements PaymentProvider {
 
   async authorize(input: AuthorizePaymentInput): Promise<ProviderOperationResult> {
     this.requireCapability(this.capabilities.supportsAuthorization, 'Maya authorization/capture');
-    return this.createCheckout({ ...input, authorizationType: 'NORMAL' });
+    if (
+      input.authorizationType === 'PREAUTHORIZATION' &&
+      !this.capabilities.supportsSecurityDeposit
+    )
+      throw new PaymentProviderError(
+        'Maya security deposit PREAUTHORIZATION is not enabled.',
+        'CONFIGURATION',
+      );
+    return this.createCheckout({
+      ...input,
+      authorizationType: input.authorizationType ?? 'NORMAL',
+    });
   }
 
   async createCheckout(input: MayaCheckoutInput): Promise<ProviderOperationResult> {
@@ -165,6 +223,8 @@ export class MayaPaymentProvider implements PaymentProvider {
     return this.financialAction(
       `/payments/v1/payments/${encodeURIComponent(input.externalPaymentId)}/voids`,
       input,
+      { reason: 'CarShare authorization release.' },
+      false,
     );
   }
 
@@ -178,21 +238,77 @@ export class MayaPaymentProvider implements PaymentProvider {
   }
 
   async retrievePayment(externalPaymentId: string): Promise<ProviderPaymentStatus> {
-    const { data: response } = await this.request<MayaResponse>(
+    const { data } = await this.request<MayaRetrievalResponse>(
       `/payments/v1/payments/${encodeURIComponent(externalPaymentId)}`,
       'GET',
       undefined,
       this.options.secretKey,
     );
+    const response = this.selectRetrievedPayment(data, externalPaymentId);
+    return this.paymentStatus(response, externalPaymentId);
+  }
+
+  async retrievePaymentByRequestReference(
+    requestReference: string,
+  ): Promise<ProviderPaymentStatus> {
+    const { data } = await this.request<MayaRetrievalResponse>(
+      `/payments/v1/payment-rrns/${encodeURIComponent(requestReference)}`,
+      'GET',
+      undefined,
+      this.options.secretKey,
+    );
+    const response = this.selectRetrievedPayment(data);
+    return this.paymentStatus(response, response.paymentId ?? response.id ?? '');
+  }
+
+  private paymentStatus(
+    response: MayaResponse,
+    fallbackExternalPaymentId: string,
+  ): ProviderPaymentStatus {
     const providerState = response.status ?? 'UNKNOWN';
+    const amount =
+      typeof response.amount === 'object' ? response.amount.value : Number(response.amount);
+    const currency =
+      typeof response.amount === 'object' ? response.amount.currency : response.currency;
     return {
-      externalPaymentId: response.paymentId ?? response.id ?? externalPaymentId,
+      ...(currency ? { currency } : {}),
+      externalPaymentId: response.paymentId ?? response.id ?? fallbackExternalPaymentId,
+      ...(amount !== undefined && Number.isFinite(amount)
+        ? { authorizedAmountMinor: BigInt(Math.round(amount * 100)) }
+        : {}),
       providerState,
       ...(response.refundedAmount?.value !== undefined
         ? { refundedAmountMinor: BigInt(Math.round(response.refundedAmount.value * 100)) }
         : {}),
       state: this.normalizeState(providerState),
     };
+  }
+
+  private selectRetrievedPayment(
+    response: MayaRetrievalResponse,
+    expectedPaymentId?: string,
+  ): MayaResponse {
+    if (!Array.isArray(response)) return response as MayaResponse;
+    if (!expectedPaymentId && response.length !== 1)
+      throw new MayaPaymentProviderError(
+        'Maya returned an ambiguous request-reference lookup.',
+        'PROVIDER_UNAVAILABLE',
+        {
+          reason: `Expected one payment for the request reference but received ${response.length}.`,
+        },
+      );
+    const selected = expectedPaymentId
+      ? response.find((candidate) =>
+          [candidate.paymentId, candidate.id].includes(expectedPaymentId),
+        )
+      : response[0];
+    if (!selected)
+      throw new MayaPaymentProviderError(
+        'Maya did not return the requested payment.',
+        'PROVIDER_UNAVAILABLE',
+        { reason: 'The retrieval response did not contain a matching payment.' },
+      );
+    return selected;
   }
 
   async verifyWebhook(input: WebhookVerificationInput): Promise<VerifiedWebhookEvent> {
@@ -230,18 +346,33 @@ export class MayaPaymentProvider implements PaymentProvider {
     path: string,
     input: ReferencedPaymentInput,
     extra: Readonly<Record<string, unknown>> = {},
+    includeAmount = true,
   ): Promise<ProviderOperationResult> {
     const { data: response } = await this.request<MayaResponse>(
       path,
       'POST',
       {
         ...extra,
-        amount: { value: Number(input.amountMinor) / 100, currency: input.currency },
-        requestReferenceNumber: input.requestReference,
+        ...(includeAmount
+          ? {
+              amount: { value: Number(input.amountMinor) / 100, currency: input.currency },
+              requestReferenceNumber: input.requestReference,
+            }
+          : {}),
       },
       this.options.secretKey,
       input.idempotencyKey,
     );
+    if (response.status === 'SUCCESS') {
+      return {
+        ...((response.id ?? response.rrn)
+          ? { externalOperationId: (response.id ?? response.rrn)! }
+          : {}),
+        externalPaymentId: response.paymentId ?? input.externalPaymentId,
+        kind: 'SUCCEEDED',
+        providerState: response.status,
+      };
+    }
     const state = this.normalizeState(response.status ?? 'UNKNOWN');
     if (state === 'UNKNOWN' || state === 'PENDING') {
       return { kind: 'UNKNOWN', providerState: response.status ?? 'UNKNOWN' };
@@ -264,7 +395,7 @@ export class MayaPaymentProvider implements PaymentProvider {
     if (status === 'PAYMENT_SUCCESS' || status === 'CAPTURED') return 'CAPTURED';
     if (status === 'VOIDED' || status === 'PAYMENT_VOIDED') return 'VOIDED';
     if (terminalFailures.has(status)) return 'FAILED';
-    if (status === 'PENDING' || status === 'FOR_AUTHENTICATION') return 'PENDING';
+    if (pendingAuthorizationStates.has(status)) return 'PENDING';
     return 'UNKNOWN';
   }
 

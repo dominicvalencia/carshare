@@ -426,6 +426,22 @@ enum PaymentWebhookStatus {
   IGNORED
 }
 
+enum PaymentOperationEvidenceSource {
+  SYNCHRONOUS_RESPONSE
+  RETRIEVAL
+  WEBHOOK
+  REQUEST_REFERENCE_LOOKUP
+  ADMIN_EVIDENCE
+}
+
+enum PaymentEvidenceAttribution {
+  EXACT
+  UNAMBIGUOUS_AGGREGATE
+  AMBIGUOUS
+  CONFLICTING
+  INSUFFICIENT
+}
+
 enum CommissionScope {
   PLATFORM_DEFAULT
   VEHICLE_CATEGORY
@@ -520,6 +536,33 @@ enum SecurityDepositStatus {
   PARTIALLY_USED
   USED
   FAILED
+}
+
+enum SecurityDepositSettlementStatus {
+  SETTLEMENT_REVIEW
+  DISPUTED
+  APPROVED
+  RELEASE_PENDING
+  CAPTURE_PENDING
+  CAPTURED_RELEASE_PENDING
+  RELEASED
+  PARTIALLY_USED
+  USED
+  SETTLEMENT_UNKNOWN
+  MANUAL_REVIEW
+  REVERSED
+}
+
+enum SecurityDepositSettlementDecisionSource {
+  SYSTEM
+  ADMIN
+}
+
+enum SecurityDepositSettlementLegRole {
+  CAPTURE
+  RELEASE
+  REFUND
+  REVERSAL
 }
 
 enum InspectionType {
@@ -1057,6 +1100,8 @@ model User {
   claimEvidenceSubmitted                PostReturnClaimEvidence[]                  @relation("ClaimEvidenceSubmitter")
   claimResponses                        ClaimResponse[]                            @relation("ClaimResponseRenter")
   claimAdjudications                    ClaimAdjudication[]                        @relation("ClaimAdjudicator")
+  securityDepositSettlementsApproved    SecurityDepositSettlement[]                @relation("SecurityDepositSettlementApprover")
+  paymentOperationEvidenceCreated       PaymentOperationEvidence[]                 @relation("PaymentOperationEvidenceCreator")
   disputesOpened                        Dispute[]                                  @relation("DisputeOpener")
   disputesResolved                      Dispute[]                                  @relation("DisputeResolver")
   disputeEvidenceSubmitted              DisputeEvidence[]                          @relation("DisputeEvidenceSubmitter")
@@ -1858,6 +1903,9 @@ model VehiclePolicyVersion {
   deliveryFeeMinor                Int?                   @map("delivery_fee_minor")
   collectionFeeMinor              Int?                   @map("collection_fee_minor")
   fulfillmentMinimumNoticeMinutes Int                    @default(0) @map("fulfillment_minimum_notice_minutes")
+  securityDepositRequired         Boolean                @default(false) @map("security_deposit_required")
+  securityDepositAmountMinor      Int?                   @map("security_deposit_amount_minor")
+  securityDepositCurrency         String?                @map("security_deposit_currency") @db.Char(3)
   createdByUserId                 String                 @map("created_by_user_id") @db.Uuid
   createdAt                       DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
 
@@ -2113,6 +2161,7 @@ model Booking {
   commissionSnapshot                 CommissionSnapshot?
   ownerEarning                       OwnerEarning?
   securityDeposit                    SecurityDepositAuthorization?
+  securityDepositSettlements         SecurityDepositSettlement[]
   inspections                        Inspection[]
   usageSummary                       BookingUsageSummary?
   pickupChallenges                   InspectionVerificationChallenge[]
@@ -2801,16 +2850,17 @@ model PostReturnClaim {
   submittedAt          DateTime                @default(now()) @map("submitted_at") @db.Timestamptz(3)
   resolvedAt           DateTime?               @map("resolved_at") @db.Timestamptz(3)
 
-  booking          Booking                   @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  submittedBy      User                      @relation("PostReturnClaimSubmitter", fields: [submittedByUserId], references: [id], onDelete: Restrict)
-  lateOverrideBy   User?                     @relation("ClaimLateOverride", fields: [lateOverrideByUserId], references: [id], onDelete: Restrict)
-  evidence         PostReturnClaimEvidence[]
-  response         ClaimResponse?
-  adjudications    ClaimAdjudication[]
-  calculations     ClaimCalculation[]
-  disputes         Dispute[]
-  additionalCharge AdditionalCharge?
-  earningHolds     EarningHold[]
+  booking                        Booking                         @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  submittedBy                    User                            @relation("PostReturnClaimSubmitter", fields: [submittedByUserId], references: [id], onDelete: Restrict)
+  lateOverrideBy                 User?                           @relation("ClaimLateOverride", fields: [lateOverrideByUserId], references: [id], onDelete: Restrict)
+  evidence                       PostReturnClaimEvidence[]
+  response                       ClaimResponse?
+  adjudications                  ClaimAdjudication[]
+  calculations                   ClaimCalculation[]
+  disputes                       Dispute[]
+  additionalCharge               AdditionalCharge?
+  earningHolds                   EarningHold[]
+  securityDepositSettlementItems SecurityDepositSettlementItem[]
 
   @@index([bookingId, status, submittedAt])
   @@map("post_return_claims")
@@ -2895,10 +2945,11 @@ model ClaimCalculation {
   roundingRule     String                 @map("rounding_rule") @db.VarChar(100)
   createdAt        DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  claim         PostReturnClaim        @relation(fields: [claimId], references: [id], onDelete: Restrict)
-  policy        ClaimPolicy            @relation(fields: [claimPolicyId], references: [id], onDelete: Restrict)
-  adjudications ClaimAdjudication[]
-  chargeLines   AdditionalChargeLine[]
+  claim                          PostReturnClaim                 @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  policy                         ClaimPolicy                     @relation(fields: [claimPolicyId], references: [id], onDelete: Restrict)
+  adjudications                  ClaimAdjudication[]
+  chargeLines                    AdditionalChargeLine[]
+  securityDepositSettlementItems SecurityDepositSettlementItem[]
 
   @@unique([claimId, version])
   @@index([claimPolicyId, createdAt])
@@ -2917,10 +2968,11 @@ model ClaimAdjudication {
   calculationId       String?                  @map("calculation_id") @db.Uuid
   createdAt           DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  claim       PostReturnClaim   @relation(fields: [claimId], references: [id], onDelete: Restrict)
-  decidedBy   User              @relation("ClaimAdjudicator", fields: [decidedByUserId], references: [id], onDelete: Restrict)
-  calculation ClaimCalculation? @relation(fields: [calculationId], references: [id], onDelete: Restrict)
-  charge      AdditionalCharge?
+  claim                          PostReturnClaim                 @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  decidedBy                      User                            @relation("ClaimAdjudicator", fields: [decidedByUserId], references: [id], onDelete: Restrict)
+  calculation                    ClaimCalculation?               @relation(fields: [calculationId], references: [id], onDelete: Restrict)
+  charge                         AdditionalCharge?
+  securityDepositSettlementItems SecurityDepositSettlementItem[]
 
   @@unique([claimId, version])
   @@index([decidedByUserId, createdAt])
@@ -3127,30 +3179,33 @@ model BookingPricingSnapshotLine {
 }
 
 model BookingPolicySnapshot {
-  bookingId                String                 @id @map("booking_id") @db.Uuid
-  policyVersionId          String                 @map("policy_version_id") @db.Uuid
-  mileagePolicy            MileagePolicyType      @map("mileage_policy")
-  includedKilometersPerDay Int?                   @map("included_kilometers_per_day")
-  excessKilometerRateMinor Int?                   @map("excess_kilometer_rate_minor")
-  fuelReturnPolicy         FuelReturnPolicyType?  @map("fuel_return_policy")
-  fuelTolerancePercent     Int?                   @map("fuel_tolerance_percent")
-  fuelCalculationPolicyRef String?                @map("fuel_calculation_policy_ref") @db.VarChar(100)
-  evReturnPolicy           EvReturnPolicyType?    @map("ev_return_policy")
-  evRequiredPercentage     Int?                   @map("ev_required_percentage")
-  evTolerancePercent       Int?                   @map("ev_tolerance_percent")
-  evCalculationPolicyRef   String?                @map("ev_calculation_policy_ref") @db.VarChar(100)
-  turnaroundMinutes        Int                    @map("turnaround_minutes")
-  availabilityPolicy       AvailabilityPolicyType @map("availability_policy")
-  monday                   Boolean
-  tuesday                  Boolean
-  wednesday                Boolean
-  thursday                 Boolean
-  friday                   Boolean
-  saturday                 Boolean
-  sunday                   Boolean
-  claimWindowHours         Int                    @default(24) @map("claim_window_hours")
-  cancellationPolicyRef    String?                @map("cancellation_policy_ref") @db.VarChar(100)
-  createdAt                DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  bookingId                  String                 @id @map("booking_id") @db.Uuid
+  policyVersionId            String                 @map("policy_version_id") @db.Uuid
+  mileagePolicy              MileagePolicyType      @map("mileage_policy")
+  includedKilometersPerDay   Int?                   @map("included_kilometers_per_day")
+  excessKilometerRateMinor   Int?                   @map("excess_kilometer_rate_minor")
+  fuelReturnPolicy           FuelReturnPolicyType?  @map("fuel_return_policy")
+  fuelTolerancePercent       Int?                   @map("fuel_tolerance_percent")
+  fuelCalculationPolicyRef   String?                @map("fuel_calculation_policy_ref") @db.VarChar(100)
+  evReturnPolicy             EvReturnPolicyType?    @map("ev_return_policy")
+  evRequiredPercentage       Int?                   @map("ev_required_percentage")
+  evTolerancePercent         Int?                   @map("ev_tolerance_percent")
+  evCalculationPolicyRef     String?                @map("ev_calculation_policy_ref") @db.VarChar(100)
+  turnaroundMinutes          Int                    @map("turnaround_minutes")
+  availabilityPolicy         AvailabilityPolicyType @map("availability_policy")
+  monday                     Boolean
+  tuesday                    Boolean
+  wednesday                  Boolean
+  thursday                   Boolean
+  friday                     Boolean
+  saturday                   Boolean
+  sunday                     Boolean
+  claimWindowHours           Int                    @default(24) @map("claim_window_hours")
+  cancellationPolicyRef      String?                @map("cancellation_policy_ref") @db.VarChar(100)
+  securityDepositRequired    Boolean                @default(false) @map("security_deposit_required")
+  securityDepositAmountMinor Int?                   @map("security_deposit_amount_minor")
+  securityDepositCurrency    String?                @map("security_deposit_currency") @db.Char(3)
+  createdAt                  DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
 
@@ -3598,6 +3653,7 @@ model Payment {
   booking                Booking                        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   operations             PaymentOperation[]
   webhookEvents          PaymentWebhookEvent[]
+  operationEvidence      PaymentOperationEvidence[]
   refunds                Refund[]
   commission             CommissionSnapshot?
   ownerEarning           OwnerEarning?
@@ -3612,56 +3668,103 @@ model Payment {
 }
 
 model PaymentOperation {
-  id                       String                  @id @default(uuid()) @db.Uuid
-  paymentId                String                  @map("payment_id") @db.Uuid
-  type                     PaymentOperationType
-  status                   PaymentOperationStatus  @default(PENDING)
-  idempotencyKey           String                  @unique @map("idempotency_key") @db.VarChar(200)
-  providerRequestReference String                  @map("provider_request_reference") @db.VarChar(100)
-  externalOperationId      String?                 @map("external_operation_id") @db.VarChar(255)
-  amountMinor              BigInt                  @map("amount_minor")
-  currency                 String                  @db.Char(3)
-  attemptCount             Int                     @default(0) @map("attempt_count")
-  failureCategory          PaymentFailureCategory? @map("failure_category")
-  failureCode              String?                 @map("failure_code") @db.VarChar(100)
-  failureMessage           String?                 @map("failure_message") @db.VarChar(500)
-  safeProviderMetadata     Json?                   @map("safe_provider_metadata")
-  nextAttemptAt            DateTime?               @map("next_attempt_at") @db.Timestamptz(3)
-  startedAt                DateTime?               @map("started_at") @db.Timestamptz(3)
-  completedAt              DateTime?               @map("completed_at") @db.Timestamptz(3)
-  createdAt                DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt                DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                         String                  @id @default(uuid()) @db.Uuid
+  paymentId                  String                  @map("payment_id") @db.Uuid
+  type                       PaymentOperationType
+  status                     PaymentOperationStatus  @default(PENDING)
+  idempotencyKey             String                  @unique @map("idempotency_key") @db.VarChar(200)
+  providerRequestReference   String                  @map("provider_request_reference") @db.VarChar(100)
+  externalOperationId        String?                 @map("external_operation_id") @db.VarChar(255)
+  amountMinor                BigInt                  @map("amount_minor")
+  currency                   String                  @db.Char(3)
+  attemptCount               Int                     @default(0) @map("attempt_count")
+  failureCategory            PaymentFailureCategory? @map("failure_category")
+  failureCode                String?                 @map("failure_code") @db.VarChar(100)
+  failureMessage             String?                 @map("failure_message") @db.VarChar(500)
+  safeProviderMetadata       Json?                   @map("safe_provider_metadata")
+  nextAttemptAt              DateTime?               @map("next_attempt_at") @db.Timestamptz(3)
+  startedAt                  DateTime?               @map("started_at") @db.Timestamptz(3)
+  completedAt                DateTime?               @map("completed_at") @db.Timestamptz(3)
+  createdAt                  DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                  DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+  lastReconciledAt           DateTime?               @map("last_reconciled_at") @db.Timestamptz(3)
+  nextReconcileAt            DateTime?               @map("next_reconcile_at") @db.Timestamptz(3)
+  reconciliationAttemptCount Int                     @default(0) @map("reconciliation_attempt_count")
+  reconciliationReason       String?                 @map("reconciliation_reason") @db.VarChar(1000)
+  manualReviewRequiredAt     DateTime?               @map("manual_review_required_at") @db.Timestamptz(3)
 
-  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  refund  Refund?
+  payment                      Payment                       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  refund                       Refund?
+  securityDepositSettlementLeg SecurityDepositSettlementLeg?
+  evidence                     PaymentOperationEvidence[]
 
   @@unique([paymentId, type, providerRequestReference])
   @@index([status, nextAttemptAt])
   @@index([paymentId, createdAt])
+  @@index([status, nextReconcileAt])
   @@map("payment_operations")
 }
 
-model PaymentWebhookEvent {
-  id                String               @id @default(uuid()) @db.Uuid
-  paymentId         String?              @map("payment_id") @db.Uuid
-  provider          PaymentProviderCode
-  externalEventId   String               @map("external_event_id") @db.Char(64)
-  eventType         String               @map("event_type") @db.VarChar(100)
-  providerPaymentId String               @map("provider_payment_id") @db.VarChar(255)
-  status            PaymentWebhookStatus @default(RECEIVED)
-  sourceIp          String?              @map("source_ip") @db.Inet
-  payloadDigest     String               @map("payload_digest") @db.Char(64)
-  redactedPayload   Json?                @map("redacted_payload")
-  attemptCount      Int                  @default(0) @map("attempt_count")
-  failureReason     String?              @map("failure_reason") @db.VarChar(500)
-  receivedAt        DateTime             @default(now()) @map("received_at") @db.Timestamptz(3)
-  processedAt       DateTime?            @map("processed_at") @db.Timestamptz(3)
+model PaymentOperationEvidence {
+  id                  String                         @id @default(uuid()) @db.Uuid
+  paymentId           String                         @map("payment_id") @db.Uuid
+  paymentOperationId  String?                        @map("payment_operation_id") @db.Uuid
+  webhookEventId      String?                        @map("webhook_event_id") @db.Uuid
+  source              PaymentOperationEvidenceSource
+  attribution         PaymentEvidenceAttribution
+  providerPaymentId   String?                        @map("provider_payment_id") @db.VarChar(255)
+  providerOperationId String?                        @map("provider_operation_id") @db.VarChar(255)
+  requestReference    String?                        @map("request_reference") @db.VarChar(100)
+  providerStatus      String                         @map("provider_status") @db.VarChar(100)
+  amountMinor         BigInt?                        @map("amount_minor")
+  currency            String?                        @db.Char(3)
+  providerOccurredAt  DateTime?                      @map("provider_occurred_at") @db.Timestamptz(3)
+  receivedAt          DateTime                       @default(now()) @map("received_at") @db.Timestamptz(3)
+  evidenceKey         String                         @map("evidence_key") @db.VarChar(200)
+  sanitizedMetadata   Json?                          @map("sanitized_metadata")
+  reason              String?                        @db.VarChar(1000)
+  createdByUserId     String?                        @map("created_by_user_id") @db.Uuid
+  createdAt           DateTime                       @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  payment      Payment              @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  operation    PaymentOperation?    @relation(fields: [paymentOperationId], references: [id], onDelete: Restrict)
+  webhookEvent PaymentWebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: Restrict)
+  createdBy    User?                @relation("PaymentOperationEvidenceCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, evidenceKey])
+  @@index([paymentOperationId, createdAt])
+  @@index([paymentId, attribution, createdAt])
+  @@index([providerPaymentId, createdAt])
+  @@map("payment_operation_evidence")
+}
+
+model PaymentWebhookEvent {
+  id                      String               @id @default(uuid()) @db.Uuid
+  paymentId               String?              @map("payment_id") @db.Uuid
+  provider                PaymentProviderCode
+  externalEventId         String               @map("external_event_id") @db.Char(64)
+  eventType               String               @map("event_type") @db.VarChar(100)
+  providerPaymentId       String               @map("provider_payment_id") @db.VarChar(255)
+  status                  PaymentWebhookStatus @default(RECEIVED)
+  sourceIp                String?              @map("source_ip") @db.Inet
+  payloadDigest           String               @map("payload_digest") @db.Char(64)
+  redactedPayload         Json?                @map("redacted_payload")
+  attemptCount            Int                  @default(0) @map("attempt_count")
+  failureReason           String?              @map("failure_reason") @db.VarChar(500)
+  receivedAt              DateTime             @default(now()) @map("received_at") @db.Timestamptz(3)
+  processedAt             DateTime?            @map("processed_at") @db.Timestamptz(3)
+  mappedAt                DateTime?            @map("mapped_at") @db.Timestamptz(3)
+  nextRemapAt             DateTime?            @map("next_remap_at") @db.Timestamptz(3)
+  remapAttemptCount       Int                  @default(0) @map("remap_attempt_count")
+  permanentlyUnmappableAt DateTime?            @map("permanently_unmappable_at") @db.Timestamptz(3)
+
+  payment           Payment?                   @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  operationEvidence PaymentOperationEvidence[]
 
   @@unique([provider, externalEventId])
   @@index([status, receivedAt])
   @@index([provider, providerPaymentId])
+  @@index([paymentId, permanentlyUnmappableAt, nextRemapAt])
   @@map("payment_webhook_events")
 }
 
@@ -3823,13 +3926,14 @@ model AdditionalCharge {
   createdAt              DateTime                           @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt              DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  booking      Booking                @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  claim        PostReturnClaim        @relation(fields: [claimId], references: [id], onDelete: Restrict)
-  adjudication ClaimAdjudication      @relation(fields: [adjudicationId], references: [id], onDelete: Restrict)
-  ownerEarning OwnerEarning           @relation(fields: [ownerEarningId], references: [id], onDelete: Restrict)
-  payment      Payment?
-  lines        AdditionalChargeLine[]
-  disputes     Dispute[]
+  booking                        Booking                         @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  claim                          PostReturnClaim                 @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  adjudication                   ClaimAdjudication               @relation(fields: [adjudicationId], references: [id], onDelete: Restrict)
+  ownerEarning                   OwnerEarning                    @relation(fields: [ownerEarningId], references: [id], onDelete: Restrict)
+  payment                        Payment?
+  lines                          AdditionalChargeLine[]
+  disputes                       Dispute[]
+  securityDepositSettlementItems SecurityDepositSettlementItem[]
 
   @@index([bookingId, status, createdAt])
   @@index([status, updatedAt])
@@ -3930,10 +4034,101 @@ model SecurityDepositAuthorization {
   createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt             DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  booking     Booking                     @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  payment     Payment?                    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  settlements SecurityDepositSettlement[]
 
   @@map("security_deposit_authorizations")
+}
+
+model SecurityDepositSettlement {
+  id                             String                                  @id @default(uuid()) @db.Uuid
+  bookingId                      String                                  @map("booking_id") @db.Uuid
+  securityDepositAuthorizationId String                                  @map("security_deposit_authorization_id") @db.Uuid
+  version                        Int
+  status                         SecurityDepositSettlementStatus         @default(SETTLEMENT_REVIEW)
+  decisionSource                 SecurityDepositSettlementDecisionSource @default(SYSTEM) @map("decision_source")
+  decisionReason                 String?                                 @map("decision_reason") @db.VarChar(3000)
+  authorizedAmountMinorSnapshot  BigInt                                  @map("authorized_amount_minor_snapshot")
+  approvedDeductionMinor         BigInt                                  @default(0) @map("approved_deduction_minor")
+  releaseAmountMinor             BigInt                                  @default(0) @map("release_amount_minor")
+  currency                       String                                  @db.Char(3)
+  approvedByUserId               String?                                 @map("approved_by_user_id") @db.Uuid
+  approvedAt                     DateTime?                               @map("approved_at") @db.Timestamptz(3)
+  executionAuthorityEnteredAt    DateTime?                               @map("execution_authority_entered_at") @db.Timestamptz(3)
+  executionStartedAt             DateTime?                               @map("execution_started_at") @db.Timestamptz(3)
+  completedAt                    DateTime?                               @map("completed_at") @db.Timestamptz(3)
+  reconciliationRequiredAt       DateTime?                               @map("reconciliation_required_at") @db.Timestamptz(3)
+  manualReviewReason             String?                                 @map("manual_review_reason") @db.VarChar(3000)
+  createdAt                      DateTime                                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                      DateTime                                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking       Booking                         @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  authorization SecurityDepositAuthorization    @relation(fields: [securityDepositAuthorizationId], references: [id], onDelete: Restrict)
+  approvedBy    User?                           @relation("SecurityDepositSettlementApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+  items         SecurityDepositSettlementItem[]
+  legs          SecurityDepositSettlementLeg[]
+
+  @@unique([securityDepositAuthorizationId, version])
+  @@index([bookingId, status, createdAt])
+  @@index([status, reconciliationRequiredAt])
+  @@map("security_deposit_settlements")
+}
+
+model SecurityDepositSettlementItem {
+  id                     String                       @id @default(uuid()) @db.Uuid
+  settlementId           String                       @map("settlement_id") @db.Uuid
+  claimId                String                       @map("claim_id") @db.Uuid
+  claimAdjudicationId    String                       @map("claim_adjudication_id") @db.Uuid
+  additionalChargeId     String                       @map("additional_charge_id") @db.Uuid
+  claimCalculationId     String?                      @map("claim_calculation_id") @db.Uuid
+  category               AdditionalChargeLineCategory
+  approvedAmountMinor    BigInt                       @map("approved_amount_minor")
+  depositAppliedMinor    BigInt                       @map("deposit_applied_minor")
+  excessAmountMinor      BigInt                       @map("excess_amount_minor")
+  ownerCompensationMinor BigInt                       @map("owner_compensation_minor")
+  platformShareMinor     BigInt                       @map("platform_share_minor")
+  currency               String                       @db.Char(3)
+  calculationVersion     Int?                         @map("calculation_version")
+  policyVersion          Int?                         @map("policy_version")
+  adjudicationVersion    Int                          @map("adjudication_version")
+  descriptionSnapshot    String                       @map("description_snapshot") @db.VarChar(3000)
+  createdAt              DateTime                     @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  settlement       SecurityDepositSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  claim            PostReturnClaim           @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  adjudication     ClaimAdjudication         @relation(fields: [claimAdjudicationId], references: [id], onDelete: Restrict)
+  additionalCharge AdditionalCharge          @relation(fields: [additionalChargeId], references: [id], onDelete: Restrict)
+  calculation      ClaimCalculation?         @relation(fields: [claimCalculationId], references: [id], onDelete: Restrict)
+
+  @@unique([settlementId, additionalChargeId])
+  @@index([claimId])
+  @@index([claimAdjudicationId])
+  @@map("security_deposit_settlement_items")
+}
+
+model SecurityDepositSettlementLeg {
+  id                     String                           @id @default(uuid()) @db.Uuid
+  settlementId           String                           @map("settlement_id") @db.Uuid
+  paymentOperationId     String                           @unique @map("payment_operation_id") @db.Uuid
+  role                   SecurityDepositSettlementLegRole
+  sequence               Int
+  expectedAmountMinor    BigInt                           @map("expected_amount_minor")
+  expectedAggregateState String?                          @map("expected_aggregate_state") @db.VarChar(50)
+  reversesLegId          String?                          @map("reverses_leg_id") @db.Uuid
+  supersedesLegId        String?                          @map("supersedes_leg_id") @db.Uuid
+  createdAt              DateTime                         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  settlement   SecurityDepositSettlement      @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  operation    PaymentOperation               @relation(fields: [paymentOperationId], references: [id], onDelete: Restrict)
+  reverses     SecurityDepositSettlementLeg?  @relation("SecurityDepositSettlementLegReversal", fields: [reversesLegId], references: [id], onDelete: Restrict)
+  reversedBy   SecurityDepositSettlementLeg[] @relation("SecurityDepositSettlementLegReversal")
+  supersedes   SecurityDepositSettlementLeg?  @relation("SecurityDepositSettlementLegSupersession", fields: [supersedesLegId], references: [id], onDelete: Restrict)
+  supersededBy SecurityDepositSettlementLeg[] @relation("SecurityDepositSettlementLegSupersession")
+
+  @@unique([settlementId, role, sequence])
+  @@index([settlementId, createdAt])
+  @@map("security_deposit_settlement_legs")
 }
 
 model PayoutEligibility {

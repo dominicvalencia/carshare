@@ -146,6 +146,23 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(source).toContain('fulfillmentMinimumNoticeMinutes: ownerService ? minimumNotice : 0');
   });
 
+  it('keeps security deposit policy semantics while using compact conditional controls', () => {
+    expect(source).toContain('function DepositRequirementSelector');
+    expect(source).toContain('label="No deposit"');
+    expect(source).toContain('label="Require deposit"');
+    expect(source).toContain('accessibilityState={{ checked: selected }}');
+    expect(source).toContain('minHeight: 44');
+    expect(source).toContain('{securityDepositRequired && (');
+    expect(source).toContain('<DepositTierSelector');
+    expect(source).toContain('options={allowedDepositTiers.map((amountMinor) => ({');
+    expect(source).toContain('allowedTiersByCurrency[selectedDepositCurrency]');
+    expect(source).toContain('securityDepositRequired,');
+    expect(source).toContain('securityDepositAmountMinor: selectedDepositAmountMinor');
+    expect(source).toContain('securityDepositCurrency: selectedDepositCurrency');
+    expect(source).toContain('Changes apply to new booking requests only.');
+    expect(source).toContain('Deposit processing isn’t active yet.');
+  });
+
   it('uses safe defaults, conditional service controls, and friendly validation', () => {
     expect(source).toContain('current?.supportsRenterPickup ?? true');
     expect(source).toContain('current?.supportsOwnerDelivery ?? false');

@@ -13,6 +13,7 @@ import { PRICING_ENGINE_VERSION, RentalDurationService } from './duration.servic
 import { PublicVehiclesService } from './public-vehicles.service';
 import type { CreatePricingQuoteDto } from './discovery.dto';
 import { FulfillmentServiceabilityService } from '../fulfillment/fulfillment-serviceability';
+import { securityDepositProjection } from '../common/security-deposit-policy';
 
 type QuoteWithFulfillment = Prisma.PricingQuoteGetPayload<{
   include: { fulfillment: true; lines: true };
@@ -237,7 +238,7 @@ export class PricingQuotesService {
       userId,
       vehicleId,
     });
-    return this.project(created, 'VALID', true);
+    return this.project(created, 'VALID', true, securityDepositProjection(policy));
   }
 
   async get(userId: string, id: string) {
@@ -257,6 +258,14 @@ export class PricingQuotesService {
       select: { id: true },
       where: { vehicleId: quote.vehicleId },
     });
+    const sourcePolicy = await this.database.client.vehiclePolicyVersion.findUniqueOrThrow({
+      select: {
+        securityDepositAmountMinor: true,
+        securityDepositCurrency: true,
+        securityDepositRequired: true,
+      },
+      where: { id: quote.policyVersionId },
+    });
     const expired = quote.expiresAt <= new Date();
     const configurationCurrent = latest?.id === quote.policyVersionId;
     if (expired) {
@@ -271,6 +280,7 @@ export class PricingQuotesService {
       quote,
       expired ? 'EXPIRED' : configurationCurrent ? 'VALID' : 'CONFIGURATION_CHANGED',
       configurationCurrent,
+      securityDepositProjection(sourcePolicy),
     );
   }
 
@@ -300,7 +310,12 @@ export class PricingQuotesService {
     throw new ApplicationException(code, message, HttpStatus.UNPROCESSABLE_ENTITY);
   }
 
-  private project(quote: QuoteWithFulfillment, status: string, configurationCurrent: boolean) {
+  private project(
+    quote: QuoteWithFulfillment,
+    status: string,
+    configurationCurrent: boolean,
+    securityDeposit: ReturnType<typeof securityDepositProjection>,
+  ) {
     const fulfillment = quote.fulfillment;
     return {
       ...quote,
@@ -322,6 +337,7 @@ export class PricingQuotesService {
           }
         : null,
       reservesVehicle: false,
+      securityDeposit,
       status,
     };
   }

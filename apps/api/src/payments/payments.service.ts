@@ -14,6 +14,8 @@ import {
   LedgerTransactionType,
   OwnerEarningStatus,
   PaymentFailureCategory,
+  PaymentEvidenceAttribution,
+  PaymentOperationEvidenceSource,
   PaymentOperationStatus,
   PaymentOperationType,
   PaymentProviderCode,
@@ -134,6 +136,27 @@ export function calculatePreCustodyOwnerAdjustment(input: {
   readonly retainedDeliveryMinor: bigint;
 }) {
   return input.currentAdjustmentMinor + input.retainedDeliveryMinor - input.originalNetEarningMinor;
+}
+
+export function securityDepositEligibility(input: {
+  readonly leadHours: number;
+  readonly now: Date;
+  readonly pickupAt: Date;
+}) {
+  const eligibleAt = new Date(input.pickupAt.getTime() - input.leadHours * 3_600_000);
+  return { eligibleAt, isEligibleNow: input.now >= eligibleAt };
+}
+
+export function securityDepositAuthorizationFits(input: {
+  readonly authorizationLifetimeSeconds: number | null;
+  readonly clearanceBufferHours: number;
+  readonly holdAt: Date;
+  readonly returnAt: Date;
+}) {
+  if (!input.authorizationLifetimeSeconds) return false;
+  const requiredUntil = input.returnAt.getTime() + input.clearanceBufferHours * 3_600_000;
+  const providerExpiresAt = input.holdAt.getTime() + input.authorizationLifetimeSeconds * 1_000;
+  return requiredUntil <= providerExpiresAt;
 }
 
 @Injectable()
@@ -627,7 +650,11 @@ export class PaymentsService {
     const prepared = await this.database.client.$transaction(async (transaction) => {
       await this.renterEligibility.assertEligible(userId, transaction);
       const booking = await transaction.booking.findFirst({
-        include: { pricingSnapshot: true, renter: { select: { email: true } } },
+        include: {
+          policySnapshot: true,
+          pricingSnapshot: true,
+          renter: { select: { email: true } },
+        },
         where: {
           renterUserId: userId,
           ...this.bookingIdentity(reference),
@@ -644,6 +671,7 @@ export class PaymentsService {
         this.invalidState('The booking is not awaiting payment authorization.');
       }
       if (!booking.pricingSnapshot) this.invalidState('The booking pricing snapshot is missing.');
+      if (!booking.policySnapshot) this.invalidState('The booking policy snapshot is missing.');
       if (booking.holdExpiresAt && booking.holdExpiresAt <= new Date()) {
         this.invalidState('The booking hold has expired.');
       }
@@ -678,15 +706,17 @@ export class PaymentsService {
           type: PaymentOperationType.AUTHORIZE,
         },
       });
-      await transaction.securityDepositAuthorization.upsert({
-        create: {
-          bookingId: booking.id,
-          currency: booking.pricingSnapshot.currency,
-          status: SecurityDepositStatus.NOT_REQUIRED,
-        },
-        update: {},
-        where: { bookingId: booking.id },
-      });
+      if (!booking.policySnapshot.securityDepositRequired) {
+        await transaction.securityDepositAuthorization.upsert({
+          create: {
+            bookingId: booking.id,
+            currency: booking.pricingSnapshot.currency,
+            status: SecurityDepositStatus.NOT_REQUIRED,
+          },
+          update: {},
+          where: { bookingId: booking.id },
+        });
+      }
       return {
         booking,
         operation,
@@ -742,6 +772,181 @@ export class PaymentsService {
     return this.getPayment(userId, reference);
   }
 
+  async authorizeSecurityDeposit(userId: string, reference: string, request: RequestMetadata) {
+    if (!this.configuration.getOrThrow('SECURITY_DEPOSIT_EXECUTION_ENABLED', { infer: true }))
+      throw new ApplicationException(
+        PaymentErrorCode.SECURITY_DEPOSIT_EXECUTION_DISABLED,
+        'Security deposit placement is not enabled.',
+        HttpStatus.CONFLICT,
+      );
+    if (!this.provider.capabilities.supportsSecurityDeposit)
+      this.invalidState('The payment provider cannot place security deposit holds.');
+    const prepared = await this.database.client.$transaction(async (transaction) => {
+      const identity = await transaction.booking.findFirst({
+        select: { id: true },
+        where: { renterUserId: userId, ...this.bookingIdentity(reference) },
+      });
+      if (!identity) this.notFound();
+      await this.lockBooking(transaction, identity.id);
+      const booking = await transaction.booking.findFirst({
+        include: {
+          payments: { where: { purpose: PaymentPurpose.RENTAL } },
+          policySnapshot: true,
+          renter: { select: { email: true } },
+          securityDeposit: { include: { payment: { include: PAYMENT_INCLUDE } } },
+        },
+        where: { id: identity.id, renterUserId: userId },
+      });
+      if (!booking) this.notFound();
+      const snapshot = booking.policySnapshot;
+      if (
+        !snapshot?.securityDepositRequired ||
+        !snapshot.securityDepositAmountMinor ||
+        !snapshot.securityDepositCurrency
+      )
+        this.invalidState('This booking does not require a security deposit.');
+      if (
+        booking.status !== BookingStatus.CONFIRMED &&
+        booking.status !== BookingStatus.READY_FOR_PICKUP
+      )
+        this.invalidState('The booking is not eligible for security deposit placement.');
+      if (!booking.payments.some((payment) => payment.status === PaymentStatus.CAPTURED))
+        this.invalidState('Complete the rental payment before placing the security deposit.');
+      const evaluatedAt = new Date();
+      const eligibility = securityDepositEligibility({
+        leadHours: this.configuration.getOrThrow('SECURITY_DEPOSIT_LEAD_HOURS', { infer: true }),
+        now: evaluatedAt,
+        pickupAt: booking.rentalStart,
+      });
+      if (!eligibility.isEligibleNow)
+        throw new ApplicationException(
+          PaymentErrorCode.SECURITY_DEPOSIT_NOT_ELIGIBLE,
+          `The security deposit can be placed from ${eligibility.eligibleAt.toISOString()}.`,
+          HttpStatus.CONFLICT,
+        );
+      const authorizationLifetime = this.provider.capabilities.authorizationHoldDurationSeconds;
+      if (
+        !securityDepositAuthorizationFits({
+          authorizationLifetimeSeconds: authorizationLifetime,
+          clearanceBufferHours: this.configuration.getOrThrow(
+            'SECURITY_DEPOSIT_POST_RETURN_BUFFER_HOURS',
+            { infer: true },
+          ),
+          holdAt: evaluatedAt,
+          returnAt: booking.rentalEnd,
+        })
+      )
+        throw new ApplicationException(
+          PaymentErrorCode.SECURITY_DEPOSIT_AUTH_WINDOW_UNSUPPORTED,
+          'The provider hold would not remain valid through the return clearance window.',
+          HttpStatus.CONFLICT,
+        );
+      if (
+        booking.securityDeposit?.payment &&
+        booking.securityDeposit.payment.status !== PaymentStatus.FAILED &&
+        booking.securityDeposit.payment.status !== PaymentStatus.VOIDED
+      )
+        return {
+          booking,
+          existing: true,
+          operation: null,
+          payment: booking.securityDeposit.payment,
+        };
+
+      const providerRequestReference = randomUUID();
+      const payment = await transaction.payment.create({
+        data: {
+          amountMinor: BigInt(snapshot.securityDepositAmountMinor),
+          bookingId: booking.id,
+          currency: snapshot.securityDepositCurrency,
+          provider: this.providerCode(),
+          providerRequestReference,
+          purpose: PaymentPurpose.SECURITY_DEPOSIT,
+          status: PaymentStatus.AUTHORIZING,
+        },
+      });
+      const operation = await transaction.paymentOperation.create({
+        data: {
+          amountMinor: payment.amountMinor,
+          attemptCount: 1,
+          currency: payment.currency,
+          idempotencyKey: `booking:${booking.id}:security-deposit:authorize:${providerRequestReference}`,
+          paymentId: payment.id,
+          providerRequestReference,
+          startedAt: new Date(),
+          status: PaymentOperationStatus.PROCESSING,
+          type: PaymentOperationType.AUTHORIZE,
+        },
+      });
+      await transaction.securityDepositAuthorization.upsert({
+        create: {
+          bookingId: booking.id,
+          currency: payment.currency,
+          paymentId: payment.id,
+          requiredAmountMinor: payment.amountMinor,
+          status: SecurityDepositStatus.AUTHORIZING,
+        },
+        update: { paymentId: payment.id, status: SecurityDepositStatus.AUTHORIZING },
+        where: { bookingId: booking.id },
+      });
+      return {
+        booking,
+        existing: false,
+        operation,
+        payment: { ...payment, operations: [], refunds: [] },
+      };
+    });
+    if (prepared.existing || !prepared.operation) return this.paymentProjection(prepared.payment);
+    let result: ProviderOperationResult;
+    try {
+      result = await this.provider.authorize({
+        amountMinor: prepared.payment.amountMinor,
+        authorizationType: 'PREAUTHORIZATION',
+        ...(prepared.booking.renter.email ? { customerEmail: prepared.booking.renter.email } : {}),
+        currency: prepared.payment.currency,
+        description: `Security deposit ${prepared.booking.publicReference}`,
+        idempotencyKey: prepared.operation.idempotencyKey,
+        requestReference: prepared.operation.providerRequestReference,
+      });
+    } catch (error) {
+      await this.recordUnknown(prepared.payment.id, prepared.operation.id, error);
+      return this.paymentProjection(
+        await this.database.client.payment.findUniqueOrThrow({
+          include: PAYMENT_INCLUDE,
+          where: { id: prepared.payment.id },
+        }),
+      );
+    }
+    if (result.kind === 'SUCCEEDED')
+      await this.finalizeAuthorization(prepared.payment.id, prepared.operation.id, result, request);
+    else if (result.kind === 'ACTION_REQUIRED') {
+      await this.database.client.$transaction([
+        this.database.client.payment.update({
+          data: {
+            customerActionUrl: result.customerActionUrl ?? null,
+            externalPaymentId: result.externalPaymentId ?? null,
+            providerState: result.providerState ?? null,
+            reconcileAfter: new Date(Date.now() + 15_000),
+            reconciliationRequired: true,
+          },
+          where: { id: prepared.payment.id },
+        }),
+        this.database.client.paymentOperation.update({
+          data: { completedAt: new Date(), status: PaymentOperationStatus.SUCCEEDED },
+          where: { id: prepared.operation.id },
+        }),
+      ]);
+    } else if (result.kind === 'DECLINED')
+      await this.failAuthorization(prepared.payment.id, prepared.operation.id, result, request);
+    else await this.recordUnknown(prepared.payment.id, prepared.operation.id, undefined, result);
+    return this.paymentProjection(
+      await this.database.client.payment.findUniqueOrThrow({
+        include: PAYMENT_INCLUDE,
+        where: { id: prepared.payment.id },
+      }),
+    );
+  }
+
   async getPayment(userId: string, reference: string) {
     const payment = await this.database.client.payment.findFirst({
       include: PAYMENT_INCLUDE,
@@ -789,10 +994,16 @@ export class PaymentsService {
       include: PAYMENT_INCLUDE,
       where: { id: paymentId },
     });
-    if (!payment?.externalPaymentId) return;
+    if (!payment) return;
+    const authorizationReference = payment.operations.find(
+      (candidate) => candidate.type === PaymentOperationType.AUTHORIZE,
+    )?.providerRequestReference;
+    if (!payment.externalPaymentId && !authorizationReference) return;
     let status: ProviderPaymentStatus;
     try {
-      status = await this.provider.retrievePayment(payment.externalPaymentId);
+      status = payment.externalPaymentId
+        ? await this.provider.retrievePayment(payment.externalPaymentId)
+        : await this.provider.retrievePaymentByRequestReference(authorizationReference!);
     } catch {
       await this.deferReconciliation(payment.id);
       return;
@@ -814,6 +1025,14 @@ export class PaymentsService {
       return;
     }
     if (status.state === 'AUTHORIZED' && payment.status === PaymentStatus.AUTHORIZING) {
+      if (
+        payment.purpose === PaymentPurpose.SECURITY_DEPOSIT &&
+        (status.authorizedAmountMinor !== payment.amountMinor ||
+          status.currency !== payment.currency)
+      ) {
+        await this.deferReconciliation(payment.id);
+        return;
+      }
       const authorization = payment.operations.find(
         (item) => item.type === PaymentOperationType.AUTHORIZE,
       );
@@ -894,6 +1113,7 @@ export class PaymentsService {
         providerPaymentId: verified.providerPaymentId,
         redactedPayload: verified.redactedPayload as Prisma.InputJsonValue,
         sourceIp: sourceIp ?? null,
+        ...(payment ? { mappedAt: new Date() } : { nextRemapAt: new Date() }),
       },
       update: {},
       where: {
@@ -904,26 +1124,41 @@ export class PaymentsService {
       },
     });
     if (event.status === PaymentWebhookStatus.RECEIVED && payment) {
-      await this.database.client.paymentWebhookEvent.update({
-        data: { attemptCount: { increment: 1 }, status: PaymentWebhookStatus.PROCESSING },
-        where: { id: event.id },
-      });
-      try {
-        await this.reconcilePayment(payment.id, { correlationId: `webhook:${event.id}` });
-        await this.database.client.paymentWebhookEvent.update({
-          data: { processedAt: new Date(), status: PaymentWebhookStatus.PROCESSED },
-          where: { id: event.id },
+      await this.database.client.$transaction(async (transaction) => {
+        await transaction.paymentOperationEvidence.upsert({
+          create: {
+            attribution: PaymentEvidenceAttribution.AMBIGUOUS,
+            evidenceKey: `webhook:${event.id}`,
+            paymentId: payment.id,
+            providerPaymentId: verified.providerPaymentId,
+            providerStatus: verified.eventType,
+            reason: 'Webhook proves aggregate payment evidence; operation identity is not assumed.',
+            sanitizedMetadata: { eventType: verified.eventType },
+            source: PaymentOperationEvidenceSource.WEBHOOK,
+            webhookEventId: event.id,
+          },
+          update: {},
+          where: {
+            paymentId_evidenceKey: {
+              evidenceKey: `webhook:${event.id}`,
+              paymentId: payment.id,
+            },
+          },
         });
-      } catch (error) {
-        await this.database.client.paymentWebhookEvent.update({
+        await transaction.payment.update({
+          data: { reconcileAfter: new Date(), reconciliationRequired: true },
+          where: { id: payment.id },
+        });
+        await transaction.paymentWebhookEvent.update({
           data: {
-            failureReason:
-              error instanceof Error ? error.message.slice(0, 500) : 'Processing failed',
-            status: PaymentWebhookStatus.FAILED,
+            attemptCount: { increment: 1 },
+            mappedAt: event.mappedAt ?? new Date(),
+            processedAt: new Date(),
+            status: PaymentWebhookStatus.PROCESSED,
           },
           where: { id: event.id },
         });
-      }
+      });
     }
     return { accepted: true, duplicate: event.status !== PaymentWebhookStatus.RECEIVED };
   }
@@ -1154,6 +1389,36 @@ export class PaymentsService {
           });
         }
         await this.ensureOperation(transaction, payment, PaymentOperationType.CAPTURE);
+        return;
+      }
+      if (payment.purpose === PaymentPurpose.SECURITY_DEPOSIT) {
+        const authorizedAt = new Date();
+        await transaction.payment.update({
+          data: {
+            authorizedAmountMinor: payment.amountMinor,
+            authorizedAt,
+            customerActionUrl: null,
+            externalPaymentId,
+            providerState: result.providerState ?? 'AUTHORIZED',
+            reconcileAfter: null,
+            reconciliationRequired: false,
+            status: PaymentStatus.AUTHORIZED,
+            unknownExpiresAt: null,
+          },
+          where: { id: payment.id },
+        });
+        await transaction.securityDepositAuthorization.update({
+          data: {
+            authorizedAmountMinor: payment.amountMinor,
+            status: SecurityDepositStatus.AUTHORIZED,
+          },
+          where: { paymentId: payment.id },
+        });
+        await this.outbox(transaction, booking.id, 'SECURITY_DEPOSIT_HELD', {
+          amountMinor: payment.amountMinor.toString(),
+          bookingId: booking.id,
+          currency: payment.currency,
+        });
         return;
       }
       if (booking.status === BookingStatus.CANCELLED || booking.status === BookingStatus.EXPIRED) {
@@ -1496,6 +1761,12 @@ export class PaymentsService {
         },
         where: { id: payment.id },
       });
+      if (payment.purpose === PaymentPurpose.SECURITY_DEPOSIT) {
+        await transaction.securityDepositAuthorization.update({
+          data: { status: SecurityDepositStatus.RELEASED },
+          where: { paymentId: payment.id },
+        });
+      }
       await this.outbox(transaction, payment.bookingId, 'PAYMENT_AUTHORIZATION_VOIDED', {
         bookingId: payment.bookingId,
         paymentId: payment.id,
@@ -1526,6 +1797,13 @@ export class PaymentsService {
         data: { providerState: result.providerState ?? null, status: PaymentStatus.FAILED },
         where: { id: payment.id },
       });
+      if (payment.purpose === PaymentPurpose.SECURITY_DEPOSIT) {
+        await transaction.securityDepositAuthorization.update({
+          data: { status: SecurityDepositStatus.FAILED },
+          where: { paymentId: payment.id },
+        });
+        return;
+      }
       if (payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE) {
         if (payment.additionalChargeId) {
           await transaction.additionalCharge.update({

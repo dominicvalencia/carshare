@@ -20,6 +20,8 @@ export function createPaymentProvider(environment: ApiEnvironment): PaymentProvi
     cancelUrl: environment.MAYA_CANCEL_URL,
     failureUrl: environment.MAYA_FAILURE_URL,
     publicKey: environment.MAYA_PUBLIC_KEY!,
+    securityDepositPreauthorizationEnabled:
+      environment.MAYA_SECURITY_DEPOSIT_PREAUTHORIZATION_ENABLED,
     secretKey: environment.MAYA_SECRET_KEY!,
     successUrl: environment.MAYA_SUCCESS_URL,
     voidRefundEnabled: environment.MAYA_VOID_REFUND_ENABLED,
@@ -54,6 +56,10 @@ export const paymentProviderFactory = {
       cancelUrl: configuration.getOrThrow('MAYA_CANCEL_URL', { infer: true }),
       failureUrl: configuration.getOrThrow('MAYA_FAILURE_URL', { infer: true }),
       publicKey: configuration.getOrThrow('MAYA_PUBLIC_KEY', { infer: true }),
+      securityDepositPreauthorizationEnabled: configuration.getOrThrow(
+        'MAYA_SECURITY_DEPOSIT_PREAUTHORIZATION_ENABLED',
+        { infer: true },
+      ),
       secretKey: configuration.getOrThrow('MAYA_SECRET_KEY', { infer: true }),
       successUrl: configuration.getOrThrow('MAYA_SUCCESS_URL', { infer: true }),
       voidRefundEnabled: configuration.getOrThrow('MAYA_VOID_REFUND_ENABLED', { infer: true }),

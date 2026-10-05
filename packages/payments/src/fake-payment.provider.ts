@@ -16,6 +16,23 @@ export class FakePaymentProvider implements PaymentProvider {
   readonly code = 'FAKE' as const;
   readonly capabilities = Object.freeze({
     authorizationHoldDurationSeconds: 6 * 24 * 60 * 60,
+    evidence: Object.freeze({
+      supportsAuthorizationExpiryLookup: 'SUPPORTED' as const,
+      supportsAuthorizationRetrieval: 'SUPPORTED' as const,
+      supportsFullCapture: 'SUPPORTED' as const,
+      supportsFullVoid: 'SUPPORTED' as const,
+      supportsIdempotentReplayAfterTimeout: 'SUPPORTED' as const,
+      supportsMultipleCaptures: 'UNSUPPORTED' as const,
+      supportsOperationSpecificRetrieval: 'SUPPORTED' as const,
+      supportsPartialCapture: 'UNSUPPORTED' as const,
+      supportsPartialRefund: 'SUPPORTED' as const,
+      supportsPartialVoid: 'UNSUPPORTED' as const,
+      supportsRefund: 'SUPPORTED' as const,
+      supportsRequestReferenceRetrieval: 'SUPPORTED' as const,
+      supportsSecurityDepositUtilization: 'UNSUPPORTED' as const,
+      supportsWebhookOperationAmount: 'SUPPORTED' as const,
+      supportsWebhookOperationIdentity: 'SUPPORTED' as const,
+    }),
     supportsAuthorization: true,
     supportsAuthorizationVoid: true,
     supportsAdditionalPaymentAuthorization: true,
@@ -23,23 +40,26 @@ export class FakePaymentProvider implements PaymentProvider {
     supportsPartialCapture: false,
     supportsPartialRefund: true,
     supportsRefund: true,
-    supportsSecurityDeposit: false,
+    supportsSecurityDeposit: true,
     supportsSecurityDepositUtilization: false,
     supportsWebhooks: true,
   });
   private readonly states = new Map<string, ProviderPaymentStatus>();
+  private readonly requestReferences = new Map<string, string>();
   private readonly refundResults = new Map<string, ProviderOperationResult>();
 
   constructor(private outcome: FakePaymentOutcome = 'succeed') {}
 
   async authorize(input: AuthorizePaymentInput): Promise<ProviderOperationResult> {
     const externalPaymentId = `fake_${digest(input.requestReference).slice(0, 24)}`;
+    this.requestReferences.set(input.requestReference, externalPaymentId);
     if (this.outcome === 'unknown')
       return { externalPaymentId, kind: 'UNKNOWN', providerState: 'UNKNOWN' };
     if (this.outcome === 'decline')
       return { kind: 'DECLINED', providerState: 'DECLINED', failureCode: 'FAKE_DECLINE' };
     this.states.set(externalPaymentId, {
       authorizedAmountMinor: input.amountMinor,
+      currency: input.currency,
       externalPaymentId,
       providerState: 'AUTHORIZED',
       state: 'AUTHORIZED',
@@ -52,6 +72,7 @@ export class FakePaymentProvider implements PaymentProvider {
     this.states.set(input.externalPaymentId, {
       authorizedAmountMinor: input.amountMinor,
       capturedAmountMinor: input.amountMinor,
+      currency: input.currency,
       externalPaymentId: input.externalPaymentId,
       providerState: 'CAPTURED',
       state: 'CAPTURED',
@@ -106,6 +127,19 @@ export class FakePaymentProvider implements PaymentProvider {
         state: 'UNKNOWN',
       }
     );
+  }
+
+  async retrievePaymentByRequestReference(
+    requestReference: string,
+  ): Promise<ProviderPaymentStatus> {
+    const externalPaymentId = this.requestReferences.get(requestReference);
+    return externalPaymentId
+      ? this.retrievePayment(externalPaymentId)
+      : {
+          externalPaymentId: '',
+          providerState: 'NOT_FOUND',
+          state: 'UNKNOWN',
+        };
   }
 
   async verifyWebhook(input: WebhookVerificationInput): Promise<VerifiedWebhookEvent> {

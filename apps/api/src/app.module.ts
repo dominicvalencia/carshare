@@ -35,6 +35,7 @@ import { GeographyModule } from './geography/geography.module';
 import { OwnerAnalyticsModule } from './owner-analytics/owner-analytics.module';
 import { FulfillmentModule } from './fulfillment/fulfillment.module';
 import { LocationsModule } from './locations/locations.module';
+import { SecurityDepositSettlementsModule } from './security-deposit-settlements/security-deposit-settlements.module';
 
 @Module({
   imports: [
@@ -71,6 +72,7 @@ import { LocationsModule } from './locations/locations.module';
     OwnerAnalyticsModule,
     FulfillmentModule,
     LocationsModule,
+    SecurityDepositSettlementsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: ApiExceptionFilter },

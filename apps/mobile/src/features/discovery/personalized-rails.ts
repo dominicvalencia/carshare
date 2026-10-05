@@ -47,6 +47,13 @@ export interface ExploreRailCard {
   readonly approximateLocation: { readonly city: string; readonly province: string };
   readonly displayPrice: { readonly amountMinor: number; readonly label: string };
   readonly currency: string;
+  readonly securityDeposit?:
+    | {
+        readonly amountMinor: number | null;
+        readonly currency: string | null;
+        readonly required: boolean;
+      }
+    | undefined;
   readonly rating?:
     { readonly averageRating: string | null; readonly reviewCount: number } | undefined;
 }

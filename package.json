@@ -18,6 +18,7 @@
     "format:check": "prettier --check .",
     "infra:validate": "node tooling/validate-compose.mjs",
     "lint": "turbo run lint",
+    "maya:certify": "pnpm --filter @carrental/api exec tsx src/providers/maya-certification.cli.ts",
     "setup:mac": "bash tooling/setup-new-mac.sh",
     "typecheck": "pnpm db:generate && turbo run typecheck",
     "test": "turbo run test",

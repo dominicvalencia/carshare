@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ApiEnvironment } from '@carrental/config';
 import {
@@ -10,6 +10,12 @@ import {
 } from '@carrental/database';
 import { FilesService } from '../files/files.service';
 import { workflowCompliance } from '../rentals/workflow-compliance';
+import { BookingErrorCode } from '@carrental/api-contracts';
+import { ApplicationException } from '../common/errors/application.exception';
+import {
+  isAllowedSecurityDepositTier,
+  isSecurityDepositCurrency,
+} from '../common/security-deposit-policy';
 
 export const bookingInclude = {
   amendments: {
@@ -88,6 +94,17 @@ export const bookingInclude = {
     },
   },
   policySnapshot: true,
+  securityDeposit: {
+    include: {
+      payment: {
+        select: {
+          customerActionUrl: true,
+          reconciliationRequired: true,
+          status: true,
+        },
+      },
+    },
+  },
   pricingSnapshot: { include: { lines: { orderBy: { displayOrder: 'asc' as const } } } },
   renter: {
     select: {
@@ -156,6 +173,136 @@ export type BookingRecord = Prisma.BookingGetPayload<{ include: typeof bookingIn
 
 type StartMethod = 'RENTER_PICKUP' | 'OWNER_DELIVERY';
 type EndMethod = 'RENTER_RETURN' | 'OWNER_COLLECTION';
+
+export function bookingSecurityDepositProjection(input: {
+  readonly bookingStatus?: string;
+  readonly executionAvailable?: boolean;
+  readonly leadHours?: number;
+  readonly now?: Date;
+  readonly rentalPaymentCaptured?: boolean;
+  readonly rentalStart?: Date;
+  readonly policySnapshot: {
+    readonly securityDepositAmountMinor: number | null;
+    readonly securityDepositCurrency: string | null;
+    readonly securityDepositRequired: boolean;
+  } | null;
+  readonly securityDeposit: {
+    readonly authorizedAmountMinor: bigint;
+    readonly currency: string;
+    readonly requiredAmountMinor: bigint;
+    readonly status: string;
+    readonly usedAmountMinor: bigint;
+    readonly payment?: {
+      readonly customerActionUrl: string | null;
+      readonly reconciliationRequired: boolean;
+      readonly status: string;
+    } | null;
+  } | null;
+}) {
+  const snapshot = input.policySnapshot;
+  if (!snapshot) return null;
+  const inconsistent = (message: string): never => {
+    throw new ApplicationException(
+      BookingErrorCode.SECURITY_DEPOSIT_SNAPSHOT_INCONSISTENT,
+      message,
+      HttpStatus.INTERNAL_SERVER_ERROR,
+    );
+  };
+  if (!snapshot.securityDepositRequired) {
+    if (snapshot.securityDepositAmountMinor !== null || snapshot.securityDepositCurrency !== null) {
+      inconsistent('The booking no-deposit snapshot is inconsistent.');
+    }
+    if (
+      input.securityDeposit &&
+      (input.securityDeposit.requiredAmountMinor !== 0n ||
+        input.securityDeposit.authorizedAmountMinor !== 0n ||
+        input.securityDeposit.usedAmountMinor !== 0n)
+    ) {
+      inconsistent('The booking no-deposit lifecycle state is inconsistent.');
+    }
+    return {
+      actionRequired: false,
+      availableAt: null,
+      eligibleAt: null,
+      amountMinor: null,
+      blockingPickup: false,
+      capturedMinor: 0,
+      currency: null,
+      executionAvailable: false,
+      heldMinor: 0,
+      leadHours: input.leadHours ?? 48,
+      isEligibleNow: false,
+      releasedMinor: 0,
+      required: false,
+      status: 'NOT_REQUIRED',
+    };
+  }
+  const amountMinor = snapshot.securityDepositAmountMinor;
+  const currency = snapshot.securityDepositCurrency;
+  const requiredAmountMinor =
+    amountMinor ?? inconsistent('The required security deposit snapshot is incomplete.');
+  const requiredCurrency =
+    currency ?? inconsistent('The required security deposit snapshot is incomplete.');
+  if (
+    requiredAmountMinor <= 0 ||
+    !isSecurityDepositCurrency(requiredCurrency) ||
+    !isAllowedSecurityDepositTier(requiredCurrency, requiredAmountMinor)
+  ) {
+    inconsistent('The required security deposit snapshot is inconsistent.');
+  }
+  const lifecycle = input.securityDeposit;
+  if (
+    lifecycle &&
+    (lifecycle.requiredAmountMinor !== BigInt(requiredAmountMinor) ||
+      lifecycle.currency !== requiredCurrency)
+  ) {
+    inconsistent('The security deposit lifecycle does not match the booking snapshot.');
+  }
+  const authorizedMinor = Number(lifecycle?.authorizedAmountMinor ?? 0n);
+  const usedMinor = Number(lifecycle?.usedAmountMinor ?? 0n);
+  const leadHours = input.leadHours ?? 48;
+  const availableAt = input.rentalStart
+    ? new Date(input.rentalStart.getTime() - leadHours * 60 * 60 * 1000)
+    : null;
+  const now = input.now ?? new Date();
+  const lifecycleEligible =
+    input.bookingStatus === 'CONFIRMED' || input.bookingStatus === 'READY_FOR_PICKUP';
+  const windowOpen = availableAt ? now >= availableAt : false;
+  const held = lifecycle?.status === 'AUTHORIZED' && authorizedMinor >= requiredAmountMinor;
+  const executionAvailable = input.executionAvailable ?? false;
+  const payment = lifecycle?.payment;
+  const providerOutcomeUnknown =
+    lifecycle?.status === 'AUTHORIZING' &&
+    Boolean(payment?.reconciliationRequired) &&
+    !payment?.customerActionUrl;
+  const resumableCheckout =
+    lifecycle?.status === 'AUTHORIZING' && Boolean(payment?.customerActionUrl);
+  const retrySafe =
+    !lifecycle ||
+    lifecycle.status === 'PENDING' ||
+    lifecycle.status === 'FAILED' ||
+    resumableCheckout;
+  const isEligibleNow =
+    executionAvailable && lifecycleEligible && Boolean(input.rentalPaymentCaptured) && windowOpen;
+  return {
+    actionRequired: isEligibleNow && !held && retrySafe,
+    availableAt: availableAt?.toISOString() ?? null,
+    eligibleAt: availableAt?.toISOString() ?? null,
+    amountMinor: requiredAmountMinor,
+    blockingPickup: executionAvailable && lifecycleEligible && !held,
+    capturedMinor: usedMinor,
+    currency: requiredCurrency,
+    executionAvailable,
+    heldMinor: Math.max(0, authorizedMinor - usedMinor),
+    leadHours,
+    isEligibleNow,
+    releasedMinor: lifecycle?.status === 'RELEASED' ? authorizedMinor - usedMinor : 0,
+    required: true,
+    status: providerOutcomeUnknown
+      ? 'UNKNOWN'
+      : (lifecycle?.status ?? (availableAt && !windowOpen ? 'NOT_ELIGIBLE' : 'PENDING')),
+  };
+}
 
 export function bookingAmendmentFulfillmentCapabilities(input: {
   actualPickupAt: Date | null;
@@ -324,6 +471,7 @@ export class BookingProjectionService {
         status: payment.status,
       })),
       pricing: this.pricing(booking),
+      securityDeposit: this.securityDeposit(booking),
       publicReference: booking.publicReference,
       rentalEnd,
       rentalStart,
@@ -504,6 +652,22 @@ export class BookingProjectionService {
       policyVersionId: policy.policyVersionId,
       turnaroundMinutes: policy.turnaroundMinutes,
     };
+  }
+
+  private securityDeposit(booking: BookingRecord) {
+    const executionAvailable = this.configuration.getOrThrow('SECURITY_DEPOSIT_EXECUTION_ENABLED', {
+      infer: true,
+    });
+    return bookingSecurityDepositProjection({
+      ...booking,
+      bookingStatus: booking.status,
+      executionAvailable,
+      leadHours: this.configuration.getOrThrow('SECURITY_DEPOSIT_LEAD_HOURS', { infer: true }),
+      rentalPaymentCaptured: booking.payments.some(
+        (payment) => payment.purpose === 'RENTAL' && payment.status === 'CAPTURED',
+      ),
+      rentalStart: booking.rentalStart,
+    });
   }
 
   private pricing(booking: BookingRecord) {

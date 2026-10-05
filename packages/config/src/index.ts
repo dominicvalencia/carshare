@@ -26,14 +26,38 @@ const paymentSchema = z.object({
   PAYMENT_PROVIDER: z.enum(['fake', 'maya']).default('fake'),
   PAYMENT_UNKNOWN_GRACE_MINUTES: z.coerce.number().int().min(1).max(30).default(5),
   PAYMENT_RECONCILE_INTERVAL_SECONDS: z.coerce.number().int().min(5).max(300).default(15),
+  PAYMENT_OPERATION_RECONCILIATION_MANUAL_REVIEW_ATTEMPTS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(8),
   SECURITY_DEPOSIT_ENABLED: z
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  SECURITY_DEPOSIT_CONFIGURATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  SECURITY_DEPOSIT_EXECUTION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  SECURITY_DEPOSIT_SETTLEMENT_EXECUTION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  SECURITY_DEPOSIT_LEAD_HOURS: z.coerce.number().int().min(1).max(168).default(48),
+  SECURITY_DEPOSIT_POST_RETURN_BUFFER_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   MAYA_ENVIRONMENT: z.enum(['sandbox', 'production']).default('sandbox'),
   MAYA_PUBLIC_KEY: z.string().min(1).optional(),
   MAYA_SECRET_KEY: z.string().min(1).optional(),
   MAYA_AUTH_CAPTURE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  MAYA_SECURITY_DEPOSIT_PREAUTHORIZATION_ENABLED: z
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
@@ -494,9 +518,28 @@ function validatePaymentEnvironment<
     throw new Error('Staging payments must use the Maya sandbox environment.');
   if (environment.APP_ENV === 'production' && environment.MAYA_ENVIRONMENT !== 'production')
     throw new Error('Production payment configuration must select Maya production.');
-  if (environment.SECURITY_DEPOSIT_ENABLED) {
-    throw new Error('Security deposits remain disabled until provider capability is approved.');
+  if (environment.SECURITY_DEPOSIT_EXECUTION_ENABLED) {
+    if (!environment.SECURITY_DEPOSIT_CONFIGURATION_ENABLED)
+      throw new Error('Security deposit execution requires configuration to be enabled.');
+    if (environment.APP_ENV === 'production')
+      throw new Error('Security deposit execution remains disabled in production.');
+    if (environment.PAYMENT_PROVIDER === 'maya') {
+      if (environment.MAYA_ENVIRONMENT !== 'sandbox')
+        throw new Error('Security deposit execution with Maya requires the sandbox environment.');
+      if (
+        !environment.MAYA_SECURITY_DEPOSIT_PREAUTHORIZATION_ENABLED ||
+        !environment.MAYA_AUTH_CAPTURE_ENABLED ||
+        !environment.MAYA_VOID_REFUND_ENABLED
+      )
+        throw new Error(
+          'Maya security deposit execution requires PREAUTHORIZATION, authorization, and void capabilities.',
+        );
+    }
   }
+  if (environment.SECURITY_DEPOSIT_SETTLEMENT_EXECUTION_ENABLED)
+    throw new Error(
+      'Security Deposit settlement provider execution is unavailable in the Phase 4 foundation.',
+    );
   return environment;
 }
 

@@ -33,6 +33,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  type LayoutChangeEvent,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -64,6 +65,8 @@ import {
   StatusBadge,
 } from '../../ui/primitives';
 import type { BookingView } from '../bookings/MyBookingsScreen';
+import { SecurityDepositInfoSheet } from '../bookings/SecurityDepositInfoSheet';
+import { bookingHoldRevealOffset } from './booking-hold-scroll';
 import { invalidateRenterVerification } from '../../query/verification-invalidation';
 import { LocationPicker } from '../../location/LocationPicker';
 import {
@@ -155,6 +158,11 @@ export interface VehicleCardView {
   readonly approximateLocation: { city: string; province: string };
   readonly displayPrice: { amountMinor: number; label: string };
   readonly currency: string;
+  readonly securityDeposit: {
+    readonly amountMinor: number | null;
+    readonly currency: string | null;
+    readonly required: boolean;
+  };
   readonly transmission?: string | null;
   readonly seats?: number | null;
   readonly fuelType?: string | null;
@@ -199,6 +207,11 @@ interface VehicleDetail {
     dailyRateMinor: number;
     durationDiscounts?: readonly PublicDurationDiscount[];
   };
+  readonly securityDeposit: {
+    readonly amountMinor: number | null;
+    readonly currency: string | null;
+    readonly required: boolean;
+  };
   readonly mileagePolicy: {
     type: string;
     includedKilometersPerChargeableDay?: number;
@@ -231,6 +244,11 @@ interface Quote {
   readonly chargeableDays: number;
   readonly currency: string;
   readonly totalMinor: number;
+  readonly securityDeposit: {
+    readonly amountMinor: number | null;
+    readonly currency: string | null;
+    readonly required: boolean;
+  };
   readonly baseRentalAmountMinor: number;
   readonly durationDiscountAmountMinor: number;
   readonly discountedRentalSubtotalMinor: number;
@@ -2158,6 +2176,12 @@ function SearchResultVehicleCard({
     attributes.join(', '),
     `${money(vehicle.displayPrice.amountMinor, vehicle.currency)} per day`,
     fulfillmentLabel,
+    vehicle.securityDeposit.required && vehicle.securityDeposit.amountMinor != null
+      ? `Security deposit required, ${money(
+          vehicle.securityDeposit.amountMinor,
+          vehicle.securityDeposit.currency ?? vehicle.currency,
+        )}`
+      : null,
   ]
     .filter(Boolean)
     .join('. ');
@@ -2174,6 +2198,11 @@ function SearchResultVehicleCard({
             accessible={false}
             contentPath={vehicle.coverPhoto?.contentPath}
             style={styles.cardImage}
+          />
+          <SecurityDepositBadge
+            amountMinor={vehicle.securityDeposit.amountMinor}
+            currency={vehicle.securityDeposit.currency ?? vehicle.currency}
+            required={vehicle.securityDeposit.required}
           />
         </View>
         <View style={styles.vehicleContent}>
@@ -2293,9 +2322,16 @@ function ExploreVehicleCard({
   const rating = vehicle.rating?.averageRating
     ? `Rated ${vehicle.rating.averageRating} from ${vehicle.rating.reviewCount} reviews`
     : 'New listing';
+  const depositAccessibility =
+    vehicle.securityDeposit?.required && vehicle.securityDeposit.amountMinor != null
+      ? `Security deposit required, ${money(
+          vehicle.securityDeposit.amountMinor,
+          vehicle.securityDeposit.currency ?? vehicle.currency,
+        )}`
+      : null;
   return (
     <Pressable
-      accessibilityLabel={`${identity}, ${rating}, ${money(vehicle.displayPrice.amountMinor, vehicle.currency)} per day, ${vehicle.approximateLocation.city}`}
+      accessibilityLabel={`${identity}, ${rating}, ${money(vehicle.displayPrice.amountMinor, vehicle.currency)} per day, ${vehicle.approximateLocation.city}${depositAccessibility ? `, ${depositAccessibility}` : ''}`}
       accessibilityRole="button"
       onPress={onOpen}
       style={({ pressed }) => [
@@ -2309,6 +2345,11 @@ function ExploreVehicleCard({
           accessibilityLabel={`${identity} cover photo`}
           contentPath={vehicle.coverPhoto?.contentPath}
           style={styles.exploreVehicleImage}
+        />
+        <SecurityDepositBadge
+          amountMinor={vehicle.securityDeposit?.amountMinor ?? null}
+          currency={vehicle.securityDeposit?.currency ?? vehicle.currency}
+          required={vehicle.securityDeposit?.required ?? false}
         />
         <View style={styles.exploreFavorite}>
           <IconButton
@@ -2370,6 +2411,8 @@ function VehicleView(properties: {
   const selectedGalleryIndex = useRef(0);
   const quotePosition = useRef(0);
   const lastScrolledQuoteId = useRef<string | null>(null);
+  const scrollViewportHeight = useRef(0);
+  const lastRevealedBookingReference = useRef<string | null>(null);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [quoteClock, setQuoteClock] = useState(() => Date.now());
@@ -2392,6 +2435,7 @@ function VehicleView(properties: {
   const [tripCalendarOpen, setTripCalendarOpen] = useState(false);
   const [featuresOpen, setFeaturesOpen] = useState(false);
   const [cancellationPolicyOpen, setCancellationPolicyOpen] = useState(false);
+  const [securityDepositInfoOpen, setSecurityDepositInfoOpen] = useState(false);
   const [draftPickup, setDraftPickup] = useState(properties.pickup);
   const [draftReturnAt, setDraftReturnAt] = useState(properties.returnAt);
   const [draftDatesExplicit, setDraftDatesExplicit] = useState(properties.datesExplicit);
@@ -2687,6 +2731,24 @@ function VehicleView(properties: {
   const bookingBarTripContext = properties.datesExplicit
     ? tripDateSummary(properties.pickup, properties.returnAt)
     : 'Add dates';
+  const revealBookingHold = (
+    layout: LayoutChangeEvent['nativeEvent']['layout'],
+    reference: string,
+  ) => {
+    if (lastRevealedBookingReference.current === reference) return;
+    if (scrollViewportHeight.current <= 0) return;
+    lastRevealedBookingReference.current = reference;
+    const targetOffset = bookingHoldRevealOffset({
+      currentOffset: detailScrollOffset.value,
+      edgePadding: spacing.md,
+      obscuredTop: stickyHeaderHeight,
+      sectionHeight: layout.height,
+      sectionTop: quotePosition.current + layout.y,
+      viewportHeight: scrollViewportHeight.current,
+    });
+    if (targetOffset == null) return;
+    requestAnimationFrame(() => scrollRef.current?.scrollTo({ animated: true, y: targetOffset }));
+  };
   const bookingBar = (
     <View style={[styles.bookingBar, { paddingBottom: Math.max(bottomSafeArea, spacing.sm) }]}>
       <Pressable
@@ -2763,6 +2825,9 @@ function VehicleView(properties: {
       animatedScroll
       bottomAccessory={bookingBar}
       onScroll={onDetailScroll}
+      onScrollLayout={(event) => {
+        scrollViewportHeight.current = event.nativeEvent.layout.height;
+      }}
       overlay={stickyGalleryHeader}
       scrollRef={scrollRef}
       safeTop={false}
@@ -3179,6 +3244,7 @@ function VehicleView(properties: {
             returnAt={properties.returnAt}
             reserve={properties.reserve}
             continueBooking={properties.continueBooking}
+            onHoldLayout={revealBookingHold}
           />
         </View>
       )}
@@ -3244,6 +3310,20 @@ function VehicleView(properties: {
               : `${vehicle.mileagePolicy.includedKilometersPerChargeableDay} km included per rental day`
           }
         />
+        <PolicyRow
+          accessibilityHint="Opens deposit information"
+          icon="shield-checkmark-outline"
+          onPress={() => setSecurityDepositInfoOpen(true)}
+          title="Security deposit"
+          value={
+            vehicle.securityDeposit.required && vehicle.securityDeposit.amountMinor != null
+              ? `${money(
+                  vehicle.securityDeposit.amountMinor,
+                  vehicle.securityDeposit.currency ?? vehicle.pricing.currency,
+                )} refundable deposit · Separate from the rental price`
+              : 'No security deposit required'
+          }
+        />
         {typeof vehicle.mileagePolicy.excessKilometerRateMinor === 'number' &&
           vehicle.mileagePolicy.excessKilometerRateMinor > 0 && (
             <PolicyRow
@@ -3283,6 +3363,7 @@ function VehicleView(properties: {
           />
         )}
         <PolicyRow
+          accessibilityHint="Opens the renter cancellation policy"
           icon="document-text-outline"
           onPress={() => setCancellationPolicyOpen(true)}
           title="Cancellation policy"
@@ -3320,6 +3401,12 @@ function VehicleView(properties: {
           </Card>
         </Screen>
       </Modal>
+      <SecurityDepositInfoSheet
+        deposit={vehicle.securityDeposit}
+        executionAvailable={false}
+        onDismiss={() => setSecurityDepositInfoOpen(false)}
+        visible={securityDepositInfoOpen}
+      />
       {vehicle.rentalRequirements && (
         <View style={styles.editorialSection}>
           <SectionHeader title="Rental requirements" />
@@ -3563,11 +3650,13 @@ function ExpandableDetailText({
 }
 
 function PolicyRow({
+  accessibilityHint,
   icon,
   onPress,
   title,
   value,
 }: {
+  readonly accessibilityHint?: string | undefined;
   readonly icon: ComponentProps<typeof Icon>['name'];
   readonly onPress?: (() => void) | undefined;
   readonly title: string;
@@ -3588,7 +3677,7 @@ function PolicyRow({
   if (onPress)
     return (
       <Pressable
-        accessibilityHint="Opens the renter cancellation policy"
+        accessibilityHint={accessibilityHint}
         accessibilityLabel={`${title}. ${value}`}
         accessibilityRole="button"
         onPress={onPress}
@@ -3600,6 +3689,34 @@ function PolicyRow({
   return <View style={styles.policyRow}>{content}</View>;
 }
 
+function SecurityDepositBadge({
+  amountMinor,
+  currency,
+  required,
+}: {
+  readonly amountMinor: number | null;
+  readonly currency: string;
+  readonly required: boolean;
+}) {
+  if (!required || amountMinor == null) return null;
+  return (
+    <View
+      accessible={false}
+      importantForAccessibility="no-hide-descendants"
+      style={styles.securityDepositBadge}
+    >
+      <Text
+        adjustsFontSizeToFit
+        minimumFontScale={0.9}
+        numberOfLines={1}
+        style={styles.securityDepositBadgeText}
+      >
+        {money(amountMinor, currency)} deposit
+      </Text>
+    </View>
+  );
+}
+
 function QuoteCard({
   current,
   quote,
@@ -3608,6 +3725,7 @@ function QuoteCard({
   returnAt,
   reserve,
   continueBooking,
+  onHoldLayout,
 }: {
   readonly current: boolean;
   readonly quote: Quote;
@@ -3616,6 +3734,10 @@ function QuoteCard({
   readonly returnAt: Date;
   readonly reserve: ReturnType<typeof useMutation<BookingView, Error, string>>;
   readonly continueBooking: ReturnType<typeof useMutation<PaymentSetupResult, Error, string>>;
+  readonly onHoldLayout: (
+    layout: LayoutChangeEvent['nativeEvent']['layout'],
+    reference: string,
+  ) => void;
 }) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const expiryTime = timeLabel(quote.expiresAt);
@@ -3662,6 +3784,32 @@ function QuoteCard({
           {quote.chargeableDays}-day booking.
         </Text>
       )}
+      <View
+        accessibilityLabel={
+          quote.securityDeposit.required && quote.securityDeposit.amountMinor != null
+            ? `Security deposit, ${money(
+                quote.securityDeposit.amountMinor,
+                quote.securityDeposit.currency ?? quote.currency,
+              )}, separate from the rental total`
+            : 'Security deposit, no security deposit required'
+        }
+        style={styles.hold}
+      >
+        <Text style={styles.cardTitle}>Security deposit</Text>
+        <Text style={styles.body}>
+          {quote.securityDeposit.required && quote.securityDeposit.amountMinor != null
+            ? `${money(
+                quote.securityDeposit.amountMinor,
+                quote.securityDeposit.currency ?? quote.currency,
+              )} refundable deposit`
+            : 'No security deposit required'}
+        </Text>
+        <Text style={styles.note}>
+          {quote.securityDeposit.required
+            ? 'Separate from rental charges. No deposit hold is placed at this stage.'
+            : 'No refundable deposit is added to this booking.'}
+        </Text>
+      </View>
       <View style={styles.totalLine}>
         <Text style={styles.totalLabel}>Total</Text>
         <Text style={styles.total}>{money(quote.totalMinor, quote.currency)}</Text>
@@ -3694,9 +3842,22 @@ function QuoteCard({
         </View>
       )}
       {reserve.data && (
-        <View style={styles.hold}>
+        <View
+          onLayout={(event) =>
+            onHoldLayout(event.nativeEvent.layout, reserve.data!.publicReference)
+          }
+          style={styles.hold}
+        >
           <Text style={styles.cardTitle}>Car held temporarily</Text>
           <Text style={styles.body}>Reference {reserve.data.publicReference}</Text>
+          <Text style={styles.body}>
+            {reserve.data.securityDeposit.required
+              ? `Security deposit: ${money(
+                  reserve.data.securityDeposit.amountMinor ?? 0,
+                  reserve.data.securityDeposit.currency ?? quote.currency,
+                )} · Required, not yet held`
+              : 'Security deposit: Not required'}
+          </Text>
           <Text style={styles.note}>
             {reserve.data.holdExpiresAt
               ? `Complete payment setup by ${dateTimeLabel(reserve.data.holdExpiresAt)}.`
@@ -4754,6 +4915,21 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontWeight: '800',
     marginTop: spacing.sm,
+  },
+  securityDepositBadge: {
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    borderRadius: radius.pill,
+    left: spacing.sm,
+    maxWidth: '68%',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+    position: 'absolute',
+    top: spacing.sm,
+  },
+  securityDepositBadgeText: {
+    color: colors.ink,
+    fontSize: 12,
+    fontWeight: '800',
   },
   favorite: {
     backgroundColor: 'rgba(255,255,255,0.92)',

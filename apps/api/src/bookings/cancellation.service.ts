@@ -66,6 +66,7 @@ const CANCELLATION_INCLUDE = {
   },
   pickupChallenges: true,
   pricingSnapshot: true,
+  securityDeposit: { include: { payment: { include: { operations: true } } } },
 } satisfies Prisma.BookingInclude;
 
 type CancellationBooking = Prisma.BookingGetPayload<{ include: typeof CANCELLATION_INCLUDE }>;
@@ -423,6 +424,26 @@ export class CancellationService {
         data: { status: BookingStatus.CANCELLED },
         where: { id: booking.id },
       });
+      const depositPayment = booking.securityDeposit?.payment;
+      if (depositPayment?.status === PaymentStatus.AUTHORIZED) {
+        await transaction.payment.update({
+          data: { status: PaymentStatus.VOID_PENDING },
+          where: { id: depositPayment.id },
+        });
+        if (!depositPayment.operations.some((item) => item.type === PaymentOperationType.VOID))
+          await transaction.paymentOperation.create({
+            data: {
+              amountMinor: depositPayment.authorizedAmountMinor,
+              attemptCount: 0,
+              currency: depositPayment.currency,
+              idempotencyKey: `booking:${booking.id}:security-deposit:void:v1`,
+              paymentId: depositPayment.id,
+              providerRequestReference: randomUUID(),
+              status: PaymentOperationStatus.PENDING,
+              type: PaymentOperationType.VOID,
+            },
+          });
+      }
       await transaction.vehicleOccupancy.updateMany({
         data: {
           active: false,

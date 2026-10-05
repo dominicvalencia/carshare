@@ -13,6 +13,22 @@ export function renderNotification(
   const reference = text(variables.reference, 'your booking');
   const scope = text(variables.scope, 'BOTH');
   const templates: Readonly<Record<string, NotificationContent>> = {
+    'security-deposit.required': {
+      title: 'Security deposit required',
+      body: `Complete the security deposit for ${reference} before pickup.`,
+    },
+    'security-deposit.24-hour-reminder': {
+      title: 'Your trip starts tomorrow',
+      body: `Complete the security deposit for ${reference} to avoid pickup issues.`,
+    },
+    'security-deposit.final-reminder': {
+      title: 'Security deposit still required',
+      body: `Your trip starts soon. Complete the security deposit for ${reference} before pickup.`,
+    },
+    'security-deposit.completed': {
+      title: 'Security deposit completed',
+      body: `No further deposit action is needed for ${reference}. You're ready for pickup.`,
+    },
     'rental.overdue-recovery-reported': {
       title:
         scope === 'START'

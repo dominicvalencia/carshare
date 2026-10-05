@@ -3,6 +3,17 @@ import { renderNotification } from './templates';
 
 describe('overdue reminder content', () => {
   it.each([
+    ['security-deposit.required', 'Security deposit required'],
+    ['security-deposit.24-hour-reminder', 'Your trip starts tomorrow'],
+    ['security-deposit.final-reminder', 'Security deposit still required'],
+    ['security-deposit.completed', 'Security deposit completed'],
+  ])('renders concise booking-scoped content for %s', (key, title) => {
+    const content = renderNotification(key, { reference: 'CR-2026-DEPOSIT' });
+    expect(content.title).toBe(title);
+    expect(content.body).toContain('CR-2026-DEPOSIT');
+  });
+
+  it.each([
     ['START', 'Confirm Pickup handover', 'Pickup report'],
     ['RETURN', 'Confirm Return handover', 'Return report'],
     ['BOTH', 'Confirm Pickup and Return', 'Pickup and Return report'],

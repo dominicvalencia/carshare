@@ -1,8 +1,10 @@
 import { Body, Controller, Get, Ip, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ConfigService } from '@nestjs/config';
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { RoleCode } from '@carrental/database';
+import type { ApiEnvironment } from '@carrental/config';
 import { requestMetadata } from '../auth/auth.controller';
 import { AccessTokenGuard } from '../authorization/access-token.guard';
 import {
@@ -22,6 +24,33 @@ import { PaymentProviderCapabilitiesService } from './payment-provider.factory';
 import { PaymentsService } from './payments.service';
 import { OwnerFinancialActivityQueryDto } from './owner-financial-read-model.dto';
 import { OwnerFinancialReadModelService } from './owner-financial-read-model.service';
+import { SECURITY_DEPOSIT_TIERS } from '../common/security-deposit-policy';
+
+@ApiTags('Security deposit policy')
+@Controller('security-deposit')
+export class SecurityDepositPolicyController {
+  constructor(
+    private readonly capabilities: PaymentProviderCapabilitiesService,
+    private readonly configuration: ConfigService<ApiEnvironment, true>,
+  ) {}
+
+  @Get('policy')
+  policy() {
+    const capabilities = this.capabilities.get();
+    return {
+      allowedTiersByCurrency: SECURITY_DEPOSIT_TIERS,
+      enabledForConfiguration: this.configuration.getOrThrow(
+        'SECURITY_DEPOSIT_CONFIGURATION_ENABLED',
+        { infer: true },
+      ),
+      executionAvailable:
+        this.configuration.getOrThrow('SECURITY_DEPOSIT_EXECUTION_ENABLED', { infer: true }) &&
+        capabilities.supportsSecurityDeposit,
+      leadHours: this.configuration.getOrThrow('SECURITY_DEPOSIT_LEAD_HOURS', { infer: true }),
+      supportedCurrencies: Object.keys(SECURITY_DEPOSIT_TIERS),
+    };
+  }
+}
 
 @ApiBearerAuth()
 @ApiTags('Rental payments')
@@ -43,6 +72,28 @@ export class RenterPaymentsController {
   @Get()
   status(@CurrentPrincipal() principal: RequestPrincipal, @Param('reference') reference: string) {
     return this.payments.getPayment(principal.userId, reference);
+  }
+}
+
+@ApiBearerAuth()
+@ApiTags('Security deposits')
+@Controller('bookings/:reference/security-deposit')
+@RequireRoles(RoleCode.RENTER)
+@UseGuards(AccessTokenGuard, PolicyGuard)
+export class RenterSecurityDepositController {
+  constructor(private readonly payments: PaymentsService) {}
+
+  @Post('authorize')
+  authorize(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Req() request: Request,
+  ) {
+    return this.payments.authorizeSecurityDeposit(
+      principal.userId,
+      reference,
+      requestMetadata(request),
+    );
   }
 }
 

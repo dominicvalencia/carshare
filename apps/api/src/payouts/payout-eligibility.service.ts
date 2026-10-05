@@ -64,6 +64,8 @@ export class PayoutEligibilityService {
             payments: true,
             postReturnClaims: true,
             rentalIncidents: true,
+            securityDeposit: true,
+            securityDepositSettlements: true,
           },
         },
         holds: { where: { status: EarningHoldStatus.ACTIVE } },
@@ -122,6 +124,18 @@ export class PayoutEligibilityService {
         )
       )
         blockers.push('PAYMENT_RECONCILIATION');
+      const depositTerminal = earning.booking.securityDepositSettlements.some((settlement) =>
+        ['RELEASED', 'PARTIALLY_USED', 'USED', 'REVERSED'].includes(settlement.status),
+      );
+      const depositFinanciallyOpen =
+        earning.booking.securityDepositSettlements.some(
+          (settlement) =>
+            !['RELEASED', 'PARTIALLY_USED', 'USED', 'REVERSED'].includes(settlement.status),
+        ) ||
+        (earning.booking.securityDeposit !== null &&
+          ['AUTHORIZED', 'CLAIM_HELD'].includes(earning.booking.securityDeposit.status) &&
+          !depositTerminal);
+      if (depositFinanciallyOpen) blockers.push('SECURITY_DEPOSIT_SETTLEMENT_PENDING');
       return {
         amountMinor:
           earning.netEarningAmountMinor +
@@ -181,6 +195,21 @@ export class PayoutEligibilityService {
         AND NOT EXISTS (SELECT 1 FROM "disputes" d WHERE d."booking_id" = e."booking_id" AND d."status" NOT IN ('RESOLVED_FOR_RENTER', 'RESOLVED_FOR_OWNER', 'PARTIALLY_RESOLVED', 'CLOSED'))
         AND NOT EXISTS (SELECT 1 FROM "rental_incidents" i WHERE i."booking_id" = e."booking_id" AND i."severity" = 'CRITICAL' AND i."status" NOT IN ('RESOLVED', 'DISMISSED'))
         AND NOT EXISTS (SELECT 1 FROM "payments" p WHERE p."booking_id" = e."booking_id" AND (p."reconciliation_required" OR p."status" IN ('AUTHORIZING', 'CAPTURING', 'VOID_PENDING')))
+        AND NOT EXISTS (
+          SELECT 1 FROM "security_deposit_settlements" s
+          WHERE s."booking_id" = e."booking_id"
+            AND s."status" NOT IN ('RELEASED', 'PARTIALLY_USED', 'USED', 'REVERSED')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM "security_deposit_authorizations" a
+          WHERE a."booking_id" = e."booking_id"
+            AND a."status" IN ('AUTHORIZED', 'CLAIM_HELD')
+            AND NOT EXISTS (
+              SELECT 1 FROM "security_deposit_settlements" terminal
+              WHERE terminal."security_deposit_authorization_id" = a."id"
+                AND terminal."status" IN ('RELEASED', 'PARTIALLY_USED', 'USED', 'REVERSED')
+            )
+        )
       ORDER BY e."available_at" ASC NULLS LAST, e."created_at" ASC, e."id" ASC
       FOR UPDATE OF e SKIP LOCKED
     `;

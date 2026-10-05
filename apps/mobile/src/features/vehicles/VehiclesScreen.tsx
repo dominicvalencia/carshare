@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { SecurityDepositPolicyCatalog } from '@carrental/api-contracts';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import {
@@ -26,10 +27,12 @@ import { SearchableReferenceSelector } from '../../ui/SearchableReferenceSelecto
 import { LocationPicker } from '../../location/LocationPicker';
 import { locationLabel, type CarShareLocation } from '../../location/booking-location-provider';
 import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
+import { DepositTierSelector } from './DepositTierSelector';
 import {
   BackControl,
   Button,
   formKeyboardDismissMode,
+  Icon,
   StateView,
   StatusBadge,
   useKeyboardAwareBottomPadding,
@@ -64,6 +67,14 @@ interface Policy {
   readonly version: number;
   readonly dailyRateMinor: number;
   readonly currency: string;
+  readonly securityDeposit: {
+    readonly amountMinor: number | null;
+    readonly currency: string | null;
+    readonly required: boolean;
+  };
+  readonly securityDepositAmountMinor: number | null;
+  readonly securityDepositCurrency: string | null;
+  readonly securityDepositRequired: boolean;
   readonly minimumRentalDays: number;
   readonly maximumRentalDays: number;
   readonly mileagePolicy: string;
@@ -1629,11 +1640,51 @@ function PolicyStep({
   );
   const [minimumNotice, setMinimumNotice] = useState(current?.fulfillmentMinimumNoticeMinutes ?? 0);
   const [fulfillmentError, setFulfillmentError] = useState('');
+  const depositCatalog = useQuery({
+    queryKey: ['security-deposit-policy'],
+    queryFn: () => apiClient.request<SecurityDepositPolicyCatalog>('/security-deposit/policy'),
+    staleTime: 5 * 60_000,
+  });
+  const [securityDepositRequired, setSecurityDepositRequired] = useState(
+    current?.securityDeposit.required ?? current?.securityDepositRequired ?? false,
+  );
+  const [securityDepositCurrency] = useState(
+    current?.securityDeposit.currency ??
+      current?.securityDepositCurrency ??
+      current?.currency ??
+      'PHP',
+  );
+  const [securityDepositAmountMinor, setSecurityDepositAmountMinor] = useState<number | null>(
+    current?.securityDeposit.amountMinor ?? current?.securityDepositAmountMinor ?? null,
+  );
+  const [securityDepositError, setSecurityDepositError] = useState('');
+  const selectedDepositCurrency = depositCatalog.data?.supportedCurrencies.includes(
+    securityDepositCurrency,
+  )
+    ? securityDepositCurrency
+    : (depositCatalog.data?.supportedCurrencies[0] ?? securityDepositCurrency);
+  const allowedDepositTiers =
+    depositCatalog.data?.allowedTiersByCurrency[selectedDepositCurrency] ?? [];
+  const selectedDepositAmountMinor = allowedDepositTiers.includes(securityDepositAmountMinor ?? -1)
+    ? securityDepositAmountMinor
+    : (allowedDepositTiers[0] ?? null);
   const electric = vehicle.powertrain === 'BATTERY_ELECTRIC';
   const ownerService = ownerDelivery || ownerCollection;
   const save = useMutation({
     mutationFn: async () => {
       setFulfillmentError('');
+      setSecurityDepositError('');
+      if (!depositCatalog.data?.enabledForConfiguration) {
+        setSecurityDepositError('Security deposit options are unavailable. Retry before saving.');
+        throw new Error('Security deposit options are unavailable.');
+      }
+      if (
+        securityDepositRequired &&
+        (!selectedDepositAmountMinor || !allowedDepositTiers.includes(selectedDepositAmountMinor))
+      ) {
+        setSecurityDepositError('Choose an available security deposit amount.');
+        throw new Error('Choose an available security deposit amount.');
+      }
       if (!renterPickup && !ownerDelivery) {
         setFulfillmentError('Choose at least one way for renters to receive the car.');
         throw new Error('Choose at least one way for renters to receive the car.');
@@ -1667,6 +1718,13 @@ function PolicyStep({
         body: JSON.stringify({
           dailyRateMinor: Math.round(Number(dailyRate) * 100),
           currency: current?.currency ?? 'PHP',
+          securityDepositRequired,
+          ...(securityDepositRequired
+            ? {
+                securityDepositAmountMinor: selectedDepositAmountMinor,
+                securityDepositCurrency: selectedDepositCurrency,
+              }
+            : {}),
           ...(shortDiscount.trim()
             ? { shortDurationDiscountBps: Math.round(Number(shortDiscount) * 100) }
             : {}),
@@ -1769,6 +1827,47 @@ function PolicyStep({
           Example: 7 days is{' '}
           {money(Math.round(Number(dailyRate) * 100 * 7 * (1 - Number(weeklyDiscount) / 100)))}{' '}
           after the weekly discount.
+        </Text>
+      )}
+      <Text style={styles.label}>Security deposit</Text>
+      {depositCatalog.isPending && <StateView loading title="Loading deposit options…" />}
+      {depositCatalog.isError && (
+        <StateView
+          icon="cloud-offline-outline"
+          title="Deposit options unavailable"
+          message="Retry to load the current amounts before saving this policy."
+          actionLabel="Retry"
+          onAction={() => void depositCatalog.refetch()}
+        />
+      )}
+      {depositCatalog.data?.enabledForConfiguration && (
+        <View style={styles.depositSection}>
+          <DepositRequirementSelector
+            required={securityDepositRequired}
+            onChange={setSecurityDepositRequired}
+          />
+          {securityDepositRequired && (
+            <DepositTierSelector
+              options={allowedDepositTiers.map((amountMinor) => ({
+                label: money(amountMinor, selectedDepositCurrency),
+                value: amountMinor,
+              }))}
+              value={selectedDepositAmountMinor}
+              onChange={setSecurityDepositAmountMinor}
+            />
+          )}
+          <Text style={styles.depositHelper}>Changes apply to new booking requests only.</Text>
+          {!depositCatalog.data.executionAvailable && (
+            <Text style={styles.depositInfoNote}>
+              Deposit processing isn’t active yet. No hold will be placed and pickup won’t be
+              blocked.
+            </Text>
+          )}
+        </View>
+      )}
+      {securityDepositError && (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {securityDepositError}
         </Text>
       )}
       <Text style={styles.label}>Handover options</Text>
@@ -2257,6 +2356,53 @@ function Choice({
     </Pressable>
   );
 }
+
+function DepositRequirementSelector({
+  required,
+  onChange,
+}: {
+  readonly required: boolean;
+  readonly onChange: (required: boolean) => void;
+}) {
+  return (
+    <View accessibilityLabel="Security deposit requirement" style={styles.depositSegmentedControl}>
+      <DepositRequirementOption
+        label="No deposit"
+        selected={!required}
+        onPress={() => onChange(false)}
+      />
+      <DepositRequirementOption
+        label="Require deposit"
+        selected={required}
+        onPress={() => onChange(true)}
+      />
+    </View>
+  );
+}
+
+function DepositRequirementOption({
+  label,
+  selected,
+  onPress,
+}: {
+  readonly label: string;
+  readonly selected: boolean;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected }}
+      onPress={onPress}
+      style={[styles.depositSegment, selected && styles.depositSegmentSelected]}
+    >
+      {selected && <Icon color={colors.onPrimary} name="checkmark" size={16} />}
+      <Text style={[styles.depositSegmentText, selected && styles.depositSegmentTextSelected]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
 function Save({
   mutation,
   label = 'Save draft',
@@ -2389,6 +2535,45 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   choiceActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  depositHelper: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
+  depositInfoNote: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.sm,
+    color: colors.subtleText,
+    fontSize: 13,
+    lineHeight: 19,
+    padding: spacing.sm,
+  },
+  depositSection: { gap: spacing.xs, marginTop: spacing.xs },
+  depositSegment: {
+    alignItems: 'center',
+    borderRadius: radius.sm,
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 0,
+    paddingHorizontal: spacing.xs,
+  },
+  depositSegmentedControl: {
+    backgroundColor: colors.muted,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    padding: spacing.xxs,
+  },
+  depositSegmentSelected: { backgroundColor: colors.primary },
+  depositSegmentText: {
+    color: colors.ink,
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  depositSegmentTextSelected: { color: colors.onPrimary },
   dangerButton: {
     alignItems: 'center',
     backgroundColor: '#A12626',

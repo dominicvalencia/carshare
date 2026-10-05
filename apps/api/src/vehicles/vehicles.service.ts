@@ -44,6 +44,12 @@ import {
   validateFulfillmentPolicy,
 } from '../fulfillment/fulfillment-policy';
 import { manilaTodayWindow, ownerAvailabilityToday } from './owner-availability';
+import {
+  isAllowedSecurityDepositTier,
+  isSecurityDepositCurrency,
+  securityDepositConfiguration,
+  securityDepositProjection,
+} from '../common/security-deposit-policy';
 
 const MATERIAL_EDITABLE: readonly VehicleLifecycleStatus[] = [
   VehicleLifecycleStatus.DRAFT,
@@ -716,6 +722,7 @@ export class VehiclesService {
     const vehicle = await this.ownedRecord(userId, id);
     this.assertState(vehicle.status, POLICY_EDITABLE, 'Policies cannot be changed in this state.');
     this.validatePolicy(vehicle.powertrain, input);
+    const securityDeposit = this.validateSecurityDeposit(input);
     const fulfillment = normalizeFulfillmentPolicy(input);
     const latest = await this.database.client.vehiclePolicyVersion.findFirst({
       orderBy: { version: 'desc' },
@@ -758,6 +765,9 @@ export class VehiclesService {
         sunday:
           input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.sunday === true,
         ...fulfillment,
+        securityDepositAmountMinor: securityDeposit.amountMinor,
+        securityDepositCurrency: securityDeposit.currency,
+        securityDepositRequired: securityDeposit.required,
         thursday:
           input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.thursday === true,
         turnaroundMinutes: input.turnaroundMinutes,
@@ -946,11 +956,20 @@ export class VehiclesService {
       photos: Array<{
         fileAsset: { id: string; status: FileAssetStatus };
       }>;
+      policyVersions: Array<{
+        securityDepositAmountMinor: number | null;
+        securityDepositCurrency: string | null;
+        securityDepositRequired: boolean;
+      }>;
     },
   >(vehicle: T) {
     return {
       ...vehicle,
       ...this.serializedLocation(vehicle),
+      policyVersions: vehicle.policyVersions.map((policy) => ({
+        ...policy,
+        securityDeposit: securityDepositProjection(policy),
+      })),
       photos: vehicle.photos.map((photo) => ({
         ...photo,
         fileAsset: {
@@ -1337,6 +1356,52 @@ export class VehiclesService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
+  }
+
+  private validateSecurityDeposit(input: CreateVehiclePolicyVersionDto) {
+    const deposit = securityDepositConfiguration({
+      ...(input.securityDepositAmountMinor === undefined
+        ? {}
+        : { amountMinor: input.securityDepositAmountMinor }),
+      ...(input.securityDepositCurrency === undefined
+        ? {}
+        : { currency: input.securityDepositCurrency }),
+      ...(input.securityDepositRequired === undefined
+        ? {}
+        : { required: input.securityDepositRequired }),
+    });
+    if (!deposit.required) {
+      if (input.securityDepositAmountMinor !== undefined || input.securityDepositCurrency) {
+        throw new ApplicationException(
+          VehicleErrorCode.SECURITY_DEPOSIT_INVALID_CONFIGURATION,
+          'A no-deposit policy cannot include a deposit amount or currency.',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+      return deposit;
+    }
+    if (deposit.amountMinor === null || deposit.currency === null || deposit.amountMinor <= 0) {
+      throw new ApplicationException(
+        VehicleErrorCode.SECURITY_DEPOSIT_INVALID_CONFIGURATION,
+        'A required security deposit needs a positive amount and currency.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    if (!isSecurityDepositCurrency(deposit.currency)) {
+      throw new ApplicationException(
+        VehicleErrorCode.SECURITY_DEPOSIT_CURRENCY_UNSUPPORTED,
+        'Select a supported security deposit currency.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    if (!isAllowedSecurityDepositTier(deposit.currency, deposit.amountMinor)) {
+      throw new ApplicationException(
+        VehicleErrorCode.SECURITY_DEPOSIT_AMOUNT_NOT_ALLOWED,
+        'Select an approved security deposit amount.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    return deposit;
   }
 
   private async transition(

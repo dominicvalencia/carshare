@@ -5,6 +5,8 @@ import {
   OwnerEarningsController,
   PaymentWebhooksController,
   RenterPaymentsController,
+  RenterSecurityDepositController,
+  SecurityDepositPolicyController,
 } from './payments.controller';
 import {
   PAYMENT_PROVIDER,
@@ -19,9 +21,11 @@ import { OwnerFinancialReadModelService } from './owner-financial-read-model.ser
 @Module({
   controllers: [
     RenterPaymentsController,
+    RenterSecurityDepositController,
     OwnerEarningsController,
     PaymentWebhooksController,
     AdminFinanceController,
+    SecurityDepositPolicyController,
   ],
   exports: [PaymentsService, PAYMENT_PROVIDER],
   imports: [PayoutsModule, RenterVerificationModule],

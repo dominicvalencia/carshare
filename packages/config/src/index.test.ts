@@ -40,10 +40,31 @@ describe('environment configuration', () => {
 
     expect(environment.API_PORT).toBe(3000);
     expect(environment.CORS_ORIGINS).toEqual(['http://localhost:3001', 'http://localhost:8081']);
+    expect(environment.SECURITY_DEPOSIT_SETTLEMENT_EXECUTION_ENABLED).toBe(false);
+  });
+
+  it('fails closed when Phase 4 settlement provider execution is requested', () => {
+    expect(() =>
+      parseApiEnvironment({
+        DATABASE_URL: 'postgresql://user:password@localhost:5432/database',
+        JWT_ACCESS_SECRET: 'test-access-secret-at-least-thirty-two-characters',
+        REDIS_URL: 'redis://localhost:6379',
+        SECURITY_DEPOSIT_SETTLEMENT_EXECUTION_ENABLED: 'true',
+        TOKEN_HASH_SECRET: 'test-token-secret-at-least-thirty-two-characters',
+      }),
+    ).toThrow('settlement provider execution is unavailable');
   });
 
   it('rejects an invalid worker Redis URL', () => {
     expect(() => parseWorkerEnvironment({ REDIS_URL: 'not-a-url' })).toThrow();
+  });
+
+  it('uses an operational evidence-attempt threshold without treating it as provider failure', () => {
+    const environment = parseWorkerEnvironment({
+      DATABASE_URL: 'postgresql://user:password@localhost:5432/database',
+      REDIS_URL: 'redis://localhost:6379',
+    });
+    expect(environment.PAYMENT_OPERATION_RECONCILIATION_MANUAL_REVIEW_ATTEMPTS).toBe(8);
   });
 
   it('rejects the fake payment provider in production', () => {

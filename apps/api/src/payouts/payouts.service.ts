@@ -894,6 +894,37 @@ export class PayoutsService {
             'PAYOUT_WORKFLOW_INCOMPLETE',
             `Required rental workflow is incomplete: ${blocker}.`,
           );
+        const depositBlocker = await transaction.$queryRaw<{ blocked: boolean }[]>(Prisma.sql`
+          SELECT EXISTS (
+            SELECT 1
+            FROM "payout_items" pi
+            JOIN "owner_earnings" e ON e."id" = pi."owner_earning_id"
+            WHERE pi."payout_id" = ${payoutId}::uuid
+              AND pi."active_allocation"
+              AND (
+                EXISTS (
+                  SELECT 1 FROM "security_deposit_settlements" s
+                  WHERE s."booking_id" = e."booking_id"
+                    AND s."status" NOT IN ('RELEASED', 'PARTIALLY_USED', 'USED', 'REVERSED')
+                )
+                OR EXISTS (
+                  SELECT 1 FROM "security_deposit_authorizations" a
+                  WHERE a."booking_id" = e."booking_id"
+                    AND a."status" IN ('AUTHORIZED', 'CLAIM_HELD')
+                    AND NOT EXISTS (
+                      SELECT 1 FROM "security_deposit_settlements" terminal
+                      WHERE terminal."security_deposit_authorization_id" = a."id"
+                        AND terminal."status" IN ('RELEASED', 'PARTIALLY_USED', 'USED', 'REVERSED')
+                    )
+                )
+              )
+          ) AS blocked
+        `);
+        if (depositBlocker[0]?.blocked)
+          this.conflict(
+            'PAYOUT_SECURITY_DEPOSIT_SETTLEMENT_PENDING',
+            'Security Deposit settlement must reach financial closure before payout submission.',
+          );
       }
       const payout = await transaction.payout.update({
         data: {

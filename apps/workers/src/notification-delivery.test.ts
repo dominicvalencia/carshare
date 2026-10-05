@@ -4,6 +4,39 @@ import { consumeDomainEvent, workerPushProvider } from './notification-delivery'
 import type { WorkerEnvironment } from '@carrental/config';
 
 describe('booking request notification delivery', () => {
+  it('creates the authoritative deposit-completed notification exactly once for the renter', async () => {
+    const bookingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const renterUserId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const creates = new Map<string, Record<string, unknown>>();
+    const database = {
+      booking: {
+        findUnique: vi.fn(async ({ select }: { select: Record<string, unknown> }) =>
+          'publicReference' in select
+            ? { publicReference: 'CR-2026-DEPOSIT' }
+            : { ownerUserId, renterUserId },
+        ),
+      },
+      devicePushToken: { findMany: vi.fn(async () => []) },
+      notificationPreference: { findUnique: vi.fn(async () => null) },
+      notification: {
+        upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+          creates.set(String(create.stableKey), create);
+          return { id: bookingId };
+        }),
+      },
+    } as unknown as PrismaClient;
+    const payload = { bookingId, amountMinor: '300000', currency: 'PHP' };
+    await consumeDomainEvent(database, 'SECURITY_DEPOSIT_HELD', payload, 'outbox-1');
+    await consumeDomainEvent(database, 'SECURITY_DEPOSIT_HELD', payload, 'outbox-2');
+    expect(creates).toHaveLength(1);
+    expect([...creates.values()][0]).toMatchObject({
+      deepLink: 'carrental://bookings/CR-2026-DEPOSIT',
+      templateKey: 'security-deposit.completed',
+      userId: renterUserId,
+      variables: { reference: 'CR-2026-DEPOSIT' },
+    });
+  });
   it('creates one renter recovery notification with a safe focused deep link', async () => {
     const bookingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';

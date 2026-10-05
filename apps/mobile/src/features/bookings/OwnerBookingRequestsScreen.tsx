@@ -22,6 +22,7 @@ import {
 } from '../../ui/primitives';
 import type { BookingView } from './MyBookingsScreen';
 import { BookingCancellationSheet } from './BookingCancellationSheet';
+import { SecurityDepositSummary } from './SecurityDepositSummary';
 import { tripDateSummary } from '../discovery/trip-date-policy';
 import {
   amendmentErrorMessage,
@@ -826,6 +827,7 @@ function OwnerRequestDetail({
           />
         )}
       </Card>
+      <SecurityDepositSummary securityDeposit={booking.securityDeposit} />
       <Card style={styles.notice}>
         <Text style={styles.title}>Payment is authorized, not captured</Text>
         <Text style={styles.body}>

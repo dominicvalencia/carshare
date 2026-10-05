@@ -10,6 +10,7 @@ import {
   PaymentStatus,
   PaymentWebhookStatus,
   Prisma,
+  SecurityDepositStatus,
   type PrismaClient,
   finalizeBookingAmendmentPaymentCapture,
 } from '@carrental/database';
@@ -33,6 +34,8 @@ export function workerPaymentProvider(environment: WorkerEnvironment): PaymentPr
     cancelUrl: environment.MAYA_CANCEL_URL,
     failureUrl: environment.MAYA_FAILURE_URL,
     publicKey: environment.MAYA_PUBLIC_KEY!,
+    securityDepositPreauthorizationEnabled:
+      environment.MAYA_SECURITY_DEPOSIT_PREAUTHORIZATION_ENABLED,
     secretKey: environment.MAYA_SECRET_KEY!,
     successUrl: environment.MAYA_SUCCESS_URL,
     voidRefundEnabled: environment.MAYA_VOID_REFUND_ENABLED,
@@ -48,6 +51,37 @@ export async function reconcilePayments(
   provider: PaymentProvider,
   environment: WorkerEnvironment,
 ): Promise<number> {
+  const terminalDeposits = await database.securityDepositAuthorization.findMany({
+    include: { booking: true, payment: { include: { operations: true } } },
+    take: 50,
+    where: {
+      booking: { status: { in: [BookingStatus.CANCELLED, BookingStatus.EXPIRED] } },
+      payment: { status: PaymentStatus.AUTHORIZED },
+    },
+  });
+  for (const deposit of terminalDeposits) {
+    const payment = deposit.payment;
+    if (!payment) continue;
+    await database.$transaction(async (transaction) => {
+      await transaction.payment.updateMany({
+        data: { status: PaymentStatus.VOID_PENDING },
+        where: { id: payment.id, status: PaymentStatus.AUTHORIZED },
+      });
+      await transaction.paymentOperation.upsert({
+        create: {
+          amountMinor: payment.authorizedAmountMinor,
+          currency: payment.currency,
+          idempotencyKey: `booking:${deposit.bookingId}:security-deposit:void:v1`,
+          paymentId: payment.id,
+          providerRequestReference: randomUUID(),
+          status: PaymentOperationStatus.PENDING,
+          type: PaymentOperationType.VOID,
+        },
+        update: {},
+        where: { idempotencyKey: `booking:${deposit.bookingId}:security-deposit:void:v1` },
+      });
+    });
+  }
   const payments = await database.payment.findMany({
     include: { operations: { orderBy: { createdAt: 'desc' } } },
     take: 50,
@@ -187,6 +221,7 @@ async function retrieveAndApply(
   payment: {
     id: string;
     externalPaymentId: string | null;
+    operations?: readonly { providerRequestReference: string; type: PaymentOperationType }[];
     purpose: PaymentPurpose;
     status: PaymentStatus;
   },
@@ -194,9 +229,16 @@ async function retrieveAndApply(
   correlationId: string,
   environment: WorkerEnvironment,
 ) {
-  if (!payment.externalPaymentId) return defer(database, payment.id);
   try {
-    const truth = await provider.retrievePayment(payment.externalPaymentId);
+    const authorizationReference = payment.operations?.find(
+      (candidate) => candidate.type === PaymentOperationType.AUTHORIZE,
+    )?.providerRequestReference;
+    const truth = payment.externalPaymentId
+      ? await provider.retrievePayment(payment.externalPaymentId)
+      : authorizationReference
+        ? await provider.retrievePaymentByRequestReference(authorizationReference)
+        : null;
+    if (!truth?.externalPaymentId) return defer(database, payment.id);
     if (truth.state === 'AUTHORIZED' && payment.status === PaymentStatus.AUTHORIZING) {
       if (payment.purpose === PaymentPurpose.ADDITIONAL_CHARGE) {
         await prepareAdditionalChargeCapture(
@@ -205,6 +247,38 @@ async function retrieveAndApply(
           truth.externalPaymentId,
           truth.providerState,
         );
+      } else if (payment.purpose === PaymentPurpose.SECURITY_DEPOSIT) {
+        await database.$transaction(async (transaction) => {
+          const record = await transaction.payment.findUniqueOrThrow({ where: { id: payment.id } });
+          if (
+            truth.authorizedAmountMinor !== record.amountMinor ||
+            truth.currency !== record.currency
+          )
+            throw new Error('SECURITY_DEPOSIT_PROVIDER_CORRELATION_INVALID');
+          await transaction.payment.update({
+            data: {
+              authorizedAmountMinor: record.amountMinor,
+              authorizedAt: new Date(),
+              externalPaymentId: truth.externalPaymentId,
+              providerState: truth.providerState,
+              reconciliationRequired: false,
+              status: PaymentStatus.AUTHORIZED,
+            },
+            where: { id: payment.id },
+          });
+          await transaction.securityDepositAuthorization.update({
+            data: {
+              authorizedAmountMinor: truth.authorizedAmountMinor,
+              status: SecurityDepositStatus.AUTHORIZED,
+            },
+            where: { paymentId: payment.id },
+          });
+          if (operationId)
+            await transaction.paymentOperation.update({
+              data: { completedAt: new Date(), status: PaymentOperationStatus.SUCCEEDED },
+              where: { id: operationId },
+            });
+        });
       } else {
         await database.$executeRaw(
           Prisma.sql`SELECT "finalize_payment_authorization"(${payment.id}::uuid, ${truth.externalPaymentId}, ${truth.providerState}, ${environment.OWNER_RESPONSE_TTL_MINUTES}, ${correlationId})`,
@@ -351,9 +425,18 @@ async function finalizeVoid(
   providerState: string,
   externalOperationId: string | undefined,
 ) {
+  const payment = await database.payment.findUniqueOrThrow({
+    select: { purpose: true },
+    where: { id: paymentId },
+  });
   await database.$executeRaw(
     Prisma.sql`SELECT "finalize_payment_void"(${paymentId}::uuid, ${operationId ?? null}::uuid, ${providerState}, ${externalOperationId ?? null})`,
   );
+  if (payment.purpose === PaymentPurpose.SECURITY_DEPOSIT)
+    await database.securityDepositAuthorization.update({
+      data: { status: SecurityDepositStatus.RELEASED },
+      where: { paymentId },
+    });
 }
 
 async function definitiveCaptureFailure(
@@ -516,8 +599,22 @@ async function processWebhookBacklog(
       data: { attemptCount: { increment: 1 }, status: PaymentWebhookStatus.PROCESSING },
       where: { id: event.id },
     });
-    const payment = await database.payment.findUnique({ where: { id: event.paymentId } });
+    const payment = await database.payment.findUnique({
+      include: { operations: { include: { securityDepositSettlementLeg: true } } },
+      where: { id: event.paymentId },
+    });
     if (!payment) continue;
+    if (payment.operations.some((operation) => operation.securityDepositSettlementLeg)) {
+      await database.paymentWebhookEvent.update({
+        data: {
+          failureReason: null,
+          processedAt: new Date(),
+          status: PaymentWebhookStatus.PROCESSED,
+        },
+        where: { id: event.id },
+      });
+      continue;
+    }
     try {
       await retrieveAndApply(
         database,

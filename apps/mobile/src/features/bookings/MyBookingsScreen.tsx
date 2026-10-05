@@ -34,6 +34,8 @@ import { ReviewPanel } from '../reviews/ReviewPanel';
 import { bookingGroup, type BookingGroup } from './booking-presentation';
 import { BookingCancellationSheet } from './BookingCancellationSheet';
 import { BookingAmendmentSheet } from './BookingAmendmentSheet';
+import { SecurityDepositSummary } from './SecurityDepositSummary';
+import type { BookingSecurityDepositReadModel } from '@carrental/api-contracts';
 
 interface ContentGrant {
   readonly contentPath: string;
@@ -41,6 +43,7 @@ interface ContentGrant {
 }
 
 export interface BookingView {
+  readonly securityDeposit: BookingSecurityDepositReadModel;
   readonly latestAmendment?: {
     readonly amendmentId: string;
     readonly createdAt: string;
@@ -273,6 +276,17 @@ export function MyBookingsScreen({
     mutationFn: (reference: string) => apiClient.request(`/bookings/${reference}/payment`),
     onSuccess: () => refresh(client, selected),
   });
+  const securityDeposit = useMutation({
+    mutationFn: async (booking: BookingView) => {
+      const result = await apiClient.request<{ customerActionUrl: string | null }>(
+        `/bookings/${booking.publicReference}/security-deposit/authorize`,
+        { method: 'POST' },
+      );
+      if (result.customerActionUrl) await Linking.openURL(result.customerActionUrl);
+      return result;
+    },
+    onSuccess: () => refresh(client, selected),
+  });
   if (selected)
     return (
       <BookingDetail
@@ -294,6 +308,7 @@ export function MyBookingsScreen({
         cancel={cancel}
         payment={payment}
         refreshPayment={refreshPayment}
+        securityDepositMutation={securityDeposit}
       />
     );
   const filtered = (bookings.data ?? []).filter(
@@ -466,6 +481,7 @@ function BookingDetail({
   cancel,
   payment,
   refreshPayment,
+  securityDepositMutation,
 }: {
   readonly booking?: BookingView | undefined;
   readonly focusRecovery: boolean;
@@ -477,6 +493,7 @@ function BookingDetail({
   readonly cancel: ReturnType<typeof useMutation<BookingView, Error, string>>;
   readonly payment: ReturnType<typeof useMutation<unknown, Error, BookingView>>;
   readonly refreshPayment: ReturnType<typeof useMutation<unknown, Error, string>>;
+  readonly securityDepositMutation: ReturnType<typeof useMutation<unknown, Error, BookingView>>;
 }) {
   const scrollRef = useRef<ScrollView>(null);
   const scrollOffsetY = useRef(0);
@@ -663,6 +680,12 @@ function BookingDetail({
                   />
                 )}
               </Card>
+              <SecurityDepositSummary
+                busy={securityDepositMutation.isPending}
+                errorMessage={securityDepositMutation.error?.message}
+                onPlace={() => securityDepositMutation.mutate(booking)}
+                securityDeposit={booking.securityDeposit}
+              />
               {booking.conversationId && (
                 <Button
                   icon="chatbubble-outline"
@@ -826,6 +849,12 @@ function BookingDetail({
               />
             )}
           </Card>
+          <SecurityDepositSummary
+            busy={securityDepositMutation.isPending}
+            errorMessage={securityDepositMutation.error?.message}
+            onPlace={() => securityDepositMutation.mutate(booking)}
+            securityDeposit={booking.securityDeposit}
+          />
           {booking.conversationId && (
             <Button
               icon="chatbubble-outline"

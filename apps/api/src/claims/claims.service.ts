@@ -413,9 +413,25 @@ export class ClaimsService {
       orderBy: { postedAt: 'asc' },
       where: { sourceId: { in: ledgerSourceIds } },
     });
+    const securityDepositSettlements =
+      await this.database.client.securityDepositSettlement.findMany({
+        include: {
+          items: {
+            include: {
+              additionalCharge: { select: { status: true } },
+              adjudication: { select: { outcome: true, reason: true, version: true } },
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          },
+          legs: { include: { operation: true }, orderBy: { sequence: 'asc' } },
+        },
+        orderBy: { version: 'desc' },
+        where: { bookingId: claim.bookingId },
+      });
     return this.serialize({
       claim: { ...claim, severity: this.claimSeverity(claim) },
       ledger,
+      securityDepositSettlements,
     });
   }
 
