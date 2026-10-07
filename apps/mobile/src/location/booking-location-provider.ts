@@ -51,3 +51,31 @@ export function locationLabel(location: CarShareLocation) {
     .filter((value, index, all) => Boolean(value) && all.indexOf(value) === index)
     .join(', ');
 }
+
+export function locationDisplayLabel(location: CarShareLocation) {
+  const seen = new Set<string>();
+  const postalCodeKey = location.postalCode?.toLocaleLowerCase().trim();
+
+  return [
+    location.displayName,
+    location.addressLine1,
+    location.barangay,
+    location.city,
+    location.province,
+    location.postalCode,
+  ]
+    .flatMap((value) => value?.split(',') ?? [])
+    .map((value) => value.trim())
+    .filter((value) => {
+      const key = value.toLocaleLowerCase().replace(/\s+/g, ' ');
+      if (!key || seen.has(key)) return false;
+      if (
+        key === postalCodeKey &&
+        [...seen].some((part) => part.split(/[^a-z0-9]+/).includes(postalCodeKey))
+      )
+        return false;
+      seen.add(key);
+      return true;
+    })
+    .join(', ');
+}

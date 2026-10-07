@@ -128,6 +128,17 @@ isolated synthetic Checkout exercise. The explicit certification switch is false
 
 ## Safety and state model audit
 
+Certification-only validation is scoped to the explicit Maya certification runner/CLI. Normal API
+startup applies the ordinary global payment/provider configuration safeguards, but does not require
+certification-only inputs merely because `MAYA_CERTIFICATION_ENABLED` is present. This allows
+unrelated API integration tests to boot without private certification credentials or an isolated
+certification payment configuration.
+
+The certification runner still enforces local/test execution, Maya sandbox selection, the explicit
+certification switch, bounded amounts, execution confirmation, credentials, return-URL allowlisting,
+and provider capability checks. This scoping change does not modify `.env` or credentials, weaken
+production payment safety, or enable Security Deposit settlement execution.
+
 The existing database models already store provider payment identifiers, attempts, idempotency
 keys, financial webhook identities, ledger postings, and reconciliation state. Booking authorization,
 owner acceptance capture, void/cancellation, refund, unknown-state reconciliation, and ledger

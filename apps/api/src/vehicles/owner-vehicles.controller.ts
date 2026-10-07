@@ -30,6 +30,7 @@ import {
   CreateVehicleDto,
   CreateVehiclePolicyVersionDto,
   ReorderVehiclePhotosDto,
+  RemoveVehicleDto,
   SetVehicleFeaturesDto,
   SetVehicleLocationDto,
   UpdateVehicleDto,
@@ -67,6 +68,22 @@ export class OwnerVehiclesController {
   @Get(':id')
   detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
     return this.vehicles.getOwned(principal.userId, id);
+  }
+
+  @Get(':id/delete-eligibility')
+  deleteEligibility(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
+    return this.vehicles.deleteEligibility(principal.userId, id);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  remove(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: RemoveVehicleDto,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.removeFromFleet(principal.userId, id, input, requestMetadata(request));
   }
 
   @Get(':id/known-issues')

@@ -136,6 +136,16 @@ enum VehicleOperationalStatus {
   TEMPORARILY_UNAVAILABLE
 }
 
+enum VehicleRemovalReason {
+  SOLD_VEHICLE
+  NO_LONGER_RENTING
+  VEHICLE_UNAVAILABLE
+  MAINTENANCE_OR_REPAIRS
+  REPLACING_VEHICLE
+  CARSHARE_EXPERIENCE
+  OTHER
+}
+
 enum VehicleTransmission {
   AUTOMATIC
   MANUAL
@@ -1057,6 +1067,7 @@ model User {
   securityEvents                        SecurityEvent[]
   auditLogs                             AuditLog[]                                 @relation("AuditActor")
   ownedVehicles                         Vehicle[]                                  @relation("VehicleOwnerUser")
+  archivedVehicles                      Vehicle[]                                  @relation("VehicleArchivedByUser")
   vehiclePolicyVersions                 VehiclePolicyVersion[]                     @relation("VehiclePolicyCreator")
   vehicleBlocksCreated                  VehicleBlockedPeriod[]                     @relation("VehicleBlockCreator")
   vehicleStatusChanges                  VehicleStatusHistory[]                     @relation("VehicleStatusActor")
@@ -1747,11 +1758,15 @@ model Vehicle {
   submittedAt          DateTime?                @map("submitted_at") @db.Timestamptz(3)
   approvedAt           DateTime?                @map("approved_at") @db.Timestamptz(3)
   archivedAt           DateTime?                @map("archived_at") @db.Timestamptz(3)
+  archivedByUserId     String?                  @map("archived_by_user_id") @db.Uuid
+  removalReason        VehicleRemovalReason?    @map("removal_reason")
+  removalOtherReason   String?                  @map("removal_other_reason") @db.VarChar(500)
   createdAt            DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt            DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   ownerProfile    OwnerProfile               @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
   ownerUser       User                       @relation("VehicleOwnerUser", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  archivedByUser  User?                      @relation("VehicleArchivedByUser", fields: [archivedByUserId], references: [id], onDelete: SetNull)
   category        VehicleCategory?           @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   features        VehicleFeatureAssignment[]
   photos          VehiclePhoto[]

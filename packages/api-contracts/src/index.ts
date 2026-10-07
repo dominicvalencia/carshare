@@ -84,11 +84,26 @@ export const VehicleErrorCode = {
   INVALID_VEHICLE_FILE: 'INVALID_VEHICLE_FILE',
   INVALID_VEHICLE_SPECIFICATION: 'INVALID_VEHICLE_SPECIFICATION',
   INVALID_VEHICLE_STATE: 'INVALID_VEHICLE_STATE',
+  VEHICLE_DELETE_BLOCKED: 'VEHICLE_DELETE_BLOCKED',
   VEHICLE_INCOMPLETE: 'VEHICLE_INCOMPLETE',
   VEHICLE_NOT_FOUND: 'VEHICLE_NOT_FOUND',
 } as const;
 
 export type VehicleErrorCode = (typeof VehicleErrorCode)[keyof typeof VehicleErrorCode];
+
+export const VehicleRemovalReason = {
+  CARSHARE_EXPERIENCE: 'CARSHARE_EXPERIENCE',
+  MAINTENANCE_OR_REPAIRS: 'MAINTENANCE_OR_REPAIRS',
+  NO_LONGER_RENTING: 'NO_LONGER_RENTING',
+  OTHER: 'OTHER',
+  REPLACING_VEHICLE: 'REPLACING_VEHICLE',
+  SOLD_VEHICLE: 'SOLD_VEHICLE',
+  VEHICLE_UNAVAILABLE: 'VEHICLE_UNAVAILABLE',
+} as const;
+
+export type VehicleRemovalReason = (typeof VehicleRemovalReason)[keyof typeof VehicleRemovalReason];
+
+export const VEHICLE_REMOVAL_OTHER_REASON_MAX_LENGTH = 500 as const;
 
 export interface SecurityDepositTerms {
   readonly amountMinor: number | null;

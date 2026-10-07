@@ -37,6 +37,22 @@ import {
   VehiclePowertrain,
   VehicleTransmission,
 } from '@carrental/database';
+import {
+  VEHICLE_REMOVAL_OTHER_REASON_MAX_LENGTH,
+  VehicleRemovalReason,
+} from '@carrental/api-contracts';
+
+export class RemoveVehicleDto {
+  @ApiProperty({ enum: VehicleRemovalReason })
+  @IsEnum(VehicleRemovalReason)
+  reason!: VehicleRemovalReason;
+
+  @ApiPropertyOptional({ maxLength: VEHICLE_REMOVAL_OTHER_REASON_MAX_LENGTH })
+  @IsOptional()
+  @IsString()
+  @MaxLength(VEHICLE_REMOVAL_OTHER_REASON_MAX_LENGTH)
+  otherReason?: string;
+}
 
 export class CreateVehicleDto {
   @ApiPropertyOptional() @IsOptional() @IsUUID() categoryId?: string;

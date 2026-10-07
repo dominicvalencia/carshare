@@ -1,12 +1,16 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import {
   AvailabilityPolicyType,
+  BookingStatus,
+  DisputeStatus,
   FileAssetStatus,
   FileClassification,
   InspectionConditionClassification,
   MileagePolicyType,
+  PostReturnClaimStatus,
   Prisma,
   ReviewType,
+  SecurityDepositSettlementStatus,
   VehicleLifecycleStatus,
   VehicleOperationalStatus,
   VehiclePhotoPerspective,
@@ -33,6 +37,7 @@ import type {
   CreateVehicleDto,
   CreateVehiclePolicyVersionDto,
   ReorderVehiclePhotosDto,
+  RemoveVehicleDto,
   SetVehicleFeaturesDto,
   SetVehicleLocationDto,
   UpdateVehicleDto,
@@ -101,6 +106,18 @@ const ownerVehicleInclude = {
   statusHistory: { orderBy: { occurredAt: 'asc' as const } },
 };
 type OwnerVehicleRecord = Prisma.VehicleGetPayload<{ include: typeof ownerVehicleInclude }>;
+type VehicleDeleteBlocker = {
+  readonly code:
+    | 'ONGOING_RENTAL'
+    | 'FUTURE_BOOKING'
+    | 'RETURN_PENDING'
+    | 'OPEN_CLAIM'
+    | 'OPEN_DISPUTE'
+    | 'FINANCIAL_SETTLEMENT_PENDING';
+  readonly bookingReference?: string;
+  readonly startsAt?: string;
+  readonly endsAt?: string;
+};
 
 @Injectable()
 export class VehiclesService {
@@ -191,7 +208,7 @@ export class VehiclesService {
         policyVersions: { orderBy: { version: 'desc' }, take: 1 },
       },
       orderBy: { updatedAt: 'desc' },
-      where: { ownerUserId: userId },
+      where: { ownerUserId: userId, status: { not: VehicleLifecycleStatus.ARCHIVED } },
     });
     const { endExclusive, startInclusive } = manilaTodayWindow();
     const vehicleIds = vehicles.map(({ id }) => id);
@@ -285,6 +302,173 @@ export class VehiclesService {
         operationalStatus: vehicle.operationalStatus,
       }),
     };
+  }
+
+  async deleteEligibility(userId: string, id: string) {
+    await this.ownedRecord(userId, id);
+    return this.deleteEligibilityWithClient(this.database.client, id);
+  }
+
+  async removeFromFleet(
+    userId: string,
+    id: string,
+    input: RemoveVehicleDto,
+    request: RequestMetadata,
+  ) {
+    await this.owners.assertDraftCapable(userId);
+    const otherReason = input.otherReason?.trim() || null;
+    if (input.reason !== 'OTHER' && otherReason) {
+      throw new ApplicationException(
+        VehicleErrorCode.INVALID_VEHICLE_SPECIFICATION,
+        'Additional removal details are only accepted when Other is selected.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    await this.database.client.$transaction(async (transaction) => {
+      await transaction.$queryRaw`SELECT id FROM vehicles WHERE id = ${id}::uuid FOR UPDATE`;
+      const vehicle = await transaction.vehicle.findFirst({
+        select: { id: true, status: true },
+        where: { id, ownerUserId: userId },
+      });
+      if (!vehicle) this.notFound();
+      if (vehicle.status === VehicleLifecycleStatus.ARCHIVED) return;
+      const eligibility = await this.deleteEligibilityWithClient(transaction, id);
+      if (!eligibility.allowed) {
+        throw new ApplicationException(
+          VehicleErrorCode.VEHICLE_DELETE_BLOCKED,
+          this.deleteBlockedMessage(eligibility.blockers[0]),
+          HttpStatus.CONFLICT,
+          eligibility.blockers.map((blocker) => ({
+            field: blocker.code,
+            issue: this.deleteBlockedMessage(blocker),
+          })),
+        );
+      }
+      await this.transitionInTransaction(
+        transaction,
+        id,
+        userId,
+        vehicle.status,
+        VehicleLifecycleStatus.ARCHIVED,
+        'Removed from fleet by owner',
+        request,
+        {
+          archivedAt: new Date(),
+          archivedByUser: { connect: { id: userId } },
+          operationalStatus: VehicleOperationalStatus.TEMPORARILY_UNAVAILABLE,
+          removalOtherReason: input.reason === 'OTHER' ? otherReason : null,
+          removalReason: input.reason,
+        },
+      );
+      await transaction.auditLog.create({
+        data: {
+          action: 'VEHICLE_REMOVED_FROM_FLEET',
+          actorUserId: userId,
+          metadata: {
+            otherReason: input.reason === 'OTHER' ? otherReason : null,
+            reason: input.reason,
+          },
+          reason: 'Owner requested removal',
+          targetId: id,
+          targetType: 'VEHICLE',
+          ...(request.correlationId ? { correlationId: request.correlationId } : {}),
+          ...(request.ipAddress ? { ipAddress: request.ipAddress } : {}),
+        },
+      });
+    });
+    await this.setPhotoClassification(id, FileClassification.PRIVATE);
+  }
+
+  private async deleteEligibilityWithClient(
+    client: Prisma.TransactionClient | DatabaseService['client'],
+    vehicleId: string,
+  ): Promise<{ allowed: boolean; blockers: VehicleDeleteBlocker[]; retentionMode: 'ARCHIVE' }> {
+    const bookings = await client.booking.findMany({
+      select: {
+        publicReference: true,
+        rentalEnd: true,
+        rentalStart: true,
+        status: true,
+        postReturnClaims: { select: { status: true } },
+        disputes: { select: { status: true } },
+        securityDepositSettlements: { select: { status: true } },
+      },
+      where: { vehicleId },
+    });
+    const blockers: VehicleDeleteBlocker[] = [];
+    const now = new Date();
+    for (const booking of bookings) {
+      const detail = {
+        bookingReference: booking.publicReference,
+        endsAt: booking.rentalEnd.toISOString(),
+        startsAt: booking.rentalStart.toISOString(),
+      };
+      if (
+        [BookingStatus.ACTIVE, BookingStatus.READY_FOR_PICKUP].includes(booking.status as never)
+      ) {
+        blockers.push({ code: 'ONGOING_RENTAL', ...detail });
+      } else if (
+        [BookingStatus.RETURN_PENDING, BookingStatus.RETURNED].includes(booking.status as never)
+      ) {
+        blockers.push({ code: 'RETURN_PENDING', ...detail });
+      } else if (
+        [BookingStatus.CAPTURE_PENDING, BookingStatus.CONFIRMED].includes(
+          booking.status as never,
+        ) &&
+        booking.rentalEnd > now
+      ) {
+        blockers.push({ code: 'FUTURE_BOOKING', ...detail });
+      }
+      if (
+        booking.postReturnClaims.some(
+          ({ status }) =>
+            ![PostReturnClaimStatus.WITHDRAWN, PostReturnClaimStatus.RESOLVED].includes(
+              status as never,
+            ),
+        )
+      )
+        blockers.push({ code: 'OPEN_CLAIM', ...detail });
+      if (
+        booking.disputes.some(
+          ({ status }) =>
+            ![
+              DisputeStatus.RESOLVED_FOR_RENTER,
+              DisputeStatus.RESOLVED_FOR_OWNER,
+              DisputeStatus.PARTIALLY_RESOLVED,
+              DisputeStatus.CLOSED,
+            ].includes(status as never),
+        )
+      )
+        blockers.push({ code: 'OPEN_DISPUTE', ...detail });
+      if (
+        booking.securityDepositSettlements.some(
+          ({ status }) =>
+            ![
+              SecurityDepositSettlementStatus.RELEASED,
+              SecurityDepositSettlementStatus.PARTIALLY_USED,
+              SecurityDepositSettlementStatus.USED,
+              SecurityDepositSettlementStatus.REVERSED,
+            ].includes(status as never),
+        )
+      )
+        blockers.push({ code: 'FINANCIAL_SETTLEMENT_PENDING', ...detail });
+    }
+    return { allowed: blockers.length === 0, blockers, retentionMode: 'ARCHIVE' };
+  }
+
+  private deleteBlockedMessage(blocker?: VehicleDeleteBlocker): string {
+    if (!blocker) return 'This vehicle cannot be removed right now.';
+    if (blocker.code === 'ONGOING_RENTAL')
+      return "This vehicle can't be removed while a rental is in progress.";
+    if (blocker.code === 'FUTURE_BOOKING')
+      return "This vehicle can't be removed because it has an upcoming booking.";
+    if (blocker.code === 'RETURN_PENDING')
+      return "This vehicle can't be removed until the return workflow is complete.";
+    if (blocker.code === 'OPEN_CLAIM')
+      return "This vehicle can't be removed while a claim is open.";
+    if (blocker.code === 'OPEN_DISPUTE')
+      return "This vehicle can't be removed while a dispute is open.";
+    return "This vehicle can't be removed while a security deposit settlement is pending.";
   }
 
   async listKnownIssues(userId: string, id: string) {
@@ -479,7 +663,10 @@ export class VehiclesService {
     this.assertState(vehicle.status, POLICY_EDITABLE, 'Features cannot be changed in this state.');
     const unique = [...new Set(input.featureIds)];
     const count = await this.database.client.vehicleFeature.count({
-      where: { active: true, id: { in: unique } },
+      where: {
+        id: { in: unique },
+        OR: [{ active: true }, { assignments: { some: { vehicleId: id } } }],
+      },
     });
     if (count !== unique.length) {
       throw new ApplicationException(

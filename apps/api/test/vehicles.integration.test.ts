@@ -93,6 +93,57 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
       .send({})
       .expect(201);
     preVerificationVehicleId = draft.body.data.id;
+    const removableDraft = await request(app.getHttpServer())
+      .post('/api/v1/owner/vehicles')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({})
+      .expect(201);
+    await request(app.getHttpServer())
+      .get(`/api/v1/owner/vehicles/${removableDraft.body.data.id}/delete-eligibility`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toEqual({ allowed: true, blockers: [], retentionMode: 'ARCHIVE' });
+      });
+    await request(app.getHttpServer())
+      .delete(`/api/v1/owner/vehicles/${removableDraft.body.data.id}`)
+      .set('Authorization', `Bearer ${renterToken}`)
+      .send({ reason: 'SOLD_VEHICLE' })
+      .expect(403);
+    await request(app.getHttpServer())
+      .delete(`/api/v1/owner/vehicles/${removableDraft.body.data.id}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ reason: 'NOT_A_REASON' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .delete(`/api/v1/owner/vehicles/${removableDraft.body.data.id}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ otherReason: 'Should not be stored', reason: 'SOLD_VEHICLE' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .delete(`/api/v1/owner/vehicles/${removableDraft.body.data.id}`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ otherReason: '  Switching to a family vehicle.  ', reason: 'OTHER' })
+      .expect(204);
+    await expect(
+      database.client.vehicle.findUniqueOrThrow({ where: { id: removableDraft.body.data.id } }),
+    ).resolves.toMatchObject({
+      archivedAt: expect.any(Date),
+      archivedByUserId: expect.any(String),
+      removalOtherReason: 'Switching to a family vehicle.',
+      removalReason: 'OTHER',
+      status: 'ARCHIVED',
+    });
+    await expect(
+      database.client.auditLog.findFirstOrThrow({
+        where: { action: 'VEHICLE_REMOVED_FROM_FLEET', targetId: removableDraft.body.data.id },
+      }),
+    ).resolves.toMatchObject({
+      metadata: {
+        otherReason: 'Switching to a family vehicle.',
+        reason: 'OTHER',
+      },
+    });
     await request(app.getHttpServer())
       .patch(`/api/v1/owner/vehicles/${preVerificationVehicleId}`)
       .set('Authorization', `Bearer ${ownerToken}`)
@@ -228,11 +279,61 @@ describe.sequential('Phase 3 vehicle supply integration', () => {
       .get('/api/v1/owner/vehicle-reference-data/features')
       .set('Authorization', `Bearer ${ownerToken}`)
       .expect(200);
+    const featureCatalog = features.body.data as Array<{
+      code: string;
+      id: string;
+      name: string;
+      sortOrder: number;
+    }>;
+    expect(featureCatalog).toHaveLength(32);
+    expect(new Set(featureCatalog.map(({ code }) => code))).toHaveLength(32);
+    expect(new Set(featureCatalog.map(({ name }) => name))).toHaveLength(32);
+    expect(featureCatalog.map(({ sortOrder }) => sortOrder)).toEqual(
+      [...featureCatalog.map(({ sortOrder }) => sortOrder)].sort((left, right) => left - right),
+    );
+    expect(featureCatalog.map(({ code }) => code)).toEqual(
+      expect.arrayContaining([
+        'AIR_CONDITIONING',
+        'BLIND_SPOT_MONITORING',
+        'AUTOSWEEP_RFID',
+        'FAST_CHARGING_SUPPORT',
+        'V2L_SUPPORT',
+      ]),
+    );
+    expect(featureCatalog.map(({ code }) => code)).not.toContain('PHONE_HOLDER');
+    const selectedFeatureIds = ['AIR_CONDITIONING', 'AUTOSWEEP_RFID'].map(
+      (code) => featureCatalog.find((feature) => feature.code === code)?.id,
+    );
+    expect(selectedFeatureIds.every(Boolean)).toBe(true);
     await request(app.getHttpServer())
       .put(`/api/v1/owner/vehicles/${vehicleId}/features`)
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ featureIds: features.body.data.slice(0, 3).map((item: { id: string }) => item.id) })
+      .send({ featureIds: selectedFeatureIds })
       .expect(200);
+    const persistedFeatures = await database.client.vehicleFeatureAssignment.findMany({
+      where: { vehicleId },
+    });
+    expect(persistedFeatures.map(({ featureId }) => featureId).sort()).toEqual(
+      [...selectedFeatureIds].sort(),
+    );
+    const retiredFeature = await database.client.vehicleFeature.findUniqueOrThrow({
+      where: { code: 'PHONE_HOLDER' },
+    });
+    expect(retiredFeature.active).toBe(false);
+    await database.client.vehicleFeatureAssignment.create({
+      data: { featureId: retiredFeature.id, vehicleId },
+    });
+    const selectionWithRetiredFeature = [...selectedFeatureIds, retiredFeature.id];
+    await request(app.getHttpServer())
+      .put(`/api/v1/owner/vehicles/${vehicleId}/features`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ featureIds: selectionWithRetiredFeature })
+      .expect(200);
+    expect(
+      (await database.client.vehicleFeatureAssignment.findMany({ where: { vehicleId } }))
+        .map(({ featureId }) => featureId)
+        .sort(),
+    ).toEqual([...selectionWithRetiredFeature].sort());
     await request(app.getHttpServer())
       .put(`/api/v1/owner/vehicles/${vehicleId}/location`)
       .set('Authorization', `Bearer ${ownerToken}`)

@@ -3,6 +3,7 @@
 Start with the [current system baseline](architecture/current-system-baseline.md). Domain references:
 
 - [Booking lifecycle and cancellation](architecture/booking-lifecycle-and-cancellation.md)
+- [Owner vehicle management](architecture/owner-vehicle-management.md)
 - [Change Booking](architecture/change-booking.md)
 - [Payments, refunds, ledger, and payouts](architecture/payments-refunds-ledger.md)
 - [Security Deposit Phase 1 foundation](architecture/security-deposit-phase-1-foundation.md)

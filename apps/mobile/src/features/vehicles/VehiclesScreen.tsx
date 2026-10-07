@@ -1,31 +1,42 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { SecurityDepositPolicyCatalog } from '@carrental/api-contracts';
+import {
+  VEHICLE_REMOVAL_OTHER_REASON_MAX_LENGTH,
+  VehicleRemovalReason,
+  type SecurityDepositPolicyCatalog,
+  type VehicleRemovalReason as VehicleRemovalReasonCode,
+} from '@carrental/api-contracts';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import {
   Alert,
-  Image,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { apiClient } from '../../auth/api-client';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateTimeField } from '../../ui/DateTimeField';
+import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
 import { ensureCameraPermission } from '../../ui/camera-permission';
 import { domainLabel, money, vehicleStatusLabel } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import { SearchableReferenceSelector } from '../../ui/SearchableReferenceSelector';
 import { LocationPicker } from '../../location/LocationPicker';
-import { locationLabel, type CarShareLocation } from '../../location/booking-location-provider';
+import {
+  locationDisplayLabel,
+  type CarShareLocation,
+} from '../../location/booking-location-provider';
 import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
 import { DepositTierSelector } from './DepositTierSelector';
 import {
@@ -42,8 +53,22 @@ interface Reference {
   readonly id: string;
   readonly code: string;
   readonly name: string;
+  readonly description?: string | null;
   readonly required?: boolean;
 }
+
+const vehicleRemovalReasonOptions: readonly {
+  readonly label: string;
+  readonly value: VehicleRemovalReasonCode;
+}[] = [
+  { label: 'I sold the vehicle', value: VehicleRemovalReason.SOLD_VEHICLE },
+  { label: 'I no longer want to rent it out', value: VehicleRemovalReason.NO_LONGER_RENTING },
+  { label: 'The vehicle is no longer available', value: VehicleRemovalReason.VEHICLE_UNAVAILABLE },
+  { label: 'Maintenance or repairs', value: VehicleRemovalReason.MAINTENANCE_OR_REPAIRS },
+  { label: "I'm replacing it with another vehicle", value: VehicleRemovalReason.REPLACING_VEHICLE },
+  { label: 'I had problems using CarShare', value: VehicleRemovalReason.CARSHARE_EXPERIENCE },
+  { label: 'Other', value: VehicleRemovalReason.OTHER },
+];
 interface SafeFile {
   readonly id: string;
   readonly originalName: string;
@@ -179,9 +204,76 @@ const steps = [
   'Photos',
   'Documents',
   'Location',
-  'Policies',
+  'Pricing',
+  'Handover & usage',
   'Review',
 ] as const;
+const stepCompletionIds = [
+  'Details',
+  'Features',
+  'Photos',
+  'Documents',
+  'Location',
+  null,
+  'Policies',
+  null,
+] as const;
+const vehicleFeatureGroups = [
+  {
+    codes: [
+      'AIR_CONDITIONING',
+      'REAR_AIR_CONDITIONING',
+      'LEATHER_SEATS',
+      'PUSH_BUTTON_START',
+      'KEYLESS_ENTRY',
+      'CRUISE_CONTROL',
+      'ADAPTIVE_CRUISE_CONTROL',
+      'SUNROOF_MOONROOF',
+    ],
+    title: 'Comfort',
+  },
+  {
+    codes: [
+      'BLUETOOTH',
+      'APPLE_CARPLAY',
+      'ANDROID_AUTO',
+      'WIRELESS_PHONE_CHARGING',
+      'USB_CHARGING',
+      'GPS_NAVIGATION',
+    ],
+    title: 'Connectivity',
+  },
+  {
+    codes: [
+      'BACKUP_CAMERA',
+      'CAMERA_360',
+      'PARKING_SENSORS',
+      'BLIND_SPOT_MONITORING',
+      'LANE_KEEPING_ASSIST',
+      'AUTOMATIC_EMERGENCY_BRAKING',
+      'DASHCAM',
+      'CHILD_SEAT_COMPATIBLE',
+    ],
+    title: 'Parking & safety',
+  },
+  {
+    codes: [
+      'FAST_CHARGING_SUPPORT',
+      'PORTABLE_CHARGING_CABLE',
+      'CHARGING_ADAPTER',
+      'REGENERATIVE_BRAKING',
+      'V2L_SUPPORT',
+      'ONE_PEDAL_DRIVING',
+      'BATTERY_PRECONDITIONING',
+    ],
+    title: 'EV & charging',
+  },
+  {
+    codes: ['TOLL_RFID', 'AUTOSWEEP_RFID', 'EASYTRIP_RFID'],
+    title: 'Other',
+  },
+] as const;
+const evFeaturePowertrains = new Set(['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID']);
 const transitionalVehicleStatuses = ['DRAFT', 'SUBMITTED', 'AWAITING_REVIEW', 'UNDER_REVIEW'];
 const perspectives = [
   'FRONT',
@@ -194,6 +286,23 @@ const perspectives = [
   'CARGO',
   'ADDITIONAL',
 ] as const;
+const photoPerspectiveGuidance: Record<(typeof perspectives)[number], string> = {
+  ADDITIONAL: 'Add another useful angle or detail.',
+  CARGO: 'Show the usable trunk or cargo space.',
+  DASHBOARD: 'Show the dashboard and controls clearly.',
+  DRIVER_SIDE: 'Capture the full driver side in good light.',
+  FRONT: 'Capture the full front of the vehicle.',
+  INTERIOR: 'Show the cabin, seating, and overall condition.',
+  INTERIOR_DASHBOARD: 'Show the front cabin and dashboard together.',
+  PASSENGER_SIDE: 'Capture the full passenger side in good light.',
+  REAR: 'Capture the full rear of the vehicle.',
+};
+const documentGuidance: Record<string, string> = {
+  CERTIFICATE_OF_REGISTRATION: 'Vehicle registration document.',
+  CURRENT_REGISTRATION_EVIDENCE: 'Latest registration evidence.',
+  INSURANCE_EVIDENCE: 'Current insurance document.',
+  OWNERSHIP_AUTHORIZATION: 'Add this if ownership or permission needs supporting evidence.',
+};
 
 export function VehiclesScreen() {
   const client = useQueryClient();
@@ -222,6 +331,11 @@ export function VehiclesScreen() {
       <VehicleDetail
         id={selectedId}
         onClose={() => setSelectedId(null)}
+        onRemoved={() => {
+          setSelectedId(null);
+          void client.invalidateQueries({ queryKey: ['vehicles'] });
+          Alert.alert('Vehicle removed', 'The vehicle has been removed from your fleet.');
+        }}
         onEdit={(step) => {
           setEditStep(step);
           setEditing(true);
@@ -243,12 +357,18 @@ export function VehiclesScreen() {
   return (
     <SafeAreaView edges={['top']} style={styles.flex}>
       <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
-        <Text style={styles.eyebrow}>OWNER FLEET</Text>
-        <Text style={styles.title}>My vehicles</Text>
-        <Text style={styles.body}>
-          Drafts save on the server, so you can leave and resume at any time.
-        </Text>
-        <Pressable style={styles.primaryButton} onPress={() => create.mutate()}>
+        <View style={styles.fleetHeader}>
+          <Text style={styles.eyebrow}>OWNER FLEET</Text>
+          <Text style={styles.fleetTitle}>My vehicles</Text>
+          <Text style={styles.fleetHelper}>
+            Drafts are saved automatically, so you can leave and resume anytime.
+          </Text>
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          style={[styles.primaryButton, styles.fleetAddAction]}
+          onPress={() => create.mutate()}
+        >
           <Text style={styles.primaryText}>Add vehicle</Text>
         </Pressable>
         {create.error && <Text style={styles.error}>{create.error.message}</Text>}
@@ -263,46 +383,11 @@ export function VehiclesScreen() {
           />
         )}
         {vehicles.data?.map((vehicle) => (
-          <Pressable
+          <FleetVehicleCard
             key={vehicle.id}
-            accessibilityLabel={`${vehicle.make ?? ''} ${vehicle.model ?? 'vehicle'}. Marketplace status: ${vehicleStatusLabel(vehicle.status)}. Vehicle availability: ${availabilityTodayLabel(vehicle.availabilityToday)}.`}
-            accessibilityRole="button"
+            vehicle={vehicle}
             onPress={() => setSelectedId(vehicle.id)}
-            style={styles.fleetCard}
-          >
-            <VehicleImage
-              contentPath={vehicle.photos[0]?.fileAsset.contentGrant?.contentPath}
-              style={styles.fleetImage}
-            />
-            <View style={styles.fleetContent}>
-              <Text numberOfLines={1} style={styles.cardTitle}>
-                {vehicle.make && vehicle.model
-                  ? `${vehicle.modelYear ?? ''} ${vehicle.make} ${vehicle.model}`.trim()
-                  : 'Untitled vehicle draft'}
-              </Text>
-              <StatusBadge
-                label={vehicleStatusLabel(vehicle.status)}
-                tone={vehicleTone(vehicle.status)}
-              />
-              <Text style={styles.body}>{vehicleStatusLabel(vehicle.operationalStatus)}</Text>
-              <Text style={styles.availabilityText}>
-                {availabilityTodayLabel(vehicle.availabilityToday)}
-              </Text>
-              {vehicle.category && <Text style={styles.body}>{vehicle.category.name}</Text>}
-              {vehicle.location && (
-                <Text numberOfLines={1} style={styles.body}>
-                  {vehicle.location.city}, {vehicle.location.province}
-                </Text>
-              )}
-              {vehicle.policyVersions[0] && (
-                <Text style={styles.rate}>
-                  {money(vehicle.policyVersions[0].dailyRateMinor)} / day
-                </Text>
-              )}
-              {vehicle.reviewReason && <Text style={styles.error}>{vehicle.reviewReason}</Text>}
-              <Text style={styles.link}>Manage vehicle →</Text>
-            </View>
-          </Pressable>
+          />
         ))}
         {!vehicles.isPending && !vehicles.isError && vehicles.data?.length === 0 && (
           <StateView
@@ -316,17 +401,92 @@ export function VehiclesScreen() {
   );
 }
 
+function FleetVehicleCard({
+  vehicle,
+  onPress,
+}: {
+  readonly vehicle: Vehicle;
+  readonly onPress: () => void;
+}) {
+  const draft = vehicle.status === 'DRAFT';
+  const cover = vehicle.photos.find(({ isCover }) => isCover) ?? vehicle.photos[0];
+  const title =
+    vehicle.make && vehicle.model
+      ? `${vehicle.modelYear ?? ''} ${vehicle.make} ${vehicle.model}`.trim()
+      : 'Untitled vehicle draft';
+  const policy = vehicle.policyVersions[0];
+  const metadata = [vehicle.category?.name, vehicle.location?.city].filter(Boolean).join(' · ');
+  const actionLabel = draft ? 'Continue setup' : 'Manage vehicle';
+  const distinctAvailability = fleetDistinctAvailabilityLabel(vehicle.availabilityToday);
+  const accessibilityDetails = draft
+    ? `${title}. Draft. Setup in progress. Continue setup.`
+    : `${title}. Status: ${vehicleStatusLabel(vehicle.status)}. ${policy ? `${money(policy.dailyRateMinor)} per day. ` : ''}${metadata ? `${metadata}. ` : ''}Marketplace: ${ownerMarketplaceStatus(vehicle)}. Vehicle availability: ${availabilityTodayLabel(vehicle.availabilityToday)}. Manage vehicle.`;
+
+  return (
+    <Pressable
+      accessibilityLabel={accessibilityDetails}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={[styles.fleetCard, draft && styles.fleetDraftCard]}
+    >
+      <VehicleImage
+        accessibilityLabel={`${title} cover photo`}
+        contentPath={cover?.fileAsset.contentGrant?.contentPath}
+        style={styles.fleetImage}
+      />
+      <View style={styles.fleetContent}>
+        <Text numberOfLines={2} style={styles.fleetVehicleTitle}>
+          {title}
+        </Text>
+        <StatusBadge
+          label={vehicleStatusLabel(vehicle.status)}
+          tone={vehicleTone(vehicle.status)}
+        />
+        {draft ? (
+          <Text style={styles.fleetDraftState}>Setup in progress</Text>
+        ) : (
+          <>
+            {policy && <Text style={styles.fleetRate}>{money(policy.dailyRateMinor)} / day</Text>}
+            {metadata ? (
+              <Text numberOfLines={1} style={styles.fleetMetadata}>
+                {metadata}
+              </Text>
+            ) : null}
+            <Text numberOfLines={1} style={styles.fleetMarketplaceState}>
+              {fleetMarketplaceStatus(vehicle)}
+            </Text>
+            {distinctAvailability ? (
+              <Text numberOfLines={1} style={styles.fleetAvailabilityState}>
+                {distinctAvailability}
+              </Text>
+            ) : null}
+            {vehicle.reviewReason && (
+              <Text numberOfLines={2} style={styles.fleetReviewReason}>
+                {vehicle.reviewReason}
+              </Text>
+            )}
+          </>
+        )}
+        <Text style={styles.fleetAction}>{actionLabel} →</Text>
+      </View>
+    </Pressable>
+  );
+}
+
 function VehicleDetail({
   id,
   onClose,
   onEdit,
+  onRemoved,
 }: {
   readonly id: string;
   readonly onClose: () => void;
   readonly onEdit: (step?: number) => void;
+  readonly onRemoved: () => void;
 }) {
   const [managingAvailability, setManagingAvailability] = useState(false);
   const [managingKnownIssues, setManagingKnownIssues] = useState(false);
+  const [removalReasonOpen, setRemovalReasonOpen] = useState(false);
   const vehicle = useQuery({
     queryKey: ['vehicle', id],
     queryFn: () => apiClient.request<Vehicle>(`/owner/vehicles/${id}`),
@@ -341,6 +501,23 @@ function VehicleDetail({
         method: 'PATCH',
       }),
     onSuccess: () => void vehicle.refetch(),
+  });
+  const deleteEligibility = useQuery({
+    queryKey: ['vehicle-delete-eligibility', id],
+    queryFn: () =>
+      apiClient.request<{
+        allowed: boolean;
+        blockers: readonly { code: string; bookingReference?: string }[];
+        retentionMode: 'ARCHIVE';
+      }>(`/owner/vehicles/${id}/delete-eligibility`),
+  });
+  const removeVehicle = useMutation({
+    mutationFn: (input: { reason: VehicleRemovalReasonCode; otherReason?: string }) =>
+      apiClient.request(`/owner/vehicles/${id}`, {
+        body: JSON.stringify(input),
+        method: 'DELETE',
+      }),
+    onSuccess: onRemoved,
   });
   if (vehicle.isPending) return <StateView loading title="Loading vehicle…" />;
   if (vehicle.isError || !vehicle.data)
@@ -366,79 +543,180 @@ function VehicleDetail({
       />
     );
   const cover = value.photos.find(({ isCover }) => isCover) ?? value.photos[0];
+  const policy = value.policyVersions[0];
+  const activeDocuments = value.documents.filter(({ replacedAt }) => !replacedAt);
+  const activeIssues = value.knownIssues.filter(({ status }) => status === 'ACTIVE');
+  const editable = ['DRAFT', 'CHANGES_REQUIRED', 'REJECTED'].includes(value.status);
+  const discountsEnabled = Boolean(
+    policy &&
+    [
+      policy.shortDurationDiscountBps,
+      policy.weeklyDiscountBps,
+      policy.extendedTripDiscountBps,
+      policy.monthlyDiscountBps,
+    ].some((discount) => (discount ?? 0) > 0),
+  );
   return (
     <SafeAreaView edges={['top']} style={styles.flex}>
-      <ScrollView contentContainerStyle={styles.page}>
-        <BackControl label="Fleet" onPress={onClose} />
+      <View style={styles.vehicleDetailHeader}>
+        <BackControl label="Back" onPress={onClose} />
+      </View>
+      <ScrollView contentContainerStyle={[styles.page, styles.vehicleDetailPage]}>
         <VehicleImage
+          accessibilityLabel={`${value.make ?? ''} ${value.model ?? 'vehicle'} cover photo`}
           contentPath={cover?.fileAsset.contentGrant?.contentPath}
           style={styles.hero}
         />
         <Text style={styles.title}>
           {value.make} {value.model}
         </Text>
-        <Text style={styles.body}>
-          {value.modelYear ?? '—'} · {value.category?.name ?? 'Vehicle'} ·{' '}
-          {domainLabel(value.fuelType)}
-        </Text>
-        <StatusBadge label={vehicleStatusLabel(value.status)} tone={vehicleTone(value.status)} />
-        <View style={styles.wrap}>
-          <Choice label="Edit vehicle" selected={false} onPress={() => onEdit()} />
+        <View style={styles.vehicleMetaRow}>
+          <Text style={[styles.body, styles.vehicleMetaText]}>
+            {value.modelYear ?? '—'} · {value.category?.name ?? 'Vehicle'} ·{' '}
+            {domainLabel(value.fuelType)}
+          </Text>
+          <StatusBadge label={vehicleStatusLabel(value.status)} tone={vehicleTone(value.status)} />
         </View>
-        <DetailSection title="Vehicle details">
-          <Text style={styles.body}>
-            {domainLabel(value.transmission)} · {domainLabel(value.powertrain)} ·{' '}
-            {value.color ?? 'Color not set'} · {value.seatCount ?? '—'} seats
-          </Text>
-        </DetailSection>
-        <DetailSection title="Registration / verification">
-          <Text style={styles.body}>
-            {value.documents.filter(({ replacedAt }) => !replacedAt).length} documents attached ·{' '}
-            {value.plateNumber ?? 'Plate not set'}
-          </Text>
-        </DetailSection>
-        <DetailSection title="Private pickup location">
-          <Text style={styles.body}>
-            {value.location ? ownerPrivateLocationLabel(value.location) : 'Not configured'}
-          </Text>
-          {['DRAFT', 'CHANGES_REQUIRED', 'REJECTED'].includes(value.status) && (
-            <Button label="Change location" onPress={() => onEdit(4)} variant="secondary" />
-          )}
-        </DetailSection>
-        <DetailSection title="Pricing & usage">
-          <Text style={styles.body}>
-            {value.policyVersions[0]
-              ? `${money(value.policyVersions[0].dailyRateMinor)} / day · ${value.policyVersions[0].turnaroundMinutes / 60}h turnaround`
-              : 'Not configured'}
-          </Text>
-        </DetailSection>
-        <DetailSection title="Handover options">
-          <Text style={styles.body}>{ownerHandoverSummary(value.policyVersions[0])}</Text>
-          <Button label="Edit handover options" onPress={() => onEdit(5)} variant="secondary" />
-        </DetailSection>
-        <DetailSection title="Known vehicle issues">
-          <Text style={styles.cardTitle}>
-            {value.knownIssues.filter(({ status }) => status === 'ACTIVE').length} active
-          </Text>
-          {value.knownIssues
-            .filter(({ status }) => status === 'ACTIVE')
-            .slice(0, 3)
-            .map((issue) => (
-              <Text key={issue.id} style={styles.body}>
-                {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+        <View style={styles.vehicleEditAction}>
+          <DetailAction label="Edit vehicle" onPress={() => onEdit()} />
+        </View>
+        <VehicleDetailSection title="Vehicle overview">
+          <View style={styles.vehicleOverviewGrid}>
+            <VehicleDetailValue label="Transmission" value={domainLabel(value.transmission)} />
+            <VehicleDetailValue label="Powertrain" value={domainLabel(value.powertrain)} />
+            <VehicleDetailValue label="Color" value={value.color ?? 'Not set'} />
+            <VehicleDetailValue label="Seats" value={String(value.seatCount ?? '—')} />
+          </View>
+        </VehicleDetailSection>
+        <VehicleDetailSection title="Registration & verification">
+          <VehicleDetailRow label="Documents" value={`${activeDocuments.length} attached`} />
+          <VehicleDetailRow label="Plate number" value={value.plateNumber ?? 'Not set'} />
+        </VehicleDetailSection>
+        <VehicleDetailSection
+          action={
+            editable ? <DetailAction label="Change location" onPress={() => onEdit(4)} /> : null
+          }
+          title="Private pickup location"
+        >
+          <View style={styles.privateLocationRow}>
+            <View style={styles.vehicleDetailRowCopy}>
+              <Text style={styles.vehicleDetailValue}>
+                {value.location
+                  ? `${value.location.city}, ${value.location.province}`
+                  : 'Not configured'}
               </Text>
-            ))}
-          <Button
-            label="Manage issues"
-            onPress={() => setManagingKnownIssues(true)}
-            variant="secondary"
+              {value.location && (
+                <>
+                  <Text style={styles.vehicleDetailHelper}>
+                    {ownerPrivateLocationLabel(value.location)}
+                  </Text>
+                  <View accessibilityLabel="Private pickup location" style={styles.privateLabelRow}>
+                    <Icon color={colors.primary} name="lock-closed-outline" size={15} />
+                    <Text style={styles.privateLabelText}>Private</Text>
+                  </View>
+                </>
+              )}
+            </View>
+          </View>
+        </VehicleDetailSection>
+        <VehicleDetailSection
+          action={editable ? <DetailAction label="Edit pricing" onPress={() => onEdit(5)} /> : null}
+          title="Pricing"
+        >
+          <VehicleDetailRow
+            label="Daily rate"
+            value={policy ? money(policy.dailyRateMinor) : 'Not configured'}
           />
-        </DetailSection>
-        <DetailSection title="Marketplace status">
-          <Text style={styles.cardTitle}>{ownerMarketplaceStatus(value)}</Text>
-          <Text style={styles.body}>{ownerMarketplaceExplanation(value)}</Text>
+          <VehicleDetailRow
+            label="Long-booking discounts"
+            value={policy ? (discountsEnabled ? 'Enabled' : 'Not enabled') : 'Not configured'}
+          />
+          <VehicleDetailRow
+            label="Security deposit"
+            value={
+              policy
+                ? policy.securityDeposit.required || policy.securityDepositRequired
+                  ? 'Required'
+                  : 'Not required'
+                : 'Not configured'
+            }
+          />
+        </VehicleDetailSection>
+        <VehicleDetailSection
+          action={<DetailAction label="Edit handover & usage" onPress={() => onEdit(6)} />}
+          title="Handover & usage"
+        >
+          {policy ? (
+            <>
+              <VehicleDetailSummary
+                label="Start of rental"
+                value={[
+                  policy.supportsRenterPickup ? 'Renter pickup' : null,
+                  policy.supportsOwnerDelivery ? 'Owner delivery' : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              />
+              <VehicleDetailSummary
+                label="End of rental"
+                value={[
+                  policy.supportsRenterReturn ? 'Renter return' : null,
+                  policy.supportsOwnerCollection ? 'Owner collection' : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              />
+              <VehicleDetailSummary
+                label="Mileage"
+                value={
+                  policy.mileagePolicy === 'UNLIMITED'
+                    ? 'Unlimited'
+                    : `Limited${policy.includedKilometersPerDay ? ` · ${policy.includedKilometersPerDay} km/day` : ''}`
+                }
+              />
+              <VehicleDetailSummary
+                label="Turnaround"
+                value={`${policy.turnaroundMinutes / 60} hours`}
+              />
+            </>
+          ) : (
+            <Text style={styles.vehicleDetailHelper}>Not configured</Text>
+          )}
+        </VehicleDetailSection>
+        <VehicleDetailSection
+          action={
+            <DetailAction label="Manage issues" onPress={() => setManagingKnownIssues(true)} />
+          }
+          title="Known vehicle issues"
+        >
+          <Text style={styles.vehicleOperationalValue}>{activeIssues.length} active</Text>
+          {activeIssues.slice(0, 3).map((issue) => (
+            <Text key={issue.id} style={styles.vehicleDetailHelper}>
+              {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+            </Text>
+          ))}
+        </VehicleDetailSection>
+        <VehicleDetailSection
+          action={
+            <DetailAction
+              label="Manage availability"
+              onPress={() => setManagingAvailability(true)}
+            />
+          }
+          emphasized
+          title="Marketplace & availability"
+        >
+          <VehicleDetailRow label="Review status" value={ownerMarketplaceStatus(value)} />
+          <Text style={styles.vehicleDetailHelper}>{ownerMarketplaceExplanation(value)}</Text>
+          <VehicleDetailRow
+            label="Availability"
+            value={availabilityTodayLabel(value.availabilityToday)}
+          />
+          <Text style={styles.vehicleDetailHelper}>
+            {availabilityTodayDetail(value.availabilityToday)}
+          </Text>
           {value.status === 'APPROVED' && (
-            <Button
+            <DetailAction
               disabled={operationalStatus.isPending}
               label={
                 operationalStatus.isPending
@@ -452,7 +730,6 @@ function VehicleDetail({
                   value.operationalStatus === 'AVAILABLE' ? 'TEMPORARILY_UNAVAILABLE' : 'AVAILABLE',
                 )
               }
-              variant="secondary"
             />
           )}
           {operationalStatus.error && (
@@ -460,19 +737,221 @@ function VehicleDetail({
               {operationalStatus.error.message}
             </Text>
           )}
-        </DetailSection>
-        <DetailSection title="Availability">
-          <Text style={styles.cardTitle}>{availabilityTodayLabel(value.availabilityToday)}</Text>
-          <Text style={styles.body}>{availabilityTodayDetail(value.availabilityToday)}</Text>
-          <Button
-            label="Manage availability"
-            onPress={() => setManagingAvailability(true)}
-            variant="secondary"
-          />
-        </DetailSection>
+        </VehicleDetailSection>
+        <View style={styles.vehicleDangerZone}>
+          <Text accessibilityRole="header" style={styles.vehicleDangerTitle}>
+            Danger zone
+          </Text>
+          <Text style={styles.vehicleDetailHelper}>
+            Remove this vehicle from your active fleet. Historical booking and financial records are
+            retained.
+          </Text>
+          {deleteEligibility.data && !deleteEligibility.data.allowed ? (
+            <Text accessibilityRole="alert" style={styles.vehicleDeleteBlocked}>
+              {vehicleDeleteBlockerMessage(deleteEligibility.data.blockers[0]?.code)}
+            </Text>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{
+              disabled:
+                deleteEligibility.isPending ||
+                removeVehicle.isPending ||
+                deleteEligibility.data?.allowed !== true,
+            }}
+            disabled={
+              deleteEligibility.isPending ||
+              removeVehicle.isPending ||
+              deleteEligibility.data?.allowed !== true
+            }
+            onPress={() => setRemovalReasonOpen(true)}
+            style={[
+              styles.vehicleDeleteAction,
+              (deleteEligibility.isPending ||
+                removeVehicle.isPending ||
+                deleteEligibility.data?.allowed !== true) &&
+                styles.disabledButton,
+            ]}
+          >
+            <Text style={styles.vehicleDeleteActionText}>
+              {removeVehicle.isPending ? 'Removing…' : 'Remove vehicle'}
+            </Text>
+          </Pressable>
+          {removeVehicle.error ? (
+            <Text accessibilityRole="alert" style={styles.error}>
+              {removeVehicle.error.message}
+            </Text>
+          ) : null}
+        </View>
       </ScrollView>
+      <VehicleRemovalReasonSheet
+        onCancel={() => setRemovalReasonOpen(false)}
+        onContinue={(reason, otherReason) => {
+          setRemovalReasonOpen(false);
+          Alert.alert(
+            'Remove vehicle?',
+            'This will remove the vehicle from your active fleet. Existing historical records are kept for completed rentals and account history.',
+            [
+              { style: 'cancel', text: 'Cancel' },
+              {
+                onPress: () =>
+                  removeVehicle.mutate({ reason, ...(otherReason ? { otherReason } : {}) }),
+                style: 'destructive',
+                text: 'Remove vehicle',
+              },
+            ],
+          );
+        }}
+        visible={removalReasonOpen}
+      />
     </SafeAreaView>
   );
+}
+
+function VehicleRemovalReasonSheet({
+  onCancel,
+  onContinue,
+  visible,
+}: {
+  readonly onCancel: () => void;
+  readonly onContinue: (reason: VehicleRemovalReasonCode, otherReason?: string) => void;
+  readonly visible: boolean;
+}) {
+  const [reason, setReason] = useState<VehicleRemovalReasonCode | null>(null);
+  const [otherReason, setOtherReason] = useState('');
+  const [measuredContentHeight, setMeasuredContentHeight] = useState(0);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
+  const bottomAllowance = Math.max(safeArea.bottom, spacing.lg);
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight: measuredContentHeight,
+        headerHeight: 0,
+        maxSafeViewportHeight: maximumHeight,
+        // The measured content includes the sheet's safe-area allowance.
+        safeAreaAllowance: 0,
+      }),
+    [maximumHeight, measuredContentHeight],
+  );
+  const sheetHeight = useSharedValue(Math.min(560, maximumHeight));
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
+
+  useEffect(() => {
+    if (!visible || measuredContentHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
+  }, [measuredContentHeight, measuredLayout.height, reason, sheetHeight, viewportHeight, visible]);
+
+  const close = () => {
+    Keyboard.dismiss();
+    setReason(null);
+    setOtherReason('');
+    onCancel();
+  };
+  const continueRemoval = () => {
+    if (!reason) return;
+    const selectedReason = reason;
+    const detail = otherReason.trim() || undefined;
+    Keyboard.dismiss();
+    setReason(null);
+    setOtherReason('');
+    onContinue(selectedReason, detail);
+  };
+  return (
+    <Modal
+      animationType="slide"
+      onRequestClose={close}
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      transparent
+      visible={visible}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.removalReasonModalRoot}
+      >
+        <View style={styles.removalReasonBackdrop} />
+        <Reanimated.View
+          accessibilityViewIsModal
+          style={[styles.removalReasonSheet, animatedSheetStyle]}
+        >
+          <ScrollView
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+            contentContainerStyle={[
+              styles.removalReasonContent,
+              { paddingBottom: bottomAllowance },
+            ]}
+            keyboardShouldPersistTaps="handled"
+            onContentSizeChange={(_width, height) => setMeasuredContentHeight(height)}
+            scrollEnabled={measuredLayout.scrollEnabled}
+            showsVerticalScrollIndicator={measuredLayout.scrollEnabled}
+          >
+            <BackControl label="Back" onPress={close} />
+            <Text accessibilityRole="header" style={styles.removalReasonTitle}>
+              Remove vehicle
+            </Text>
+            <Text style={styles.removalReasonPrompt}>Why are you removing this vehicle?</Text>
+            <View accessibilityRole="radiogroup" style={styles.removalReasonOptions}>
+              {vehicleRemovalReasonOptions.map((option) => {
+                const selected = reason === option.value;
+                return (
+                  <Pressable
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: selected }}
+                    key={option.value}
+                    onPress={() => setReason(option.value)}
+                    style={styles.removalReasonOption}
+                  >
+                    <Text style={styles.removalReasonOptionText}>{option.label}</Text>
+                    <Icon
+                      color={selected ? colors.primary : colors.subtleText}
+                      name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={22}
+                    />
+                  </Pressable>
+                );
+              })}
+            </View>
+            {reason === VehicleRemovalReason.OTHER ? (
+              <View style={styles.removalOtherField}>
+                <Text style={styles.label}>Tell us more</Text>
+                <TextInput
+                  accessibilityLabel="Tell us more"
+                  maxLength={VEHICLE_REMOVAL_OTHER_REASON_MAX_LENGTH}
+                  multiline
+                  onChangeText={setOtherReason}
+                  placeholder="Optional"
+                  placeholderTextColor={colors.placeholder}
+                  style={[styles.input, styles.removalOtherInput]}
+                  value={otherReason}
+                />
+              </View>
+            ) : null}
+            <View style={styles.removalReasonContinue}>
+              <Button disabled={!reason} label="Continue" onPress={continueRemoval} />
+            </View>
+          </ScrollView>
+        </Reanimated.View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+function vehicleDeleteBlockerMessage(code?: string): string {
+  if (code === 'ONGOING_RENTAL')
+    return "This vehicle can't be removed while a rental is in progress.";
+  if (code === 'FUTURE_BOOKING')
+    return "This vehicle can't be removed because it has an upcoming booking.";
+  if (code === 'RETURN_PENDING')
+    return "This vehicle can't be removed until the return workflow is complete.";
+  if (code === 'OPEN_CLAIM') return "This vehicle can't be removed while a claim is open.";
+  if (code === 'OPEN_DISPUTE') return "This vehicle can't be removed while a dispute is open.";
+  if (code === 'FINANCIAL_SETTLEMENT_PENDING')
+    return "This vehicle can't be removed while a security deposit settlement is pending.";
+  return 'This vehicle cannot be removed right now.';
 }
 
 function KnownIssuesManager({
@@ -865,18 +1344,84 @@ const knownIssueClassificationOptions = ['COSMETIC', 'OPERATIONAL', 'SAFETY_CRIT
   (value) => ({ code: value, id: value, name: domainLabel(value) }),
 );
 
-function DetailSection({
+function VehicleDetailSection({
+  action,
   title,
   children,
+  emphasized = false,
 }: {
+  readonly action?: React.ReactNode;
   readonly title: string;
   readonly children: React.ReactNode;
+  readonly emphasized?: boolean;
 }) {
   return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>{title}</Text>
-      {children}
+    <View
+      style={[styles.vehicleDetailSection, emphasized && styles.vehicleDetailSectionEmphasized]}
+    >
+      <View style={styles.vehicleDetailSectionHeader}>
+        <Text accessibilityRole="header" style={styles.vehicleDetailSectionTitle}>
+          {title}
+        </Text>
+      </View>
+      <View style={styles.vehicleDetailSectionContent}>{children}</View>
+      {action}
     </View>
+  );
+}
+
+function VehicleDetailRow({ label, value }: { readonly label: string; readonly value: string }) {
+  return (
+    <View accessibilityLabel={`${label}: ${value}`} style={styles.vehicleDetailRow}>
+      <Text style={styles.vehicleDetailRowLabel}>{label}</Text>
+      <Text style={styles.vehicleDetailRowValue}>{value}</Text>
+    </View>
+  );
+}
+
+function VehicleDetailValue({ label, value }: { readonly label: string; readonly value: string }) {
+  return (
+    <View accessibilityLabel={`${label}: ${value}`} style={styles.vehicleOverviewValue}>
+      <Text style={styles.vehicleOverviewLabel}>{label}</Text>
+      <Text style={styles.vehicleDetailValue}>{value}</Text>
+    </View>
+  );
+}
+
+function VehicleDetailSummary({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}) {
+  return (
+    <View accessibilityLabel={`${label}: ${value}`} style={styles.vehicleDetailSummary}>
+      <Text style={styles.vehicleOverviewLabel}>{label}</Text>
+      <Text style={styles.vehicleDetailValue}>{value || 'Not configured'}</Text>
+    </View>
+  );
+}
+
+function DetailAction({
+  disabled = false,
+  label,
+  onPress,
+}: {
+  readonly disabled?: boolean;
+  readonly label: string;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.vehicleDetailAction, disabled && styles.disabledButton]}
+    >
+      <Text style={styles.vehicleDetailActionText}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -898,7 +1443,9 @@ function VehicleEditor({
   const [selectedStep, setSelectedStep] = useState<number | null>(initialStep ?? null);
   const [wizardError, setWizardError] = useState('');
   const completedSection = vehicle.data?.lastCompletedSection;
-  const completedIndex = steps.findIndex((section) => section.toUpperCase() === completedSection);
+  const completedIndex = stepCompletionIds.findIndex(
+    (section) => section?.toUpperCase() === completedSection,
+  );
   const restoredStep =
     completedSection === 'AVAILABILITY'
       ? steps.length - 1
@@ -908,7 +1455,11 @@ function VehicleEditor({
     setWizardError('');
     setSelectedStep(Math.min(step + 1, steps.length - 1));
   };
-  const refresh = () => void client.invalidateQueries({ queryKey: ['vehicle', id] });
+  const goPrevious = () => {
+    setWizardError('');
+    setSelectedStep(Math.max(0, step - 1));
+  };
+  const refresh = () => client.invalidateQueries({ queryKey: ['vehicle', id] });
   const action = useMutation({
     mutationFn: ({
       path,
@@ -926,7 +1477,10 @@ function VehicleEditor({
     onSuccess: refresh,
   });
   const continueDraft = useMutation({
-    mutationFn: () => markSectionComplete(id, steps[step] ?? 'Review'),
+    mutationFn: () => {
+      const completionSection = stepCompletionIds[step];
+      return completionSection ? markSectionComplete(id, completionSection) : Promise.resolve();
+    },
     onSuccess: advance,
   });
   const continueEditor = () => {
@@ -970,10 +1524,16 @@ function VehicleEditor({
       <View style={styles.editorHeader}>
         <BackControl label="Fleet" onPress={onClose} />
         <View>
-          <Text style={styles.cardTitle}>
-            {value.make ?? 'Vehicle'} {value.model ?? 'draft'}
+          <Text style={[styles.cardTitle, step <= 1 && styles.editorStepTitle]}>
+            {step <= 1 && value.status === 'DRAFT'
+              ? 'Add vehicle'
+              : `${value.make ?? 'Vehicle'} ${value.model ?? 'draft'}`}
           </Text>
-          <Text style={styles.body}>{vehicleStatusLabel(value.status)}</Text>
+          <Text style={[styles.body, step <= 1 && styles.editorStepSubtitle]}>
+            {step <= 1 && value.status === 'DRAFT'
+              ? 'Vehicle draft'
+              : vehicleStatusLabel(value.status)}
+          </Text>
         </View>
       </View>
       <View
@@ -984,80 +1544,132 @@ function VehicleEditor({
           <Text style={styles.progressStep}>
             Step {step + 1} of {steps.length}
           </Text>
-          <Text style={styles.progressTitle}>{steps[step]}</Text>
+          <Text style={styles.progressTitle}>{step === 0 ? 'Vehicle details' : steps[step]}</Text>
         </View>
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { width: `${((step + 1) / steps.length) * 100}%` }]} />
         </View>
       </View>
       <KeyboardAvoidingView style={styles.flex}>
-        <ScrollView
-          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-          contentContainerStyle={[styles.editorBody, { paddingBottom: keyboardAwareBottomPadding }]}
-          keyboardDismissMode={formKeyboardDismissMode}
-          keyboardShouldPersistTaps="handled"
-        >
-          {step === 0 && <DetailsStep vehicle={value} onSaved={refresh} onContinue={advance} />}
-          {step === 1 && (
-            <FeaturesStep
-              id={id}
-              selectedFeatureIds={value.features.map((item) => item.featureId)}
-              onSaved={refresh}
-              onContinue={advance}
-            />
-          )}
-          {step === 2 && <PhotosStep id={id} photos={value.photos} onSaved={refresh} />}
-          {step === 3 && <DocumentsStep id={id} documents={value.documents} onSaved={refresh} />}
-          {step === 4 && (
-            <LocationStep id={id} vehicle={value} onSaved={refresh} onContinue={advance} />
-          )}
-          {step === 5 && (
-            <PolicyStep id={id} vehicle={value} onSaved={refresh} onContinue={advance} />
-          )}
-          {step === 6 && <ReviewStep vehicle={value} action={action.mutate} />}
-          {action.error && <Text style={styles.error}>{action.error.message}</Text>}
-          {wizardError && (
-            <Text accessibilityRole="alert" style={styles.error}>
-              {wizardError}
-            </Text>
-          )}
-        </ScrollView>
-        <View style={styles.editorActions}>
-          {step > 0 && (
-            <Pressable
-              accessibilityRole="button"
-              style={[styles.secondaryButton, styles.editorActionButton]}
-              onPress={() => {
-                setWizardError('');
-                setSelectedStep(Math.max(0, step - 1));
-              }}
+        {step === 0 ? (
+          <DetailsStep
+            contentBottomPadding={keyboardAwareBottomPadding}
+            vehicle={value}
+            onSaved={refresh}
+            onContinue={advance}
+          />
+        ) : step === 1 ? (
+          <FeaturesStep
+            contentBottomPadding={keyboardAwareBottomPadding}
+            id={id}
+            powertrain={value.powertrain}
+            selectedFeatureIds={value.features.map((item) => item.featureId)}
+            onPrevious={goPrevious}
+            onSaved={refresh}
+            onContinue={advance}
+          />
+        ) : step === 4 ? (
+          <LocationStep
+            id={id}
+            vehicle={value}
+            onPrevious={goPrevious}
+            onSaved={refresh}
+            onContinue={advance}
+          />
+        ) : step === 5 ? (
+          <PolicyStep
+            contentBottomPadding={keyboardAwareBottomPadding}
+            id={id}
+            mode="pricing"
+            vehicle={value}
+            onPrevious={goPrevious}
+            onSaved={refresh}
+            onContinue={advance}
+          />
+        ) : step === 6 ? (
+          <PolicyStep
+            contentBottomPadding={keyboardAwareBottomPadding}
+            id={id}
+            mode="usage"
+            vehicle={value}
+            onPrevious={goPrevious}
+            onSaved={refresh}
+            onContinue={advance}
+          />
+        ) : (
+          <>
+            <ScrollView
+              automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+              contentContainerStyle={[
+                styles.editorBody,
+                { paddingBottom: keyboardAwareBottomPadding },
+              ]}
+              keyboardDismissMode={formKeyboardDismissMode}
+              keyboardShouldPersistTaps="handled"
             >
-              <Text>Previous</Text>
-            </Pressable>
-          )}
-          {step < steps.length - 1 && ![0, 1, 4, 5].includes(step) && (
-            <Pressable
-              accessibilityRole="button"
-              disabled={continueDraft.isPending}
-              style={[styles.primaryButton, styles.editorActionButton]}
-              onPress={continueEditor}
-            >
-              <Text style={styles.primaryText}>
-                {continueDraft.isPending ? 'Saving…' : 'Continue'}
-              </Text>
-            </Pressable>
-          )}
-        </View>
+              {step === 2 && <PhotosStep id={id} photos={value.photos} onSaved={refresh} />}
+              {step === 3 && (
+                <DocumentsStep id={id} documents={value.documents} onSaved={refresh} />
+              )}
+              {step === 7 && (
+                <ReviewStep vehicle={value} action={action.mutate} onEdit={setSelectedStep} />
+              )}
+              {action.error && <Text style={styles.error}>{action.error.message}</Text>}
+              {wizardError && (
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {wizardError}
+                </Text>
+              )}
+            </ScrollView>
+            {step > 0 && (
+              <View style={[styles.editorActions, step === 3 && styles.documentEditorActions]}>
+                <Pressable
+                  accessibilityRole="button"
+                  style={[styles.secondaryButton, styles.editorActionButton]}
+                  onPress={goPrevious}
+                >
+                  <Text>Previous</Text>
+                </Pressable>
+                {step < steps.length - 1 && ![0, 1, 5, 6].includes(step) && (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={continueDraft.isPending}
+                    style={[styles.primaryButton, styles.editorActionButton]}
+                    onPress={continueEditor}
+                  >
+                    <Text style={styles.primaryText}>
+                      {continueDraft.isPending ? 'Saving…' : 'Continue'}
+                    </Text>
+                  </Pressable>
+                )}
+                {step === 7 && ['DRAFT', 'CHANGES_REQUIRED', 'REJECTED'].includes(value.status) && (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={action.isPending}
+                    style={[styles.primaryButton, styles.editorActionButton]}
+                    onPress={() => action.mutate({ path: '/submission' })}
+                  >
+                    <Text style={styles.primaryText}>
+                      {action.isPending ? 'Submitting…' : 'Submit for approval'}
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
+          </>
+        )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 function DetailsStep({
+  contentBottomPadding,
   vehicle,
   onSaved,
   onContinue,
 }: {
+  readonly contentBottomPadding: number;
   readonly vehicle: Vehicle;
   readonly onSaved: () => void;
   readonly onContinue: () => void;
@@ -1102,8 +1714,9 @@ function DetailsStep({
       apiClient.request(`/owner/vehicles/${vehicle.id}`, {
         body: JSON.stringify({
           ...form,
+          categoryId: form.categoryId || undefined,
           lastCompletedSection: 'DETAILS',
-          modelYear: Number(form.modelYear),
+          modelYear: form.modelYear.trim() ? Number(form.modelYear) : undefined,
           seatCount: Number(form.seatCount),
           doorCount: Number(form.doorCount),
         }),
@@ -1115,102 +1728,147 @@ function DetailsStep({
     },
   });
   return (
-    <Section title="Basic details">
-      <SearchableReferenceSelector
-        label="Make"
-        options={(makes.data ?? []).map((item) => ({ ...item, id: item.name }))}
-        value={form.make}
-        onChange={(make) => {
-          setForm({ ...form, make, model: '' });
-          setCustomModel(false);
-        }}
-      />
-      <SearchableReferenceSelector
-        label="Model"
-        options={[
-          ...(models.data ?? []).map((item) => ({ ...item, id: item.name })),
-          { id: 'OTHER', code: 'OTHER', name: 'Other / Model not listed' },
+    <>
+      <ScrollView
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        contentContainerStyle={[
+          styles.editorBody,
+          styles.detailsStep,
+          { paddingBottom: contentBottomPadding },
         ]}
-        value={customModel ? 'OTHER' : form.model}
-        onChange={(model) => {
-          setCustomModel(model === 'OTHER');
-          setForm({ ...form, model: model === 'OTHER' ? '' : model });
-        }}
-      />
-      {customModel && (
-        <Field
-          label="Enter model"
-          value={form.model}
-          onChange={(model) => setForm({ ...form, model })}
-          placeholder="Manufacturer model name"
-        />
-      )}
-      <Field
-        label="Model year"
-        value={form.modelYear}
-        onChange={(modelYear) => setForm({ ...form, modelYear })}
-        keyboard="numeric"
-      />
-      <SearchableReferenceSelector
-        label="Vehicle type"
-        options={categories.data ?? []}
-        value={form.categoryId}
-        onChange={(categoryId) => setForm({ ...form, categoryId })}
-      />
-      <SearchableReferenceSelector
-        label="Powertrain"
-        options={[
-          { id: 'ICE', code: 'ICE', name: 'Combustion engine' },
-          { id: 'HYBRID', code: 'HYBRID', name: 'Hybrid' },
-          { id: 'PLUG_IN_HYBRID', code: 'PLUG_IN_HYBRID', name: 'Plug-in Hybrid' },
-          { id: 'BATTERY_ELECTRIC', code: 'BATTERY_ELECTRIC', name: 'Electric' },
-        ]}
-        value={form.powertrain}
-        onChange={(powertrain) =>
-          setForm({
-            ...form,
-            powertrain,
-            fuelType: powertrain === 'BATTERY_ELECTRIC' ? 'ELECTRIC' : 'GASOLINE',
-          })
-        }
-      />
-      {form.powertrain !== 'BATTERY_ELECTRIC' && (
-        <SearchableReferenceSelector
-          label="Fuel"
-          options={[
-            { id: 'GASOLINE', code: 'GASOLINE', name: 'Gasoline' },
-            { id: 'DIESEL', code: 'DIESEL', name: 'Diesel' },
-            { id: 'HYBRID', code: 'HYBRID', name: 'Hybrid fuel system' },
-            { id: 'OTHER', code: 'OTHER', name: 'Other' },
-          ]}
-          value={form.fuelType}
-          onChange={(fuelType) => setForm({ ...form, fuelType })}
-        />
-      )}
-      <Field label="Color" value={form.color} onChange={(color) => setForm({ ...form, color })} />
-      <Field
-        label="Plate number (private)"
-        value={form.plateNumber}
-        onChange={(plateNumber) => setForm({ ...form, plateNumber })}
-      />
-      <Field
-        label="Description"
-        value={form.description}
-        onChange={(description) => setForm({ ...form, description })}
-      />
-      <Save mutation={save} label="Save and continue" />
-    </Section>
+        keyboardDismissMode={formKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
+        <DetailsFormSection title="Vehicle identity">
+          <SearchableReferenceSelector
+            label="Make"
+            options={(makes.data ?? []).map((item) => ({ ...item, id: item.name }))}
+            value={form.make}
+            onChange={(make) => {
+              setForm({ ...form, make, model: '' });
+              setCustomModel(false);
+            }}
+          />
+          <SearchableReferenceSelector
+            label="Model"
+            options={[
+              ...(models.data ?? []).map((item) => ({ ...item, id: item.name })),
+              { id: 'OTHER', code: 'OTHER', name: 'Other / Model not listed' },
+            ]}
+            value={customModel ? 'OTHER' : form.model}
+            onChange={(model) => {
+              setCustomModel(model === 'OTHER');
+              setForm({ ...form, model: model === 'OTHER' ? '' : model });
+            }}
+          />
+          {customModel && (
+            <Field
+              grouped
+              label="Enter model"
+              value={form.model}
+              onChange={(model) => setForm({ ...form, model })}
+              placeholder="Manufacturer model name"
+            />
+          )}
+          <Field
+            grouped
+            label="Model year"
+            value={form.modelYear}
+            onChange={(modelYear) => setForm({ ...form, modelYear })}
+            keyboard="numeric"
+            placeholder="Enter model year"
+          />
+          <SearchableReferenceSelector
+            label="Vehicle type"
+            options={categories.data ?? []}
+            value={form.categoryId}
+            onChange={(categoryId) => setForm({ ...form, categoryId })}
+          />
+        </DetailsFormSection>
+
+        <DetailsFormSection title="Powertrain">
+          <SearchableReferenceSelector
+            label="Powertrain"
+            options={[
+              { id: 'ICE', code: 'ICE', name: 'Combustion engine' },
+              { id: 'HYBRID', code: 'HYBRID', name: 'Hybrid' },
+              { id: 'PLUG_IN_HYBRID', code: 'PLUG_IN_HYBRID', name: 'Plug-in Hybrid' },
+              { id: 'BATTERY_ELECTRIC', code: 'BATTERY_ELECTRIC', name: 'Electric' },
+            ]}
+            value={form.powertrain}
+            onChange={(powertrain) =>
+              setForm({
+                ...form,
+                powertrain,
+                fuelType: powertrain === 'BATTERY_ELECTRIC' ? 'ELECTRIC' : 'GASOLINE',
+              })
+            }
+          />
+          {form.powertrain !== 'BATTERY_ELECTRIC' && (
+            <SearchableReferenceSelector
+              label="Fuel"
+              options={[
+                { id: 'GASOLINE', code: 'GASOLINE', name: 'Gasoline' },
+                { id: 'DIESEL', code: 'DIESEL', name: 'Diesel' },
+                { id: 'HYBRID', code: 'HYBRID', name: 'Hybrid fuel system' },
+                { id: 'OTHER', code: 'OTHER', name: 'Other' },
+              ]}
+              value={form.fuelType}
+              onChange={(fuelType) => setForm({ ...form, fuelType })}
+            />
+          )}
+        </DetailsFormSection>
+
+        <DetailsFormSection title="Vehicle details">
+          <Field
+            grouped
+            label="Color"
+            value={form.color}
+            onChange={(color) => setForm({ ...form, color })}
+            placeholder="Enter vehicle color"
+          />
+          <Field
+            grouped
+            helper="Kept private and not shown on your public listing."
+            label="Plate number"
+            value={form.plateNumber}
+            onChange={(plateNumber) => setForm({ ...form, plateNumber })}
+            placeholder="ABC 1234"
+          />
+        </DetailsFormSection>
+
+        <DetailsFormSection optional title="About your vehicle">
+          <Field
+            grouped
+            label="Description"
+            multiline
+            value={form.description}
+            onChange={(description) => setForm({ ...form, description })}
+            placeholder="Tell renters anything useful about your vehicle"
+          />
+        </DetailsFormSection>
+
+        {save.error && <Text style={styles.error}>{save.error.message}</Text>}
+      </ScrollView>
+      <WizardSaveFooter mutation={save} />
+    </>
   );
 }
 
 function FeaturesStep({
+  contentBottomPadding,
   id,
+  powertrain,
   selectedFeatureIds,
+  onPrevious,
   onSaved,
   onContinue,
 }: {
+  readonly contentBottomPadding: number;
   readonly id: string;
+  readonly powertrain: string | null;
   readonly selectedFeatureIds: string[];
+  readonly onPrevious: () => void;
   readonly onSaved: () => void;
   readonly onContinue: () => void;
 }) {
@@ -1219,6 +1877,23 @@ function FeaturesStep({
     queryFn: () => apiClient.request<Reference[]>('/owner/vehicle-reference-data/features'),
   });
   const [selected, setSelected] = useState<string[]>(selectedFeatureIds);
+  const groupedFeatures = useMemo(() => {
+    const features = definitions.data ?? [];
+    const knownCodes = new Set<string>(vehicleFeatureGroups.flatMap(({ codes }) => codes));
+    return vehicleFeatureGroups
+      .filter(
+        ({ title }) => title !== 'EV & charging' || evFeaturePowertrains.has(powertrain ?? ''),
+      )
+      .map((group) => ({
+        features: features.filter(
+          ({ code }) =>
+            (group.codes as readonly string[]).includes(code) ||
+            (group.title === 'Other' && !knownCodes.has(code)),
+        ),
+        title: group.title,
+      }))
+      .filter(({ features: values }) => values.length > 0);
+  }, [definitions.data, powertrain]);
   const save = useMutation({
     mutationFn: async () => {
       await apiClient.request(`/owner/vehicles/${id}/features`, {
@@ -1233,26 +1908,52 @@ function FeaturesStep({
     },
   });
   return (
-    <Section title="Features">
-      <Text style={styles.body}>Choose structured features renters can filter later.</Text>
-      <View style={styles.wrap}>
-        {definitions.data?.map((feature) => (
-          <Choice
-            key={feature.id}
-            selected={selected.includes(feature.id)}
-            label={feature.name}
-            onPress={() =>
-              setSelected(
-                selected.includes(feature.id)
-                  ? selected.filter((item) => item !== feature.id)
-                  : [...selected, feature.id],
-              )
-            }
-          />
+    <>
+      <ScrollView
+        contentContainerStyle={[
+          styles.editorBody,
+          styles.featuresStep,
+          { paddingBottom: contentBottomPadding },
+        ]}
+      >
+        <View style={styles.featuresIntro}>
+          <Text style={styles.featuresHelper}>
+            Choose the features renters can use to find the right vehicle.
+          </Text>
+          <Text accessibilityLiveRegion="polite" style={styles.featuresCount}>
+            {selected.length} selected
+          </Text>
+        </View>
+        {groupedFeatures.map((group) => (
+          <View key={group.title} style={styles.featureGroup}>
+            <Text accessibilityRole="header" style={styles.detailsSectionTitle}>
+              {group.title}
+            </Text>
+            <View style={styles.featureChips}>
+              {group.features.map((feature) => {
+                const checked = selected.includes(feature.id);
+                return (
+                  <FeatureChip
+                    key={feature.id}
+                    label={feature.name}
+                    selected={checked}
+                    onPress={() =>
+                      setSelected(
+                        checked
+                          ? selected.filter((item) => item !== feature.id)
+                          : [...selected, feature.id],
+                      )
+                    }
+                  />
+                );
+              })}
+            </View>
+          </View>
         ))}
-      </View>
-      <Save disabled={!location} mutation={save} label="Save and continue" />
-    </Section>
+        {save.error && <Text style={styles.error}>{save.error.message}</Text>}
+      </ScrollView>
+      <WizardSaveFooter mutation={save} onPrevious={onPrevious} />
+    </>
   );
 }
 
@@ -1266,6 +1967,7 @@ function PhotosStep({
   readonly onSaved: () => void;
 }) {
   const [error, setError] = useState('');
+  const [uploadingPerspective, setUploadingPerspective] = useState<string | null>(null);
   const displayedPhotos = [...photos].sort(
     (left, right) =>
       Number(right.isCover) - Number(left.isCover) || left.displayOrder - right.displayOrder,
@@ -1287,6 +1989,7 @@ function PhotosStep({
     if (result.canceled) return;
     const asset = result.assets[0];
     if (!asset) return;
+    setUploadingPerspective(perspective);
     try {
       const file = await apiClient.upload<SafeFile>('/files', 'PRIVATE', {
         uri: asset.uri,
@@ -1306,7 +2009,16 @@ function PhotosStep({
       onSaved();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Upload failed.');
+    } finally {
+      setUploadingPerspective(null);
     }
+  };
+  const choosePhotoSource = (perspective: string) => {
+    Alert.alert(`Add ${domainLabel(perspective).toLowerCase()} photo`, undefined, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Take photo', onPress: () => void upload(perspective, true) },
+      { text: 'Choose from library', onPress: () => void upload(perspective, false) },
+    ]);
   };
   const reorder = async (
     next: VehiclePhoto[],
@@ -1342,52 +2054,113 @@ function PhotosStep({
       setError(caught instanceof Error ? caught.message : 'Removal failed.');
     }
   };
+  const confirmRemove = (photo: VehiclePhoto) => {
+    Alert.alert(
+      'Remove photo?',
+      photo.isCover
+        ? 'This is your current cover photo. Choose another cover after removing it.'
+        : 'This photo will be removed from the vehicle draft.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove photo',
+          style: 'destructive',
+          onPress: () => void remove(photo.id),
+        },
+      ],
+    );
+  };
+  const showPhotoActions = (photo: VehiclePhoto) => {
+    Alert.alert('Photo options', undefined, [
+      ...(!photo.isCover ? [{ text: 'Set as cover', onPress: () => setCover(photo.id) }] : []),
+      { text: 'Remove photo', style: 'destructive' as const, onPress: () => confirmRemove(photo) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
   return (
     <Section title="Vehicle photos">
-      <Text style={styles.body}>
-        Add clear photos of the exterior and interior. Your cover photo appears first in search
-        results. Photos remain private until the listing is approved.
-      </Text>
+      <View style={styles.photosIntro}>
+        <Text style={styles.photosHelper}>
+          Add clear exterior and interior photos. Your cover appears first in search, and all photos
+          stay private until the listing is approved.
+        </Text>
+        <Text accessibilityLiveRegion="polite" style={styles.photosCount}>
+          {photos.length} added
+        </Text>
+      </View>
       {perspectives.map((perspective) => {
         const present = displayedPhotos.filter((photo) => photo.perspective === perspective);
-        const multiple = ['INTERIOR', 'DASHBOARD', 'CARGO', 'ADDITIONAL'].includes(perspective);
+        const uploading = uploadingPerspective === perspective;
         return (
-          <View key={perspective} style={styles.card}>
-            <Text style={styles.cardTitle}>{domainLabel(perspective)}</Text>
-            {present.map((photo) => (
-              <View key={photo.id} style={styles.photoPreviewRow}>
-                <VehicleImage
-                  contentPath={photo.fileAsset.contentGrant?.contentPath}
-                  style={styles.photoPreview}
-                />
-                <View style={styles.flex}>
-                  <Text style={styles.body}>{photo.isCover ? 'Cover' : 'Vehicle photo'}</Text>
-                  <View style={styles.photoActions}>
-                    {!photo.isCover && (
-                      <Button
-                        label="Set cover"
-                        onPress={() => setCover(photo.id)}
-                        variant="secondary"
-                      />
+          <View key={perspective} style={styles.photoCategoryCard}>
+            <View style={styles.photoCategoryHeader}>
+              <Text accessibilityRole="header" style={styles.cardTitle}>
+                {domainLabel(perspective)}
+              </Text>
+              <Text style={styles.photoCategoryCount}>
+                {present.length} {present.length === 1 ? 'photo' : 'photos'}
+              </Text>
+            </View>
+            <Text style={styles.photoGuidance}>{photoPerspectiveGuidance[perspective]}</Text>
+            {present.length === 0 ? (
+              <Pressable
+                accessibilityHint="Choose the camera or photo library"
+                accessibilityLabel={`Add ${domainLabel(perspective).toLowerCase()} photo`}
+                accessibilityRole="button"
+                disabled={uploading}
+                onPress={() => choosePhotoSource(perspective)}
+                style={styles.photoEmptyState}
+              >
+                <Icon color={colors.primary} name="images-outline" size={26} />
+                <Text style={styles.photoEmptyTitle}>{uploading ? 'Uploading…' : 'Add photo'}</Text>
+                <Text style={styles.photoEmptyCopy}>
+                  Take a new photo or choose one from your library.
+                </Text>
+              </Pressable>
+            ) : (
+              <View style={styles.photoGrid}>
+                {present.map((photo) => (
+                  <View
+                    key={photo.id}
+                    style={[styles.photoTile, present.length === 1 && styles.photoTileSingle]}
+                  >
+                    <VehicleImage
+                      contentPath={photo.fileAsset.contentGrant?.contentPath}
+                      style={styles.photoTileImage}
+                    />
+                    {photo.isCover && (
+                      <View style={styles.photoCoverBadge}>
+                        <Icon color={colors.onPrimary} name="star" size={12} />
+                        <Text style={styles.photoCoverBadgeText}>Cover</Text>
+                      </View>
                     )}
-                    <Button label="Remove" onPress={() => void remove(photo.id)} variant="danger" />
+                    <Pressable
+                      accessibilityHint="Set as cover or remove this photo"
+                      accessibilityLabel={`${domainLabel(perspective)} photo options${photo.isCover ? ', current cover' : ''}`}
+                      accessibilityRole="button"
+                      hitSlop={8}
+                      onPress={() => showPhotoActions(photo)}
+                      style={styles.photoOverflowAction}
+                    >
+                      <Icon color={colors.ink} name="ellipsis-horizontal" size={22} />
+                    </Pressable>
                   </View>
-                </View>
+                ))}
               </View>
-            ))}
-            {(multiple || present.length === 0) && (
-              <View style={styles.wrap}>
-                <Choice
-                  label="Take photo"
-                  selected={false}
-                  onPress={() => void upload(perspective, true)}
-                />
-                <Choice
-                  label="Upload photo"
-                  selected={false}
-                  onPress={() => void upload(perspective, false)}
-                />
-              </View>
+            )}
+            {present.length > 0 && (
+              <Pressable
+                accessibilityHint="Choose the camera or photo library"
+                accessibilityRole="button"
+                disabled={uploading}
+                onPress={() => choosePhotoSource(perspective)}
+                style={styles.photoAddAction}
+              >
+                <Icon color={colors.primary} name="add-circle-outline" size={20} />
+                <Text style={styles.photoAddActionText}>
+                  {uploading ? 'Uploading…' : 'Add photo'}
+                </Text>
+              </Pressable>
             )}
           </View>
         );
@@ -1412,8 +2185,9 @@ function DocumentsStep({
       apiClient.request<Reference[]>('/owner/vehicle-reference-data/document-definitions'),
   });
   const [error, setError] = useState('');
-  const [previews, setPreviews] = useState<Record<string, string>>({});
+  const [uploadingDefinitionId, setUploadingDefinitionId] = useState<string | null>(null);
   const upload = async (definition: Reference, camera: boolean) => {
+    setError('');
     if (camera && !(await ensureCameraPermission())) return;
     const cameraResult = camera
       ? await ImagePicker.launchCameraAsync({
@@ -1431,6 +2205,7 @@ function DocumentsStep({
     if (cameraResult?.canceled || pickerResult?.canceled) return;
     const asset = camera ? cameraResult?.assets[0] : pickerResult?.assets[0];
     if (!asset) return;
+    setUploadingDefinitionId(definition.id);
     try {
       const file = await apiClient.upload<SafeFile>('/files', 'SENSITIVE', {
         uri: asset.uri,
@@ -1448,49 +2223,136 @@ function DocumentsStep({
         }),
         method: 'POST',
       });
-      if ((asset.mimeType ?? '').startsWith('image/') || camera) {
-        setPreviews((current) => ({ ...current, [definition.id]: asset.uri }));
-      }
       onSaved();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Upload failed.');
+    } finally {
+      setUploadingDefinitionId(null);
     }
   };
+  const chooseDocumentSource = (definition: Reference, replacing = false) => {
+    Alert.alert(`${replacing ? 'Replace' : 'Add'} ${definition.name}`, undefined, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Take photo', onPress: () => void upload(definition, true) },
+      { text: 'Choose file', onPress: () => void upload(definition, false) },
+    ]);
+  };
+  const showDocumentActions = (definition: Reference) => {
+    Alert.alert('Document options', undefined, [
+      { text: 'Replace document', onPress: () => chooseDocumentSource(definition, true) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+  const activeDocuments = documents.filter(({ replacedAt }) => !replacedAt);
+  const activeDefinitionIds = new Set(activeDocuments.map(({ definitionId }) => definitionId));
+  const requiredDefinitions = definitions.data?.filter(({ required }) => required) ?? [];
+  const addedRequiredCount = requiredDefinitions.filter(({ id: definitionId }) =>
+    activeDefinitionIds.has(definitionId),
+  ).length;
   return (
     <Section title="Verification documents">
-      <Text style={styles.body}>
-        Files remain sensitive and are only available through expiring authorized access.
-      </Text>
+      <View style={styles.documentsIntro}>
+        <Text style={styles.documentsHelper}>
+          Upload the documents needed to verify your vehicle. Files remain sensitive and available
+          only through authorized access.
+        </Text>
+        {requiredDefinitions.length > 0 && (
+          <Text accessibilityLiveRegion="polite" style={styles.documentsProgress}>
+            {addedRequiredCount} of {requiredDefinitions.length} required added
+          </Text>
+        )}
+      </View>
+      {definitions.isPending && <Text style={styles.body}>Loading document checklist…</Text>}
+      {definitions.isError && (
+        <View style={styles.documentDefinitionsError}>
+          <Text accessibilityRole="alert" style={styles.error}>
+            {definitions.error.message}
+          </Text>
+          <Button label="Retry" onPress={() => void definitions.refetch()} variant="secondary" />
+        </View>
+      )}
       {definitions.data?.map((definition) => {
-        const present = documents.some(
+        const document = activeDocuments.find(
           (document) => document.definitionId === definition.id && !document.replacedAt,
         );
+        const uploading = uploadingDefinitionId === definition.id;
         return (
-          <View key={definition.id} style={styles.card}>
-            <Text style={styles.cardTitle}>
-              {present ? '✓' : '+'} {definition.name}
-            </Text>
-            <Text style={styles.body}>
-              {definition.required ? 'Required' : 'If applicable'} ·{' '}
-              {present
-                ? 'Attached · replace or retake before submission'
-                : 'Capture or choose a file'}
-            </Text>
-            {previews[definition.id] && (
-              <Image source={{ uri: previews[definition.id] }} style={styles.documentPreview} />
-            )}
-            <View style={styles.wrap}>
-              <Choice
-                label={present ? 'Retake' : 'Take photo'}
-                selected={false}
-                onPress={() => void upload(definition, true)}
-              />
-              <Choice
-                label={present ? 'Replace file' : 'Choose file'}
-                selected={false}
-                onPress={() => void upload(definition, false)}
-              />
+          <View
+            accessibilityLabel={`${definition.name}, ${definition.required ? 'Required' : 'Optional'}, ${uploading ? 'Uploading' : document ? 'Added' : 'Not added'}`}
+            key={definition.id}
+            style={[styles.documentCard, !definition.required && styles.documentCardOptional]}
+          >
+            <View style={styles.documentCardHeader}>
+              <Text accessibilityRole="header" style={styles.documentTitle}>
+                {definition.name}
+              </Text>
+              <Text
+                style={[
+                  styles.documentRequirementBadge,
+                  !definition.required && styles.documentRequirementBadgeOptional,
+                ]}
+              >
+                {definition.required ? 'Required' : 'Optional'}
+              </Text>
             </View>
+            <Text style={styles.documentGuidance}>
+              {definition.description ??
+                documentGuidance[definition.code] ??
+                'Upload a clear, current copy.'}
+            </Text>
+            {document ? (
+              <View style={styles.documentAddedRow}>
+                <View style={styles.documentIdentity}>
+                  <View style={styles.documentAddedIcon}>
+                    <Icon
+                      color={colors.onPrimary}
+                      name={uploading ? 'cloud-upload-outline' : 'checkmark'}
+                      size={18}
+                    />
+                  </View>
+                  <View style={styles.documentFileCopy}>
+                    <Text style={styles.documentAddedLabel}>
+                      {uploading ? 'Replacing…' : 'Added'}
+                    </Text>
+                    <Text numberOfLines={2} style={styles.documentFileName}>
+                      {document.fileAsset.originalName.split(/[\\/]/).pop() ??
+                        document.fileAsset.originalName}
+                    </Text>
+                  </View>
+                </View>
+                <Pressable
+                  accessibilityHint="Replace this document"
+                  accessibilityLabel={`${definition.name} document options`}
+                  accessibilityRole="button"
+                  disabled={uploading}
+                  hitSlop={8}
+                  onPress={() => showDocumentActions(definition)}
+                  style={styles.documentOverflowAction}
+                >
+                  <Icon color={colors.ink} name="ellipsis-horizontal" size={22} />
+                </Pressable>
+              </View>
+            ) : (
+              <View style={styles.documentEmptyRow}>
+                <View style={styles.documentEmptyStatus}>
+                  <Icon color={colors.subtleText} name="document-outline" size={20} />
+                  <Text style={styles.documentEmptyText}>
+                    {uploading ? 'Uploading…' : 'Not added'}
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityHint="Choose the camera or a PDF or image file"
+                  accessibilityLabel={`Add ${definition.name}`}
+                  accessibilityRole="button"
+                  disabled={uploading}
+                  onPress={() => chooseDocumentSource(definition)}
+                  style={styles.documentAddAction}
+                >
+                  <Icon color={colors.primary} name="add-circle-outline" size={20} />
+                  <Text style={styles.documentAddActionText}>Add document</Text>
+                </Pressable>
+              </View>
+            )}
           </View>
         );
       })}
@@ -1502,11 +2364,13 @@ function DocumentsStep({
 function LocationStep({
   id,
   vehicle,
+  onPrevious,
   onSaved,
   onContinue,
 }: {
   readonly id: string;
   readonly vehicle: Vehicle;
+  readonly onPrevious: () => void;
   readonly onSaved: () => void;
   readonly onContinue: () => void;
 }) {
@@ -1552,59 +2416,93 @@ function LocationStep({
     },
   });
   return (
-    <Section title="Private pickup location">
-      <Text style={styles.body}>
-        Choose the exact pickup and return point for this vehicle. This can be your preferred
-        meeting point and does not need to be your home.
-      </Text>
-      <Text style={styles.body}>
-        Your exact location is kept private from public browsing and is shared only where permitted
-        for an authorized booking.
-      </Text>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>
-          {location ? 'Location confirmed' : 'Location required'}
-        </Text>
-        <Text style={styles.body}>
-          {location ? locationLabel(location) : 'Choose a private pickup and return point.'}
-        </Text>
-        <Button
-          label={location ? 'Change location' : 'Choose location'}
-          onPress={() => setPickerOpen(true)}
-          variant="secondary"
-        />
-      </View>
-      {pickerOpen && (
-        <LocationPicker
-          visible
-          kind="pickup"
-          initial={location}
-          title="Private pickup location"
-          description="Choose the exact pickup and return point for this vehicle."
-          confirmLabel="Confirm location"
-          mapAccessibilityLabel="Google map for choosing the private vehicle pickup point"
-          mapGuidance="Move the map to adjust the exact pickup and return point."
-          onCancel={() => setPickerOpen(false)}
-          onConfirm={(value) => {
-            setLocation(value);
-            setPickerOpen(false);
-          }}
-        />
-      )}
-      <Save mutation={save} label="Save and continue" />
-    </Section>
+    <>
+      <ScrollView contentContainerStyle={styles.editorBody}>
+        <Section title="Private pickup location">
+          <Text style={styles.body}>
+            Choose the exact pickup and return point for this vehicle.
+          </Text>
+          <View style={styles.locationPrivacyNote}>
+            <Icon color={colors.subtleText} name="lock-closed-outline" size={16} />
+            <Text style={styles.locationPrivacyText}>
+              Kept private from public browsing and shared only for an authorized booking.
+            </Text>
+          </View>
+          <View style={styles.locationSetupCard}>
+            {location ? (
+              <View style={styles.locationSummaryRow}>
+                <View style={styles.locationSummaryIcon}>
+                  <Icon color={colors.primary} name="location-outline" size={22} />
+                </View>
+                <View style={styles.locationSummaryContent}>
+                  <Text style={styles.cardTitle}>Selected pickup location</Text>
+                  <Text style={styles.locationAddress}>{locationDisplayLabel(location)}</Text>
+                  <View style={styles.locationPrivateRow}>
+                    <Icon color={colors.subtleText} name="lock-closed-outline" size={14} />
+                    <Text style={styles.locationPrivateText}>Private location</Text>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.locationSummaryRow}>
+                <View style={styles.locationSummaryIcon}>
+                  <Icon color={colors.primary} name="location-outline" size={22} />
+                </View>
+                <View style={styles.locationSummaryContent}>
+                  <Text style={styles.cardTitle}>Location</Text>
+                  <Text style={styles.locationAddress}>No pickup point selected yet</Text>
+                </View>
+              </View>
+            )}
+            <Button
+              compact
+              label={location ? 'Change location' : 'Choose location'}
+              onPress={() => setPickerOpen(true)}
+              variant="secondary"
+            />
+          </View>
+          {pickerOpen && (
+            <LocationPicker
+              visible
+              kind="pickup"
+              initial={location}
+              title="Private pickup location"
+              dismissLabel="Back"
+              description="Choose the exact pickup and return point for this vehicle."
+              confirmLabel="Confirm location"
+              mapAccessibilityLabel="Google map for choosing the private vehicle pickup point"
+              mapGuidance="Move the map to adjust the exact pickup and return point."
+              presentation="vehicleSetup"
+              onCancel={() => setPickerOpen(false)}
+              onConfirm={(value) => {
+                setLocation(value);
+                setPickerOpen(false);
+              }}
+            />
+          )}
+          {save.error && <Text style={styles.error}>{save.error.message}</Text>}
+        </Section>
+      </ScrollView>
+      <WizardSaveFooter disabled={!location} mutation={save} onPrevious={onPrevious} />
+    </>
   );
 }
 
 function PolicyStep({
+  contentBottomPadding,
   id,
+  mode,
   vehicle,
+  onPrevious,
   onSaved,
   onContinue,
 }: {
+  readonly contentBottomPadding: number;
   readonly id: string;
+  readonly mode: 'pricing' | 'usage';
   readonly vehicle: Vehicle;
-  readonly onSaved: () => void;
+  readonly onPrevious: () => void;
+  readonly onSaved: () => void | Promise<void>;
   readonly onContinue: () => void;
 }) {
   const current = vehicle.policyVersions[0];
@@ -1627,6 +2525,15 @@ function PolicyStep({
   const [monthlyDiscount, setMonthlyDiscount] = useState(
     current?.monthlyDiscountBps == null ? '' : String(current.monthlyDiscountBps / 100),
   );
+  const [discountsEnabled, setDiscountsEnabled] = useState(
+    [
+      current?.shortDurationDiscountBps,
+      current?.weeklyDiscountBps,
+      current?.extendedTripDiscountBps,
+      current?.monthlyDiscountBps,
+    ].some((value) => (value ?? 0) > 0),
+  );
+  const [discountError, setDiscountError] = useState('');
   const [renterPickup, setRenterPickup] = useState(current?.supportsRenterPickup ?? true);
   const [ownerDelivery, setOwnerDelivery] = useState(current?.supportsOwnerDelivery ?? false);
   const [renterReturn, setRenterReturn] = useState(current?.supportsRenterReturn ?? true);
@@ -1641,6 +2548,7 @@ function PolicyStep({
   const [minimumNotice, setMinimumNotice] = useState(current?.fulfillmentMinimumNoticeMinutes ?? 0);
   const [fulfillmentError, setFulfillmentError] = useState('');
   const depositCatalog = useQuery({
+    enabled: mode === 'pricing',
     queryKey: ['security-deposit-policy'],
     queryFn: () => apiClient.request<SecurityDepositPolicyCatalog>('/security-deposit/policy'),
     staleTime: 5 * 60_000,
@@ -1668,28 +2576,68 @@ function PolicyStep({
   const selectedDepositAmountMinor = allowedDepositTiers.includes(securityDepositAmountMinor ?? -1)
     ? securityDepositAmountMinor
     : (allowedDepositTiers[0] ?? null);
+  const depositRequiredForPayload =
+    mode === 'pricing'
+      ? securityDepositRequired
+      : (current?.securityDeposit.required ?? current?.securityDepositRequired ?? false);
+  const depositAmountForPayload =
+    mode === 'pricing'
+      ? selectedDepositAmountMinor
+      : (current?.securityDeposit.amountMinor ?? current?.securityDepositAmountMinor ?? null);
+  const depositCurrencyForPayload =
+    mode === 'pricing'
+      ? selectedDepositCurrency
+      : (current?.securityDeposit.currency ??
+        current?.securityDepositCurrency ??
+        current?.currency ??
+        'PHP');
   const electric = vehicle.powertrain === 'BATTERY_ELECTRIC';
   const ownerService = ownerDelivery || ownerCollection;
   const save = useMutation({
     mutationFn: async () => {
       setFulfillmentError('');
       setSecurityDepositError('');
-      if (!depositCatalog.data?.enabledForConfiguration) {
+      setDiscountError('');
+      if (mode === 'pricing' && discountsEnabled) {
+        let previousDiscount = 0;
+        for (const [label, rawValue] of [
+          ['3-day', shortDiscount],
+          ['7-day', weeklyDiscount],
+          ['14-day', extendedDiscount],
+          ['30-day', monthlyDiscount],
+        ] as const) {
+          if (!rawValue.trim()) continue;
+          const discount = Number(rawValue);
+          if (!Number.isFinite(discount) || discount < 0 || discount > 40) {
+            const message = `${label} discount must be between 0% and 40%.`;
+            setDiscountError(message);
+            throw new Error(message);
+          }
+          if (discount < previousDiscount) {
+            const message = 'Longer-stay discounts can’t be lower than shorter-stay discounts.';
+            setDiscountError(message);
+            throw new Error(message);
+          }
+          previousDiscount = discount;
+        }
+      }
+      if (mode === 'pricing' && !depositCatalog.data?.enabledForConfiguration) {
         setSecurityDepositError('Security deposit options are unavailable. Retry before saving.');
         throw new Error('Security deposit options are unavailable.');
       }
       if (
+        mode === 'pricing' &&
         securityDepositRequired &&
         (!selectedDepositAmountMinor || !allowedDepositTiers.includes(selectedDepositAmountMinor))
       ) {
         setSecurityDepositError('Choose an available security deposit amount.');
         throw new Error('Choose an available security deposit amount.');
       }
-      if (!renterPickup && !ownerDelivery) {
+      if (mode === 'usage' && !renterPickup && !ownerDelivery) {
         setFulfillmentError('Choose at least one way for renters to receive the car.');
         throw new Error('Choose at least one way for renters to receive the car.');
       }
-      if (!renterReturn && !ownerCollection) {
+      if (mode === 'usage' && !renterReturn && !ownerCollection) {
         setFulfillmentError('Choose at least one way for the car to be returned.');
         throw new Error('Choose at least one way for the car to be returned.');
       }
@@ -1697,17 +2645,23 @@ function PolicyStep({
       const deliveryFeeMinor = Math.round(Number(deliveryFee) * 100);
       const collectionFeeMinor = Math.round(Number(collectionFee) * 100);
       if (
+        mode === 'usage' &&
         ownerService &&
         (!Number.isInteger(radiusMeters) || radiusMeters <= 0 || radiusMeters > 50_000)
       ) {
         setFulfillmentError('Choose a service area from 1 to 50 km.');
         throw new Error('Choose a service area from 1 to 50 km.');
       }
-      if (ownerDelivery && (!Number.isSafeInteger(deliveryFeeMinor) || deliveryFeeMinor < 0)) {
+      if (
+        mode === 'usage' &&
+        ownerDelivery &&
+        (!Number.isSafeInteger(deliveryFeeMinor) || deliveryFeeMinor < 0)
+      ) {
         setFulfillmentError('Enter a valid Delivery fee. Zero means free delivery.');
         throw new Error('Enter a valid Delivery fee.');
       }
       if (
+        mode === 'usage' &&
         ownerCollection &&
         (!Number.isSafeInteger(collectionFeeMinor) || collectionFeeMinor < 0)
       ) {
@@ -1718,23 +2672,23 @@ function PolicyStep({
         body: JSON.stringify({
           dailyRateMinor: Math.round(Number(dailyRate) * 100),
           currency: current?.currency ?? 'PHP',
-          securityDepositRequired,
-          ...(securityDepositRequired
+          securityDepositRequired: depositRequiredForPayload,
+          ...(depositRequiredForPayload
             ? {
-                securityDepositAmountMinor: selectedDepositAmountMinor,
-                securityDepositCurrency: selectedDepositCurrency,
+                securityDepositAmountMinor: depositAmountForPayload,
+                securityDepositCurrency: depositCurrencyForPayload,
               }
             : {}),
-          ...(shortDiscount.trim()
+          ...(discountsEnabled && shortDiscount.trim()
             ? { shortDurationDiscountBps: Math.round(Number(shortDiscount) * 100) }
             : {}),
-          ...(weeklyDiscount.trim()
+          ...(discountsEnabled && weeklyDiscount.trim()
             ? { weeklyDiscountBps: Math.round(Number(weeklyDiscount) * 100) }
             : {}),
-          ...(extendedDiscount.trim()
+          ...(discountsEnabled && extendedDiscount.trim()
             ? { extendedTripDiscountBps: Math.round(Number(extendedDiscount) * 100) }
             : {}),
-          ...(monthlyDiscount.trim()
+          ...(discountsEnabled && monthlyDiscount.trim()
             ? { monthlyDiscountBps: Math.round(Number(monthlyDiscount) * 100) }
             : {}),
           minimumRentalDays: current?.minimumRentalDays ?? 1,
@@ -1778,258 +2732,378 @@ function PolicyStep({
         }),
         method: 'POST',
       });
-      return markSectionComplete(id, 'Policies');
+      if (mode === 'usage') await markSectionComplete(id, 'Policies');
     },
-    onSuccess: () => {
-      onSaved();
+    onSuccess: async () => {
+      await onSaved();
       onContinue();
     },
   });
   return (
-    <Section title="Pricing and usage policies">
-      <Field
-        label="Daily rate (PHP)"
-        value={dailyRate}
-        onChange={setDailyRate}
-        keyboard="numeric"
-      />
-      <Text style={styles.label}>Long-booking discounts (optional)</Text>
-      <Text style={styles.body}>
-        Enter a percentage from 0 to 40. Longer enabled tiers cannot be lower than shorter tiers.
-        The best eligible tier is applied once to the rental subtotal.
-      </Text>
-      <Field
-        label="3+ days (%)"
-        value={shortDiscount}
-        onChange={setShortDiscount}
-        keyboard="decimal-pad"
-      />
-      <Field
-        label="7+ days (%)"
-        value={weeklyDiscount}
-        onChange={setWeeklyDiscount}
-        keyboard="decimal-pad"
-      />
-      <Field
-        label="14+ days (%)"
-        value={extendedDiscount}
-        onChange={setExtendedDiscount}
-        keyboard="decimal-pad"
-      />
-      <Field
-        label="30+ days (%)"
-        value={monthlyDiscount}
-        onChange={setMonthlyDiscount}
-        keyboard="decimal-pad"
-      />
-      {Number(dailyRate) > 0 && weeklyDiscount.trim() && (
-        <Text style={styles.body}>
-          Example: 7 days is{' '}
-          {money(Math.round(Number(dailyRate) * 100 * 7 * (1 - Number(weeklyDiscount) / 100)))}{' '}
-          after the weekly discount.
-        </Text>
-      )}
-      <Text style={styles.label}>Security deposit</Text>
-      {depositCatalog.isPending && <StateView loading title="Loading deposit options…" />}
-      {depositCatalog.isError && (
-        <StateView
-          icon="cloud-offline-outline"
-          title="Deposit options unavailable"
-          message="Retry to load the current amounts before saving this policy."
-          actionLabel="Retry"
-          onAction={() => void depositCatalog.refetch()}
-        />
-      )}
-      {depositCatalog.data?.enabledForConfiguration && (
-        <View style={styles.depositSection}>
-          <DepositRequirementSelector
-            required={securityDepositRequired}
-            onChange={setSecurityDepositRequired}
-          />
-          {securityDepositRequired && (
-            <DepositTierSelector
-              options={allowedDepositTiers.map((amountMinor) => ({
-                label: money(amountMinor, selectedDepositCurrency),
-                value: amountMinor,
-              }))}
-              value={selectedDepositAmountMinor}
-              onChange={setSecurityDepositAmountMinor}
-            />
+    <>
+      <ScrollView
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        contentContainerStyle={[styles.editorBody, { paddingBottom: contentBottomPadding }]}
+        keyboardDismissMode={formKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Section title={mode === 'pricing' ? 'Pricing' : 'Handover & usage policies'}>
+          {mode === 'pricing' ? (
+            <>
+              <View style={styles.policySection}>
+                <Text style={styles.policySectionTitle}>Base pricing</Text>
+                <Field
+                  grouped
+                  label="Daily rate"
+                  value={dailyRate}
+                  onChange={setDailyRate}
+                  keyboard="numeric"
+                  placeholder="2,500"
+                  prefix="₱"
+                />
+              </View>
+              <View style={[styles.policySection, styles.policySectionSeparated]}>
+                <Text style={styles.policySectionTitle}>Long-booking discounts</Text>
+                <Text style={styles.policyHelper}>Optional discounts for longer rentals.</Text>
+                <Pressable
+                  accessibilityLabel="Offer long-booking discounts"
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: discountsEnabled }}
+                  onPress={() => {
+                    const enabled = !discountsEnabled;
+                    setDiscountsEnabled(enabled);
+                    if (!enabled) setDiscountError('');
+                  }}
+                  style={styles.discountToggleRow}
+                >
+                  <Text style={styles.discountToggleLabel}>Offer long-booking discounts</Text>
+                  <View
+                    accessibilityElementsHidden
+                    style={[
+                      styles.discountSwitchTrack,
+                      discountsEnabled && styles.discountSwitchTrackEnabled,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.discountSwitchThumb,
+                        discountsEnabled && styles.discountSwitchThumbEnabled,
+                      ]}
+                    />
+                  </View>
+                </Pressable>
+                {discountsEnabled && (
+                  <>
+                    <Text style={styles.policyHelper}>
+                      Enter 0–40%. Longer stays can’t have a lower discount than shorter stays.
+                    </Text>
+                    <View style={styles.discountRows}>
+                      <DiscountRow
+                        divider
+                        label="3+ days"
+                        value={shortDiscount}
+                        onChange={setShortDiscount}
+                      />
+                      <DiscountRow
+                        divider
+                        label="7+ days"
+                        value={weeklyDiscount}
+                        onChange={setWeeklyDiscount}
+                      />
+                      <DiscountRow
+                        divider
+                        label="14+ days"
+                        value={extendedDiscount}
+                        onChange={setExtendedDiscount}
+                      />
+                      <DiscountRow
+                        label="30+ days"
+                        value={monthlyDiscount}
+                        onChange={setMonthlyDiscount}
+                      />
+                    </View>
+                    {discountError && (
+                      <Text accessibilityRole="alert" style={styles.error}>
+                        {discountError}
+                      </Text>
+                    )}
+                    {Number(dailyRate) > 0 && weeklyDiscount.trim() && (
+                      <Text style={styles.body}>
+                        Example: 7 days is{' '}
+                        {money(
+                          Math.round(
+                            Number(dailyRate) * 100 * 7 * (1 - Number(weeklyDiscount) / 100),
+                          ),
+                        )}{' '}
+                        after the weekly discount.
+                      </Text>
+                    )}
+                  </>
+                )}
+              </View>
+              <View style={[styles.policySection, styles.policySectionSeparated]}>
+                <Text style={styles.policySectionTitle}>Security deposit</Text>
+                {depositCatalog.isPending && <StateView loading title="Loading deposit options…" />}
+                {depositCatalog.isError && (
+                  <StateView
+                    icon="cloud-offline-outline"
+                    title="Deposit options unavailable"
+                    message="Retry to load the current amounts before saving this policy."
+                    actionLabel="Retry"
+                    onAction={() => void depositCatalog.refetch()}
+                  />
+                )}
+                {depositCatalog.data?.enabledForConfiguration && (
+                  <View style={styles.depositSection}>
+                    <DepositRequirementSelector
+                      required={securityDepositRequired}
+                      onChange={setSecurityDepositRequired}
+                    />
+                    {securityDepositRequired && (
+                      <DepositTierSelector
+                        options={allowedDepositTiers.map((amountMinor) => ({
+                          label: money(amountMinor, selectedDepositCurrency),
+                          value: amountMinor,
+                        }))}
+                        value={selectedDepositAmountMinor}
+                        onChange={setSecurityDepositAmountMinor}
+                      />
+                    )}
+                    <Text style={styles.depositHelper}>
+                      Changes apply to new booking requests only.
+                    </Text>
+                    {!depositCatalog.data.executionAvailable && (
+                      <Text style={styles.depositInfoNote}>
+                        Deposit processing isn’t active yet. No hold will be placed and pickup won’t
+                        be blocked.
+                      </Text>
+                    )}
+                  </View>
+                )}
+                {securityDepositError && (
+                  <Text accessibilityRole="alert" style={styles.error}>
+                    {securityDepositError}
+                  </Text>
+                )}
+              </View>
+            </>
+          ) : (
+            <View style={styles.usageStep}>
+              <View style={styles.usageSection}>
+                <Text accessibilityRole="header" style={styles.policySectionTitle}>
+                  Handover
+                </Text>
+                <Text style={styles.policyHelper}>Choose how each rental starts and ends.</Text>
+                <PolicyOptionGroup
+                  label="Start of rental"
+                  options={[
+                    {
+                      label: 'Renter pickup',
+                      onPress: () => setRenterPickup((value) => !value),
+                      selected: renterPickup,
+                    },
+                    {
+                      label: 'Owner delivery',
+                      onPress: () => setOwnerDelivery((value) => !value),
+                      selected: ownerDelivery,
+                    },
+                  ]}
+                />
+                <PolicyOptionGroup
+                  label="End of rental"
+                  options={[
+                    {
+                      label: 'Renter return',
+                      onPress: () => setRenterReturn((value) => !value),
+                      selected: renterReturn,
+                    },
+                    {
+                      label: 'Owner collection',
+                      onPress: () => setOwnerCollection((value) => !value),
+                      selected: ownerCollection,
+                    },
+                  ]}
+                />
+                {fulfillmentError && (
+                  <Text accessibilityRole="alert" style={styles.error}>
+                    {fulfillmentError}
+                  </Text>
+                )}
+              </View>
+
+              {ownerService && (
+                <View style={[styles.usageSection, styles.policySectionSeparated]}>
+                  <Text accessibilityRole="header" style={styles.policySectionTitle}>
+                    Delivery & collection
+                  </Text>
+                  <Text style={styles.policyHelper}>
+                    Set the service area, fees, and notice for owner-provided handover.
+                  </Text>
+                  <Text style={styles.compactFieldLabel}>Service radius</Text>
+                  <Text style={styles.policyHelper}>
+                    How far you’re willing to{' '}
+                    {ownerDelivery && ownerCollection
+                      ? 'deliver or collect'
+                      : ownerDelivery
+                        ? 'deliver'
+                        : 'collect'}{' '}
+                    the vehicle.
+                  </Text>
+                  <View accessibilityLabel="Owner service radius" style={styles.policyOptionGrid}>
+                    {[5, 10, 15, 25, 50].map((kilometers) => (
+                      <CompactPolicyChoice
+                        key={kilometers}
+                        label={`${kilometers} km`}
+                        selected={serviceRadiusKm === String(kilometers)}
+                        onPress={() => setServiceRadiusKm(String(kilometers))}
+                      />
+                    ))}
+                  </View>
+                  <View style={styles.compactFieldGrid}>
+                    {ownerDelivery && (
+                      <PolicyNumberField
+                        accessibilityLabel="Delivery fee in Philippine pesos"
+                        label="Delivery fee"
+                        prefix="₱"
+                        value={deliveryFee}
+                        onChange={setDeliveryFee}
+                      />
+                    )}
+                    {ownerCollection && (
+                      <PolicyNumberField
+                        accessibilityLabel="Collection fee in Philippine pesos"
+                        label="Collection fee"
+                        prefix="₱"
+                        value={collectionFee}
+                        onChange={setCollectionFee}
+                      />
+                    )}
+                  </View>
+                  <Text style={styles.compactFieldLabel}>Minimum notice</Text>
+                  <Text style={styles.policyHelper}>
+                    How far in advance renters must book owner delivery or collection. Renter pickup
+                    and return aren’t affected.
+                  </Text>
+                  <View
+                    accessibilityLabel="Delivery and collection notice"
+                    style={styles.policyOptionGrid}
+                  >
+                    {[
+                      [0, 'None'],
+                      [180, '3 hr'],
+                      [360, '6 hr'],
+                      [720, '12 hr'],
+                      [1440, '24 hr'],
+                      [2880, '48 hr'],
+                      [10080, '7 days'],
+                    ].map(([minutes, label]) => (
+                      <CompactPolicyChoice
+                        key={minutes}
+                        label={String(label)}
+                        selected={minimumNotice === minutes}
+                        onPress={() => setMinimumNotice(Number(minutes))}
+                      />
+                    ))}
+                  </View>
+                </View>
+              )}
+
+              <View style={[styles.usageSection, styles.policySectionSeparated]}>
+                <Text accessibilityRole="header" style={styles.policySectionTitle}>
+                  Mileage
+                </Text>
+                <Text style={styles.policyHelper}>
+                  Set how much driving is included with each rental.
+                </Text>
+                <PolicyOptionGroup
+                  exclusive
+                  label="Mileage allowance"
+                  options={[
+                    { label: 'Limited', onPress: () => setLimited(true), selected: limited },
+                    { label: 'Unlimited', onPress: () => setLimited(false), selected: !limited },
+                  ]}
+                />
+                {limited && (
+                  <>
+                    <View style={styles.compactFieldGrid}>
+                      <PolicyNumberField
+                        accessibilityLabel="Included distance in kilometers per day"
+                        label="Included distance"
+                        suffix="km/day"
+                        value={included}
+                        onChange={setIncluded}
+                      />
+                      <PolicyNumberField
+                        accessibilityLabel="Excess distance fee in Philippine pesos per kilometer"
+                        label="Excess distance fee"
+                        prefix="₱"
+                        suffix="/ km"
+                        value={excess}
+                        onChange={setExcess}
+                      />
+                    </View>
+                    <Text style={styles.policyHelper}>
+                      Extra whole kilometers are charged at the rate above.
+                    </Text>
+                  </>
+                )}
+              </View>
+
+              <View style={[styles.usageSection, styles.policySectionSeparated]}>
+                <Text accessibilityRole="header" style={styles.policySectionTitle}>
+                  Turnaround
+                </Text>
+                <Text style={styles.policyHelper}>
+                  Time reserved between bookings for cleaning and preparation.
+                </Text>
+                <View accessibilityLabel="Turnaround buffer" style={styles.policyOptionGrid}>
+                  {[120, 240, 360, 720, 1440].map((minutes) => (
+                    <CompactPolicyChoice
+                      key={minutes}
+                      selected={turnaround === minutes}
+                      label={`${minutes / 60} hr`}
+                      onPress={() => setTurnaround(minutes)}
+                    />
+                  ))}
+                </View>
+              </View>
+
+              <View style={[styles.usageSection, styles.policySectionSeparated]}>
+                <Text accessibilityRole="header" style={styles.policySectionTitle}>
+                  Return conditions
+                </Text>
+                <View style={styles.returnConditionCard}>
+                  <View style={styles.returnConditionIcon}>
+                    <Icon
+                      color={colors.primary}
+                      name={electric ? 'flash-outline' : 'water-outline'}
+                      size={20}
+                    />
+                  </View>
+                  <View style={styles.returnConditionCopy}>
+                    <Text style={styles.returnConditionLabel}>
+                      {electric ? 'EV charge' : 'Fuel'}
+                    </Text>
+                    <Text style={styles.returnConditionValue}>
+                      Same level as pickup · 5% tolerance
+                    </Text>
+                    <Text style={styles.returnConditionHelper}>
+                      Deficiency charges require platform review.
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </View>
           )}
-          <Text style={styles.depositHelper}>Changes apply to new booking requests only.</Text>
-          {!depositCatalog.data.executionAvailable && (
-            <Text style={styles.depositInfoNote}>
-              Deposit processing isn’t active yet. No hold will be placed and pickup won’t be
-              blocked.
+          {save.error && !discountError && !fulfillmentError && !securityDepositError && (
+            <Text accessibilityRole="alert" style={styles.error}>
+              We couldn’t save these changes. Check your connection and try again.
             </Text>
           )}
-        </View>
-      )}
-      {securityDepositError && (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {securityDepositError}
-        </Text>
-      )}
-      <Text style={styles.label}>Handover options</Text>
-      <Text style={styles.label}>START OF RENTAL</Text>
-      <View style={styles.wrap}>
-        <Choice
-          label="Renter pickup"
-          selected={renterPickup}
-          onPress={() => setRenterPickup((value) => !value)}
-        />
-        <Choice
-          label="I can deliver the car"
-          selected={ownerDelivery}
-          onPress={() => setOwnerDelivery((value) => !value)}
-        />
-      </View>
-      <Text style={styles.label}>END OF RENTAL</Text>
-      <View style={styles.wrap}>
-        <Choice
-          label="Renter returns the car"
-          selected={renterReturn}
-          onPress={() => setRenterReturn((value) => !value)}
-        />
-        <Choice
-          label="I can collect the car"
-          selected={ownerCollection}
-          onPress={() => setOwnerCollection((value) => !value)}
-        />
-      </View>
-      {ownerService && (
-        <>
-          <Text style={styles.label}>Service area</Text>
-          <Text style={styles.body}>
-            How far are you willing to{' '}
-            {ownerDelivery && ownerCollection
-              ? 'deliver or collect'
-              : ownerDelivery
-                ? 'deliver'
-                : 'collect'}{' '}
-            the vehicle?
-          </Text>
-          <View accessibilityLabel="Owner service radius" style={styles.wrap}>
-            {[5, 10, 15, 25, 50].map((kilometers) => (
-              <Choice
-                key={kilometers}
-                label={`${kilometers} km`}
-                selected={serviceRadiusKm === String(kilometers)}
-                onPress={() => setServiceRadiusKm(String(kilometers))}
-              />
-            ))}
-          </View>
-          {ownerDelivery && (
-            <>
-              <Field
-                label="Delivery fee (PHP)"
-                value={deliveryFee}
-                onChange={setDeliveryFee}
-                keyboard="decimal-pad"
-              />
-              <Text style={styles.body}>
-                Amount shown when you offer delivery. Zero means free delivery.
-              </Text>
-            </>
-          )}
-          {ownerCollection && (
-            <>
-              <Field
-                label="Collection fee (PHP)"
-                value={collectionFee}
-                onChange={setCollectionFee}
-                keyboard="decimal-pad"
-              />
-              <Text style={styles.body}>
-                Amount shown when you offer collection. Zero means free collection.
-              </Text>
-            </>
-          )}
-          <Text style={styles.label}>Delivery & collection notice</Text>
-          <Text style={styles.body}>
-            How much advance notice do you need to deliver or collect the vehicle?
-          </Text>
-          <Text style={styles.body}>
-            This only applies when you deliver or collect the vehicle. Renter pickup and return are
-            not affected.
-          </Text>
-          <View accessibilityLabel="Delivery and collection notice" style={styles.wrap}>
-            {[
-              [0, 'No minimum'],
-              [180, '3 hours'],
-              [360, '6 hours'],
-              [720, '12 hours'],
-              [1440, '24 hours'],
-              [2880, '48 hours'],
-              [10080, '7 days'],
-            ].map(([minutes, label]) => (
-              <Choice
-                key={minutes}
-                label={String(label)}
-                selected={minimumNotice === minutes}
-                onPress={() => setMinimumNotice(Number(minutes))}
-              />
-            ))}
-          </View>
-        </>
-      )}
-      {fulfillmentError && (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {fulfillmentError}
-        </Text>
-      )}
-      <Text style={styles.label}>Mileage</Text>
-      <View style={styles.wrap}>
-        <Choice label="150 km/day" selected={limited} onPress={() => setLimited(true)} />
-        <Choice label="Unlimited" selected={!limited} onPress={() => setLimited(false)} />
-      </View>
-      {limited && (
-        <>
-          <Field
-            label="Included mileage per rental day (km)"
-            value={included}
-            onChange={setIncluded}
-            keyboard="numeric"
-          />
-          <Text style={styles.body}>
-            How many kilometers are included per rental day before excess mileage charges apply.
-          </Text>
-          <Field
-            label="Excess mileage fee (PHP per whole km)"
-            value={excess}
-            onChange={setExcess}
-            keyboard="numeric"
-          />
-          <Text style={styles.body}>
-            Amount charged for each whole kilometer driven beyond the included mileage allowance.
-          </Text>
-        </>
-      )}
-      <Text style={styles.label}>Turnaround buffer</Text>
-      <Text style={styles.body}>
-        Time reserved after each rental before this vehicle can be booked again.
-      </Text>
-      <View style={styles.wrap}>
-        {[120, 240, 360, 720, 1440].map((minutes) => (
-          <Choice
-            key={minutes}
-            selected={turnaround === minutes}
-            label={`${minutes / 60}h`}
-            onPress={() => setTurnaround(minutes)}
-          />
-        ))}
-      </View>
-      <Text style={styles.body}>
-        If you select {turnaround / 60} hours, another renter cannot book the vehicle until that
-        time has passed after the previous return. Availability remains server-authoritative.
-      </Text>
-      <Text style={styles.body}>
-        {electric ? 'EV same-to-same, 5% tolerance' : 'Fuel same-to-same, 5% tolerance'} ·
-        deficiency charges require platform review. Current rate:{' '}
-        {money(Math.round(Number(dailyRate || 0) * 100))} per day.
-      </Text>
-      <Save mutation={save} label="Save and continue" />
-    </Section>
+        </Section>
+      </ScrollView>
+      <WizardSaveFooter label="Continue" mutation={save} onPrevious={onPrevious} />
+    </>
   );
 }
 
@@ -2197,6 +3271,25 @@ function availabilityTodayLabel(value?: AvailabilityToday): string {
   return 'Not currently marketplace-available';
 }
 
+function fleetDistinctAvailabilityLabel(value?: AvailabilityToday): string | null {
+  if (!value || value.state === 'MARKETPLACE_UNAVAILABLE') return null;
+  return availabilityTodayLabel(value);
+}
+
+function fleetMarketplaceStatus(vehicle: Vehicle): string {
+  if (
+    ['SUBMITTED', 'AWAITING_REVIEW', 'UNDER_REVIEW', 'PENDING_APPROVAL'].includes(vehicle.status)
+  ) {
+    return 'Awaiting marketplace approval';
+  }
+  if (vehicle.status === 'APPROVED') {
+    return vehicle.operationalStatus === 'AVAILABLE'
+      ? 'Marketplace available'
+      : 'Marketplace unavailable';
+  }
+  return ownerMarketplaceStatus(vehicle);
+}
+
 function availabilityTodayDetail(value?: AvailabilityToday): string {
   if (!value) return 'Refresh to check current availability.';
   if (value.state === 'OWNER_BLOCKED' && value.blockedUntil) {
@@ -2218,53 +3311,166 @@ function ownerPrivateLocationLabel(location: NonNullable<Vehicle['location']>): 
 function ReviewStep({
   vehicle,
   action,
+  onEdit,
 }: {
   readonly vehicle: Vehicle;
   readonly action: (value: { path: string; body?: object; method?: string }) => void;
+  readonly onEdit: (step: number) => void;
 }) {
   const editable = ['DRAFT', 'CHANGES_REQUIRED', 'REJECTED'].includes(vehicle.status);
+  const submitted = ['SUBMITTED', 'AWAITING_REVIEW', 'UNDER_REVIEW', 'PENDING_APPROVAL'].includes(
+    vehicle.status,
+  );
+  const policy = vehicle.policyVersions[0];
+  const cover = vehicle.photos.find(({ isCover }) => isCover) ?? vehicle.photos[0];
+  const activeDocuments = vehicle.documents.filter((item) => !item.replacedAt);
+  const requiredDocuments = activeDocuments.filter((item) => item.definition.required !== false);
+  const optionalDocuments = activeDocuments.length - requiredDocuments.length;
+  const discountsEnabled = Boolean(
+    policy &&
+    [
+      policy.shortDurationDiscountBps,
+      policy.weeklyDiscountBps,
+      policy.extendedTripDiscountBps,
+      policy.monthlyDiscountBps,
+    ].some((value) => (value ?? 0) > 0),
+  );
+  const detailSummary = [
+    domainLabel(vehicle.transmission),
+    domainLabel(vehicle.powertrain),
+    `${vehicle.seatCount ?? '—'} seats`,
+  ].join(' · ');
+  const photoSummary = `${vehicle.photos.length} photo${vehicle.photos.length === 1 ? '' : 's'} added · ${cover ? 'Cover selected' : 'No cover selected'}`;
+  const documentSummary = `${requiredDocuments.length} of 3 required documents added${optionalDocuments ? ` · ${optionalDocuments} optional` : ''}`;
+  const pricingSummary = policy
+    ? [
+        `${money(policy.dailyRateMinor)}/day`,
+        discountsEnabled ? 'Long-stay discounts enabled' : 'No long-stay discounts',
+        policy.securityDeposit.required || policy.securityDepositRequired
+          ? `${money(policy.securityDeposit.amountMinor ?? policy.securityDepositAmountMinor ?? 0, policy.securityDeposit.currency ?? policy.securityDepositCurrency ?? policy.currency)} deposit required`
+          : 'No security deposit',
+      ].join(' · ')
+    : 'Pricing not complete';
+  const handoverSummary = policy
+    ? [
+        policy.supportsRenterPickup ? 'Renter pickup' : null,
+        policy.supportsOwnerDelivery ? 'Owner delivery' : null,
+        policy.supportsRenterReturn ? 'Renter return' : null,
+        policy.supportsOwnerCollection ? 'Owner collection' : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+  const usageSummary = policy
+    ? `${policy.mileagePolicy === 'UNLIMITED' ? 'Unlimited mileage' : 'Limited mileage'} · ${policy.turnaroundMinutes / 60}-hour turnaround`
+    : '';
   return (
     <Section title="Review and submit">
-      <Text style={styles.status}>Status: {vehicleStatusLabel(vehicle.status)}</Text>
-      {vehicle.reviewReason && <Text style={styles.error}>{vehicle.reviewReason}</Text>}
-      <View style={styles.reviewSummary}>
-        <Text style={styles.cardTitle}>
-          {vehicle.modelYear} {vehicle.make} {vehicle.model}
-        </Text>
-        <Text style={styles.body}>
-          {domainLabel(vehicle.transmission)} · {domainLabel(vehicle.powertrain)} ·{' '}
-          {vehicle.seatCount ?? '—'} seats
-        </Text>
-        <Text style={styles.body}>
-          {vehicle.location
-            ? `${vehicle.location.city}, ${vehicle.location.province}`
-            : 'Location not complete'}
-        </Text>
-        {vehicle.policyVersions[0] && (
-          <Text style={styles.body}>
-            {money(vehicle.policyVersions[0].dailyRateMinor)} per day ·{' '}
-            {vehicle.policyVersions[0].turnaroundMinutes / 60}-hour preparation buffer
+      <View
+        accessibilityLabel={`Vehicle status: ${vehicleStatusLabel(vehicle.status)}`}
+        style={styles.reviewStatusRow}
+      >
+        <StatusBadge
+          label={vehicleStatusLabel(vehicle.status)}
+          tone={vehicleTone(vehicle.status)}
+        />
+        {submitted && (
+          <Text style={styles.reviewStatusHelper}>
+            Your vehicle has been submitted and is waiting for review.
           </Text>
         )}
       </View>
-      <Readiness
-        label="Basic details"
-        done={Boolean(vehicle.make && vehicle.model && vehicle.modelYear && vehicle.categoryId)}
-      />
-      <Readiness label="Five required photos" done={vehicle.photos.length >= 5} />
-      <Readiness
-        label="Required documents"
-        done={vehicle.documents.filter((item) => !item.replacedAt).length >= 3}
-      />
-      <Readiness label="Private location" done={Boolean(vehicle.location)} />
-      <Readiness label="Pricing and policies" done={vehicle.policyVersions.length > 0} />
-      {editable && (
-        <Pressable style={styles.primaryButton} onPress={() => action({ path: '/submission' })}>
-          <Text style={styles.primaryText}>Submit for approval</Text>
-        </Pressable>
-      )}
+      {vehicle.reviewReason && <Text style={styles.error}>{vehicle.reviewReason}</Text>}
+      <View style={styles.reviewVehicleSummary}>
+        {cover && (
+          <VehicleImage
+            accessible={false}
+            contentPath={cover.fileAsset.contentGrant?.contentPath}
+            style={styles.reviewVehicleImage}
+          />
+        )}
+        <View style={styles.reviewVehicleCopy}>
+          <Text style={styles.reviewVehicleTitle}>
+            {vehicle.modelYear} {vehicle.make} {vehicle.model}
+          </Text>
+          <Text style={styles.reviewSummaryText}>{detailSummary}</Text>
+          <Text style={styles.reviewSummaryText}>
+            {vehicle.location
+              ? `${vehicle.location.city}, ${vehicle.location.province}`
+              : 'Location not complete'}
+          </Text>
+          {policy && (
+            <Text style={styles.reviewSummaryText}>{money(policy.dailyRateMinor)}/day</Text>
+          )}
+        </View>
+      </View>
+      <View style={styles.reviewSections}>
+        <ReviewSection
+          complete={Boolean(
+            vehicle.make && vehicle.model && vehicle.modelYear && vehicle.categoryId,
+          )}
+          editLabel="Edit basic details"
+          editable={editable}
+          onEdit={() => onEdit(0)}
+          summary={`${detailSummary}${vehicle.features.length ? ` · ${vehicle.features.length} features selected` : ''}`}
+          title="Basic details"
+        />
+        <ReviewSection
+          complete={vehicle.photos.length >= 5 && Boolean(cover)}
+          editLabel="Edit photos"
+          editable={editable}
+          onEdit={() => onEdit(2)}
+          summary={photoSummary}
+          title="Photos"
+        />
+        <ReviewSection
+          complete={activeDocuments.length >= 3}
+          editLabel="Edit documents"
+          editable={editable}
+          onEdit={() => onEdit(3)}
+          summary={documentSummary}
+          title="Documents"
+        />
+        <ReviewSection
+          complete={Boolean(vehicle.location)}
+          editLabel="Edit location"
+          editable={editable}
+          onEdit={() => onEdit(4)}
+          summary={
+            vehicle.location
+              ? `${vehicle.location.city}, ${vehicle.location.province} · Private location`
+              : 'Private pickup location not complete'
+          }
+          title="Location"
+        />
+        <ReviewSection
+          complete={Boolean(policy)}
+          editLabel="Edit pricing"
+          editable={editable}
+          onEdit={() => onEdit(5)}
+          summary={pricingSummary}
+          title="Pricing"
+        />
+        <ReviewSection
+          complete={Boolean(policy)}
+          editLabel="Edit handover and usage"
+          editable={editable}
+          onEdit={() => onEdit(6)}
+          summary={
+            policy ? (
+              <View style={styles.reviewMiniSummaries}>
+                <ReviewMiniSummary label="Handover" value={handoverSummary} />
+                <ReviewMiniSummary label="Usage" value={usageSummary} />
+              </View>
+            ) : (
+              'Handover and usage policies not complete'
+            )
+          }
+          title="Handover & usage"
+        />
+      </View>
       {vehicle.status === 'APPROVED' && (
-        <>
+        <View style={styles.reviewApprovedActions}>
           <Pressable
             style={styles.secondaryButton}
             onPress={() =>
@@ -2289,9 +3495,64 @@ function ReviewStep({
           <Pressable style={styles.dangerButton} onPress={() => action({ path: '/archive' })}>
             <Text style={styles.primaryText}>Archive vehicle</Text>
           </Pressable>
-        </>
+        </View>
       )}
     </Section>
+  );
+}
+
+function ReviewSection({
+  complete,
+  editLabel,
+  editable,
+  onEdit,
+  summary,
+  title,
+}: {
+  readonly complete: boolean;
+  readonly editLabel: string;
+  readonly editable: boolean;
+  readonly onEdit: () => void;
+  readonly summary: React.ReactNode;
+  readonly title: string;
+}) {
+  return (
+    <View style={styles.reviewSection}>
+      <View style={styles.reviewSectionContent}>
+        <View style={styles.reviewSectionHeading}>
+          <Icon
+            color={complete ? colors.primary : colors.subtleText}
+            name={complete ? 'checkmark-circle' : 'ellipse-outline'}
+            size={19}
+          />
+          <Text style={styles.reviewSectionTitle}>{title}</Text>
+        </View>
+        {typeof summary === 'string' ? (
+          <Text style={styles.reviewSectionSummary}>{summary}</Text>
+        ) : (
+          summary
+        )}
+      </View>
+      {editable && (
+        <Pressable
+          accessibilityLabel={editLabel}
+          accessibilityRole="button"
+          onPress={onEdit}
+          style={styles.reviewEditHitArea}
+        >
+          <Text style={styles.reviewEditAction}>Edit</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function ReviewMiniSummary({ label, value }: { readonly label: string; readonly value: string }) {
+  return (
+    <View style={styles.reviewMiniSummary}>
+      <Text style={styles.reviewMiniSummaryLabel}>{label}</Text>
+      <Text style={styles.reviewMiniSummaryValue}>{value}</Text>
+    </View>
   );
 }
 
@@ -2309,34 +3570,85 @@ function Section({
     </View>
   );
 }
+
+function DetailsFormSection({
+  children,
+  optional = false,
+  title,
+}: {
+  readonly children: React.ReactNode;
+  readonly optional?: boolean;
+  readonly title: string;
+}) {
+  return (
+    <View style={styles.detailsSection}>
+      <View style={styles.detailsSectionHeading}>
+        <Text accessibilityRole="header" style={styles.detailsSectionTitle}>
+          {title}
+        </Text>
+        {optional && <Text style={styles.detailsOptional}>Optional</Text>}
+      </View>
+      <View style={styles.detailsFields}>{children}</View>
+    </View>
+  );
+}
+
 function Field({
+  grouped = false,
+  helper,
   label,
+  multiline = false,
   value,
   onChange,
   keyboard,
   placeholder,
+  prefix,
 }: {
+  readonly grouped?: boolean;
+  readonly helper?: string;
   readonly label: string;
+  readonly multiline?: boolean;
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly keyboard?: 'numeric' | 'decimal-pad';
   readonly placeholder?: string;
+  readonly prefix?: string;
 }) {
+  const input = (
+    <TextInput
+      accessibilityLabel={label}
+      keyboardType={keyboard}
+      multiline={multiline}
+      onChangeText={onChange}
+      placeholder={placeholder}
+      placeholderTextColor={colors.placeholder}
+      style={[
+        prefix ? styles.prefixedTextInput : styles.input,
+        grouped && !prefix && styles.groupedInput,
+        multiline && styles.multilineInput,
+      ]}
+      textAlignVertical={multiline ? 'top' : 'center'}
+      value={value}
+    />
+  );
   return (
-    <View>
-      <Text style={styles.label}>{label}</Text>
-      <TextInput
-        keyboardType={keyboard}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={colors.placeholder}
-        style={styles.input}
-        value={value}
-      />
+    <View style={grouped && styles.groupedField}>
+      <Text style={[styles.label, grouped && styles.groupedFieldLabel]}>{label}</Text>
+      {prefix ? (
+        <View style={[styles.input, grouped && styles.groupedInput, styles.prefixedInput]}>
+          <Text accessibilityElementsHidden style={styles.inputPrefix}>
+            {prefix}
+          </Text>
+          {input}
+        </View>
+      ) : (
+        input
+      )}
+      {helper && <Text style={styles.fieldHelper}>{helper}</Text>}
     </View>
   );
 }
-function Choice({
+function FeatureChip({
   label,
   selected,
   onPress,
@@ -2347,13 +3659,159 @@ function Choice({
 }) {
   return (
     <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: selected }}
       onPress={onPress}
-      style={[styles.choice, selected && styles.choiceActive]}
+      style={[styles.featureChip, selected && styles.featureChipSelected]}
     >
-      <Text style={selected ? styles.primaryText : styles.body}>{label}</Text>
+      {selected && <Icon color={colors.onPrimary} name="checkmark" size={16} />}
+      <Text style={[styles.featureChipText, selected && styles.featureChipTextSelected]}>
+        {label}
+      </Text>
     </Pressable>
+  );
+}
+
+function DiscountRow({
+  divider = false,
+  label,
+  value,
+  onChange,
+}: {
+  readonly divider?: boolean;
+  readonly label: string;
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+}) {
+  return (
+    <View style={[styles.discountRow, divider && styles.discountRowDivider]}>
+      <Text style={styles.discountLabel}>{label}</Text>
+      <View style={styles.discountInputGroup}>
+        <TextInput
+          accessibilityLabel={`${label} discount percentage`}
+          hitSlop={{ bottom: 3, top: 3 }}
+          keyboardType="decimal-pad"
+          onChangeText={onChange}
+          style={styles.discountInput}
+          value={value}
+        />
+        <Text accessibilityElementsHidden style={styles.discountSuffix}>
+          %
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function PolicyOptionGroup({
+  exclusive = false,
+  label,
+  options,
+}: {
+  readonly exclusive?: boolean;
+  readonly label: string;
+  readonly options: readonly {
+    readonly label: string;
+    readonly onPress: () => void;
+    readonly selected: boolean;
+  }[];
+}) {
+  return (
+    <View style={styles.policyOptionGroup}>
+      <Text style={styles.compactFieldLabel}>{label}</Text>
+      <View accessibilityLabel={label} style={styles.policySegmentedControl}>
+        {options.map((option) => (
+          <Pressable
+            accessibilityRole={exclusive ? 'radio' : 'checkbox'}
+            accessibilityState={{ checked: option.selected }}
+            key={option.label}
+            onPress={option.onPress}
+            style={[styles.policySegment, option.selected && styles.policySegmentSelected]}
+          >
+            {option.selected && <Icon color={colors.onPrimary} name="checkmark" size={16} />}
+            <Text
+              style={[
+                styles.policySegmentText,
+                option.selected && styles.policySegmentTextSelected,
+              ]}
+            >
+              {option.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function CompactPolicyChoice({
+  label,
+  onPress,
+  selected,
+}: {
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly selected: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected, selected }}
+      onPress={onPress}
+      style={styles.compactPolicyChoiceHitArea}
+    >
+      <View style={[styles.compactPolicyChoice, selected && styles.compactPolicyChoiceSelected]}>
+        <Text
+          style={[
+            styles.compactPolicyChoiceText,
+            selected && styles.compactPolicyChoiceTextSelected,
+          ]}
+        >
+          {label}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function PolicyNumberField({
+  accessibilityLabel,
+  label,
+  onChange,
+  prefix,
+  suffix,
+  value,
+}: {
+  readonly accessibilityLabel: string;
+  readonly label: string;
+  readonly onChange: (value: string) => void;
+  readonly prefix?: string;
+  readonly suffix?: string;
+  readonly value: string;
+}) {
+  return (
+    <View style={styles.compactNumberField}>
+      <Text style={styles.compactFieldLabel}>{label}</Text>
+      <View style={styles.compactNumberInputGroup}>
+        {prefix && (
+          <Text accessibilityElementsHidden style={styles.compactNumberAffix}>
+            {prefix}
+          </Text>
+        )}
+        <TextInput
+          accessibilityLabel={accessibilityLabel}
+          keyboardType="decimal-pad"
+          onChangeText={onChange}
+          style={styles.compactNumberInput}
+          value={value}
+        />
+        {suffix && (
+          <Text accessibilityElementsHidden style={styles.compactNumberAffix}>
+            {suffix}
+          </Text>
+        )}
+      </View>
+    </View>
   );
 }
 
@@ -2407,6 +3865,7 @@ function Save({
   mutation,
   label = 'Save draft',
   disabled = false,
+  flushTop = false,
 }: {
   readonly mutation: {
     readonly mutate: () => void;
@@ -2415,6 +3874,7 @@ function Save({
   };
   readonly label?: string;
   readonly disabled?: boolean;
+  readonly flushTop?: boolean;
 }) {
   return (
     <>
@@ -2422,7 +3882,11 @@ function Save({
         accessibilityRole="button"
         accessibilityState={{ disabled: disabled || mutation.isPending }}
         disabled={disabled || mutation.isPending}
-        style={[styles.primaryButton, (disabled || mutation.isPending) && styles.disabledButton]}
+        style={[
+          styles.primaryButton,
+          flushTop && styles.flushTop,
+          (disabled || mutation.isPending) && styles.disabledButton,
+        ]}
         onPress={() => mutation.mutate()}
       >
         <Text style={styles.primaryText}>{mutation.isPending ? 'Saving…' : label}</Text>
@@ -2431,16 +3895,50 @@ function Save({
     </>
   );
 }
-function Readiness({ label, done }: { readonly label: string; readonly done: boolean }) {
+
+function WizardSaveFooter({
+  mutation,
+  disabled = false,
+  label = 'Continue',
+  onPrevious,
+}: {
+  readonly mutation: {
+    readonly mutate: () => void;
+    readonly isPending: boolean;
+  };
+  readonly disabled?: boolean;
+  readonly label?: string;
+  readonly onPrevious?: () => void;
+}) {
+  const primaryDisabled = disabled || mutation.isPending;
   return (
-    <View style={styles.readiness}>
-      <Text style={done ? styles.status : styles.body}>
-        {done ? '✓' : '○'} {label}
-      </Text>
+    <View style={[styles.editorActions, styles.wizardSaveActions]}>
+      {onPrevious ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={onPrevious}
+          style={[styles.secondaryButton, styles.editorActionButton]}
+        >
+          <Text>Previous</Text>
+        </Pressable>
+      ) : null}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ disabled: primaryDisabled }}
+        disabled={primaryDisabled}
+        onPress={() => mutation.mutate()}
+        style={[
+          styles.primaryButton,
+          styles.editorActionButton,
+          onPrevious && styles.wizardPrimaryAction,
+          primaryDisabled && styles.disabledButton,
+        ]}
+      >
+        <Text style={styles.primaryText}>{mutation.isPending ? 'Saving…' : label}</Text>
+      </Pressable>
     </View>
   );
 }
-
 function markSectionComplete(vehicleId: string, section: string) {
   return apiClient.request(`/owner/vehicles/${vehicleId}`, {
     body: JSON.stringify({ lastCompletedSection: section.toUpperCase() }),
@@ -2453,23 +3951,6 @@ function vehicleTone(status: string): 'success' | 'warning' | 'neutral' | 'dange
   if (['CHANGES_REQUIRED', 'PENDING_APPROVAL'].includes(status)) return 'warning';
   if (['REJECTED', 'SUSPENDED'].includes(status)) return 'danger';
   return 'neutral';
-}
-
-function ownerHandoverSummary(policy?: Policy) {
-  if (!policy) return 'Configure pricing and handover policies to continue.';
-  const start = [
-    policy.supportsRenterPickup ? 'Pickup' : null,
-    policy.supportsOwnerDelivery ? 'Delivery' : null,
-  ]
-    .filter(Boolean)
-    .join(' + ');
-  const end = [
-    policy.supportsRenterReturn ? 'Renter return' : null,
-    policy.supportsOwnerCollection ? 'Owner collection' : null,
-  ]
-    .filter(Boolean)
-    .join(' + ');
-  return `Start: ${start || 'Not configured'} · End: ${end || 'Not configured'}`;
 }
 
 function ownerMarketplaceStatus(vehicle: Vehicle) {
@@ -2504,7 +3985,111 @@ function ownerMarketplaceExplanation(vehicle: Vehicle) {
 
 const styles = StyleSheet.create({
   body: { color: colors.subtleText, marginTop: spacing.xs },
+  compactFieldGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  compactFieldLabel: { color: colors.ink, fontSize: 13, fontWeight: '700' },
+  compactPolicyChoice: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    height: 34,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.sm,
+  },
+  compactPolicyChoiceHitArea: { justifyContent: 'center', minHeight: 44 },
+  compactPolicyChoiceSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
+  compactPolicyChoiceText: { color: colors.subtleText, fontSize: 13, fontWeight: '700' },
+  compactPolicyChoiceTextSelected: { color: colors.onPrimary },
+  compactNumberAffix: { color: colors.subtleText, fontSize: 14, fontWeight: '700' },
+  compactNumberField: { flexBasis: 150, flexGrow: 1, gap: spacing.xs, minWidth: 0 },
+  compactNumberInput: {
+    color: colors.ink,
+    flex: 1,
+    fontSize: 15,
+    minWidth: 40,
+    padding: 0,
+  },
+  compactNumberInputGroup: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 48,
+    paddingHorizontal: spacing.sm,
+  },
   disabledButton: { opacity: 0.5 },
+  discountInput: {
+    color: colors.ink,
+    flex: 1,
+    fontSize: 15,
+    height: 36,
+    paddingHorizontal: spacing.xs,
+    textAlign: 'right',
+  },
+  discountInputGroup: {
+    alignItems: 'center',
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: 'row',
+    height: 38,
+    paddingRight: spacing.xs,
+    width: 92,
+  },
+  discountLabel: { color: colors.ink, flex: 1, fontSize: 14, fontWeight: '700' },
+  discountRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.md,
+    justifyContent: 'space-between',
+    minHeight: 48,
+    paddingVertical: 5,
+  },
+  discountRowDivider: { borderBottomColor: colors.border, borderBottomWidth: 1 },
+  discountRows: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+  },
+  discountSwitchThumb: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.pill,
+    height: 22,
+    width: 22,
+  },
+  discountSwitchThumbEnabled: { alignSelf: 'flex-end' },
+  discountSwitchTrack: {
+    backgroundColor: colors.border,
+    borderRadius: radius.pill,
+    flexShrink: 0,
+    height: 28,
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+    width: 50,
+  },
+  discountSwitchTrackEnabled: { backgroundColor: colors.primary },
+  discountSuffix: { color: colors.subtleText, fontSize: 14, fontWeight: '700' },
+  discountToggleLabel: { color: colors.ink, flex: 1, fontSize: 14, fontWeight: '700' },
+  discountToggleRow: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    minHeight: 52,
+    paddingHorizontal: spacing.sm,
+  },
   card: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
@@ -2514,27 +4099,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   cardTitle: { color: colors.ink, fontSize: 16, fontWeight: '700' },
-  coverBadge: {
-    backgroundColor: colors.primary,
-    color: colors.onPrimary,
-    fontSize: 11,
-    fontWeight: '800',
-    left: 6,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    position: 'absolute',
-    top: 6,
-  },
   coverPreview: { borderRadius: radius.lg, height: 220, marginTop: spacing.sm, width: '100%' },
-  documentPreview: { borderRadius: radius.md, height: 180, marginTop: spacing.sm, width: '100%' },
-  choice: {
-    borderColor: colors.border,
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  choiceActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   depositHelper: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
   depositInfoNote: {
     backgroundColor: colors.primarySoft,
@@ -2574,6 +4139,138 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   depositSegmentTextSelected: { color: colors.onPrimary },
+  detailsFields: { gap: spacing.md },
+  detailsOptional: { color: colors.subtleText, fontSize: 12, fontWeight: '700' },
+  detailsSection: { gap: spacing.sm },
+  detailsSectionHeading: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  detailsSectionTitle: {
+    color: colors.primaryDark,
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  detailsStep: { gap: spacing.xxl },
+  documentAddAction: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 44,
+    paddingHorizontal: spacing.xs,
+  },
+  documentAddActionText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  documentAddedIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: radius.pill,
+    height: 30,
+    justifyContent: 'center',
+    width: 30,
+  },
+  documentAddedLabel: { color: colors.primaryDark, fontSize: 13, fontWeight: '800' },
+  documentAddedRow: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.md,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    marginTop: spacing.sm,
+    minHeight: 52,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  documentCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+  },
+  documentCardHeader: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    justifyContent: 'space-between',
+  },
+  documentCardOptional: { backgroundColor: colors.surface, borderColor: colors.border },
+  documentDefinitionsError: { gap: spacing.sm },
+  documentEmptyRow: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    marginTop: spacing.sm,
+    minHeight: 52,
+    paddingHorizontal: spacing.sm,
+  },
+  documentEmptyStatus: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: spacing.xs },
+  documentEmptyText: { color: colors.subtleText, flexShrink: 1, fontSize: 13, fontWeight: '700' },
+  documentFileCopy: { flex: 1, minWidth: 0 },
+  documentFileName: { color: colors.subtleText, fontSize: 12, lineHeight: 17, marginTop: 2 },
+  documentGuidance: {
+    color: colors.subtleText,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: spacing.xxs,
+  },
+  documentIdentity: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minWidth: 0,
+  },
+  documentOverflowAction: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.pill,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  documentRequirementBadge: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    color: colors.primaryDark,
+    flexShrink: 0,
+    fontSize: 11,
+    fontWeight: '800',
+    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  documentRequirementBadgeOptional: { backgroundColor: colors.muted, color: colors.subtleText },
+  documentsHelper: { color: colors.subtleText, fontSize: 14, lineHeight: 20 },
+  documentsIntro: { gap: spacing.xxs },
+  documentsProgress: {
+    alignSelf: 'flex-start',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    color: colors.primaryDark,
+    fontSize: 11,
+    fontWeight: '700',
+    overflow: 'hidden',
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.xxs,
+  },
+  documentTitle: {
+    color: colors.ink,
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '800',
+    lineHeight: 21,
+  },
+  documentEditorActions: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   dangerButton: {
     alignItems: 'center',
     backgroundColor: '#A12626',
@@ -2601,28 +4298,88 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   editorStateHeader: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
+  editorStepSubtitle: { fontSize: 13, marginTop: spacing.xxs },
+  editorStepTitle: { fontSize: 20, fontWeight: '900' },
   empty: { color: colors.subtleText, marginTop: spacing.xl, textAlign: 'center' },
   error: { color: '#A12626', marginTop: spacing.sm },
+  fieldHelper: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
+  featureChip: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    maxWidth: '100%',
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  featureChipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
+  featureChipText: {
+    color: colors.ink,
+    flexShrink: 1,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  featureChipTextSelected: { color: colors.onPrimary },
+  featureChips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  featureGroup: { gap: spacing.sm },
+  featuresCount: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    color: colors.primaryDark,
+    fontSize: 12,
+    fontWeight: '800',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  featuresHelper: { color: colors.subtleText, flex: 1, fontSize: 14, lineHeight: 20 },
+  featuresIntro: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
+  featuresStep: { gap: spacing.xxl },
   availabilityText: { color: colors.primary, fontWeight: '700', marginTop: spacing.xxs },
   eyebrow: { color: colors.primary, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
   flex: { backgroundColor: colors.background, flex: 1 },
+  flushTop: { marginTop: 0 },
   fleetCard: {
+    alignItems: 'stretch',
     backgroundColor: colors.surface,
     borderColor: colors.border,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
     gap: spacing.sm,
-    marginTop: spacing.md,
+    marginTop: spacing.sm,
     overflow: 'hidden',
     padding: spacing.sm,
   },
-  fleetContent: { flex: 1, minWidth: 0, paddingVertical: spacing.xxs },
-  fleetImage: { borderRadius: radius.md, height: 142, width: 116 },
+  fleetAction: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 18,
+    marginTop: 'auto',
+    paddingTop: spacing.xs,
+  },
+  fleetAddAction: { minHeight: 48, paddingVertical: spacing.sm },
+  fleetAvailabilityState: { color: colors.subtleText, fontSize: 12, lineHeight: 17 },
+  fleetContent: { flex: 1, gap: spacing.xxs, minHeight: 120, minWidth: 0 },
+  fleetDraftCard: { backgroundColor: colors.surface },
+  fleetDraftState: { color: colors.subtleText, fontSize: 13, lineHeight: 18 },
+  fleetHeader: { gap: spacing.xxs },
+  fleetHelper: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
+  fleetImage: { alignSelf: 'stretch', borderRadius: radius.md, minHeight: 120, width: 108 },
+  fleetMarketplaceState: { color: colors.ink, fontSize: 12, fontWeight: '700', lineHeight: 17 },
+  fleetMetadata: { color: colors.subtleText, fontSize: 13, lineHeight: 18 },
+  fleetRate: { color: colors.ink, fontSize: 14, fontWeight: '800', lineHeight: 19 },
+  fleetReviewReason: { color: colors.danger, fontSize: 12, lineHeight: 17 },
+  fleetTitle: { color: colors.ink, fontSize: 27, fontWeight: '800', lineHeight: 32 },
+  fleetVehicleTitle: { color: colors.ink, fontSize: 15, fontWeight: '800', lineHeight: 20 },
   galleryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
   galleryImage: { height: 104, width: '100%' },
   galleryTile: { borderRadius: radius.md, overflow: 'hidden', position: 'relative', width: '31%' },
-  hero: { borderRadius: radius.lg, height: 240, marginTop: spacing.md, width: '100%' },
+  hero: { aspectRatio: 1.55, borderRadius: radius.lg, marginTop: spacing.md, width: '100%' },
   input: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
@@ -2631,6 +4388,44 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
     padding: spacing.md,
   },
+  inputPrefix: { color: colors.ink, fontSize: 16, fontWeight: '700' },
+  locationAddress: { color: colors.subtleText, lineHeight: 20, marginTop: spacing.xxs },
+  locationPrivacyNote: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  locationPrivacyText: { color: colors.subtleText, flex: 1, fontSize: 13, lineHeight: 18 },
+  locationPrivateRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    marginTop: spacing.xs,
+  },
+  locationPrivateText: { color: colors.subtleText, fontSize: 12, fontWeight: '700' },
+  locationSetupCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    padding: spacing.sm,
+  },
+  locationSummaryContent: { flex: 1, minWidth: 0 },
+  locationSummaryIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  locationSummaryRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  groupedField: { gap: spacing.xs },
+  groupedFieldLabel: { marginTop: 0 },
+  groupedInput: { borderRadius: radius.md, marginTop: 0, minHeight: 50 },
   classificationHelper: {
     backgroundColor: colors.primarySoft,
     borderRadius: radius.md,
@@ -2688,10 +4483,183 @@ const styles = StyleSheet.create({
   label: { color: colors.ink, fontSize: 13, fontWeight: '700', marginTop: spacing.md },
   link: { color: colors.primary, fontWeight: '700', marginTop: spacing.sm },
   loading: { alignItems: 'center', flex: 1, justifyContent: 'center' },
+  multilineInput: { minHeight: 128, paddingTop: spacing.md },
   page: { backgroundColor: colors.background, flexGrow: 1, padding: spacing.xl },
-  photoPreview: { borderRadius: radius.sm, height: 82, width: 108 },
-  photoActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginTop: spacing.xs },
-  photoPreviewRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  photoAddAction: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 44,
+    paddingTop: spacing.sm,
+  },
+  photoAddActionText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  photoCategoryCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  photoCategoryCount: {
+    backgroundColor: colors.muted,
+    borderRadius: radius.pill,
+    color: colors.subtleText,
+    fontSize: 12,
+    fontWeight: '700',
+    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  photoCategoryHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  photoCoverBadge: {
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: radius.pill,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    left: spacing.xs,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.xxs,
+    position: 'absolute',
+    top: spacing.xs,
+  },
+  photoCoverBadgeText: { color: colors.onPrimary, fontSize: 11, fontWeight: '800' },
+  photoEmptyCopy: {
+    color: colors.subtleText,
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: 'center',
+  },
+  photoEmptyState: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderStyle: 'dashed',
+    borderWidth: 1,
+    gap: spacing.xs,
+    marginTop: spacing.md,
+    minHeight: 150,
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  photoEmptyTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
+  photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
+  photoGuidance: { color: colors.subtleText, fontSize: 13, lineHeight: 18, marginTop: spacing.xxs },
+  photoOverflowAction: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.pill,
+    height: 36,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: spacing.xs,
+    top: spacing.xs,
+    width: 36,
+  },
+  photoTile: {
+    aspectRatio: 1.35,
+    borderRadius: radius.md,
+    flexBasis: '48%',
+    flexGrow: 1,
+    maxWidth: '100%',
+    minWidth: 130,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  photoTileImage: { height: '100%', width: '100%' },
+  photoTileSingle: { flexBasis: '100%' },
+  photosCount: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    color: colors.primaryDark,
+    fontSize: 12,
+    fontWeight: '800',
+    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  photosHelper: { color: colors.subtleText, flex: 1, fontSize: 14, lineHeight: 20 },
+  photosIntro: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
+  policyHelper: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
+  policyOptionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xxs },
+  policyOptionGroup: { gap: spacing.xs },
+  policySegment: {
+    alignItems: 'center',
+    borderRadius: radius.sm,
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 0,
+    paddingHorizontal: spacing.xs,
+  },
+  policySegmentedControl: {
+    backgroundColor: colors.muted,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    padding: spacing.xxs,
+  },
+  policySegmentSelected: { backgroundColor: colors.primary },
+  policySegmentText: {
+    color: colors.ink,
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  policySegmentTextSelected: { color: colors.onPrimary },
+  policySection: { gap: spacing.sm },
+  policySectionSeparated: {
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+  },
+  policySectionTitle: {
+    color: colors.ink,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  returnConditionCard: {
+    alignItems: 'flex-start',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    padding: spacing.sm,
+  },
+  returnConditionCopy: { flex: 1, gap: spacing.xxs, minWidth: 0 },
+  returnConditionHelper: { color: colors.subtleText, fontSize: 12, lineHeight: 17 },
+  returnConditionIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  returnConditionLabel: { color: colors.ink, fontSize: 13, fontWeight: '800' },
+  returnConditionValue: { color: colors.ink, fontSize: 14, lineHeight: 20 },
+  prefixedInput: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    paddingVertical: 0,
+  },
+  prefixedTextInput: { color: colors.ink, flex: 1, fontSize: 16, minHeight: 48, padding: 0 },
   primaryButton: {
     alignItems: 'center',
     backgroundColor: colors.primary,
@@ -2719,20 +4687,58 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   rate: { color: colors.ink, fontSize: 14, fontWeight: '800', marginTop: spacing.xs },
-  readiness: {
-    borderBottomColor: colors.border,
-    borderBottomWidth: 1,
-    paddingVertical: spacing.sm,
-  },
   resolvedIssuesSection: { marginTop: spacing.xxl },
-  reviewSummary: {
+  reviewApprovedActions: { marginTop: spacing.sm },
+  reviewEditAction: { color: colors.primary, fontSize: 13, fontWeight: '800', padding: spacing.xs },
+  reviewEditHitArea: { justifyContent: 'center', minHeight: 44 },
+  reviewMiniSummaries: { gap: spacing.xxs, paddingLeft: 27 },
+  reviewMiniSummary: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  reviewMiniSummaryLabel: { color: colors.ink, fontSize: 12, fontWeight: '800', lineHeight: 18 },
+  reviewMiniSummaryValue: { color: colors.subtleText, flex: 1, fontSize: 13, lineHeight: 18 },
+  reviewSection: {
+    alignItems: 'flex-start',
+    backgroundColor: colors.surface,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  reviewSectionContent: { flex: 1, gap: 2, minWidth: 0 },
+  reviewSectionHeading: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
+  reviewSections: {
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    marginTop: spacing.md,
+    overflow: 'hidden',
+  },
+  reviewSectionSummary: { color: colors.subtleText, fontSize: 13, lineHeight: 18, paddingLeft: 27 },
+  reviewSectionTitle: { color: colors.ink, fontSize: 14, fontWeight: '800' },
+  reviewStatusHelper: { color: colors.subtleText, flex: 1, fontSize: 13, lineHeight: 19 },
+  reviewStatusRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  reviewSummaryText: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
+  reviewVehicleCopy: { flex: 1, gap: spacing.xxs, minWidth: 0 },
+  reviewVehicleImage: { borderRadius: radius.md, height: 88, width: 104 },
+  reviewVehicleSummary: {
+    alignItems: 'center',
     backgroundColor: colors.surface,
     borderColor: colors.border,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    marginTop: spacing.md,
-    padding: spacing.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+    padding: spacing.sm,
   },
+  reviewVehicleTitle: { color: colors.ink, fontSize: 16, fontWeight: '800', lineHeight: 21 },
   secondaryButton: {
     alignItems: 'center',
     backgroundColor: colors.muted,
@@ -2752,5 +4758,153 @@ const styles = StyleSheet.create({
   stepContent: { padding: spacing.sm },
   stepTextActive: { color: colors.onPrimary, fontWeight: '700' },
   title: { color: colors.ink, fontSize: 27, fontWeight: '800', marginTop: spacing.sm },
+  usageSection: { gap: spacing.sm },
+  usageStep: { gap: 0 },
+  wizardPrimaryAction: { flex: 1.2 },
+  wizardSaveActions: { paddingVertical: spacing.sm },
+  vehicleDetailHeader: {
+    backgroundColor: colors.background,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.xs,
+  },
+  vehicleDetailAction: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    borderColor: colors.primary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+  },
+  vehicleDetailActionText: { color: colors.primary, fontSize: 13, fontWeight: '800' },
+  vehicleDetailHelper: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
+  vehicleDetailPage: { paddingTop: spacing.sm },
+  vehicleDetailRow: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.md,
+    justifyContent: 'space-between',
+    minHeight: 34,
+  },
+  vehicleDetailRowCopy: { flex: 1, gap: spacing.xxs, minWidth: 0 },
+  vehicleDetailRowLabel: { color: colors.subtleText, flex: 1, fontSize: 13, lineHeight: 19 },
+  vehicleDetailRowValue: {
+    color: colors.ink,
+    flex: 1.2,
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 19,
+    textAlign: 'right',
+  },
+  vehicleDetailSection: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  vehicleDetailSectionContent: { gap: spacing.xs },
+  vehicleDetailSectionEmphasized: { borderWidth: 1 },
+  vehicleDetailSectionHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  vehicleDetailSectionTitle: { color: colors.ink, flex: 1, fontSize: 18, fontWeight: '800' },
+  vehicleDetailSummary: { gap: spacing.xxs, paddingVertical: spacing.xxs },
+  vehicleDetailValue: { color: colors.ink, fontSize: 14, fontWeight: '700', lineHeight: 20 },
+  vehicleDangerTitle: { color: colors.danger, fontSize: 18, fontWeight: '800' },
+  vehicleDangerZone: {
+    backgroundColor: colors.surface,
+    borderColor: colors.danger,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  vehicleDeleteAction: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    borderColor: colors.danger,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+  },
+  vehicleDeleteActionText: { color: colors.danger, fontSize: 13, fontWeight: '800' },
+  vehicleDeleteBlocked: { color: colors.danger, fontSize: 13, lineHeight: 19 },
+  vehicleEditAction: { marginTop: spacing.sm },
+  removalOtherField: { gap: spacing.xs, marginTop: spacing.md },
+  removalOtherInput: { minHeight: 96, paddingTop: spacing.sm, textAlignVertical: 'top' },
+  removalReasonBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(8, 24, 18, 0.32)',
+  },
+  removalReasonContent: { paddingHorizontal: spacing.xl, paddingTop: spacing.md },
+  removalReasonContinue: { marginTop: spacing.md },
+  removalReasonModalRoot: { flex: 1, justifyContent: 'flex-end' },
+  removalReasonOption: {
+    alignItems: 'center',
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    minHeight: 52,
+    paddingHorizontal: spacing.sm,
+  },
+  removalReasonOptionText: { color: colors.ink, flex: 1, fontSize: 15, lineHeight: 21 },
+  removalReasonOptions: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    marginTop: spacing.md,
+    overflow: 'hidden',
+  },
+  removalReasonPrompt: {
+    color: colors.subtleText,
+    fontSize: 15,
+    lineHeight: 21,
+    marginTop: spacing.xs,
+  },
+  removalReasonSheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    overflow: 'hidden',
+  },
+  removalReasonTitle: { color: colors.ink, fontSize: 28, fontWeight: '900' },
+  vehicleMetaRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  vehicleMetaText: { flex: 1, minWidth: 0 },
+  vehicleOperationalValue: { color: colors.ink, fontSize: 16, fontWeight: '800' },
+  vehicleOverviewGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: spacing.sm,
+  },
+  vehicleOverviewLabel: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
+  vehicleOverviewValue: {
+    gap: spacing.xxs,
+    minWidth: 0,
+    width: '48%',
+  },
+  privateLabelRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.xxs },
+  privateLabelText: { color: colors.primary, fontSize: 12, fontWeight: '700' },
+  privateLocationRow: { alignItems: 'flex-start', flexDirection: 'row' },
   wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginTop: spacing.sm },
 });

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
 import MapView, { PROVIDER_GOOGLE, type Region } from 'react-native-maps';
 import {
+  ActivityIndicator,
   FlatList,
   Keyboard,
   Modal,
@@ -11,10 +12,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing } from '../theme/tokens';
 import { BackControl, Button, Icon } from '../ui/primitives';
 import {
   bookingLocationProvider,
+  locationDisplayLabel,
   locationLabel,
   type BookingLocationProvider,
   type CarShareLocation,
@@ -40,6 +43,7 @@ export function LocationPicker({
   mapGuidance,
   allowCurrentLocation = true,
   dismissLabel = 'Cancel location selection',
+  presentation = 'default',
   onCancel,
   onConfirm,
   provider = bookingLocationProvider,
@@ -54,10 +58,19 @@ export function LocationPicker({
   readonly mapGuidance?: string;
   readonly allowCurrentLocation?: boolean;
   readonly dismissLabel?: string;
+  readonly presentation?: 'default' | 'vehicleSetup';
   readonly onCancel: () => void;
   readonly onConfirm: (location: CarShareLocation) => void;
   readonly provider?: BookingLocationProvider;
 }) {
+  const vehicleSetup = presentation === 'vehicleSetup';
+  const safeArea = useSafeAreaInsets();
+  const vehicleSetupInsets = vehicleSetup
+    ? {
+        paddingBottom: Math.max(safeArea.bottom, spacing.sm) + spacing.sm,
+        paddingTop: Math.max(safeArea.top, spacing.xxl) + spacing.sm,
+      }
+    : undefined;
   const map = useRef<MapView>(null);
   const request = useRef(0);
   const skipNextMapResolution = useRef(false);
@@ -177,9 +190,15 @@ export function LocationPicker({
   };
   return (
     <Modal animationType="slide" onRequestClose={onCancel} visible={visible}>
-      <View style={styles.screen}>
+      <SafeAreaView
+        edges={[]}
+        style={[styles.screen, vehicleSetup && styles.vehicleSetupScreen, vehicleSetupInsets]}
+      >
         <BackControl label={dismissLabel} onPress={onCancel} />
-        <Text accessibilityRole="header" style={styles.title}>
+        <Text
+          accessibilityRole="header"
+          style={[styles.title, vehicleSetup && styles.vehicleSetupTitle]}
+        >
           {title ??
             (kind === 'delivery'
               ? 'Delivery destination'
@@ -234,7 +253,7 @@ export function LocationPicker({
         ) : null}
         <View
           accessibilityLabel={mapAccessibilityLabel ?? 'Google map for choosing the handover point'}
-          style={styles.mapWrap}
+          style={[styles.mapWrap, vehicleSetup && styles.vehicleSetupMap]}
         >
           <MapView
             ref={map}
@@ -254,38 +273,57 @@ export function LocationPicker({
             <Icon color={colors.danger} name="location" size={38} />
           </View>
         </View>
-        <Text style={styles.guidance}>
+        <Text style={[styles.guidance, vehicleSetup && styles.vehicleSetupGuidance]}>
           {mapGuidance ?? 'Move the map to adjust the exact handover point.'}
         </Text>
-        {allowCurrentLocation && (
+        {allowCurrentLocation && (!vehicleSetup || status !== 'locating') && (
           <Button
+            compact={vehicleSetup}
             disabled={status !== 'idle'}
+            icon={vehicleSetup ? 'navigate-outline' : undefined}
             label={status === 'locating' ? 'Finding location…' : 'Use my current location'}
             onPress={() => void current()}
             variant="secondary"
           />
         )}
-        <View style={styles.summary}>
-          <Text style={styles.summaryTitle}>Selected address</Text>
-          <Text style={styles.summaryCopy}>
-            {status === 'resolving'
-              ? 'Resolving address…'
-              : pending
-                ? locationLabel(pending)
-                : 'Choose a search result or move the map.'}
-          </Text>
+        {vehicleSetup && status === 'locating' ? (
+          <View accessibilityLiveRegion="polite" style={styles.locationStatus}>
+            <ActivityIndicator color={colors.primary} size="small" />
+            <Text style={styles.locationStatusText}>Finding location…</Text>
+          </View>
+        ) : null}
+        <View style={[styles.summary, vehicleSetup && styles.vehicleSetupSummary]}>
+          {vehicleSetup ? (
+            <View style={styles.summaryIcon}>
+              <Icon color={colors.primary} name="location-outline" size={20} />
+            </View>
+          ) : null}
+          <View style={vehicleSetup && styles.summaryContent}>
+            <Text style={styles.summaryTitle}>Selected address</Text>
+            <Text style={styles.summaryCopy}>
+              {status === 'resolving'
+                ? 'Resolving address…'
+                : pending
+                  ? vehicleSetup
+                    ? locationDisplayLabel(pending)
+                    : locationLabel(pending)
+                  : 'Choose a search result or move the map.'}
+            </Text>
+          </View>
         </View>
         {error ? (
           <Text accessibilityRole="alert" style={styles.error}>
             {error}
           </Text>
         ) : null}
-        <Button
-          disabled={!pending || status !== 'idle'}
-          label={confirmLabel ?? `Confirm ${kind} location`}
-          onPress={() => pending && onConfirm(pending)}
-        />
-      </View>
+        <View style={vehicleSetup && styles.vehicleSetupConfirm}>
+          <Button
+            disabled={!pending || status !== 'idle'}
+            label={confirmLabel ?? `Confirm ${kind} location`}
+            onPress={() => pending && onConfirm(pending)}
+          />
+        </View>
+      </SafeAreaView>
     </Modal>
   );
 }
@@ -298,7 +336,9 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     paddingTop: 54,
   },
+  vehicleSetupScreen: { paddingHorizontal: spacing.lg },
   title: { color: colors.ink, fontSize: 28, fontWeight: '900' },
+  vehicleSetupTitle: { fontSize: 24 },
   copy: { color: colors.subtleText },
   search: {
     alignItems: 'center',
@@ -329,6 +369,7 @@ const styles = StyleSheet.create({
   resultTitle: { color: colors.ink, fontWeight: '800' },
   resultCopy: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
   mapWrap: { borderRadius: radius.md, flex: 1, minHeight: 220, overflow: 'hidden' },
+  vehicleSetupMap: { minHeight: 180 },
   pin: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -339,8 +380,27 @@ const styles = StyleSheet.create({
     top: '50%',
   },
   guidance: { color: colors.subtleText, fontSize: 12 },
+  vehicleSetupGuidance: { fontSize: 11 },
   summary: { backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.sm },
+  vehicleSetupSummary: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  summaryIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  summaryContent: { flex: 1 },
   summaryTitle: { color: colors.ink, fontWeight: '800' },
   summaryCopy: { color: colors.subtleText, marginTop: 4 },
+  locationStatus: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
+  locationStatusText: { color: colors.subtleText, fontSize: 13 },
+  vehicleSetupConfirm: { paddingBottom: spacing.xs },
   error: { color: colors.danger, fontSize: 13 },
 });

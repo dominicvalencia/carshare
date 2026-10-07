@@ -10,6 +10,7 @@ import {
   VerificationType,
 } from '../src/generated/prisma/enums';
 import { seedDevelopmentDemo } from './development-demo';
+import { retiredVehicleFeatureCodes, vehicleFeatureCatalog } from '../src/vehicle-feature-catalog';
 
 const roleDescriptions: Readonly<Record<RoleCode, string>> = {
   ADMIN: 'Platform administrator',
@@ -202,24 +203,6 @@ const vehicleMakes = [
   ['OTHER', 'Other'],
 ] as const;
 
-const features = [
-  ['AIR_CONDITIONING', 'Air conditioning'],
-  ['BLUETOOTH', 'Bluetooth'],
-  ['APPLE_CARPLAY', 'Apple CarPlay'],
-  ['ANDROID_AUTO', 'Android Auto'],
-  ['BACKUP_CAMERA', 'Backup camera'],
-  ['PARKING_SENSORS', 'Parking sensors'],
-  ['CAMERA_360', '360 camera'],
-  ['CRUISE_CONTROL', 'Cruise control'],
-  ['ADAPTIVE_CRUISE_CONTROL', 'Adaptive cruise control'],
-  ['KEYLESS_ENTRY', 'Keyless entry'],
-  ['USB_CHARGING', 'USB charging'],
-  ['CHILD_SEAT_COMPATIBLE', 'Child-seat compatibility'],
-  ['GPS_NAVIGATION', 'GPS/navigation'],
-  ['DASHCAM', 'Dashcam'],
-  ['TOLL_RFID', 'Toll/RFID support'],
-] as const;
-
 const documentDefinitions = [
   ['CERTIFICATE_OF_REGISTRATION', 'Certificate of Registration (CR)', true],
   ['CURRENT_REGISTRATION_EVIDENCE', 'Current registration evidence / Official Receipt', true],
@@ -384,7 +367,11 @@ async function seed(): Promise<void> {
         where: { code },
       });
     }
-    for (const [sortOrder, [code, name]] of features.entries()) {
+    await client.vehicleFeature.updateMany({
+      data: { active: false },
+      where: { code: { in: [...retiredVehicleFeatureCodes] } },
+    });
+    for (const [sortOrder, [code, name]] of vehicleFeatureCatalog.entries()) {
       await client.vehicleFeature.upsert({
         create: { code, name, sortOrder },
         update: { active: true, name, sortOrder },
