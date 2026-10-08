@@ -370,6 +370,8 @@ export function IconButton({
 }
 
 export function Field({
+  autoCapitalize,
+  autoCorrect,
   label,
   value,
   onChangeText,
@@ -379,7 +381,10 @@ export function Field({
   error,
   secureTextEntry = false,
   returnKeyType,
+  spellCheck,
 }: {
+  readonly autoCapitalize?: ComponentProps<typeof TextInput>['autoCapitalize'];
+  readonly autoCorrect?: boolean | undefined;
   readonly label: string;
   readonly value: string;
   readonly onChangeText: (value: string) => void;
@@ -389,12 +394,15 @@ export function Field({
   readonly error?: string | undefined;
   readonly secureTextEntry?: boolean | undefined;
   readonly returnKeyType?: ComponentProps<typeof TextInput>['returnKeyType'];
+  readonly spellCheck?: boolean | undefined;
 }) {
   return (
     <View style={styles.field}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <TextInput
         accessibilityLabel={label}
+        autoCapitalize={autoCapitalize}
+        autoCorrect={autoCorrect}
         keyboardType={keyboardType}
         multiline={multiline}
         onChangeText={onChangeText}
@@ -402,6 +410,7 @@ export function Field({
         placeholderTextColor={colors.placeholder}
         returnKeyType={returnKeyType ?? (multiline ? 'default' : 'next')}
         secureTextEntry={secureTextEntry}
+        spellCheck={spellCheck}
         style={[styles.input, multiline && styles.multiline, Boolean(error) && styles.inputError]}
         textAlignVertical={multiline ? 'top' : 'center'}
         value={value}
@@ -477,6 +486,7 @@ export function PasscodeInput({
 export function Chip({
   label,
   accessibilityLabel,
+  accessibilityRole = 'button',
   selected = false,
   onPress,
   icon,
@@ -484,6 +494,7 @@ export function Chip({
 }: {
   readonly label: string;
   readonly accessibilityLabel?: string | undefined;
+  readonly accessibilityRole?: 'button' | 'tab' | undefined;
   readonly selected?: boolean | undefined;
   readonly onPress?: (() => void) | undefined;
   readonly icon?: IconName | undefined;
@@ -498,7 +509,7 @@ export function Chip({
   return onPress ? (
     <Pressable
       accessibilityLabel={accessibilityLabel}
-      accessibilityRole="button"
+      accessibilityRole={accessibilityRole}
       accessibilityState={{ selected }}
       hitSlop={compact ? { bottom: 7, top: 7 } : undefined}
       onPress={onPress}

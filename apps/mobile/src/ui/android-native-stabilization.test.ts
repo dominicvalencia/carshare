@@ -44,18 +44,18 @@ describe('Android native layout stabilization', () => {
     expect(onboarding).toContain('welcome: { flexGrow: 1');
   });
 
-  it('uses an in-app front-facing camera for Android selfies only', () => {
+  it('uses the shared in-app native camera for guided selfie capture on every platform', () => {
     const workflow = source('src/features/account/RenterVerificationWorkflow.tsx');
     const androidCamera = source('src/ui/NativeCameraCapture.android.tsx');
-    const iosFallback = source('src/ui/NativeCameraCapture.tsx');
-    expect(workflow).toContain("if (Platform.OS === 'android')");
+    const nativeCamera = source('src/ui/NativeCameraCapture.shared.tsx');
     expect(workflow).toContain('<NativeCameraCapture');
     expect(workflow).toContain('facing="front"');
-    expect(workflow).toContain('cameraType: ImagePicker.CameraType.front');
-    expect(androidCamera).toContain("from 'expo-camera'");
-    expect(androidCamera).toContain('<CameraView facing={facing}');
-    expect(iosFallback).not.toContain("from 'expo-camera'");
-    expect(iosFallback).toContain('return null');
+    expect(workflow).toContain("type: 'PROFILE_PHOTO'");
+    expect(workflow).toContain("type: 'SELFIE_WITH_ID'");
+    expect(workflow).not.toContain('cameraType: ImagePicker.CameraType.front');
+    expect(androidCamera).toContain("from './NativeCameraCapture.shared'");
+    expect(nativeCamera).toContain("from 'expo-camera'");
+    expect(nativeCamera).toContain('<CameraView facing={facing}');
   });
 
   it('does not duplicate the tab navigator bottom inset in shared tab scenes', () => {

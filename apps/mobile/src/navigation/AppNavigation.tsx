@@ -170,6 +170,7 @@ function RenterNavigation({
             initialMode="favorites"
             onExit={() => navigation.navigate('Home')}
             onTabBarHiddenChange={setRenterTabsHidden}
+            wishlistTab
           />
         )}
       </RenterTabs.Screen>

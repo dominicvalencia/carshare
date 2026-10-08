@@ -24,7 +24,11 @@ import {
   StatusBadge,
   type IconName,
 } from '../../ui/primitives';
-import { RenterVerificationWorkflow } from './RenterVerificationWorkflow';
+import {
+  AuthorizedDocumentPreview,
+  RenterVerificationWorkflow,
+} from './RenterVerificationWorkflow';
+import { RenterProfileVerificationFlow } from './RenterOnboardingPages';
 import { AppLockSettings } from '../../app-lock/AppLockSettings';
 import { invalidateRenterVerification } from '../../query/verification-invalidation';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
@@ -185,11 +189,19 @@ export function AccountScreen({
     queryFn: () => apiClient.request<OwnerProfile>('/owners/me'),
     retry: false,
   });
+  const verification = useQuery({
+    queryKey: ['renter-verification'],
+    queryFn: () => apiClient.request<RenterVerificationSnapshot>('/renter-verification'),
+  });
   const name =
     me.data?.profile?.displayName ??
     me.data?.profile?.firstName ??
     auth.user?.email?.split('@')[0] ??
     'Driver';
+  const profilePhoto = verification.data?.verifications
+    .flatMap(({ documents }) => documents)
+    .find(({ definition, replacedAt }) => definition?.code === 'PROFILE_PHOTO' && !replacedAt);
+  const avatarFallback = <Text style={styles.avatarText}>{name.slice(0, 1).toUpperCase()}</Text>;
   return (
     <Screen
       eyebrow="Your account"
@@ -197,7 +209,17 @@ export function AccountScreen({
       subtitle={auth.user?.email ?? auth.user?.mobileNumber ?? undefined}
       action={
         <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{name.slice(0, 1).toUpperCase()}</Text>
+          {profilePhoto ? (
+            <AuthorizedDocumentPreview
+              compact
+              fallback={avatarFallback}
+              fileAssetId={profilePhoto.fileAsset.id}
+              name="Profile photo"
+              style={styles.profilePhoto}
+            />
+          ) : (
+            avatarFallback
+          )}
         </View>
       }
     >
@@ -244,11 +266,6 @@ export function AccountScreen({
         />
       )}
       <MenuSection title="Account">
-        <MenuRow
-          icon="person-outline"
-          label="Personal information"
-          onPress={() => navigation.navigate('PersonalInformation')}
-        />
         <MenuRow
           icon="star-outline"
           label="Reviews"
@@ -1027,6 +1044,11 @@ function OwnerReviewRow({ label, value }: { readonly label: string; readonly val
 }
 
 export function VerificationScreen({ onBack }: { readonly onBack?: () => void } = {}) {
+  const navigation = useNavigation<Navigator>();
+  return <RenterProfileVerificationFlow onExit={onBack ?? (() => navigation.goBack())} />;
+}
+
+export function LegacyProfileVerificationScreen({ onBack }: { readonly onBack?: () => void } = {}) {
   const auth = useAuth();
   const client = useQueryClient();
   const [mobileNumber, setMobileNumber] = useState('');
@@ -1990,6 +2012,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     height: 52,
     justifyContent: 'center',
+    overflow: 'hidden',
     width: 52,
   },
   avatarText: { color: colors.onPrimary, fontSize: 22, fontWeight: '800' },
@@ -2000,6 +2023,7 @@ const styles = StyleSheet.create({
   error: { color: colors.danger },
   flex: { flex: 1 },
   menu: { padding: 0 },
+  profilePhoto: { borderRadius: radius.pill, height: 52, width: 52 },
   localInbox: { backgroundColor: colors.primarySoft, gap: spacing.sm },
   verificationActions: { gap: spacing.md, marginTop: spacing.sm },
   menuDetail: { color: colors.subtleText, fontSize: 12, marginTop: 2 },

@@ -650,6 +650,9 @@ describe.sequential('Phase 2 identity integration', () => {
       (message) => message.template === 'PASSWORD_RESET',
     );
     expect(expiredReset).toBeDefined();
+    expect(expiredReset!.actionUrl).toBe(
+      `carshare-test://reset-password?token=${encodeURIComponent(expiredReset!.token)}`,
+    );
     await database.client.authToken.update({
       data: { expiresAt: new Date(Date.now() - 1000) },
       where: { id: expiredReset!.token.split('.')[0] },

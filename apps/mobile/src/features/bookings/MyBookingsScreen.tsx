@@ -22,6 +22,7 @@ import {
   Button,
   BackControl,
   Card,
+  Chip,
   Icon,
   Screen,
   SectionHeader,
@@ -132,11 +133,15 @@ export interface BookingView {
   }[];
 }
 
+type RenterBookingView = Omit<BookingView, 'pricing'> & {
+  readonly pricing: BookingView['pricing'] | null;
+};
+
 export function PendingHandoverRecoveryBanner({
   bookings,
   onReview,
 }: {
-  readonly bookings: readonly BookingView[];
+  readonly bookings: readonly RenterBookingView[];
   readonly onReview: (reference: string) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -232,16 +237,15 @@ export function MyBookingsScreen({
   const [manualSelection, setManualSelection] = useState<string | null>(null);
   const selected = manualSelection ?? initialBookingReference ?? route.params?.bookingId ?? null;
   const [group, setGroup] = useState<BookingGroup>('Current');
-  const [filterOpen, setFilterOpen] = useState(false);
   const bookings = useQuery({
     queryKey: ['bookings'],
-    queryFn: () => apiClient.request<BookingView[]>('/bookings'),
+    queryFn: () => apiClient.request<RenterBookingView[]>('/bookings'),
     refetchInterval: 10_000,
   });
   const detail = useQuery({
     enabled: Boolean(selected),
     queryKey: ['booking', selected],
-    queryFn: () => apiClient.request<BookingView>(`/bookings/${selected}`),
+    queryFn: () => apiClient.request<RenterBookingView>(`/bookings/${selected}`),
     refetchInterval: (query) =>
       query.state.data && transitionalBookingStates.has(query.state.data.status) ? 5_000 : false,
   });
@@ -251,14 +255,14 @@ export function MyBookingsScreen({
   });
   const cancel = useMutation({
     mutationFn: (reference: string) =>
-      apiClient.request<BookingView>(`/bookings/${reference}/cancel`, {
+      apiClient.request<RenterBookingView>(`/bookings/${reference}/cancel`, {
         body: JSON.stringify({ reason: 'Cancelled by renter in mobile application' }),
         method: 'POST',
       }),
     onSuccess: () => refresh(client, selected),
   });
   const payment = useMutation({
-    mutationFn: async (booking: BookingView) => {
+    mutationFn: async (booking: RenterBookingView) => {
       if (booking.status === 'HOLD')
         await apiClient.request(`/bookings/${booking.publicReference}/continue`, {
           method: 'POST',
@@ -277,7 +281,7 @@ export function MyBookingsScreen({
     onSuccess: () => refresh(client, selected),
   });
   const securityDeposit = useMutation({
-    mutationFn: async (booking: BookingView) => {
+    mutationFn: async (booking: RenterBookingView) => {
       const result = await apiClient.request<{ customerActionUrl: string | null }>(
         `/bookings/${booking.publicReference}/security-deposit/authorize`,
         { method: 'POST' },
@@ -314,25 +318,12 @@ export function MyBookingsScreen({
   const filtered = (bookings.data ?? []).filter(
     (booking) => bookingGroup(booking.status) === group,
   );
+  const datedSections = group === 'Current' ? [] : groupBookingsByDate(filtered, group);
   return (
-    <Screen
-      eyebrow="Your trips"
-      title="Bookings"
-      subtitle="Everything you need before pickup, during your rental, and after return."
-    >
+    <Screen stickyHeader={<BookingTabs group={group} onSelect={setGroup} />}>
       <PendingHandoverRecoveryBanner
         bookings={bookings.data ?? []}
         onReview={(reference) => navigation.navigate('BookingRecovery', { bookingId: reference })}
-      />
-      <BookingFilter
-        group={group}
-        open={filterOpen}
-        onClose={() => setFilterOpen(false)}
-        onOpen={() => setFilterOpen(true)}
-        onSelect={(value) => {
-          setGroup(value);
-          setFilterOpen(false);
-        }}
       />
       {bookings.isPending && <StateView loading title="Loading bookings…" />}
       {bookings.isError && (
@@ -347,11 +338,7 @@ export function MyBookingsScreen({
       {!bookings.isPending && !bookings.isError && filtered.length === 0 && (
         <StateView
           icon="calendar-outline"
-          title={
-            group === 'Current'
-              ? 'No rental needs your attention'
-              : `No ${group.toLowerCase()} bookings`
-          }
+          title={emptyBookingTitle(group)}
           message={
             group === 'Current'
               ? 'Pickup-ready, active, and return-pending rentals will always appear here.'
@@ -360,48 +347,98 @@ export function MyBookingsScreen({
         />
       )}
       {!bookings.isError &&
+        group === 'Current' &&
         filtered.map((booking) => (
-          <Pressable
+          <BookingListCard
+            booking={booking}
             key={booking.publicReference}
-            accessibilityRole="button"
             onPress={() => setManualSelection(booking.publicReference)}
-          >
-            <Card style={styles.bookingCard}>
-              <VehicleImage
-                contentPath={booking.vehicle.coverPhoto?.contentPath}
-                accessibilityLabel={`${booking.vehicle.make ?? ''} ${booking.vehicle.model ?? 'vehicle'}`.trim()}
-                style={styles.image}
+          />
+        ))}
+      {!bookings.isError &&
+        group !== 'Current' &&
+        datedSections.map((section) => (
+          <View key={section.key} style={styles.dateSection}>
+            <SectionHeader flush title={section.title} />
+            {section.bookings.map((booking) => (
+              <BookingListCard
+                booking={booking}
+                key={booking.publicReference}
+                onPress={() => setManualSelection(booking.publicReference)}
               />
-              <View style={styles.flex}>
-                <Text numberOfLines={1} style={styles.vehicle}>
-                  {booking.vehicle.year} {booking.vehicle.make} {booking.vehicle.model}
-                </Text>
-                <Text style={styles.dates}>
-                  {dateLabel(booking.rentalStart)} – {dateLabel(booking.rentalEnd)}
-                </Text>
-                <StatusBadge
-                  label={
-                    booking.workflowCompliance?.start.overdue
-                      ? 'Handover overdue'
-                      : booking.workflowCompliance?.return.overdue
-                        ? 'Return process overdue'
-                        : bookingStatusLabel(booking.status)
-                  }
-                  tone={statusTone(booking.status)}
-                />
-                <Text style={styles.reference}>{booking.publicReference}</Text>
-                <View style={styles.cardFooter}>
-                  <Text style={styles.price}>
-                    {money(booking.pricing.totalMinor, booking.pricing.currency)}
-                  </Text>
-                  <Text style={styles.actionCopy}>{primaryAction(booking.status)} →</Text>
-                </View>
-              </View>
-            </Card>
-          </Pressable>
+            ))}
+          </View>
         ))}
     </Screen>
   );
+}
+
+function BookingListCard({
+  booking,
+  onPress,
+}: {
+  readonly booking: RenterBookingView;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress}>
+      <Card style={styles.bookingCard}>
+        <VehicleImage
+          contentPath={booking.vehicle.coverPhoto?.contentPath}
+          accessibilityLabel={`${booking.vehicle.make ?? ''} ${booking.vehicle.model ?? 'vehicle'}`.trim()}
+          style={styles.image}
+        />
+        <View style={styles.flex}>
+          <Text numberOfLines={1} style={styles.vehicle}>
+            {booking.vehicle.year} {booking.vehicle.make} {booking.vehicle.model}
+          </Text>
+          <Text style={styles.dates}>
+            {dateLabel(booking.rentalStart)} – {dateLabel(booking.rentalEnd)}
+          </Text>
+          <StatusBadge
+            label={
+              booking.workflowCompliance?.start.overdue
+                ? 'Handover overdue'
+                : booking.workflowCompliance?.return.overdue
+                  ? 'Return process overdue'
+                  : bookingStatusLabel(booking.status)
+            }
+            tone={statusTone(booking.status)}
+          />
+          <Text style={styles.price}>{bookingTotalLabel(booking)}</Text>
+          <View style={styles.cardFooter}>
+            <Text numberOfLines={1} style={styles.reference}>
+              {booking.publicReference}
+            </Text>
+            <Text style={styles.actionCopy}>{primaryAction(booking.status)} →</Text>
+          </View>
+        </View>
+      </Card>
+    </Pressable>
+  );
+}
+
+function groupBookingsByDate(bookings: readonly RenterBookingView[], group: BookingGroup) {
+  const dateFor = (booking: RenterBookingView) =>
+    group === 'Upcoming' ? booking.rentalStart : booking.rentalEnd;
+  const direction = group === 'Upcoming' ? 1 : -1;
+  const sorted = [...bookings].sort(
+    (left, right) =>
+      direction * (new Date(dateFor(left)).getTime() - new Date(dateFor(right)).getTime()),
+  );
+  const sections = new Map<string, RenterBookingView[]>();
+  sorted.forEach((booking) => {
+    const date = dateFor(booking);
+    const key = dateLabel(date);
+    const section = sections.get(key) ?? [];
+    section.push(booking);
+    sections.set(key, section);
+  });
+  return [...sections].map(([key, sectionBookings]) => ({
+    bookings: sectionBookings,
+    key,
+    title: key,
+  }));
 }
 
 const transitionalBookingStates = new Set([
@@ -413,61 +450,33 @@ const transitionalBookingStates = new Set([
 ]);
 
 const bookingGroups = ['Current', 'Upcoming', 'Past'] as const;
-function BookingFilter({
+function BookingTabs({
   group,
-  open,
-  onOpen,
-  onClose,
   onSelect,
 }: {
   readonly group: BookingGroup;
-  readonly open: boolean;
-  readonly onOpen: () => void;
-  readonly onClose: () => void;
   readonly onSelect: (value: BookingGroup) => void;
 }) {
   return (
-    <View style={styles.filterSection}>
-      <Text style={styles.filterLabel}>Status</Text>
-      <Pressable
-        accessibilityLabel={`Booking status filter: ${group}`}
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        onPress={onOpen}
-        style={styles.filterButton}
-      >
-        <Text style={styles.filterValue}>{group}</Text>
-        <Icon color={colors.primary} name="chevron-down" size={18} />
-      </Pressable>
-      <Modal animationType="fade" onRequestClose={onClose} transparent visible={open}>
-        <View style={styles.filterOverlay}>
-          <Pressable
-            accessibilityLabel="Close booking status menu"
-            accessibilityRole="button"
-            onPress={onClose}
-            style={StyleSheet.absoluteFill}
-          />
-          <View accessibilityViewIsModal style={styles.filterMenu}>
-            <Text style={styles.filterMenuTitle}>Show bookings</Text>
-            {bookingGroups.map((value) => (
-              <Pressable
-                key={value}
-                accessibilityRole="radio"
-                accessibilityState={{ checked: group === value }}
-                onPress={() => onSelect(value)}
-                style={styles.filterOption}
-              >
-                <Text style={[styles.filterOptionText, group === value && styles.filterSelected]}>
-                  {value}
-                </Text>
-                {group === value && <Icon color={colors.primary} name="checkmark" size={20} />}
-              </Pressable>
-            ))}
-          </View>
-        </View>
-      </Modal>
+    <View accessibilityLabel="Booking groups" style={styles.bookingTabs}>
+      {bookingGroups.map((value) => (
+        <Chip
+          accessibilityRole="tab"
+          compact
+          key={value}
+          label={value}
+          selected={group === value}
+          onPress={() => onSelect(value)}
+        />
+      ))}
     </View>
   );
+}
+
+function emptyBookingTitle(group: BookingGroup) {
+  if (group === 'Current') return 'No active trips right now.';
+  if (group === 'Upcoming') return 'No upcoming bookings.';
+  return 'No past trips yet.';
 }
 
 function BookingDetail({
@@ -483,17 +492,19 @@ function BookingDetail({
   refreshPayment,
   securityDepositMutation,
 }: {
-  readonly booking?: BookingView | undefined;
+  readonly booking?: RenterBookingView | undefined;
   readonly focusRecovery: boolean;
   readonly loading: boolean;
   readonly error: Error | null;
   readonly onBack: () => void;
   readonly onMessage: (id: string) => void;
   readonly onCancellationCompleted: () => void;
-  readonly cancel: ReturnType<typeof useMutation<BookingView, Error, string>>;
-  readonly payment: ReturnType<typeof useMutation<unknown, Error, BookingView>>;
+  readonly cancel: ReturnType<typeof useMutation<RenterBookingView, Error, string>>;
+  readonly payment: ReturnType<typeof useMutation<unknown, Error, RenterBookingView>>;
   readonly refreshPayment: ReturnType<typeof useMutation<unknown, Error, string>>;
-  readonly securityDepositMutation: ReturnType<typeof useMutation<unknown, Error, BookingView>>;
+  readonly securityDepositMutation: ReturnType<
+    typeof useMutation<unknown, Error, RenterBookingView>
+  >;
 }) {
   const scrollRef = useRef<ScrollView>(null);
   const scrollOffsetY = useRef(0);
@@ -652,7 +663,7 @@ function BookingDetail({
                 {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
                   <Detail
                     label="Delivery fee"
-                    value={money(booking.fulfillment.deliveryFeeMinor, booking.pricing.currency)}
+                    value={money(booking.fulfillment.deliveryFeeMinor, bookingCurrency(booking))}
                     icon="cash-outline"
                   />
                 )}
@@ -675,7 +686,7 @@ function BookingDetail({
                 {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
                   <Detail
                     label="Collection fee"
-                    value={money(booking.fulfillment.collectionFeeMinor, booking.pricing.currency)}
+                    value={money(booking.fulfillment.collectionFeeMinor, bookingCurrency(booking))}
                     icon="cash-outline"
                   />
                 )}
@@ -719,9 +730,7 @@ function BookingDetail({
               }
               tone={statusTone(booking.status)}
             />
-            <Text style={styles.total}>
-              {money(booking.pricing.totalMinor, booking.pricing.currency)}
-            </Text>
+            <Text style={styles.total}>{bookingTotalLabel(booking)}</Text>
           </View>
           <Card>
             <Detail
@@ -821,7 +830,7 @@ function BookingDetail({
             {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
               <Detail
                 label="Delivery fee"
-                value={money(booking.fulfillment.deliveryFeeMinor, booking.pricing.currency)}
+                value={money(booking.fulfillment.deliveryFeeMinor, bookingCurrency(booking))}
                 icon="cash-outline"
               />
             )}
@@ -844,7 +853,7 @@ function BookingDetail({
             {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
               <Detail
                 label="Collection fee"
-                value={money(booking.fulfillment.collectionFeeMinor, booking.pricing.currency)}
+                value={money(booking.fulfillment.collectionFeeMinor, bookingCurrency(booking))}
                 icon="cash-outline"
               />
             )}
@@ -1066,6 +1075,17 @@ function primaryAction(status: string) {
   if (status === 'COMPLETED') return 'View receipt';
   return 'View details';
 }
+
+function bookingCurrency(booking: RenterBookingView) {
+  return booking.pricing?.currency ?? booking.payments[0]?.currency ?? 'PHP';
+}
+
+function bookingTotalLabel(booking: RenterBookingView) {
+  return booking.pricing
+    ? money(booking.pricing.totalMinor, booking.pricing.currency)
+    : 'Total unavailable';
+}
+
 function paymentLabel(status: string) {
   return (
     {
@@ -1083,13 +1103,25 @@ const styles = StyleSheet.create({
   actionCopy: { color: colors.primary, fontSize: 12, fontWeight: '800' },
   body: { color: colors.subtleText, lineHeight: 21, marginTop: 3 },
   bookingCard: { flexDirection: 'row', gap: spacing.sm, padding: spacing.sm },
+  bookingTabs: {
+    backgroundColor: colors.background,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    justifyContent: 'center',
+    paddingBottom: spacing.sm,
+    paddingTop: spacing.sm,
+  },
   cardFooter: {
     alignItems: 'center',
     flexDirection: 'row',
+    gap: spacing.sm,
     justifyContent: 'space-between',
-    marginTop: spacing.sm,
+    marginTop: spacing.xs,
   },
   dates: { color: colors.subtleText, fontSize: 13, marginBottom: spacing.xs, marginTop: 3 },
+  dateSection: { gap: spacing.sm },
   detail: {
     alignItems: 'center',
     borderBottomColor: colors.border,
@@ -1114,55 +1146,11 @@ const styles = StyleSheet.create({
   },
   detailValue: { color: colors.ink, fontSize: 14, fontWeight: '700', marginTop: 2 },
   flex: { flex: 1, minWidth: 0 },
-  filterButton: {
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: spacing.lg,
-    minHeight: 42,
-    paddingHorizontal: spacing.md,
-  },
-  filterLabel: { color: colors.subtleText, fontSize: 12, fontWeight: '700' },
-  filterMenu: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    padding: spacing.sm,
-    width: '100%',
-  },
-  filterMenuTitle: {
-    color: colors.ink,
-    fontSize: 17,
-    fontWeight: '800',
-    padding: spacing.sm,
-  },
-  filterOption: {
-    alignItems: 'center',
-    borderRadius: radius.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    minHeight: 48,
-    paddingHorizontal: spacing.sm,
-  },
-  filterOptionText: { color: colors.ink, fontSize: 15 },
-  filterOverlay: {
-    backgroundColor: 'rgba(16, 35, 27, 0.35)',
-    flex: 1,
-    justifyContent: 'flex-start',
-    paddingHorizontal: spacing.lg,
-    paddingTop: 180,
-  },
-  filterSection: { alignItems: 'flex-start', gap: spacing.xxs },
-  filterSelected: { color: colors.primary, fontWeight: '800' },
-  filterValue: { color: colors.ink, fontSize: 14, fontWeight: '800', minWidth: 82 },
   hero: { borderRadius: radius.lg, height: 210, width: '100%' },
   image: { borderRadius: radius.md, height: 124, width: 112 },
   notice: { backgroundColor: colors.warningSoft },
-  price: { color: colors.ink, fontSize: 16, fontWeight: '900' },
-  reference: { color: colors.subtleText, fontSize: 11, marginTop: spacing.xs },
+  price: { color: colors.ink, fontSize: 16, fontWeight: '900', marginTop: spacing.xs },
+  reference: { color: colors.subtleText, flex: 1, fontSize: 11 },
   summaryRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   timelineDot: {
     backgroundColor: colors.primary,

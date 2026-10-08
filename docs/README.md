@@ -18,6 +18,7 @@ Operational guides:
 - [Phase 6 payments and ledger](development/phase-6-payments-ledger.md)
 - [Phase 9 owner payouts](development/phase-9-owner-payouts.md)
 - [Security Deposit checkpoint](development/security-deposit-checkpoint-2026-10-05.md)
+- [Renter experience and verification checkpoint](development/renter-experience-verification-checkpoint-2026-10-08.md)
 
 Phase guides are historical implementation and acceptance records. The architecture documents above
 describe current authority when a phase guide is older.

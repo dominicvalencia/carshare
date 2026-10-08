@@ -42,22 +42,23 @@ describe('Phase 12 renter acceptance stabilization', () => {
     expect(guided).toContain('Skip onboarding');
     expect(app).not.toContain('<VerificationScreen');
     expect(guided).toContain('WELCOME TO CARSHARE');
-    expect(app).toContain('pageCount={8}');
+    expect(app).toContain('pageCount={RENTER_ONBOARDING_STEPS.length}');
     for (const title of [
       'Personal information',
       'Contact verification',
-      'Address',
+      'Residential address',
       'Driver’s license',
-      'Verification documents',
-      'Selfie',
+      'Emergency contact',
+      'Identity documents',
+      'Identity photos',
       'Review & finish',
     ])
       expect(onboarding).toContain(title);
     expect(onboarding).toContain('onboardingNavigation={{ onBack, onNext, step }}');
     expect(guided).toContain('PanResponder.create');
     expect(guided).toContain('Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5');
-    expect(guided).toContain('<View key={index} style={{ width }}>');
-    expect(guided).toContain('toValue: -nextPage * width');
+    expect(guided).toContain('<View key={pageKeys?.[index] ?? index} style={{ width }}>');
+    expect(guided).toContain('toValue: -currentPage * width');
     expect(guided).toContain("overflow: 'hidden'");
     expect(guided).toContain('<Button label="Skip onboarding" onPress={onSkip} variant="ghost" />');
     const workflow = source('features/account/RenterVerificationWorkflow.tsx');
@@ -83,14 +84,15 @@ describe('Phase 12 renter acceptance stabilization', () => {
     expect(workflow).toContain('onboardingNavigation.onNext()');
     for (const section of [
       'Personal information',
-      'Address',
-      'Contact',
-      'Driver information',
+      'Residential address',
+      'Contact verification',
+      "Driver's license",
       'Emergency contact',
-      'Document completion',
+      'Identity documents',
+      'Identity photos',
     ])
       expect(workflow).toContain(`title="${section}"`);
-    expect(workflow).toContain('••••');
+    expect(workflow).toContain('License number on file');
   });
 
   it('keeps Home discovery-focused after onboarding is skipped', () => {
@@ -110,9 +112,9 @@ describe('Phase 12 renter acceptance stabilization', () => {
       expect(selector).toContain('Keyboard.dismiss()');
     }
     const sharedSelector = source('ui/SearchableReferenceSelector.tsx');
-    expect(sharedSelector).toContain('keyboardShouldPersistTaps="always"');
-    expect(sharedSelector).toContain('<Screen scroll={false}');
-    expect(sharedSelector).toContain('style={styles.list}');
+    expect(sharedSelector).toContain('keyboardShouldPersistTaps="handled"');
+    expect(sharedSelector).toContain('automaticallyAdjustKeyboardInsets');
+    expect(sharedSelector).toContain('scrollEnabled={measuredLayout.scrollEnabled}');
   });
 
   it('keeps the date picker value inside its native bounds', () => {
@@ -132,14 +134,15 @@ describe('Phase 12 renter acceptance stabilization', () => {
     );
   });
 
-  it('uses the bounded native iOS spinner without the crashing inline mode', () => {
+  it('uses the bounded shared calendar without the native iOS wheel', () => {
     const field = source('ui/DateOnlyField.tsx');
     const iosPicker = field.slice(field.indexOf("{Platform.OS === 'ios'"));
-    expect(iosPicker).toContain('<DateTimePicker');
-    expect(iosPicker).toContain('display="spinner"');
-    expect(iosPicker).not.toContain('display="inline"');
+    expect(iosPicker).toContain('<CalendarMonth');
+    expect(iosPicker).not.toContain('<DateTimePicker');
+    expect(field).not.toContain('display="spinner"');
     expect(field).toContain('pickerMinimumDate');
     expect(field).toContain('pickerMaximumDate');
+    expect(field).toContain('adaptiveSheetLayout({');
   });
 
   it('uses the same DateOnlyField presentation for every active renter date-only field', () => {
@@ -156,7 +159,7 @@ describe('Phase 12 renter acceptance stabilization', () => {
     const workflow = source('features/account/RenterVerificationWorkflow.tsx');
     const account = source('features/account/AccountScreen.tsx');
     const invalidation = source('query/verification-invalidation.ts');
-    expect(workflow).toContain('Captured selfie preview');
+    expect(workflow).toContain('accessibilityLabel={`${title} preview`}');
     expect(workflow).not.toContain('setCapturedSelfie(null)');
     expect(account).toContain('refetchInterval: (query)');
     expect(account).toContain('client.setQueryData<RenterVerificationSnapshot>');

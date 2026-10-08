@@ -20,6 +20,7 @@ import { SecurityEventService } from '../security/security-event.service';
 import type { RequestMetadata } from '../security/security-context';
 import { EmailProvider, SmsProvider } from '../providers/delivery.provider';
 import { TokenService } from './token.service';
+import { passwordResetAppScheme } from './password-reset-link';
 import type {
   DeviceDto,
   LoginDto,
@@ -591,12 +592,12 @@ export class AuthService {
         },
       }),
     ]);
-    const publicUrl = this.configuration.getOrThrow('API_PUBLIC_URL', { infer: true });
-    const actionBase = `${publicUrl}${
+    const actionBase =
       type === AuthTokenType.EMAIL_VERIFICATION
-        ? '/api/v1/auth/email-verification'
-        : '/reset-password'
-    }`;
+        ? `${this.configuration.getOrThrow('API_PUBLIC_URL', { infer: true })}/api/v1/auth/email-verification`
+        : `${passwordResetAppScheme(
+            this.configuration.getOrThrow('APP_ENV', { infer: true }),
+          )}://reset-password`;
     await this.emailProvider.send({
       actionUrl: `${actionBase}?token=${encodeURIComponent(token.raw)}`,
       template: type === AuthTokenType.EMAIL_VERIFICATION ? 'EMAIL_VERIFICATION' : 'PASSWORD_RESET',

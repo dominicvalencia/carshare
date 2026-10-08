@@ -58,6 +58,15 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     },
     plugins: [
       ['@sentry/react-native/expo', { disableAutoUpload: true }],
+      [
+        'expo-splash-screen',
+        {
+          backgroundColor: '#F6F7F4',
+          image: './assets/carshare-app-icon.png',
+          imageWidth: 160,
+          resizeMode: 'contain',
+        },
+      ],
       'expo-font',
       '@react-native-community/datetimepicker',
       [

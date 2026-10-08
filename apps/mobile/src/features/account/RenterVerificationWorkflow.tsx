@@ -9,26 +9,40 @@ import {
   type SetStateAction,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import * as ImagePicker from 'expo-image-picker';
+import type * as ImagePicker from 'expo-image-picker';
 import {
   Alert,
   FlatList,
   Image,
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
   Platform,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import type { ImageStyle, StyleProp } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { apiClient } from '../../auth/api-client';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateOnlyField } from '../../ui/DateOnlyField';
 import { ensureCameraPermission } from '../../ui/camera-permission';
-import { Button, Card, Field, Icon, Screen, StateView, StatusBadge } from '../../ui/primitives';
-import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
+import {
+  BackControl,
+  Button,
+  Card,
+  Field,
+  Icon,
+  Screen,
+  StateView,
+  StatusBadge,
+} from '../../ui/primitives';
+import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
 import { NativeCameraCapture } from '../../ui/NativeCameraCapture';
 import type { RenterVerificationSnapshot } from './AccountScreen';
 import {
@@ -42,6 +56,7 @@ import {
   scopeSelection,
 } from './renter-verification-form';
 import { invalidateRenterVerification } from '../../query/verification-invalidation';
+import { RenterOnboardingFooter } from '../../onboarding/GuidedOnboarding';
 
 const stages = [
   'Personal information',
@@ -49,7 +64,7 @@ const stages = [
   'Driver information',
   'Emergency contact',
   'Identity documents',
-  'Selfie',
+  'Identity photos',
   'Review & submit',
 ] as const;
 
@@ -98,17 +113,26 @@ interface AreaResponse {
 }
 
 export function RenterVerificationWorkflow({
+  editingApprovedInitially = false,
   onboardingNavigation,
+  onboardingScreen,
+  onEditStep,
   onBackBeforeFirstStep,
   progressOffset = 0,
   progressTotal,
   snapshot,
 }: {
+  readonly editingApprovedInitially?: boolean;
   readonly onboardingNavigation?: {
     readonly onBack: () => void;
     readonly onNext: () => void;
     readonly step: number;
   };
+  readonly onboardingScreen?: {
+    readonly subtitle: string;
+    readonly title: string;
+  };
+  readonly onEditStep?: (step: number) => void;
   readonly onBackBeforeFirstStep?: () => void;
   readonly progressOffset?: number;
   readonly progressTotal?: number;
@@ -122,9 +146,11 @@ export function RenterVerificationWorkflow({
   const step = onboardingNavigation?.step ?? internalStep;
   const setStep = (next: number) => setInternalStep(next);
   const [formError, setFormError] = useState('');
-  const [editingApproved, setEditingApproved] = useState(false);
+  const [editingApproved, setEditingApproved] = useState(editingApprovedInitially);
   const [barangaySearch, setBarangaySearch] = useState('');
-  const [capturedSelfie, setCapturedSelfie] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [capturedIdentityPhotos, setCapturedIdentityPhotos] = useState<
+    Partial<Record<'PROFILE_PHOTO' | 'SELFIE_WITH_LICENSE', ImagePicker.ImagePickerAsset>>
+  >({});
   const initialForm = () => ({
     addressLine1: profile?.addressLine1 ?? '',
     addressScopeCode: profile?.addressScopeCode ?? '',
@@ -244,6 +270,9 @@ export function RenterVerificationWorkflow({
       ),
     [snapshot.verifications],
   );
+  const identityPhotosComplete = (['PROFILE_PHOTO', 'SELFIE_WITH_LICENSE'] as const).every((code) =>
+    Boolean(capturedIdentityPhotos[code] || documents.get(code)),
+  );
   const pending = ['SUBMITTED', 'UNDER_REVIEW'].includes(snapshot.eligibility.status);
   const locked = snapshot.eligibility.status === 'APPROVED' && !editingApproved;
   const currentDataset = regions.data?.datasetVersion ?? null;
@@ -317,7 +346,248 @@ export function RenterVerificationWorkflow({
       3,
     );
   };
-  return (
+  const advanceEmergency = () => {
+    const error = emergencyError(form, snapshot.mobileNumber);
+    if (error) return setFormError(error);
+    saveStage(
+      {
+        ...(form.emergencyContactName.trim()
+          ? {
+              emergencyContactMobile: form.emergencyContactMobile.trim(),
+              emergencyContactName: form.emergencyContactName.trim(),
+              emergencyContactRelation: form.emergencyContactRelation,
+              ...(form.emergencyContactRelationOther.trim()
+                ? { emergencyContactRelationOther: form.emergencyContactRelationOther.trim() }
+                : {}),
+            }
+          : {}),
+        stage: 'EMERGENCY_CONTACT',
+      },
+      4,
+    );
+  };
+  const personalFields = (
+    <View style={styles.personalFields}>
+      <Field
+        label="Legal first name *"
+        placeholder="Enter your first name"
+        value={form.legalFirstName}
+        onChangeText={(legalFirstName) => setForm({ ...form, legalFirstName })}
+      />
+      <Field
+        label="Legal middle name · Optional"
+        placeholder="Enter your middle name"
+        value={form.middleName}
+        onChangeText={(middleName) => setForm({ ...form, middleName })}
+      />
+      <Field
+        label="Legal last name *"
+        placeholder="Enter your last name"
+        value={form.legalLastName}
+        onChangeText={(legalLastName) => setForm({ ...form, legalLastName })}
+      />
+      <DateOnlyField
+        label="Date of birth *"
+        maximumDate={new Date()}
+        value={form.dateOfBirth}
+        onChange={(dateOfBirth) => setForm({ ...form, dateOfBirth })}
+      />
+      {formError && (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {formError}
+        </Text>
+      )}
+    </View>
+  );
+  const addressFields = (
+    <View style={styles.addressFields}>
+      <Field
+        label="House / building / street *"
+        multiline
+        placeholder="e.g. 123 Rizal St., ABC Residences"
+        value={form.addressLine1}
+        onChangeText={(addressLine1) => setForm({ ...form, addressLine1 })}
+      />
+      <ReferenceSelect
+        emptyTitle="No matching regions found."
+        label="Region *"
+        loading={regions.isPending}
+        options={regions.data?.items ?? []}
+        placeholder="Select region"
+        searchPlaceholder="Search regions"
+        selectedCode={form.regionCode}
+        selectedLabel={form.region}
+        sheetTitle="Select region"
+        onSelect={(area) => setForm({ ...form, ...regionSelection(area) })}
+      />
+      <ReferenceSelect
+        disabled={!form.regionCode}
+        disabledPlaceholder="Select region first"
+        emptyTitle="No matching provinces found."
+        label="Province / geographic area *"
+        loading={scopes.isPending}
+        options={scopes.data?.items ?? []}
+        placeholder="Select province"
+        searchPlaceholder="Search provinces"
+        selectedCode={form.addressScopeCode}
+        selectedLabel={scopeLabel(form, scopes.data?.items)}
+        sheetTitle="Select province"
+        onSelect={(area) => setForm({ ...form, ...scopeSelection(area) })}
+      />
+      <ReferenceSelect
+        disabled={!form.addressScopeCode}
+        disabledPlaceholder="Select province first"
+        emptyTitle="No matching cities or municipalities found."
+        label="City / municipality *"
+        loading={localities.isPending}
+        options={localities.data?.items ?? []}
+        placeholder="Select city or municipality"
+        searchPlaceholder="Search cities"
+        selectedCode={form.cityMunicipalityCode}
+        selectedLabel={form.cityMunicipality}
+        sheetTitle="Select city or municipality"
+        onSelect={(area) => setForm({ ...form, ...localitySelection(area) })}
+      />
+      <ReferenceSelect
+        disabled={!form.cityMunicipalityCode}
+        disabledPlaceholder="Select city first"
+        emptyTitle="No matching barangays found."
+        label="Barangay *"
+        loading={barangays.isPending}
+        onSearch={setBarangaySearch}
+        options={barangays.data?.items ?? []}
+        placeholder="Select barangay"
+        searchPlaceholder="Search barangays"
+        selectedCode={form.barangayCode}
+        selectedLabel={form.barangay}
+        sheetTitle="Select barangay"
+        onSelect={(area) => setForm({ ...form, barangay: area.name, barangayCode: area.code })}
+      />
+      <Field
+        keyboardType="number-pad"
+        label="Postal code *"
+        placeholder="e.g. 4301"
+        value={form.postalCode}
+        onChangeText={(postalCode) => setForm({ ...form, postalCode })}
+      />
+      {formError && (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {formError}
+        </Text>
+      )}
+    </View>
+  );
+  const driverLicenseError = formError.includes('license number') ? formError : undefined;
+  const driverClassError = formError.includes('classification') ? formError : undefined;
+  const driverExpiryError = formError.includes('expiration date') ? formError : undefined;
+  const driverGeneralError =
+    formError && !driverLicenseError && !driverClassError && !driverExpiryError
+      ? formError
+      : undefined;
+  const driverFields = (
+    <View style={styles.driverFields}>
+      {onboardingNavigation && (
+        <View accessibilityRole="text" style={styles.privacyHelper}>
+          <Icon color={colors.subtleText} name="lock-closed-outline" size={15} />
+          <Text style={styles.privacyHelperText}>
+            Your license number is stored securely and used only for verification.
+          </Text>
+        </View>
+      )}
+      {profile?.driverLicenseLastFour && (
+        <View
+          accessibilityLabel={`Driver's license number on file ending in ${profile.driverLicenseLastFour}`}
+          style={styles.savedLicense}
+        >
+          <Icon color={colors.primary} name="checkmark-circle" size={20} />
+          <View style={styles.flex}>
+            <Text style={styles.savedLicenseTitle}>License number on file</Text>
+            <Text style={styles.savedLicenseDetail}>Ending in {profile.driverLicenseLastFour}</Text>
+          </View>
+        </View>
+      )}
+      <Field
+        autoCapitalize="characters"
+        autoCorrect={false}
+        error={driverLicenseError}
+        label={
+          profile?.driverLicenseLastFour
+            ? 'Replace license number · Optional'
+            : "Driver's license number *"
+        }
+        value={form.driverLicenseNumber}
+        onChangeText={(driverLicenseNumber) => setForm({ ...form, driverLicenseNumber })}
+        placeholder={
+          profile?.driverLicenseLastFour
+            ? `Current ends in ${profile.driverLicenseLastFour}`
+            : 'Enter license number'
+        }
+        spellCheck={false}
+      />
+      <DateOnlyField
+        {...(driverExpiryError ? { error: driverExpiryError } : {})}
+        label="Expiration date *"
+        minimumDate={tomorrow()}
+        value={form.driverLicenseExpiry}
+        onChange={(driverLicenseExpiry) => setForm({ ...form, driverLicenseExpiry })}
+      />
+      <Field
+        error={driverClassError}
+        label="License classification *"
+        value={form.driverLicenseClass}
+        onChangeText={(driverLicenseClass) => setForm({ ...form, driverLicenseClass })}
+        placeholder="e.g. A, A1, B, B1"
+      />
+      <Field
+        label="Restrictions · Optional"
+        value={form.driverLicenseRestrictions}
+        onChangeText={(driverLicenseRestrictions) =>
+          setForm({ ...form, driverLicenseRestrictions })
+        }
+        placeholder="e.g. Corrective lenses"
+      />
+      {driverGeneralError && (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {driverGeneralError}
+        </Text>
+      )}
+    </View>
+  );
+  const onboardingPrimaryAction = () => {
+    if (step === 0) return advancePersonal();
+    if (step === 1) return advanceAddress();
+    if (step === 2) return advanceDriver();
+    if (step === 3) return advanceEmergency();
+    if (step === 4 || step === 5) return onboardingNavigation?.onNext();
+    if (step === 6) return submit.mutate();
+  };
+  const onboardingPrimaryLabel =
+    step === 6
+      ? snapshot.eligibility.status === 'MORE_INFORMATION_REQUIRED'
+        ? 'Resubmit verification'
+        : 'Submit verification'
+      : 'Continue';
+  const onboardingBusy =
+    (step <= 2 && save.isPending) ||
+    ((step === 4 || step === 5) && upload.isPending) ||
+    (step === 6 && submit.isPending);
+  const editReviewStep = (targetStep: number) => {
+    if (onboardingNavigation) return onEditStep?.(targetStep);
+    if (targetStep === -1) return onBackBeforeFirstStep?.();
+    setInternalStep(targetStep);
+  };
+  const identityPhotoCodes = ['PROFILE_PHOTO', 'SELFIE_WITH_LICENSE'] as const;
+  const identityDefinitions = snapshot.definitions.filter(({ code }) =>
+    identityPhotoCodes.includes(code as (typeof identityPhotoCodes)[number]),
+  );
+  const documentDefinitions = snapshot.definitions.filter(
+    ({ code }) =>
+      code !== 'SELFIE' &&
+      !identityPhotoCodes.includes(code as (typeof identityPhotoCodes)[number]),
+  );
+  const requiredDocuments = documentDefinitions.filter(({ required }) => required);
+  const addedRequiredDocuments = requiredDocuments.filter(({ code }) => documents.has(code));
+  const workflowContent = (
     <>
       {!onboardingNavigation && (
         <Card style={snapshot.eligibility.eligible ? undefined : styles.warningCard}>
@@ -403,165 +673,59 @@ export function RenterVerificationWorkflow({
             </Card>
           )}
 
-          {step === 0 && (
-            <SectionCard
-              icon="person-outline"
-              title="Personal information"
-              helper="Use the name and birth date shown on your government-issued identity document."
-            >
-              <Field
-                label="Legal first name *"
-                value={form.legalFirstName}
-                onChangeText={(legalFirstName) => setForm({ ...form, legalFirstName })}
-              />
-              <Field
-                label="Legal middle name"
-                value={form.middleName}
-                onChangeText={(middleName) => setForm({ ...form, middleName })}
-              />
-              <Field
-                label="Legal last name *"
-                value={form.legalLastName}
-                onChangeText={(legalLastName) => setForm({ ...form, legalLastName })}
-              />
-              <DateOnlyField
-                label="Date of birth *"
-                maximumDate={new Date()}
-                value={form.dateOfBirth}
-                onChange={(dateOfBirth) => setForm({ ...form, dateOfBirth })}
-              />
-              <NavigationButtons
-                busy={save.isPending}
-                onBack={() => back(0)}
-                onNext={advancePersonal}
-              />
-              {step === 0 && formError && (
-                <Text accessibilityRole="alert" style={styles.error}>
-                  {formError}
-                </Text>
-              )}
-            </SectionCard>
-          )}
+          {step === 0 &&
+            (onboardingNavigation ? (
+              <Card style={styles.personalFormCard}>{personalFields}</Card>
+            ) : (
+              <SectionCard
+                icon="person-outline"
+                title="Personal information"
+                helper="Use the name and birth date shown on your government-issued identity document."
+              >
+                {personalFields}
+                <NavigationButtons
+                  busy={save.isPending}
+                  onBack={() => back(0)}
+                  onNext={advancePersonal}
+                />
+              </SectionCard>
+            ))}
 
-          {step === 1 && (
-            <SectionCard
-              icon="location-outline"
-              title="Residential address"
-              helper={`Searchable official PSA PSGC reference${currentDataset ? ` · ${currentDataset.replaceAll('_', ' ')}` : ''}. Address line and postal code remain renter-entered.`}
-            >
-              <Field
-                label="House / building / street *"
-                multiline
-                value={form.addressLine1}
-                onChangeText={(addressLine1) => setForm({ ...form, addressLine1 })}
-              />
-              <ReferenceSelect
-                label="Region *"
-                loading={regions.isPending}
-                options={regions.data?.items ?? []}
-                selectedLabel={form.region}
-                onSelect={(area) => {
-                  setForm({ ...form, ...regionSelection(area) });
-                }}
-              />
-              <ReferenceSelect
-                disabled={!form.regionCode}
-                label="Province / geographic area *"
-                loading={scopes.isPending}
-                options={scopes.data?.items ?? []}
-                selectedLabel={scopeLabel(form, scopes.data?.items)}
-                onSelect={(area) => setForm({ ...form, ...scopeSelection(area) })}
-              />
-              <ReferenceSelect
-                disabled={!form.addressScopeCode}
-                label="City / municipality *"
-                loading={localities.isPending}
-                options={localities.data?.items ?? []}
-                selectedLabel={form.cityMunicipality}
-                onSelect={(area) => setForm({ ...form, ...localitySelection(area) })}
-              />
-              <ReferenceSelect
-                disabled={!form.cityMunicipalityCode}
-                label="Barangay *"
-                loading={barangays.isPending}
-                onSearch={setBarangaySearch}
-                options={barangays.data?.items ?? []}
-                selectedLabel={form.barangay}
-                onSelect={(area) =>
-                  setForm({ ...form, barangay: area.name, barangayCode: area.code })
-                }
-              />
-              <Field
-                keyboardType="number-pad"
-                label="Postal code *"
-                value={form.postalCode}
-                onChangeText={(postalCode) => setForm({ ...form, postalCode })}
-              />
-              <NavigationButtons
-                busy={save.isPending}
-                onBack={() => back(0)}
-                onNext={advanceAddress}
-              />
-              {step === 1 && formError && (
-                <Text accessibilityRole="alert" style={styles.error}>
-                  {formError}
-                </Text>
-              )}
-            </SectionCard>
-          )}
+          {step === 1 &&
+            (onboardingNavigation ? (
+              <Card style={styles.addressFormCard}>{addressFields}</Card>
+            ) : (
+              <SectionCard
+                icon="location-outline"
+                title="Residential address"
+                helper={`Searchable official PSA PSGC reference${currentDataset ? ` · ${currentDataset.replaceAll('_', ' ')}` : ''}. Address line and postal code remain renter-entered.`}
+              >
+                {addressFields}
+                <NavigationButtons
+                  busy={save.isPending}
+                  onBack={() => back(0)}
+                  onNext={advanceAddress}
+                />
+              </SectionCard>
+            ))}
 
-          {step === 2 && (
-            <SectionCard
-              icon="card-outline"
-              title="Driver information"
-              helper="The full license number is normalized, hashed, and never returned by the API."
-            >
-              <Field
-                label={
-                  profile?.driverLicenseLastFour
-                    ? 'New license number (leave blank to keep current)'
-                    : 'Driver’s license number *'
-                }
-                value={form.driverLicenseNumber}
-                onChangeText={(driverLicenseNumber) => setForm({ ...form, driverLicenseNumber })}
-                placeholder={
-                  profile?.driverLicenseLastFour
-                    ? `Current ends in ${profile.driverLicenseLastFour}`
-                    : 'Letters and numbers shown on license'
-                }
-              />
-              <DateOnlyField
-                label="Expiration date *"
-                minimumDate={tomorrow()}
-                value={form.driverLicenseExpiry}
-                onChange={(driverLicenseExpiry) => setForm({ ...form, driverLicenseExpiry })}
-              />
-              <Field
-                label="License classification *"
-                value={form.driverLicenseClass}
-                onChangeText={(driverLicenseClass) => setForm({ ...form, driverLicenseClass })}
-                placeholder="As printed on the license"
-              />
-              <Field
-                label="Restrictions"
-                value={form.driverLicenseRestrictions}
-                onChangeText={(driverLicenseRestrictions) =>
-                  setForm({ ...form, driverLicenseRestrictions })
-                }
-                placeholder="If applicable"
-              />
-              <NavigationButtons
-                busy={save.isPending}
-                onBack={() => back(1)}
-                onNext={advanceDriver}
-              />
-              {step === 2 && formError && (
-                <Text accessibilityRole="alert" style={styles.error}>
-                  {formError}
-                </Text>
-              )}
-            </SectionCard>
-          )}
+          {step === 2 &&
+            (onboardingNavigation ? (
+              <Card style={styles.driverFormCard}>{driverFields}</Card>
+            ) : (
+              <SectionCard
+                icon="card-outline"
+                title="Driver information"
+                helper="Your license number is stored securely and used only for verification."
+              >
+                {driverFields}
+                <NavigationButtons
+                  busy={save.isPending}
+                  onBack={() => back(1)}
+                  onNext={advanceDriver}
+                />
+              </SectionCard>
+            ))}
 
           {step === 3 && (
             <SectionCard
@@ -612,6 +776,7 @@ export function RenterVerificationWorkflow({
               />
               <NavigationButtons
                 busy={save.isPending}
+                hidden={Boolean(onboardingNavigation)}
                 onBack={() => back(2)}
                 onNext={() => {
                   const error = emergencyError(form, snapshot.mobileNumber);
@@ -647,9 +812,13 @@ export function RenterVerificationWorkflow({
 
           {step === 4 && (
             <DocumentStage
-              definitions={snapshot.definitions.filter(({ code }) => code !== 'SELFIE')}
+              definitions={snapshot.definitions.filter(
+                ({ code }) =>
+                  code !== 'SELFIE' && code !== 'PROFILE_PHOTO' && code !== 'SELFIE_WITH_LICENSE',
+              )}
               documents={documents}
               upload={upload}
+              showNavigation={!onboardingNavigation}
               onBack={() => back(3)}
               onContinue={() =>
                 onboardingNavigation ? onboardingNavigation.onNext() : setInternalStep(5)
@@ -658,13 +827,18 @@ export function RenterVerificationWorkflow({
           )}
 
           {step === 5 && (
-            <SelfieStage
-              captured={capturedSelfie}
-              definition={snapshot.definitions.find(({ code }) => code === 'SELFIE')}
-              document={documents.get('SELFIE')}
+            <IdentityPhotosStage
+              captured={capturedIdentityPhotos}
+              definitions={snapshot.definitions.filter(
+                ({ code }) => code === 'PROFILE_PHOTO' || code === 'SELFIE_WITH_LICENSE',
+              )}
+              documents={documents}
               upload={upload}
+              showNavigation={!onboardingNavigation}
               onBack={() => back(4)}
-              onCapture={setCapturedSelfie}
+              onCapture={(code, asset) =>
+                setCapturedIdentityPhotos((current) => ({ ...current, [code]: asset }))
+              }
               onContinue={() =>
                 onboardingNavigation ? onboardingNavigation.onNext() : setInternalStep(6)
               }
@@ -672,78 +846,150 @@ export function RenterVerificationWorkflow({
           )}
 
           {step === 6 && (
-            <SectionCard
-              icon="checkmark-done-outline"
-              title="Review & submit"
-              helper="Nothing is submitted automatically. Confirm the information below before sending it to authorized verification staff."
-            >
-              <ReviewGroup title="Personal information">
-                <ReviewRow label="First name" value={form.legalFirstName} />
-                <ReviewRow label="Middle name" value={form.middleName || 'Not provided'} />
-                <ReviewRow label="Last name" value={form.legalLastName} />
-                <ReviewRow label="Display name" value={profile?.displayName ?? 'Not set'} />
-                <ReviewRow label="Date of birth" value={form.dateOfBirth} />
-              </ReviewGroup>
-              <ReviewGroup title="Address">
-                <ReviewRow label="Street / address line" value={form.addressLine1} />
-                <ReviewRow label="Barangay" value={form.barangay} />
-                <ReviewRow label="City / municipality" value={form.cityMunicipality} />
-                <ReviewRow label="Province" value={form.province || 'Not applicable'} />
-                <ReviewRow label="Region" value={form.region} />
-                <ReviewRow label="Postal code" value={form.postalCode} />
-              </ReviewGroup>
-              <ReviewGroup title="Contact">
-                <ReviewRow label="Email" value={snapshot.email ?? 'Not provided'} />
-                <ReviewRow label="Mobile" value={snapshot.mobileNumber ?? 'Not provided'} />
-              </ReviewGroup>
-              <ReviewGroup title="Driver information">
-                <ReviewRow
-                  label="License number"
-                  value={
-                    profile?.driverLicenseLastFour
-                      ? `•••• ${profile.driverLicenseLastFour}`
-                      : form.driverLicenseNumber
-                        ? `•••• ${form.driverLicenseNumber.replaceAll(/[^a-zA-Z0-9]/g, '').slice(-4)}`
-                        : 'Not provided'
-                  }
+            <View style={styles.reviewSections}>
+              <ReviewSummarySection
+                title="Personal information"
+                editLabel="Edit personal information"
+                onEdit={() => editReviewStep(0)}
+              >
+                <Text style={styles.reviewPrimary}>
+                  {[form.legalFirstName, form.middleName, form.legalLastName]
+                    .filter(Boolean)
+                    .join(' ') || 'Required information is missing'}
+                </Text>
+                {form.dateOfBirth ? (
+                  <Text style={styles.reviewBody}>Born {formatReviewDate(form.dateOfBirth)}</Text>
+                ) : (
+                  <ReviewWarning> Date of birth is missing.</ReviewWarning>
+                )}
+              </ReviewSummarySection>
+
+              <ReviewSummarySection
+                title="Residential address"
+                editLabel="Edit residential address"
+                onEdit={() => editReviewStep(1)}
+              >
+                {form.addressLine1 ? (
+                  <>
+                    <Text style={styles.reviewBody}>{form.addressLine1}</Text>
+                    <Text style={styles.reviewBody}>
+                      {[form.barangay && `Brgy. ${form.barangay}`, form.cityMunicipality]
+                        .filter(Boolean)
+                        .join(', ')}
+                    </Text>
+                    <Text style={styles.reviewBody}>
+                      {[form.province || form.region, form.postalCode].filter(Boolean).join(' ')}
+                    </Text>
+                  </>
+                ) : (
+                  <ReviewWarning>Residential address is missing.</ReviewWarning>
+                )}
+              </ReviewSummarySection>
+
+              <ReviewSummarySection
+                title="Contact verification"
+                editLabel="Edit contact verification"
+                onEdit={() => editReviewStep(-1)}
+              >
+                <ReviewStatusRow
+                  label="Email"
+                  value={snapshot.email ?? 'Not provided'}
+                  complete={Boolean(snapshot.emailVerifiedAt)}
                 />
-                <ReviewRow label="Expiration" value={form.driverLicenseExpiry} />
-                <ReviewRow label="Class" value={form.driverLicenseClass} />
-                <ReviewRow label="Restrictions" value={form.driverLicenseRestrictions || 'None'} />
-              </ReviewGroup>
-              <ReviewGroup title="Emergency contact">
-                <ReviewRow label="Name" value={form.emergencyContactName || 'Not provided'} />
-                <ReviewRow
-                  label="Relationship"
-                  value={
-                    form.emergencyContactName
-                      ? relationshipLabel(form.emergencyContactRelation)
-                      : 'Not provided'
-                  }
+                <ReviewStatusRow
+                  label="Mobile"
+                  value={snapshot.mobileNumber ?? 'Not provided'}
+                  complete={Boolean(snapshot.mobileVerifiedAt)}
                 />
-                <ReviewRow label="Mobile" value={form.emergencyContactMobile || 'Not provided'} />
-              </ReviewGroup>
-              <ReviewGroup title="Document completion">
-                {snapshot.definitions.map((definition) => (
-                  <ReviewRow
-                    key={definition.code}
-                    label={definition.name}
-                    value={
-                      documents.has(definition.code)
-                        ? 'Completed'
-                        : definition.required
-                          ? 'Required'
-                          : 'Optional'
-                    }
-                  />
-                ))}
-              </ReviewGroup>
-              <Text style={styles.note}>
-                A camera selfie is evidence for manual review. It is not certified liveness
-                verification.
-              </Text>
+              </ReviewSummarySection>
+
+              <ReviewSummarySection
+                title="Driver's license"
+                editLabel="Edit driver's license"
+                onEdit={() => editReviewStep(2)}
+              >
+                <Text style={styles.reviewPrimary}>
+                  {profile?.driverLicenseLastFour || form.driverLicenseNumber
+                    ? 'License number on file'
+                    : 'License number is missing'}
+                </Text>
+                {form.driverLicenseClass ? (
+                  <Text style={styles.reviewBody}>Class {form.driverLicenseClass}</Text>
+                ) : (
+                  <ReviewWarning>License class is missing.</ReviewWarning>
+                )}
+                {form.driverLicenseExpiry ? (
+                  <Text style={styles.reviewBody}>
+                    Expires {formatReviewDate(form.driverLicenseExpiry)}
+                  </Text>
+                ) : (
+                  <ReviewWarning>Expiration date is missing.</ReviewWarning>
+                )}
+                <Text style={styles.reviewBody}>
+                  Restrictions: {form.driverLicenseRestrictions || 'None'}
+                </Text>
+              </ReviewSummarySection>
+
+              <ReviewSummarySection
+                title="Emergency contact"
+                editLabel="Edit emergency contact"
+                onEdit={() => editReviewStep(3)}
+              >
+                {form.emergencyContactName ? (
+                  <>
+                    <Text style={styles.reviewPrimary}>{form.emergencyContactName}</Text>
+                    <Text style={styles.reviewBody}>
+                      {[
+                        relationshipLabel(form.emergencyContactRelation),
+                        form.emergencyContactMobile,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </>
+                ) : (
+                  <Text style={styles.reviewBody}>Not provided</Text>
+                )}
+              </ReviewSummarySection>
+
+              <ReviewSummarySection
+                title="Identity documents"
+                editLabel="Edit identity documents"
+                onEdit={() => editReviewStep(4)}
+              >
+                <Text style={styles.reviewPrimary}>
+                  {addedRequiredDocuments.length} of {requiredDocuments.length} required documents
+                  added
+                </Text>
+                {requiredDocuments
+                  .filter(({ code }) => !documents.has(code))
+                  .map(({ code, name }) => (
+                    <ReviewWarning key={code}>{name} is missing.</ReviewWarning>
+                  ))}
+              </ReviewSummarySection>
+
+              <ReviewSummarySection
+                title="Identity photos"
+                editLabel="Edit identity photos"
+                onEdit={() => editReviewStep(5)}
+              >
+                <ReviewCompletionRow
+                  label="Profile photo"
+                  complete={documents.has('PROFILE_PHOTO')}
+                />
+                <ReviewCompletionRow
+                  label="Selfie with driver's license"
+                  complete={documents.has('SELFIE_WITH_LICENSE')}
+                />
+                {identityDefinitions
+                  .filter(({ required, code }) => required && !documents.has(code))
+                  .map(({ code, name }) => (
+                    <ReviewWarning key={code}>{name} is missing.</ReviewWarning>
+                  ))}
+              </ReviewSummarySection>
               <NavigationButtons
                 busy={submit.isPending}
+                hidden={Boolean(onboardingNavigation)}
                 nextLabel={
                   submit.isPending
                     ? 'Submitting…'
@@ -754,7 +1000,7 @@ export function RenterVerificationWorkflow({
                 onBack={() => back(5)}
                 onNext={() => submit.mutate()}
               />
-            </SectionCard>
+            </View>
           )}
         </>
       )}
@@ -773,6 +1019,29 @@ export function RenterVerificationWorkflow({
       )}
     </>
   );
+  if (onboardingNavigation && onboardingScreen) {
+    return (
+      <Screen
+        bottomAccessory={
+          <RenterOnboardingFooter
+            busy={onboardingBusy}
+            disabled={step === 5 && !identityPhotosComplete}
+            {...(step === 0 ? {} : { onBack: () => back(step - 1) })}
+            onPrimary={onboardingPrimaryAction}
+            primaryLabel={onboardingPrimaryLabel}
+          />
+        }
+        contentBottomPadding={spacing.lg}
+        safeTop={false}
+        scroll
+        subtitle={onboardingScreen.subtitle}
+        title={onboardingScreen.title}
+      >
+        {workflowContent}
+      </Screen>
+    );
+  }
+  return workflowContent;
 }
 
 function draftFromSnapshot(snapshot?: RenterVerificationSnapshot) {
@@ -833,101 +1102,175 @@ function SectionCard({
 
 function ReferenceSelect({
   disabled = false,
+  disabledPlaceholder = 'Select the previous field first',
+  emptyTitle = 'No matching options found.',
   label,
   loading = false,
   onSearch,
   onSelect,
   options,
+  placeholder = 'Search and select',
+  searchPlaceholder = 'Type to search',
+  selectedCode = '',
   selectedLabel,
+  sheetTitle = label.replace(' *', ''),
 }: {
   readonly disabled?: boolean;
+  readonly disabledPlaceholder?: string;
+  readonly emptyTitle?: string;
   readonly label: string;
   readonly loading?: boolean;
   readonly onSearch?: (query: string) => void;
   readonly onSelect: (option: AreaOption) => void;
   readonly options: readonly AreaOption[];
+  readonly placeholder?: string;
+  readonly searchPlaceholder?: string;
+  readonly selectedCode?: string;
   readonly selectedLabel: string;
+  readonly sheetTitle?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const [listContentHeight, setListContentHeight] = useState(0);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
   const visible = onSearch
     ? options
     : options.filter(({ name }) => name.toLowerCase().includes(query.trim().toLowerCase()));
+  const bottomAllowance = Math.max(safeArea.bottom, spacing.md);
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight: listContentHeight,
+        headerHeight,
+        maxSafeViewportHeight: maximumHeight,
+        safeAreaAllowance: bottomAllowance,
+      }),
+    [bottomAllowance, headerHeight, listContentHeight, maximumHeight],
+  );
+  const sheetHeight = useSharedValue(Math.min(360, maximumHeight));
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
+  useEffect(() => {
+    if (!open || headerHeight <= 0 || listContentHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
+  }, [headerHeight, listContentHeight, measuredLayout.height, open, sheetHeight, visible.length]);
+  const close = () => {
+    Keyboard.dismiss();
+    setOpen(false);
+  };
   return (
     <View style={styles.selectField}>
       <Text style={styles.label}>{label}</Text>
       <Pressable
         accessibilityRole="button"
+        accessibilityState={{ disabled }}
         disabled={disabled}
         onPress={() => setOpen(true)}
-        style={[styles.selectButton, disabled && styles.disabled]}
+        style={[styles.selectButton, disabled && styles.selectButtonDisabled]}
       >
         <Text numberOfLines={2} style={selectedLabel ? styles.selectValue : styles.placeholder}>
-          {selectedLabel || (disabled ? 'Select the previous field first' : 'Search and select')}
+          {selectedLabel || (disabled ? disabledPlaceholder : placeholder)}
         </Text>
-        <Icon color={colors.primary} name="chevron-down" size={19} />
+        <Icon
+          color={disabled ? colors.placeholder : colors.primary}
+          name="chevron-down"
+          size={19}
+        />
       </Pressable>
       <Modal
-        animationType="slide"
-        onRequestClose={() => setOpen(false)}
-        presentationStyle="pageSheet"
+        animationType="fade"
+        onRequestClose={close}
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
+        transparent
         visible={open}
       >
-        <Screen scroll={false} eyebrow="Searchable selector" title={label}>
-          <View style={styles.searchBox}>
-            <Icon color={colors.subtleText} name="search" size={19} />
-            <TextInput
-              autoFocus={false}
-              onChangeText={(value) => {
-                setQuery(value);
-                onSearch?.(value);
-              }}
-              placeholder="Type to search"
-              placeholderTextColor={colors.placeholder}
-              style={styles.searchInput}
-              value={query}
-            />
-          </View>
-          {loading ? (
-            <StateView loading title="Loading options…" />
-          ) : (
-            <FlatList
-              data={visible}
-              keyboardShouldPersistTaps="handled"
-              keyExtractor={(item) => item.code}
-              ListEmptyComponent={
-                <StateView
-                  icon="search-outline"
-                  title="No matching options"
-                  message="Check the spelling or choose the previous address level again."
-                />
-              }
-              renderItem={({ item }) => (
-                <Pressable
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    onSelect(item);
-                    setQuery('');
-                    onSearch?.('');
-                    setOpen(false);
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.selectorModalRoot}
+        >
+          <View style={styles.selectorBackdrop} />
+          <Reanimated.View
+            accessibilityViewIsModal
+            style={[styles.selectorSheet, animatedSheetStyle]}
+          >
+            <View
+              onLayout={({ nativeEvent }) => setHeaderHeight(nativeEvent.layout.height)}
+              style={styles.selectorHeader}
+            >
+              <BackControl onPress={close} />
+              <Text accessibilityRole="header" style={styles.selectorTitle}>
+                {sheetTitle}
+              </Text>
+              <View style={styles.searchBox}>
+                <Icon color={colors.subtleText} name="search" size={19} />
+                <TextInput
+                  accessibilityLabel={searchPlaceholder}
+                  autoCapitalize="words"
+                  autoFocus={false}
+                  onChangeText={(value) => {
+                    setQuery(value);
+                    onSearch?.(value);
                   }}
-                  style={styles.option}
-                >
-                  <Text style={styles.optionText}>{item.name}</Text>
-                  <Icon color={colors.primary} name="chevron-forward" size={18} />
-                </Pressable>
-              )}
-            />
-          )}
-          <Button
-            label="Cancel"
-            onPress={() => {
-              Keyboard.dismiss();
-              setOpen(false);
-            }}
-            variant="ghost"
-          />
-        </Screen>
+                  placeholder={searchPlaceholder}
+                  placeholderTextColor={colors.placeholder}
+                  style={styles.searchInput}
+                  value={query}
+                />
+              </View>
+            </View>
+            {loading ? (
+              <StateView loading title="Loading options…" />
+            ) : (
+              <FlatList
+                contentContainerStyle={[
+                  styles.selectorListContent,
+                  { paddingBottom: bottomAllowance },
+                ]}
+                data={visible}
+                keyboardDismissMode="on-drag"
+                keyboardShouldPersistTaps="handled"
+                keyExtractor={(item) => item.code}
+                ListEmptyComponent={<StateView icon="search-outline" title={emptyTitle} />}
+                nestedScrollEnabled
+                onContentSizeChange={(_width, height) => setListContentHeight(height)}
+                renderItem={({ item, index }) => {
+                  const selected = item.code === selectedCode || item.name === selectedLabel;
+                  return (
+                    <Pressable
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: selected }}
+                      onPress={() => {
+                        Keyboard.dismiss();
+                        onSelect(item);
+                        setQuery('');
+                        onSearch?.('');
+                        setOpen(false);
+                      }}
+                      style={[
+                        styles.option,
+                        selected && styles.optionSelected,
+                        index < visible.length - 1 && styles.optionDivider,
+                      ]}
+                    >
+                      <Text style={styles.optionText}>{item.name}</Text>
+                      {selected && (
+                        <Icon color={colors.primary} name="checkmark-circle" size={22} />
+                      )}
+                    </Pressable>
+                  );
+                }}
+                scrollEnabled={measuredLayout.scrollEnabled}
+                showsVerticalScrollIndicator={measuredLayout.scrollEnabled}
+                style={styles.selectorList}
+              />
+            )}
+          </Reanimated.View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -936,12 +1279,263 @@ function ReferenceSelect({
 function DocumentStage({
   definitions,
   documents,
+  showNavigation,
   upload,
   onBack,
   onContinue,
 }: {
   readonly definitions: RenterVerificationSnapshot['definitions'];
   readonly documents: Map<
+    string | undefined,
+    RenterVerificationSnapshot['verifications'][number]['documents'][number]
+  >;
+  readonly showNavigation: boolean;
+  readonly upload: ReturnType<
+    typeof useMutation<
+      unknown,
+      Error,
+      {
+        definition: RenterVerificationSnapshot['definitions'][number];
+        asset: { uri: string; name: string; mimeType: string };
+      }
+    >
+  >;
+  readonly onBack: () => void;
+  readonly onContinue: () => void;
+}) {
+  const requiredDefinitions = definitions.filter(({ required }) => required);
+  const requiredAdded = requiredDefinitions.filter(({ code }) => documents.has(code)).length;
+  return (
+    <View style={styles.documentStage}>
+      <View style={styles.documentSummary}>
+        <Icon color={colors.primary} name="documents-outline" size={18} />
+        <Text style={styles.documentSummaryText}>
+          {requiredAdded} of {requiredDefinitions.length} required documents added
+        </Text>
+      </View>
+      {definitions.map((definition) => {
+        const document = documents.get(definition.code);
+        return (
+          <DocumentCaptureRow
+            fileAssetId={document?.fileAsset.id}
+            definition={definition}
+            documentName={document?.fileAsset.originalName}
+            key={definition.code}
+            showRequirementLabel={requiredDefinitions.length !== definitions.length}
+            upload={upload}
+          />
+        );
+      })}
+      {showNavigation && (
+        <NavigationButtons busy={upload.isPending} onBack={onBack} onNext={onContinue} />
+      )}
+    </View>
+  );
+}
+
+function DocumentCaptureRow({
+  definition,
+  documentName,
+  fileAssetId,
+  showRequirementLabel,
+  upload,
+}: {
+  readonly definition: RenterVerificationSnapshot['definitions'][number];
+  readonly documentName?: string | undefined;
+  readonly fileAssetId?: string | undefined;
+  readonly showRequirementLabel: boolean;
+  readonly upload: ReturnType<
+    typeof useMutation<
+      unknown,
+      Error,
+      {
+        definition: RenterVerificationSnapshot['definitions'][number];
+        asset: { uri: string; name: string; mimeType: string };
+      }
+    >
+  >;
+}) {
+  const [captured, setCaptured] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [cameraVisible, setCameraVisible] = useState(false);
+  const added = Boolean(captured || documentName);
+  const capture = async () => {
+    if (!(await ensureCameraPermission())) return;
+    setCameraVisible(true);
+  };
+  return (
+    <>
+      <NativeCameraCapture
+        captureLabel={`Capture ${definition.name.toLocaleLowerCase()}`}
+        facing="back"
+        guide={documentCaptureGuide(definition.code)}
+        onCancel={() => setCameraVisible(false)}
+        onCapture={(picture) => {
+          setCameraVisible(false);
+          const asset: ImagePicker.ImagePickerAsset = {
+            fileName: `${definition.code.toLowerCase()}-${Date.now()}.${picture.format}`,
+            height: picture.height,
+            mimeType: `image/${picture.format === 'jpg' ? 'jpeg' : 'png'}`,
+            type: 'image',
+            uri: picture.uri,
+            width: picture.width,
+          };
+          setCaptured(asset);
+          upload.mutate({
+            definition,
+            asset: {
+              mimeType: asset.mimeType ?? 'image/jpeg',
+              name: asset.fileName ?? `${definition.code.toLowerCase()}-${Date.now()}.jpg`,
+              uri: asset.uri,
+            },
+          });
+        }}
+        quality={0.9}
+        visible={cameraVisible}
+      />
+      <Card style={[styles.documentCard, added && styles.documentCardAdded]}>
+        <View style={styles.documentCardHeading}>
+          <Text accessibilityRole="header" style={styles.documentTitle}>
+            {definition.name}
+          </Text>
+          <StatusBadge label={added ? 'Added' : 'Not added'} tone={added ? 'success' : 'warning'} />
+        </View>
+        <Text style={styles.documentGuidance}>{documentGuidance(definition.code)}</Text>
+        {showRequirementLabel && (
+          <Text style={styles.documentRequirement}>
+            {definition.required ? 'Required' : 'Optional'}
+          </Text>
+        )}
+        {added ? (
+          <View style={styles.documentAddedRow}>
+            {captured?.uri ? (
+              <Image
+                accessibilityLabel={`${definition.name} camera preview`}
+                source={{ uri: captured.uri }}
+                style={styles.documentThumbnail}
+              />
+            ) : fileAssetId ? (
+              <AuthorizedDocumentPreview compact fileAssetId={fileAssetId} name={definition.name} />
+            ) : null}
+            <Pressable
+              accessibilityLabel={`Retake ${definition.name.toLocaleLowerCase()}`}
+              accessibilityRole="button"
+              disabled={upload.isPending}
+              onPress={() => void capture()}
+              style={styles.documentTextAction}
+            >
+              <Icon color={colors.primary} name="camera-outline" size={18} />
+              <Text style={styles.documentTextActionLabel}>
+                {upload.isPending ? 'Uploading…' : 'Retake'}
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.documentCaptureAction}>
+            <Button
+              compact
+              disabled={upload.isPending}
+              icon="camera-outline"
+              label={upload.isPending ? 'Uploading…' : 'Capture'}
+              onPress={() => void capture()}
+              variant="secondary"
+            />
+          </View>
+        )}
+      </Card>
+    </>
+  );
+}
+
+export function AuthorizedDocumentPreview({
+  compact = false,
+  fallback,
+  fileAssetId,
+  name,
+  style,
+}: {
+  readonly compact?: boolean;
+  readonly fallback?: ReactNode;
+  readonly fileAssetId: string;
+  readonly name: string;
+  readonly style?: StyleProp<ImageStyle>;
+}) {
+  const grant = useQuery({
+    queryKey: ['renter-document-preview', fileAssetId],
+    queryFn: () =>
+      apiClient.request<{ readonly contentPath: string; readonly expiresAt: string }>(
+        `/files/${fileAssetId}/access-grants`,
+        { method: 'POST' },
+      ),
+    refetchInterval: 4 * 60 * 1000,
+    staleTime: 3 * 60 * 1000,
+  });
+  if (!grant.data && fallback) return fallback;
+  if (!grant.data)
+    return (
+      <Text style={styles.note}>
+        {grant.isError
+          ? 'Preview unavailable. Tap Retake to replace it.'
+          : 'Loading secure preview…'}
+      </Text>
+    );
+  return (
+    <Image
+      accessibilityLabel={`${name} secure preview`}
+      onError={() => void grant.refetch()}
+      source={{ uri: apiClient.assetUrl(grant.data.contentPath) }}
+      style={[compact ? styles.documentThumbnail : styles.documentPreview, style]}
+    />
+  );
+}
+
+function documentGuidance(code: string): string {
+  if (code.includes('FRONT')) return 'Keep all edges and text visible.';
+  if (code.includes('BACK')) return 'Avoid glare and blur.';
+  if (code.includes('ADDRESS')) return 'Capture the full page in even lighting.';
+  return 'Capture the full document clearly.';
+}
+
+function documentCaptureGuide(code: string) {
+  if (code === 'PROOF_OF_ADDRESS')
+    return {
+      instructions: [
+        'Fit the document inside the frame.',
+        'Make sure the text is clear and readable.',
+      ],
+      title: 'Proof of residential address',
+      type: 'DOCUMENT' as const,
+    };
+  const title =
+    code === 'DRIVER_LICENSE_FRONT'
+      ? "Driver's license — Front"
+      : code === 'DRIVER_LICENSE_BACK'
+        ? "Driver's license — Back"
+        : 'Government-issued ID';
+  return {
+    instructions: [
+      'Fit the entire ID inside the frame.',
+      'Avoid glare and keep all corners visible.',
+    ],
+    title,
+    type: 'ID_CARD' as const,
+  };
+}
+
+function IdentityPhotosStage({
+  captured,
+  definitions,
+  documents,
+  upload,
+  onBack,
+  onCapture,
+  onContinue,
+  showNavigation,
+}: {
+  readonly captured: Partial<
+    Record<'PROFILE_PHOTO' | 'SELFIE_WITH_LICENSE', ImagePicker.ImagePickerAsset>
+  >;
+  readonly definitions: RenterVerificationSnapshot['definitions'];
+  readonly documents: ReadonlyMap<
     string | undefined,
     RenterVerificationSnapshot['verifications'][number]['documents'][number]
   >;
@@ -956,199 +1550,66 @@ function DocumentStage({
     >
   >;
   readonly onBack: () => void;
+  readonly onCapture: (
+    code: 'PROFILE_PHOTO' | 'SELFIE_WITH_LICENSE',
+    asset: ImagePicker.ImagePickerAsset,
+  ) => void;
   readonly onContinue: () => void;
+  readonly showNavigation: boolean;
 }) {
-  return (
-    <SectionCard
-      icon="documents-outline"
-      title="Identity documents"
-      helper="Capture each document now with the rear camera. Images remain private and sensitive; owners cannot access them."
-    >
-      {definitions.map((definition) => {
-        const document = documents.get(definition.code);
-        return (
-          <DocumentCaptureRow
-            fileAssetId={document?.fileAsset.id}
-            definition={definition}
-            documentName={document?.fileAsset.originalName}
-            key={definition.code}
-            upload={upload}
-          />
-        );
-      })}
-      <NavigationButtons busy={upload.isPending} onBack={onBack} onNext={onContinue} />
-    </SectionCard>
-  );
-}
-
-function DocumentCaptureRow({
-  definition,
-  documentName,
-  fileAssetId,
-  upload,
-}: {
-  readonly definition: RenterVerificationSnapshot['definitions'][number];
-  readonly documentName?: string | undefined;
-  readonly fileAssetId?: string | undefined;
-  readonly upload: ReturnType<
-    typeof useMutation<
-      unknown,
-      Error,
-      {
-        definition: RenterVerificationSnapshot['definitions'][number];
-        asset: { uri: string; name: string; mimeType: string };
-      }
-    >
-  >;
-}) {
-  const [captured, setCaptured] = useState<ImagePicker.ImagePickerAsset | null>(null);
-  const capture = async () => {
-    if (!(await ensureCameraPermission())) return;
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: false,
-      cameraType: ImagePicker.CameraType.back,
-      mediaTypes: ['images'],
-      quality: 0.9,
-    });
-    const asset = result.canceled ? undefined : result.assets[0];
-    if (asset) {
-      setCaptured(asset);
-      upload.mutate({
-        definition,
-        asset: {
-          mimeType: asset.mimeType ?? 'image/jpeg',
-          name: asset.fileName ?? `${definition.code.toLowerCase()}-${Date.now()}.jpg`,
-          uri: asset.uri,
-        },
-      });
-    }
-  };
-  return (
-    <SecureCameraPhotoSlot
-      busy={upload.isPending}
-      guidance={documentGuidance(definition.code)}
-      name={definition.name}
-      onCapture={() => void capture()}
-      persistedPreview={
-        fileAssetId ? (
-          <AuthorizedDocumentPreview fileAssetId={fileAssetId} name={definition.name} />
-        ) : undefined
-      }
-      previewUri={captured?.uri}
-      required={definition.required}
-      uploaded={Boolean(documentName)}
-    />
-  );
-}
-
-function AuthorizedDocumentPreview({
-  fileAssetId,
-  name,
-}: {
-  readonly fileAssetId: string;
-  readonly name: string;
-}) {
-  const grant = useQuery({
-    queryKey: ['renter-document-preview', fileAssetId],
-    queryFn: () =>
-      apiClient.request<{ readonly contentPath: string; readonly expiresAt: string }>(
-        `/files/${fileAssetId}/access-grants`,
-        { method: 'POST' },
-      ),
-    refetchInterval: 4 * 60 * 1000,
-    staleTime: 3 * 60 * 1000,
-  });
-  if (!grant.data)
-    return (
-      <Text style={styles.note}>
-        {grant.isError
-          ? 'Preview unavailable. Tap Retake to replace it.'
-          : 'Loading secure preview…'}
-      </Text>
-    );
-  return (
-    <Image
-      accessibilityLabel={`${name} secure preview`}
-      onError={() => void grant.refetch()}
-      source={{ uri: apiClient.assetUrl(grant.data.contentPath) }}
-      style={securePhotoPreviewStyle}
-    />
-  );
-}
-
-function documentGuidance(code: string): string {
-  if (code.includes('FRONT'))
-    return 'Place the front inside the frame; keep all edges and text visible.';
-  if (code.includes('BACK')) return 'Place the back inside the frame; avoid glare and blur.';
-  if (code.includes('ADDRESS')) return 'Capture the full proof-of-address page in even lighting.';
-  return 'Keep the entire government document inside the frame and make text readable.';
-}
-
-function SelfieStage({
-  captured,
-  definition,
-  document,
-  upload,
-  onBack,
-  onCapture,
-  onContinue,
-}: {
-  readonly captured: ImagePicker.ImagePickerAsset | null;
-  readonly definition: RenterVerificationSnapshot['definitions'][number] | undefined;
-  readonly document:
-    RenterVerificationSnapshot['verifications'][number]['documents'][number] | undefined;
-  readonly upload: ReturnType<
-    typeof useMutation<
-      unknown,
-      Error,
-      {
-        definition: RenterVerificationSnapshot['definitions'][number];
-        asset: { uri: string; name: string; mimeType: string };
-      }
-    >
-  >;
-  readonly onBack: () => void;
-  readonly onCapture: (asset: ImagePicker.ImagePickerAsset | null) => void;
-  readonly onContinue: () => void;
-}) {
-  const [nativeCameraVisible, setNativeCameraVisible] = useState(false);
+  const [activeCapture, setActiveCapture] = useState<
+    'PROFILE_PHOTO' | 'SELFIE_WITH_LICENSE' | null
+  >(null);
+  const activeDefinition = definitions.find(({ code }) => code === activeCapture);
   const acceptAsset = (asset: ImagePicker.ImagePickerAsset) => {
-    onCapture(asset);
-    if (definition) {
+    if (activeCapture) onCapture(activeCapture, asset);
+    if (activeDefinition) {
       upload.mutate({
-        definition,
+        definition: activeDefinition,
         asset: {
           mimeType: asset.mimeType ?? 'image/jpeg',
-          name: asset.fileName ?? `selfie-${Date.now()}.jpg`,
+          name: asset.fileName ?? `${activeDefinition.code.toLowerCase()}-${Date.now()}.jpg`,
           uri: asset.uri,
         },
       });
     }
   };
-  const capture = async () => {
+  const capture = async (code: 'PROFILE_PHOTO' | 'SELFIE_WITH_LICENSE') => {
     if (!(await ensureCameraPermission())) return;
-    if (Platform.OS === 'android') {
-      setNativeCameraVisible(true);
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      cameraType: ImagePicker.CameraType.front,
-      mediaTypes: ['images'],
-      quality: 0.85,
-    });
-    const asset = result.canceled ? undefined : result.assets[0];
-    if (asset) acceptAsset(asset);
+    setActiveCapture(code);
   };
+  const addedCount = (['PROFILE_PHOTO', 'SELFIE_WITH_LICENSE'] as const).filter(
+    (code) => captured[code] || documents.get(code),
+  ).length;
   return (
     <>
       <NativeCameraCapture
+        captureLabel={activeCapture === 'PROFILE_PHOTO' ? 'Take profile photo' : 'Take photo'}
         facing="front"
-        onCancel={() => setNativeCameraVisible(false)}
+        guide={
+          activeCapture === 'PROFILE_PHOTO'
+            ? {
+                instructions: [
+                  'Center your face inside the frame.',
+                  'Look straight ahead and use good lighting.',
+                ],
+                title: 'Profile photo',
+                type: 'PROFILE_PHOTO',
+              }
+            : {
+                instructions: [
+                  "Center your face in the oval and hold your driver's license inside the box.",
+                  'Keep both fully visible and avoid glare.',
+                ],
+                title: "Selfie with driver's license",
+                type: 'SELFIE_WITH_ID',
+              }
+        }
+        onCancel={() => setActiveCapture(null)}
         onCapture={(picture) => {
-          setNativeCameraVisible(false);
+          setActiveCapture(null);
           acceptAsset({
-            fileName: `selfie-${Date.now()}.${picture.format}`,
+            fileName: `${activeCapture?.toLowerCase() ?? 'identity-photo'}-${Date.now()}.${picture.format}`,
             height: picture.height,
             mimeType: `image/${picture.format === 'jpg' ? 'jpeg' : 'png'}`,
             type: 'image',
@@ -1156,57 +1617,149 @@ function SelfieStage({
             width: picture.width,
           });
         }}
-        visible={nativeCameraVisible}
+        visible={Boolean(activeCapture)}
       />
-      <SectionCard
-        icon="camera-outline"
-        title="Selfie verification"
-        helper="Use the front camera in good lighting. Center your face, remove sunglasses, and capture a new photo."
-      >
-        <Card style={styles.guidanceCard}>
-          <Text style={styles.cardTitle}>Camera-only evidence</Text>
-          <Text style={styles.note}>
-            No gallery or file-picker action is available for the selfie. A submitted selfie is
-            manually reviewed and does not prove certified liveness.
-          </Text>
+      <View style={styles.identityPhotoHeader}>
+        <Text accessibilityRole="header" style={styles.cardTitle}>
+          Identity photos
+        </Text>
+        <Text style={styles.note}>{addedCount} of 2 photos added</Text>
+      </View>
+      <IdentityPhotoCard
+        captured={captured.PROFILE_PHOTO}
+        code="PROFILE_PHOTO"
+        document={documents.get('PROFILE_PHOTO')}
+        helper="This photo will appear on your renter profile and will also be used for identity review."
+        guidance={[
+          'Face the camera in good lighting',
+          'Remove sunglasses or anything covering your face',
+        ]}
+        title="Profile photo"
+        uploadPending={upload.isPending}
+        onCapture={capture}
+      />
+      <IdentityPhotoCard
+        captured={captured.SELFIE_WITH_LICENSE}
+        code="SELFIE_WITH_LICENSE"
+        document={documents.get('SELFIE_WITH_LICENSE')}
+        helper="Private verification evidence only. This photo will never be used as your profile photo."
+        guidance={[
+          "Hold your driver's license beside your face so both are clearly visible",
+          'Keep your face and license edges visible and avoid glare',
+        ]}
+        title="Selfie with driver's license"
+        uploadPending={upload.isPending}
+        onCapture={capture}
+      />
+      <Text style={styles.selfieReviewNote}>
+        These photos are manually reviewed and do not prove certified liveness.
+      </Text>
+      {showNavigation && (
+        <Card style={styles.selfieCard}>
+          <NavigationButtons busy={upload.isPending} onBack={onBack} onNext={onContinue} />
         </Card>
-        {captured ? (
-          <>
+      )}
+    </>
+  );
+}
+
+function IdentityPhotoCard({
+  captured,
+  code,
+  document,
+  guidance,
+  helper,
+  onCapture,
+  title,
+  uploadPending,
+}: {
+  readonly captured: ImagePicker.ImagePickerAsset | undefined;
+  readonly code: 'PROFILE_PHOTO' | 'SELFIE_WITH_LICENSE';
+  readonly document:
+    RenterVerificationSnapshot['verifications'][number]['documents'][number] | undefined;
+  readonly guidance: readonly string[];
+  readonly helper: string;
+  readonly onCapture: (code: 'PROFILE_PHOTO' | 'SELFIE_WITH_LICENSE') => Promise<void>;
+  readonly title: string;
+  readonly uploadPending: boolean;
+}) {
+  const added = Boolean(captured || document);
+  return (
+    <Card style={styles.selfieCard}>
+      <View style={styles.selfieHeading}>
+        <Text accessibilityRole="header" style={styles.cardTitle}>
+          {title}
+        </Text>
+        <StatusBadge label={added ? 'Added' : 'Not added'} tone={added ? 'success' : 'warning'} />
+      </View>
+      <Text style={styles.selfieCameraNote}>{helper}</Text>
+      <View style={styles.selfieGuidance}>
+        {guidance.map((item) => (
+          <Text key={item} style={styles.documentGuidance}>
+            • {item}
+          </Text>
+        ))}
+      </View>
+      <Text style={styles.selfieReviewNote}>Camera only. Gallery uploads aren’t allowed.</Text>
+      {added ? (
+        <View style={styles.documentAddedRow}>
+          {captured?.uri ? (
             <Image
-              accessibilityLabel="Captured selfie preview"
+              accessibilityLabel={`${title} preview`}
               source={{ uri: captured.uri }}
               style={styles.selfiePreview}
             />
-            <View style={styles.buttonRow}>
-              <Button label="Retake" onPress={() => void capture()} variant="secondary" />
-              {upload.isPending && <Text style={styles.note}>Uploading securely…</Text>}
-            </View>
-          </>
-        ) : (
+          ) : document?.fileAsset.id ? (
+            <AuthorizedDocumentPreview
+              compact
+              fileAssetId={document.fileAsset.id}
+              name={title}
+              style={styles.selfiePreview}
+            />
+          ) : null}
+          <Pressable
+            accessibilityLabel={`Retake ${title.toLowerCase()}`}
+            accessibilityRole="button"
+            disabled={uploadPending}
+            onPress={() => void onCapture(code)}
+            style={styles.documentTextAction}
+          >
+            <Icon color={colors.primary} name="camera-outline" size={18} />
+            <Text style={styles.documentTextActionLabel}>
+              {uploadPending ? 'Uploading…' : 'Retake'}
+            </Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View style={styles.selfieCaptureAction}>
           <Button
+            compact
+            disabled={uploadPending}
             icon="camera-outline"
-            label={document ? 'Retake selfie' : 'Open camera'}
-            onPress={() => void capture()}
+            label={uploadPending ? 'Uploading…' : 'Take photo'}
+            onPress={() => void onCapture(code)}
+            variant="secondary"
           />
-        )}
-        {document && <Text style={styles.success}>✓ Selfie submitted for manual review</Text>}
-        <NavigationButtons busy={upload.isPending} onBack={onBack} onNext={onContinue} />
-      </SectionCard>
-    </>
+        </View>
+      )}
+    </Card>
   );
 }
 
 function NavigationButtons({
   busy,
+  hidden = false,
   nextLabel = 'Continue',
   onBack,
   onNext,
 }: {
   readonly busy: boolean;
+  readonly hidden?: boolean;
   readonly nextLabel?: string;
   readonly onBack: () => void;
   readonly onNext: () => void;
 }) {
+  if (hidden) return null;
   return (
     <View style={styles.buttonRow}>
       <Button label="Back" onPress={onBack} variant="secondary" />
@@ -1215,28 +1768,101 @@ function NavigationButtons({
   );
 }
 
-function ReviewRow({ label, value }: { readonly label: string; readonly value: string }) {
+function ReviewSummarySection({
+  children,
+  editLabel,
+  onEdit,
+  title,
+}: {
+  readonly children: ReactNode;
+  readonly editLabel?: string;
+  readonly onEdit?: () => void;
+  readonly title: string;
+}) {
   return (
-    <View style={styles.reviewRow}>
-      <Text style={styles.label}>{label}</Text>
-      <Text style={styles.body}>{value}</Text>
+    <Card style={styles.reviewSummaryCard}>
+      <View style={styles.reviewSummaryHeading}>
+        <Text accessibilityRole="header" style={styles.cardTitle}>
+          {title}
+        </Text>
+        {editLabel && onEdit && (
+          <Pressable
+            accessibilityLabel={editLabel}
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={onEdit}
+            style={styles.reviewEditAction}
+          >
+            <Text style={styles.reviewEditLabel}>Edit</Text>
+          </Pressable>
+        )}
+      </View>
+      {children}
+    </Card>
+  );
+}
+
+function ReviewStatusRow({
+  complete,
+  label,
+  value,
+}: {
+  readonly complete: boolean;
+  readonly label: string;
+  readonly value: string;
+}) {
+  return (
+    <View style={styles.reviewStatusRow}>
+      <View style={styles.flex}>
+        <Text style={styles.reviewLabel}>{label}</Text>
+        <Text style={styles.reviewBody}>{value}</Text>
+      </View>
+      <StatusBadge
+        label={complete ? 'Verified' : 'Not verified'}
+        tone={complete ? 'success' : 'warning'}
+      />
     </View>
   );
 }
 
-function ReviewGroup({
-  children,
-  title,
+function ReviewCompletionRow({
+  complete,
+  label,
 }: {
-  readonly children: ReactNode;
-  readonly title: string;
+  readonly complete: boolean;
+  readonly label: string;
 }) {
   return (
-    <View style={styles.reviewGroup}>
-      <Text style={styles.reviewGroupTitle}>{title}</Text>
-      {children}
+    <View
+      accessibilityLabel={`${label}, ${complete ? 'Added' : 'Missing'}`}
+      style={styles.reviewCompletionRow}
+    >
+      <Icon
+        color={complete ? colors.primary : colors.warning}
+        name={complete ? 'checkmark-circle' : 'alert-circle-outline'}
+        size={18}
+      />
+      <Text style={styles.reviewBody}>
+        {label} · {complete ? 'Added' : 'Missing'}
+      </Text>
     </View>
   );
+}
+
+function ReviewWarning({ children }: { readonly children: ReactNode }) {
+  return (
+    <View accessibilityRole="alert" style={styles.reviewWarning}>
+      <Icon color={colors.warning} name="alert-circle-outline" size={17} />
+      <Text style={styles.reviewWarningText}>{children}</Text>
+    </View>
+  );
+}
+
+function formatReviewDate(value: string) {
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function tomorrow() {
@@ -1269,10 +1895,14 @@ function verificationLabel(status: string) {
 }
 
 const styles = StyleSheet.create({
+  addressFields: { gap: spacing.sm },
+  addressFormCard: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
   body: { color: colors.subtleText, lineHeight: 21 },
   buttonRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   cardTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
-  disabled: { opacity: 0.5 },
   documentCapture: {
     borderBottomColor: colors.border,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -1280,28 +1910,91 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
     paddingTop: spacing.xs,
   },
+  documentAddedRow: {
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    gap: spacing.md,
+    justifyContent: 'space-between',
+  },
+  documentCaptureAction: { alignSelf: 'flex-start', minWidth: 132 },
+  documentCard: { gap: spacing.xs, padding: spacing.md },
+  documentCardAdded: { paddingVertical: spacing.xs },
+  documentCardHeading: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  documentGuidance: { color: colors.subtleText, fontSize: 13, lineHeight: 18 },
   documentPreview: {
     aspectRatio: 1.58,
     backgroundColor: colors.muted,
     borderRadius: radius.md,
     width: '100%',
   },
+  documentRequirement: {
+    color: colors.subtleText,
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  documentStage: { gap: spacing.xs },
+  documentSummary: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xs,
+  },
+  documentSummaryText: { color: colors.subtleText, fontSize: 13, fontWeight: '700' },
+  documentTextAction: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 44,
+    paddingHorizontal: spacing.sm,
+  },
+  documentTextActionLabel: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  documentThumbnail: {
+    aspectRatio: 1.58,
+    backgroundColor: colors.muted,
+    borderRadius: radius.sm,
+    height: 56,
+  },
+  documentTitle: { color: colors.ink, flex: 1, fontSize: 15, fontWeight: '800', lineHeight: 20 },
+  driverFields: { gap: spacing.xs },
+  driverFormCard: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
   error: { color: colors.danger, fontWeight: '700', lineHeight: 20 },
   flex: { flex: 1 },
-  guidanceCard: { backgroundColor: colors.primarySoft, gap: spacing.xs },
   label: { color: colors.ink, fontSize: 13, fontWeight: '700' },
   note: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
   option: {
     alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  optionDivider: {
     borderBottomColor: colors.border,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    minHeight: 54,
-    paddingVertical: spacing.sm,
   },
-  optionText: { color: colors.ink, flex: 1, fontSize: 15, fontWeight: '700' },
+  optionSelected: { backgroundColor: colors.primarySoft },
+  optionText: { color: colors.ink, flex: 1, fontSize: 15, fontWeight: '700', lineHeight: 20 },
+  personalFields: { gap: spacing.md },
+  personalFormCard: { padding: spacing.md },
   placeholder: { color: colors.subtleText, flex: 1, fontSize: 14 },
+  privacyHelper: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    paddingBottom: spacing.xxs,
+  },
+  privacyHelperText: { color: colors.subtleText, flex: 1, fontSize: 12, lineHeight: 18 },
   progressCard: { gap: spacing.xs },
   progressDot: {
     backgroundColor: colors.border,
@@ -1318,24 +2011,59 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     textTransform: 'uppercase',
   },
-  reviewRow: {
-    borderBottomColor: colors.border,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    gap: spacing.xxs,
-    paddingVertical: spacing.sm,
+  reviewBody: { color: colors.subtleText, fontSize: 14, lineHeight: 20 },
+  reviewCompletionRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 28,
   },
-  reviewGroup: {
-    borderColor: colors.border,
+  reviewEditAction: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 44,
+    paddingHorizontal: spacing.xs,
+  },
+  reviewEditLabel: { color: colors.primary, fontSize: 13, fontWeight: '800' },
+  reviewLabel: { color: colors.ink, fontSize: 12, fontWeight: '800' },
+  reviewPrimary: { color: colors.ink, fontSize: 15, fontWeight: '800', lineHeight: 21 },
+  reviewSections: { gap: spacing.sm },
+  reviewStatusRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  reviewSummaryCard: { gap: spacing.xs, padding: spacing.md },
+  reviewSummaryHeading: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 32,
+  },
+  reviewWarning: {
+    alignItems: 'center',
+    backgroundColor: colors.warningSoft,
+    borderRadius: radius.sm,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  reviewWarningText: { color: colors.warning, flex: 1, fontSize: 13, lineHeight: 18 },
+  savedLicense: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
     borderRadius: radius.md,
-    borderWidth: 1,
-    paddingHorizontal: spacing.md,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minHeight: 48,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
   },
-  reviewGroupTitle: {
-    color: colors.ink,
-    fontSize: 16,
-    fontWeight: '800',
-    paddingTop: spacing.md,
-  },
+  savedLicenseDetail: { color: colors.subtleText, fontSize: 12, lineHeight: 17 },
+  savedLicenseTitle: { color: colors.ink, fontSize: 14, fontWeight: '800' },
   rowBetween: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -1376,14 +2104,62 @@ const styles = StyleSheet.create({
     minHeight: 50,
     paddingHorizontal: spacing.md,
   },
+  selectButtonDisabled: {
+    backgroundColor: colors.muted,
+    borderColor: colors.border,
+  },
   selectField: { gap: spacing.xs },
   selectValue: { color: colors.ink, flex: 1, fontSize: 14, fontWeight: '700' },
-  selfiePreview: {
-    aspectRatio: 0.85,
-    backgroundColor: colors.muted,
-    borderRadius: radius.lg,
-    width: '100%',
+  selectorBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(8, 24, 18, 0.32)',
   },
-  success: { color: colors.primary, fontWeight: '800' },
+  selectorHeader: { gap: spacing.sm, paddingHorizontal: spacing.xl, paddingTop: spacing.md },
+  selectorList: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flex: 1,
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.sm,
+    overflow: 'hidden',
+  },
+  selectorListContent: { flexGrow: 0 },
+  selectorModalRoot: { flex: 1, justifyContent: 'flex-end' },
+  selectorSheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    overflow: 'hidden',
+  },
+  selectorTitle: { color: colors.ink, fontSize: 21, fontWeight: '900' },
+  selfieCameraNote: { color: colors.ink, fontSize: 13, lineHeight: 18 },
+  selfieCaptureAction: { alignSelf: 'flex-start', minWidth: 136 },
+  selfieCard: {
+    gap: spacing.xs,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  selfieGuidance: { gap: spacing.xxs },
+  selfieHeading: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  identityPhotoHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  selfiePreview: {
+    aspectRatio: 1,
+    backgroundColor: colors.muted,
+    borderRadius: radius.pill,
+    height: 88,
+    width: 88,
+  },
+  selfieReviewNote: { color: colors.subtleText, fontSize: 11, lineHeight: 15 },
   warningCard: { backgroundColor: colors.warningSoft },
 });

@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useState } from 'react';
+import * as SplashScreen from 'expo-splash-screen';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -19,12 +20,18 @@ import {
   RenterOnboardingContactPage,
   RenterOnboardingKycPage,
 } from './src/features/account/RenterOnboardingPages';
+import type { RenterVerificationSnapshot } from './src/features/account/AccountScreen';
 import { RenterOnboardingDraftProvider } from './src/features/account/RenterVerificationWorkflow';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { activeRoleStorage } from './src/navigation/active-role-storage';
 import { OwnerOnboardingScreen } from './src/features/account/AccountScreen';
-import { GuidedOnboarding, OnboardingWelcome } from './src/onboarding/GuidedOnboarding';
+import { GuidedOnboarding } from './src/onboarding/GuidedOnboarding';
+import {
+  RENTER_ONBOARDING_STEPS,
+  renterOnboardingPageForKycStep,
+  renterOnboardingResumePage,
+} from './src/onboarding/renter-onboarding-steps';
 import {
   ownerFirstEntryIntentStorage,
   ownerOnboardingStorage,
@@ -41,11 +48,20 @@ export default function App() {
     <GestureHandlerRootView style={styles.container}>
       <SafeAreaProvider>
         <AuthProvider>
-          <SessionApplication />
+          <StartupSplashGate />
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
+}
+
+function StartupSplashGate() {
+  const auth = useAuth();
+  useEffect(() => {
+    if (!auth.booting) void SplashScreen.hideAsync().catch(() => undefined);
+  }, [auth.booting]);
+  if (auth.booting) return null;
+  return <SessionApplication />;
 }
 
 function SessionApplication() {
@@ -339,32 +355,43 @@ function PersonaOption({
 
 function RenterOnboarding({ onSkip }: { readonly onSkip: () => void }) {
   const [stage, setStage] = useState(0);
-  const settle = setStage;
+  const resumeApplied = useRef(false);
+  const verification = useQuery({
+    queryKey: ['renter-verification'],
+    queryFn: () => apiClient.request<RenterVerificationSnapshot>('/renter-verification'),
+  });
+  useEffect(() => {
+    if (resumeApplied.current || !verification.data) return;
+    resumeApplied.current = true;
+    setStage(renterOnboardingResumePage(verification.data));
+  }, [verification.data]);
   const renderPage = (page: number) => {
-    if (page === 0)
-      return (
-        <OnboardingWelcome
-          body="Find and book vehicles from trusted owners. Complete your verification when you’re ready to rent."
-          icon="car-sport-outline"
-          onNext={() => settle(1)}
-          title="Your next drive starts here."
-        />
-      );
-    if (page === 2)
-      return <RenterOnboardingContactPage onBack={() => settle(1)} onNext={() => settle(3)} />;
-    const kycStep = ({ 1: 0, 3: 1, 4: 2, 5: 4, 6: 5, 7: 6 } as Record<number, number>)[page];
+    const definition = RENTER_ONBOARDING_STEPS[page];
+    if (!definition) return null;
+    if (definition.id === 'CONTACT_VERIFICATION')
+      return <RenterOnboardingContactPage onBack={() => setStage(0)} onNext={() => setStage(2)} />;
+    if (!('kycStep' in definition)) return null;
     return (
       <RenterOnboardingKycPage
-        step={kycStep ?? 0}
-        onBack={() => settle(page - 1)}
-        onNext={() => (page === 7 ? onSkip() : settle(page + 1))}
+        step={definition.kycStep}
+        onBack={() => setStage(page - 1)}
+        onEdit={(targetStep) =>
+          setStage(targetStep === -1 ? 1 : renterOnboardingPageForKycStep(targetStep))
+        }
+        onNext={() => (definition.id === 'REVIEW' ? onSkip() : setStage(page + 1))}
       />
     );
   };
   return (
     <RenterOnboardingDraftProvider>
-      <GuidedOnboarding currentPage={stage} onPageChange={setStage} onSkip={onSkip} pageCount={8}>
-        {Array.from({ length: 8 }, (_, page) => renderPage(page))}
+      <GuidedOnboarding
+        currentPage={stage}
+        onPageChange={setStage}
+        onSkip={onSkip}
+        pageCount={RENTER_ONBOARDING_STEPS.length}
+        pageKeys={RENTER_ONBOARDING_STEPS.map(({ id }) => id)}
+      >
+        {RENTER_ONBOARDING_STEPS.map((_step, page) => renderPage(page))}
       </GuidedOnboarding>
     </RenterOnboardingDraftProvider>
   );

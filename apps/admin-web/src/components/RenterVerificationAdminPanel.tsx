@@ -575,7 +575,7 @@ export function RenterVerificationAdminPanel({
                     <AdminEvidenceCard
                       key={document.id}
                       displayMode={
-                        ['SELFIE', 'LIVENESS', 'SELFIE_LIVENESS'].some((value) =>
+                        ['PROFILE_PHOTO', 'SELFIE', 'LIVENESS', 'SELFIE_LIVENESS'].some((value) =>
                           (document.definition?.code ?? '').includes(value),
                         )
                           ? 'photo'

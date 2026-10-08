@@ -302,14 +302,14 @@ describe('Task 12D non-sticky normal result summary regression', () => {
     expect(screenSource).toContain('listContentHeight.value = height');
     expect(screenSource).toContain('listViewportHeight.value = nativeEvent.layout.height');
     expect(screenSource).toContain('listContentHeight.value - listViewportHeight.value');
-    expect(screenSource).not.toContain('summaryHeight');
-    expect(screenSource).not.toContain('headerHeight');
+    expect(screenSource).not.toContain('summaryHeight.value');
+    expect(screenSource).not.toContain('headerHeight.value');
   });
 
   it('avoids duplicate initial-error and successful-empty wording', () => {
     expect(screenSource).toContain('title="Search unavailable"');
-    expect(screenSource).toContain('title="Adjust your search"');
-    expect(screenSource).not.toContain('title="No cars found"');
+    expect(screenSource).toContain('<ExploreEmptyState');
+    expect(screenSource).not.toContain('title="Adjust your search"');
     expect(screenSource.match(/Vehicle results unavailable/g) ?? []).toHaveLength(0);
   });
 

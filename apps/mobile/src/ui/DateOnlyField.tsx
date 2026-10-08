@@ -1,8 +1,22 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { useState } from 'react';
-import { Keyboard, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Keyboard,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
+import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing } from '../theme/tokens';
-import { Button, Icon } from './primitives';
+import { adaptiveSheetLayout } from './adaptive-sheet-layout';
+import { CalendarMonth } from './CalendarMonth';
+import { BackControl, Button, Icon } from './primitives';
 import { dateWithinBounds, normalizeDateOnly } from './date-only';
 
 export function DateOnlyField({
@@ -32,10 +46,39 @@ export function DateOnlyField({
   const [draft, setDraft] = useState(() =>
     dateWithinBounds(parseDate(value), pickerMinimumDate, pickerMaximumDate),
   );
+  const [month, setMonth] = useState(() => monthStart(draft));
+  const [yearPickerOpen, setYearPickerOpen] = useState(false);
+  const [yearPageStart, setYearPageStart] = useState(() => draft.getFullYear() - 5);
+  const [contentHeight, setContentHeight] = useState(0);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
+  const bottomAllowance = Math.max(safeArea.bottom, spacing.md);
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight,
+        headerHeight: 0,
+        maxSafeViewportHeight: maximumHeight,
+        safeAreaAllowance: bottomAllowance,
+      }),
+    [bottomAllowance, contentHeight, maximumHeight],
+  );
+  const sheetHeight = useSharedValue(Math.min(560, maximumHeight));
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
+  useEffect(() => {
+    if (!open || contentHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
+  }, [contentHeight, measuredLayout.height, open, sheetHeight]);
   const show = () => {
     Keyboard.dismiss();
     const nextDraft = dateWithinBounds(parseDate(value), pickerMinimumDate, pickerMaximumDate);
     setDraft(nextDraft);
+    setMonth(monthStart(nextDraft));
+    setYearPageStart(nextDraft.getFullYear() - 5);
+    setYearPickerOpen(false);
     setOpen(true);
   };
   const androidChange = (event: DateTimePickerEvent, selected?: Date) => {
@@ -68,33 +111,73 @@ export function DateOnlyField({
       )}
       {Platform.OS === 'ios' && (
         <Modal
-          animationType="slide"
+          animationType="fade"
           onRequestClose={() => setOpen(false)}
-          presentationStyle="pageSheet"
+          presentationStyle="overFullScreen"
+          statusBarTranslucent
+          transparent
           visible={open}
         >
-          <View style={styles.modal}>
-            <View style={styles.handle} />
-            <Text style={styles.modalTitle}>{label}</Text>
-            <DateTimePicker
-              {...(pickerMaximumDate ? { maximumDate: pickerMaximumDate } : {})}
-              {...(pickerMinimumDate ? { minimumDate: pickerMinimumDate } : {})}
-              display="spinner"
-              mode="date"
-              themeVariant="light"
-              onChange={(_, selected) => selected && setDraft(normalizeDateOnly(selected))}
-              value={draft}
-            />
-            <Button
-              label="Use this date"
-              onPress={() => {
-                onChange(
-                  canonicalDate(dateWithinBounds(draft, pickerMinimumDate, pickerMaximumDate)),
-                );
-                setOpen(false);
-              }}
-            />
-            <Button label="Cancel" onPress={() => setOpen(false)} variant="ghost" />
+          <View style={styles.modalRoot}>
+            <View style={styles.backdrop} />
+            <Reanimated.View style={[styles.sheet, animatedSheetStyle]}>
+              <ScrollView
+                contentContainerStyle={[styles.sheetContent, { paddingBottom: bottomAllowance }]}
+                onContentSizeChange={(_width, height) => setContentHeight(height)}
+                scrollEnabled={measuredLayout.scrollEnabled}
+                showsVerticalScrollIndicator={measuredLayout.scrollEnabled}
+              >
+                <BackControl label="Back" onPress={() => setOpen(false)} />
+                <Text accessibilityRole="header" style={styles.modalTitle}>
+                  {label.replace(' *', '')}
+                </Text>
+                {yearPickerOpen ? (
+                  <YearPicker
+                    {...(pickerMaximumDate ? { maximumYear: pickerMaximumDate.getFullYear() } : {})}
+                    {...(pickerMinimumDate ? { minimumYear: pickerMinimumDate.getFullYear() } : {})}
+                    pageStart={yearPageStart}
+                    selectedYear={month.getFullYear()}
+                    onPageChange={setYearPageStart}
+                    onSelect={(year) => {
+                      setMonth(new Date(year, month.getMonth(), 1, 12));
+                      setYearPickerOpen(false);
+                    }}
+                  />
+                ) : (
+                  <CalendarMonth
+                    disabledDate={(day) =>
+                      Boolean(
+                        (pickerMinimumDate && day < pickerMinimumDate) ||
+                        (pickerMaximumDate && day > pickerMaximumDate),
+                      )
+                    }
+                    {...(pickerMaximumDate ? { maximumDate: pickerMaximumDate } : {})}
+                    {...(pickerMinimumDate ? { minimumDate: pickerMinimumDate } : {})}
+                    month={month}
+                    onMonthChange={setMonth}
+                    onSelect={(selected) => setDraft(normalizeDateOnly(selected))}
+                    onTitlePress={() => {
+                      setYearPageStart(month.getFullYear() - 5);
+                      setYearPickerOpen(true);
+                    }}
+                    selected={draft}
+                  />
+                )}
+                <Button
+                  disabled={
+                    Boolean(pickerMinimumDate && draft < pickerMinimumDate) ||
+                    Boolean(pickerMaximumDate && draft > pickerMaximumDate)
+                  }
+                  label="Use this date"
+                  onPress={() => {
+                    onChange(
+                      canonicalDate(dateWithinBounds(draft, pickerMinimumDate, pickerMaximumDate)),
+                    );
+                    setOpen(false);
+                  }}
+                />
+              </ScrollView>
+            </Reanimated.View>
           </View>
         </Modal>
       )}
@@ -114,6 +197,76 @@ function canonicalDate(date: Date) {
   ).padStart(2, '0')}`;
 }
 
+function monthStart(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1, 12);
+}
+
+function YearPicker({
+  maximumYear,
+  minimumYear,
+  onPageChange,
+  onSelect,
+  pageStart,
+  selectedYear,
+}: {
+  readonly maximumYear?: number;
+  readonly minimumYear?: number;
+  readonly onPageChange: (year: number) => void;
+  readonly onSelect: (year: number) => void;
+  readonly pageStart: number;
+  readonly selectedYear: number;
+}) {
+  const years = Array.from({ length: 12 }, (_, index) => pageStart + index);
+  return (
+    <View style={styles.yearPicker}>
+      <View style={styles.yearPickerHeader}>
+        <Button
+          compact
+          label="Earlier years"
+          onPress={() => onPageChange(pageStart - 12)}
+          variant="ghost"
+        />
+        <Text accessibilityRole="header" style={styles.yearPickerRange}>
+          {pageStart}–{pageStart + 11}
+        </Text>
+        <Button
+          compact
+          label="Later years"
+          onPress={() => onPageChange(pageStart + 12)}
+          variant="ghost"
+        />
+      </View>
+      <View style={styles.yearGrid}>
+        {years.map((year) => {
+          const disabled =
+            (minimumYear !== undefined && year < minimumYear) ||
+            (maximumYear !== undefined && year > maximumYear);
+          const selected = year === selectedYear;
+          return (
+            <Pressable
+              accessibilityLabel={`${year}${selected ? ', selected' : ''}`}
+              accessibilityRole="button"
+              accessibilityState={{ disabled, selected }}
+              disabled={disabled}
+              key={year}
+              onPress={() => onSelect(year)}
+              style={[
+                styles.yearOption,
+                selected && styles.yearOptionSelected,
+                disabled && styles.yearOptionDisabled,
+              ]}
+            >
+              <Text style={[styles.yearOptionText, selected && styles.yearOptionTextSelected]}>
+                {year}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 function readableDate(value: string) {
   return new Intl.DateTimeFormat('en-PH', {
     day: 'numeric',
@@ -123,18 +276,14 @@ function readableDate(value: string) {
 }
 
 const styles = StyleSheet.create({
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(8, 24, 18, 0.32)',
+  },
   error: { color: colors.danger, fontSize: 12 },
   field: { gap: spacing.xs },
-  handle: {
-    alignSelf: 'center',
-    backgroundColor: colors.border,
-    borderRadius: 3,
-    height: 5,
-    marginBottom: spacing.lg,
-    width: 42,
-  },
   label: { color: colors.ink, fontSize: 13, fontWeight: '700' },
-  modal: { backgroundColor: colors.background, flex: 1, padding: spacing.lg },
+  modalRoot: { flex: 1, justifyContent: 'flex-end' },
   modalTitle: { color: colors.ink, fontSize: 24, fontWeight: '800' },
   placeholder: { color: colors.subtleText, fontWeight: '500' },
   value: {
@@ -150,4 +299,30 @@ const styles = StyleSheet.create({
   },
   valueError: { borderColor: colors.danger },
   valueText: { color: colors.ink, fontSize: 15, fontWeight: '700' },
+  yearGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  yearOption: {
+    alignItems: 'center',
+    borderRadius: radius.md,
+    justifyContent: 'center',
+    minHeight: 44,
+    width: '23%',
+  },
+  yearOptionDisabled: { opacity: 0.35 },
+  yearOptionSelected: { backgroundColor: colors.primary },
+  yearOptionText: { color: colors.ink, fontSize: 15, fontWeight: '700' },
+  yearOptionTextSelected: { color: colors.onPrimary },
+  yearPicker: { gap: spacing.sm },
+  yearPickerHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  yearPickerRange: { color: colors.ink, fontSize: 15, fontWeight: '800' },
+  sheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    overflow: 'hidden',
+  },
+  sheetContent: { gap: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
 });

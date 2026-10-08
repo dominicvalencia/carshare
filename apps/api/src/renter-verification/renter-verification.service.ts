@@ -310,6 +310,12 @@ export class RenterVerificationService {
           version: (previous?.version ?? 0) + 1,
         },
       });
+      if (definition.code === 'PROFILE_PHOTO')
+        await transaction.userProfile.upsert({
+          create: { avatarFileId: file.id, userId },
+          update: { avatarFileId: file.id },
+          where: { userId },
+        });
       await transaction.verification.update({
         data: { rejectionReason: null, status: VerificationStatus.DRAFT },
         where: { id: verification.id },

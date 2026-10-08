@@ -46,6 +46,7 @@ import {
 import type { RenterTabParamList, RootStackParamList } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateTimeField } from '../../ui/DateTimeField';
+import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
 import { VehicleImage } from '../../ui/VehicleImage';
 import {
   SearchableReferenceSelector,
@@ -86,10 +87,21 @@ import { DiscoveryMap, type MapSearchArea } from './DiscoveryMap';
 import { TripDateCalendar } from './TripDateCalendar';
 import { tripDateSummary } from './trip-date-policy';
 import { formatResultSummary, uniqueVehicleCount } from './result-summary';
-import { areaRailTitle, exploreRailQuery, showTripRail, uniqueRailVehicles } from './explore-rails';
+import {
+  areaRailTitle,
+  contextualExploreRails,
+  exploreRailQuery,
+  showTripRail,
+  uniqueRailVehicles,
+} from './explore-rails';
 import { committedSearchPayload } from './committed-search-history';
 import { PriceRangeSlider } from './PriceRangeSlider';
 import { MinimumSeatsSlider } from './MinimumSeatsSlider';
+import {
+  discoveryLocationStorage,
+  type DiscoveryLocationSource,
+} from './discovery-location-storage';
+import { exploreEmptyStateCopy } from './explore-empty-state';
 import {
   cloneDiscoveryFilters,
   DEFAULT_DISCOVERY_FILTERS,
@@ -317,8 +329,49 @@ type SearchDraft = {
 
 const locations = developmentLocationSuggestions;
 const sessionRecentlyViewed: string[] = [];
+const automaticDeviceLocationAttempts = new Set<string>();
 const searchLocationSession = () =>
   `search_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+async function deviceDiscoveryLocation(): Promise<{
+  readonly location: SearchLocation | null;
+  readonly error: string;
+}> {
+  try {
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (!permission.granted)
+      return {
+        error: 'Location access is off. Choose an area to explore cars.',
+        location: null,
+      };
+    const current = await Promise.race([
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+    ]);
+    if (!current)
+      return {
+        error: 'Current location is unavailable. Choose an area to explore cars.',
+        location: null,
+      };
+    return {
+      error: '',
+      location: {
+        city: 'Current area',
+        detail: 'Based on your device location',
+        label: 'Near your current location',
+        latitude: current.coords.latitude,
+        longitude: current.coords.longitude,
+        province: '',
+        source: 'DEVICE',
+      },
+    };
+  } catch {
+    return {
+      error: 'Current location is unavailable. Choose an area to explore cars.',
+      location: null,
+    };
+  }
+}
 
 function futureDate(days: number, hour = 9) {
   const value = new Date();
@@ -338,12 +391,14 @@ export function DiscoveryScreen({
   initialVehicleId,
   onExit,
   onTabBarHiddenChange,
+  wishlistTab = false,
 }: {
   readonly home?: boolean;
   readonly initialMode?: 'form' | 'favorites';
   readonly initialVehicleId?: string | undefined;
   readonly onExit?: (() => void) | undefined;
   readonly onTabBarHiddenChange?: ((hidden: boolean) => void) | undefined;
+  readonly wishlistTab?: boolean | undefined;
 }) {
   const navigation = useNavigation<NavigationProp<RenterTabParamList & RootStackParamList>>();
   const isFocused = useIsFocused();
@@ -352,7 +407,7 @@ export function DiscoveryScreen({
     ? 54 + Math.max(bottomSafeArea, 10) + spacing.md
     : Math.max(spacing.md, bottomSafeArea + spacing.xs);
   const client = useQueryClient();
-  const { user } = useAuth();
+  const { booting, user } = useAuth();
   const [mode, setMode] = useState<ViewMode>(initialVehicleId ? 'detail' : initialMode);
   const detailOrigin = useRef<ViewMode>(initialMode === 'favorites' ? 'favorites' : 'form');
   const [vehicleId, setVehicleId] = useState<string | null>(initialVehicleId ?? null);
@@ -365,6 +420,9 @@ export function DiscoveryScreen({
   const [selectedMapVehicleId, setSelectedMapVehicleId] = useState<string | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
+  const [searchSheetInitialSection, setSearchSheetInitialSection] = useState<
+    'default' | 'dates' | 'location'
+  >('default');
   const [make, setMake] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [seats, setSeats] = useState('');
@@ -382,6 +440,9 @@ export function DiscoveryScreen({
   const recoveryTitleRef = useRef<Text>(null);
   const [exploreShortcut, setExploreShortcut] = useState<ExploreShortcut>('ALL');
   const [discoveryLocationEstablished, setDiscoveryLocationEstablished] = useState(false);
+  const [discoveryLocationSource, setDiscoveryLocationSource] =
+    useState<DiscoveryLocationSource>('FALLBACK');
+  const [resolvingDefaultLocation, setResolvingDefaultLocation] = useState(false);
   const [tripDatesEstablished, setTripDatesEstablished] = useState(false);
   const [exactTimesSelected, setExactTimesSelected] = useState(false);
   const [railFavoriteOverrides, setRailFavoriteOverrides] = useState<Record<string, boolean>>({});
@@ -392,6 +453,39 @@ export function DiscoveryScreen({
   const fullMapGestureThreshold = 72;
   const fullMapPeekHeight = Math.max(88, Math.min(104, 64 + bottomSafeArea));
   const validDates = returnAt.getTime() > pickup.getTime();
+  const discoveryLocationAccountId = user?.id ?? 'guest';
+  useEffect(() => {
+    if (!home || booting) return;
+    let cancelled = false;
+    void discoveryLocationStorage.get(discoveryLocationAccountId).then(async (stored) => {
+      if (cancelled) return;
+      if (stored) {
+        setPlace(stored);
+        setActivePlace(stored);
+        setDiscoveryLocationEstablished(true);
+        setDiscoveryLocationSource('USER_SELECTED');
+        return;
+      }
+      if (automaticDeviceLocationAttempts.has(discoveryLocationAccountId)) return;
+      automaticDeviceLocationAttempts.add(discoveryLocationAccountId);
+      setResolvingDefaultLocation(true);
+      const result = await deviceDiscoveryLocation();
+      if (cancelled) return;
+      setResolvingDefaultLocation(false);
+      if (!result.location) {
+        setLocationError(result.error);
+        return;
+      }
+      setPlace(result.location);
+      setActivePlace(result.location);
+      setDiscoveryLocationEstablished(true);
+      setDiscoveryLocationSource('DEVICE_LOCATION');
+      setLocationError('');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [booting, discoveryLocationAccountId, home]);
   const reference = useQuery({
     enabled: home || filtersOpen,
     queryKey: ['vehicle-reference-data'],
@@ -459,14 +553,36 @@ export function DiscoveryScreen({
   const mapQueryString = `${activeCriteriaQueryString}&limit=50&mode=MAP`;
   const tripRailEligible = showTripRail(tripDatesEstablished, pickup, returnAt);
   const authenticatedRenter = Boolean(user?.roles.includes('RENTER'));
-  const areaRailQueryString = exploreRailQuery(activePlace, activeRadiusKm, 'AREA', {
+  const exploreRailFilters = {
     categoryId,
     handover,
+    make,
+    maxPrice,
+    minPrice,
     returnHandover,
     powertrain,
     seats,
-  });
-  const electricRailQueryString = exploreRailQuery(activePlace, activeRadiusKm, 'ELECTRIC');
+    transmission,
+  };
+  const areaRailQueryString = exploreRailQuery(
+    activePlace,
+    activeRadiusKm,
+    'AREA',
+    exploreRailFilters,
+  );
+  const electricRailQueryString = exploreRailQuery(
+    activePlace,
+    activeRadiusKm,
+    'ELECTRIC',
+    exploreRailFilters,
+  );
+  const electricRailEligible = !powertrain || powertrain === 'BATTERY_ELECTRIC';
+  const recentRailQueryString = exploreRailQuery(
+    activePlace,
+    activeRadiusKm,
+    'RECENT',
+    exploreRailFilters,
+  );
   const areaRailSearch = useQuery({
     enabled: home && mode === 'form',
     queryKey: ['public-search', 'rail', areaRailQueryString],
@@ -474,9 +590,15 @@ export function DiscoveryScreen({
     staleTime: 30_000,
   });
   const electricRailSearch = useQuery({
-    enabled: home && mode === 'form',
+    enabled: home && mode === 'form' && electricRailEligible,
     queryKey: ['public-search', 'rail', electricRailQueryString],
     queryFn: () => apiClient.request<SearchResponse>(`/vehicles/search?${electricRailQueryString}`),
+    staleTime: 30_000,
+  });
+  const recentRailSearch = useQuery({
+    enabled: home && mode === 'form',
+    queryKey: ['public-search', 'rail', recentRailQueryString],
+    queryFn: () => apiClient.request<SearchResponse>(`/vehicles/search?${recentRailQueryString}`),
     staleTime: 30_000,
   });
   const recentSearchHistory = useQuery({
@@ -601,6 +723,13 @@ export function DiscoveryScreen({
     }));
   const areaRailItems = railVehicles(areaRailSearch.data?.items ?? []);
   const electricRailItems = railVehicles(electricRailSearch.data?.items ?? []);
+  const recentlyAddedRailItems = railVehicles(recentRailSearch.data?.items ?? []);
+  const contextualRails = contextualExploreRails({
+    area: areaRailItems,
+    electric: electricRailItems,
+    primaryTitle: areaRailTitle(discoveryLocationEstablished, activePlace),
+    recent: recentlyAddedRailItems,
+  });
   const tripRailItems = tripRailEligible ? railVehicles(searchItems).slice(0, 6) : [];
   const recentRailItems = recentVehicleCards(
     recentVehicleHistory.isError ? [] : (recentVehicleHistory.data?.items ?? []),
@@ -616,6 +745,28 @@ export function DiscoveryScreen({
   const savedSimilarityRailItems = railVehicles(
     savedSimilarity.isError ? [] : (savedSimilarity.data?.items ?? []),
   );
+  const homeExploreItemCount = [
+    recentRailItems,
+    continuedRailItems,
+    savedSimilarityRailItems,
+    contextualRails.flatMap(({ items }) => items),
+    tripRailItems,
+  ].reduce((total, items) => total + items.length, 0);
+  const homeExploreLoading =
+    resolvingDefaultLocation ||
+    areaRailSearch.isPending ||
+    electricRailSearch.isPending ||
+    recentRailSearch.isPending ||
+    (authenticatedRenter && recentSearchHistory.isPending) ||
+    (authenticatedRenter && recentVehicleHistory.isPending) ||
+    (Boolean(continuedSearch) && continuedRailSearch.isPending) ||
+    (Boolean(savedSimilarityQueryString) && savedSimilarity.isPending) ||
+    (tripRailEligible && listSearch.isPending);
+  const homeExploreError =
+    homeExploreItemCount === 0 &&
+    areaRailSearch.isError &&
+    (!electricRailEligible || electricRailSearch.isError) &&
+    recentRailSearch.isError;
   const mapItems = mapSearch.data?.items ?? [];
   const nextPageError = listSearch.isFetchNextPageError ? listSearch.error : null;
   const fetchNextSearchPage = listSearch.fetchNextPage;
@@ -1081,6 +1232,8 @@ export function DiscoveryScreen({
     setTripDatesEstablished(true);
     setExactTimesSelected(true);
     setDiscoveryLocationEstablished(true);
+    setDiscoveryLocationSource('USER_SELECTED');
+    void discoveryLocationStorage.set(discoveryLocationAccountId, continuedSearch.location);
     setCategoryId(continuedSearch.categoryId);
     setMake(continuedSearch.make);
     setSeats(continuedSearch.seats);
@@ -1132,52 +1285,44 @@ export function DiscoveryScreen({
     setReturnAt(nextEnd);
     setActiveRadiusKm(radiusKm);
     setDiscoveryLocationEstablished(true);
+    const nextLocationSource = nextPlace.source === 'DEVICE' ? 'DEVICE_LOCATION' : 'USER_SELECTED';
+    setDiscoveryLocationSource(nextLocationSource);
+    if (nextLocationSource === 'USER_SELECTED')
+      void discoveryLocationStorage.set(discoveryLocationAccountId, nextPlace);
+    else void discoveryLocationStorage.clear(discoveryLocationAccountId);
     setTripDatesEstablished(datesExplicit);
     resetResultsViewport();
     setMode('results');
   }
   function searchMapArea(area: MapSearchArea) {
-    setActivePlace((current) => ({
-      ...current,
-      source: undefined,
-      latitude: area.latitude,
-      longitude: area.longitude,
-    }));
+    setActivePlace((current) => {
+      const selectedArea = {
+        ...current,
+        source: undefined,
+        latitude: area.latitude,
+        longitude: area.longitude,
+      };
+      void discoveryLocationStorage.set(discoveryLocationAccountId, selectedArea);
+      return selectedArea;
+    });
+    setDiscoveryLocationSource('USER_SELECTED');
     setRadiusKm(area.radiusKm);
     setActiveRadiusKm(area.radiusKm);
     resetResultsViewport({ preserveFullMap: fullMap });
   }
   async function resolveCurrentLocation(): Promise<SearchLocation | null> {
     setLocationError('');
-    const permission = await Location.requestForegroundPermissionsAsync();
-    if (!permission.granted) {
-      setLocationError('Location access was not granted. Choose a city instead.');
-      return null;
-    }
-    try {
-      const current = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      const currentArea = {
-        label: 'Current area',
-        detail: 'Based on your device location',
-        city: 'Current area',
-        province: '',
-        latitude: current.coords.latitude,
-        longitude: current.coords.longitude,
-        source: 'DEVICE' as const,
-      };
-      return currentArea;
-    } catch {
-      setLocationError('We could not get your location. Choose a city instead.');
-      return null;
-    }
+    const result = await deviceDiscoveryLocation();
+    setLocationError(result.error);
+    return result.location;
   }
 
   async function selectCurrentLocation(activateSearch = false): Promise<boolean> {
     const currentArea = await resolveCurrentLocation();
     if (!currentArea) return false;
     setPlace(currentArea);
+    setDiscoveryLocationSource('DEVICE_LOCATION');
+    void discoveryLocationStorage.clear(discoveryLocationAccountId);
     if (activateSearch) {
       setActivePlace(currentArea);
       setDiscoveryLocationEstablished(true);
@@ -1186,6 +1331,17 @@ export function DiscoveryScreen({
   }
 
   function openExploreSearch() {
+    setSearchSheetInitialSection('default');
+    setLocationOpen(true);
+  }
+
+  function openExploreLocation() {
+    setSearchSheetInitialSection('location');
+    setLocationOpen(true);
+  }
+
+  function openExploreDates() {
+    setSearchSheetInitialSection('dates');
     setLocationOpen(true);
   }
 
@@ -1372,6 +1528,22 @@ export function DiscoveryScreen({
     setHandover(deliveryFilterActive ? 'ANY' : 'DELIVERY_AVAILABLE');
   }
 
+  function clearResultsFilters() {
+    prepareResultsFilterChange();
+    setRadiusKm(DEFAULT_DISCOVERY_FILTERS.radiusKm);
+    setActiveRadiusKm(DEFAULT_DISCOVERY_FILTERS.radiusKm);
+    setMake(DEFAULT_DISCOVERY_FILTERS.make);
+    setCategoryId(DEFAULT_DISCOVERY_FILTERS.categoryId);
+    setSeats(DEFAULT_DISCOVERY_FILTERS.seats);
+    setTransmission(DEFAULT_DISCOVERY_FILTERS.transmission);
+    setPowertrain(DEFAULT_DISCOVERY_FILTERS.powertrain);
+    setMinPrice(DEFAULT_DISCOVERY_FILTERS.minPrice);
+    setMaxPrice(DEFAULT_DISCOVERY_FILTERS.maxPrice);
+    setHandover(DEFAULT_DISCOVERY_FILTERS.handover);
+    setReturnHandover(DEFAULT_DISCOVERY_FILTERS.returnHandover);
+    setExploreShortcut('ALL');
+  }
+
   const committedFilters: DiscoveryFilters = {
     radiusKm: activeRadiusKm,
     make,
@@ -1410,10 +1582,21 @@ export function DiscoveryScreen({
       appliedStart={pickup}
       datesEstablished={tripDatesEstablished}
       error={locationError}
+      initialSection={searchSheetInitialSection}
       locationEstablished={discoveryLocationEstablished}
+      locationSource={discoveryLocationSource}
       onClose={() => setLocationOpen(false)}
       onClearError={() => setLocationError('')}
-      onCurrent={resolveCurrentLocation}
+      onCurrent={async () => {
+        const currentArea = await resolveCurrentLocation();
+        if (!currentArea) return null;
+        setPlace(currentArea);
+        setActivePlace(currentArea);
+        setDiscoveryLocationEstablished(true);
+        setDiscoveryLocationSource('DEVICE_LOCATION');
+        void discoveryLocationStorage.clear(discoveryLocationAccountId);
+        return currentArea;
+      }}
       onSearch={(draft) => {
         setLocationOpen(false);
         performSearch(draft);
@@ -1422,6 +1605,86 @@ export function DiscoveryScreen({
       selected={discoveryLocationEstablished ? activePlace : place}
     />
   );
+  const homeDiscoveryHeader = home ? (
+    <View style={styles.exploreStickyControls}>
+      <Pressable
+        accessibilityLabel="Start your search"
+        accessibilityRole="button"
+        onPress={openExploreSearch}
+        style={({ pressed }) => [styles.exploreSearchPill, pressed && styles.explorePressed]}
+      >
+        <View style={styles.exploreSearchIcon}>
+          <Icon color={colors.primary} name="search" size={22} />
+        </View>
+        <View style={styles.flex}>
+          <Text style={styles.exploreSearchTitle}>
+            {resolvingDefaultLocation
+              ? 'Finding cars near you…'
+              : discoveryLocationEstablished
+                ? activePlace.label
+                : 'Start your search'}
+          </Text>
+          <Text numberOfLines={1} style={styles.exploreSearchSummary}>
+            {resolvingDefaultLocation
+              ? 'Using your location for Explore'
+              : discoveryLocationEstablished
+                ? tripDatesEstablished
+                  ? tripDateSummary(pickup, returnAt)
+                  : 'Add trip dates'
+                : 'Search destinations, cities or places'}
+          </Text>
+        </View>
+        <Icon color={colors.subtleText} name="chevron-forward" size={19} />
+      </Pressable>
+      <ScrollView
+        accessibilityLabel="Vehicle discovery categories"
+        contentContainerStyle={styles.exploreCategoryContent}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.exploreCategoryRow}
+      >
+        <Chip
+          compact
+          label="All"
+          selected={exploreShortcut === 'ALL'}
+          onPress={() => selectExploreShortcut('ALL')}
+        />
+        <Chip
+          compact
+          icon="navigate-outline"
+          label="Nearby"
+          selected={exploreShortcut === 'NEARBY'}
+          onPress={() => selectExploreShortcut('NEARBY')}
+        />
+        {categoryShortcuts.map((category) => {
+          const shortcut = `CATEGORY:${category.id}` as const;
+          return (
+            <Chip
+              compact
+              key={category.id}
+              label={category.label}
+              selected={exploreShortcut === shortcut}
+              onPress={() => selectExploreShortcut(shortcut)}
+            />
+          );
+        })}
+        <Chip
+          compact
+          icon="flash-outline"
+          label="EV"
+          selected={exploreShortcut === 'EV'}
+          onPress={() => selectExploreShortcut('EV')}
+        />
+        <Chip
+          compact
+          icon="people-outline"
+          label="7+ seats"
+          selected={exploreShortcut === 'SEVEN_PLUS'}
+          onPress={() => selectExploreShortcut('SEVEN_PLUS')}
+        />
+      </ScrollView>
+    </View>
+  ) : undefined;
 
   if (mode === 'favorites')
     return (
@@ -1429,7 +1692,7 @@ export function DiscoveryScreen({
         data={favorites.data}
         error={favorites.error}
         loading={favorites.isPending}
-        onBack={onExit ?? (() => setMode('form'))}
+        onBack={wishlistTab ? undefined : (onExit ?? (() => setMode('form')))}
         onOpen={openVehicle}
         onRemove={(id) => favorite.mutate({ id, active: true })}
         onRetry={() => void favorites.refetch()}
@@ -1488,7 +1751,7 @@ export function DiscoveryScreen({
             accessibilityHint="Edit search"
             accessibilityLabel={`${activePlace.label}, ${tripDateSummary(pickup, returnAt)}`}
             accessibilityRole="button"
-            onPress={() => setLocationOpen(true)}
+            onPress={openExploreSearch}
             style={styles.resultsSearchSummary}
           >
             <Icon color={colors.primary} name="search" size={18} />
@@ -1652,7 +1915,7 @@ export function DiscoveryScreen({
                       title="Finding cars…"
                       message="Checking availability for your dates."
                     />
-                  ) : listSearch.isError && !listSearch.data ? (
+                  ) : listSearch.isError && searchItems.length === 0 ? (
                     <StateView
                       icon="cloud-offline-outline"
                       title="Search unavailable"
@@ -1714,16 +1977,12 @@ export function DiscoveryScreen({
                           />
                         )}
                         ListEmptyComponent={
-                          <StateView
-                            icon="search-outline"
-                            title="Adjust your search"
-                            message={
-                              handover === 'ANY'
-                                ? 'Try a nearby city, wider radius, or different dates.'
-                                : 'No cars match this handover option. Try another handover option or expand your search.'
-                            }
-                            actionLabel="Change search"
-                            onAction={() => setMode('form')}
+                          <ExploreEmptyState
+                            datesSelected={tripDatesEstablished || exactTimesSelected}
+                            filtersActive={resultsFilterCount > 0}
+                            locationSource={discoveryLocationSource}
+                            onChangeLocation={openExploreLocation}
+                            onClearFilters={clearResultsFilters}
                           />
                         }
                         ListFooterComponent={
@@ -1797,6 +2056,7 @@ export function DiscoveryScreen({
   return (
     <Screen
       {...(home ? { scrollRef: exploreScrollRef } : {})}
+      stickyHeader={homeDiscoveryHeader}
       eyebrow={home ? undefined : 'Find a car'}
       title={home ? undefined : 'Search cars'}
       subtitle={home ? undefined : 'Book verified cars from local owners across the Philippines.'}
@@ -1810,31 +2070,6 @@ export function DiscoveryScreen({
         )
       }
     >
-      {home && (
-        <Pressable
-          accessibilityLabel="Start your search"
-          accessibilityRole="button"
-          onPress={openExploreSearch}
-          style={({ pressed }) => [styles.exploreSearchPill, pressed && styles.explorePressed]}
-        >
-          <View style={styles.exploreSearchIcon}>
-            <Icon color={colors.primary} name="search" size={22} />
-          </View>
-          <View style={styles.flex}>
-            <Text style={styles.exploreSearchTitle}>
-              {discoveryLocationEstablished ? activePlace.label : 'Start your search'}
-            </Text>
-            <Text numberOfLines={1} style={styles.exploreSearchSummary}>
-              {discoveryLocationEstablished
-                ? tripDatesEstablished
-                  ? tripDateSummary(pickup, returnAt)
-                  : 'Add trip dates'
-                : 'Search destinations, cities or places'}
-            </Text>
-          </View>
-          <Icon color={colors.subtleText} name="chevron-forward" size={19} />
-        </Pressable>
-      )}
       {home && pendingRecoveryActions.length > 0 && (
         <Pressable
           ref={recoveryAlertRef}
@@ -1918,7 +2153,7 @@ export function DiscoveryScreen({
           <Card style={styles.searchCard}>
             <Pressable
               accessibilityRole="button"
-              onPress={() => setLocationOpen(true)}
+              onPress={openExploreLocation}
               style={styles.searchRow}
             >
               <View style={styles.searchIcon}>
@@ -1937,7 +2172,7 @@ export function DiscoveryScreen({
             <Pressable
               accessibilityLabel={`Trip dates, ${tripDateSummary(pickup, returnAt)}. Change dates`}
               accessibilityRole="button"
-              onPress={() => setLocationOpen(true)}
+              onPress={openExploreDates}
               style={styles.searchCollapsedCard}
             >
               <View>
@@ -1986,67 +2221,46 @@ export function DiscoveryScreen({
       )}
       {home && (
         <>
-          <ScrollView
-            accessibilityLabel="Vehicle discovery categories"
-            contentContainerStyle={styles.exploreCategoryContent}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.exploreCategoryRow}
-          >
-            <Chip
-              compact
-              label="All"
-              selected={exploreShortcut === 'ALL'}
-              onPress={() => selectExploreShortcut('ALL')}
-            />
-            <Chip
-              compact
-              icon="navigate-outline"
-              label="Nearby"
-              selected={exploreShortcut === 'NEARBY'}
-              onPress={() => selectExploreShortcut('NEARBY')}
-            />
-            {categoryShortcuts.map((category) => {
-              const shortcut = `CATEGORY:${category.id}` as const;
-              return (
-                <Chip
-                  compact
-                  key={category.id}
-                  label={category.label}
-                  selected={exploreShortcut === shortcut}
-                  onPress={() => selectExploreShortcut(shortcut)}
-                />
-              );
-            })}
-            <Chip
-              compact
-              icon="flash-outline"
-              label="EV"
-              selected={exploreShortcut === 'EV'}
-              onPress={() => selectExploreShortcut('EV')}
-            />
-            <Chip
-              compact
-              icon="people-outline"
-              label="7+ seats"
-              selected={exploreShortcut === 'SEVEN_PLUS'}
-              onPress={() => selectExploreShortcut('SEVEN_PLUS')}
-            />
-          </ScrollView>
           {locationError ? (
             <Text accessibilityRole="alert" style={styles.error}>
               {locationError}
             </Text>
           ) : null}
-          <ExploreVehicleSection
-            cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
-            items={recentRailItems}
-            onFavorite={(vehicle) =>
-              favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
-            }
-            onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
-            title="Recently viewed"
-          />
+          {homeExploreLoading ? (
+            <StateView loading title="Finding cars…" message="Checking cars in this area." />
+          ) : homeExploreError ? (
+            <StateView
+              icon="cloud-offline-outline"
+              title="Explore unavailable"
+              message="Cars could not be loaded. Check your connection and try again."
+              actionLabel="Retry"
+              onAction={() => {
+                void areaRailSearch.refetch();
+                void electricRailSearch.refetch();
+                void recentRailSearch.refetch();
+              }}
+            />
+          ) : homeExploreItemCount === 0 ? (
+            <ExploreEmptyState
+              datesSelected={tripDatesEstablished || exactTimesSelected}
+              filtersActive={resultsFilterCount > 0}
+              locationSource={discoveryLocationSource}
+              onChangeLocation={openExploreLocation}
+              onClearFilters={clearResultsFilters}
+            />
+          ) : null}
+          {contextualRails.map((rail) => (
+            <ExploreVehicleSection
+              key={rail.key}
+              cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
+              items={rail.items}
+              onFavorite={(vehicle) =>
+                favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
+              }
+              onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
+              title={rail.title}
+            />
+          ))}
           <ExploreVehicleSection
             cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
             items={continuedRailItems}
@@ -2070,21 +2284,12 @@ export function DiscoveryScreen({
           />
           <ExploreVehicleSection
             cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
-            items={areaRailItems}
+            items={recentRailItems}
             onFavorite={(vehicle) =>
               favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
             }
             onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
-            title={areaRailTitle(discoveryLocationEstablished, activePlace)}
-          />
-          <ExploreVehicleSection
-            cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
-            items={electricRailItems}
-            onFavorite={(vehicle) =>
-              favorite.mutate({ id: vehicle.vehicleId, active: vehicle.favorite })
-            }
-            onOpen={(vehicle) => openVehicle(vehicle.vehicleId)}
-            title="Electric cars"
+            title="Recently viewed"
           />
           <ExploreVehicleSection
             cardWidth={Math.min(320, Math.max(250, viewportWidth - 72))}
@@ -3937,14 +4142,14 @@ function FavoritesView({
     { items: readonly { vehicle: VehicleDetail }[]; unavailableCount: number } | undefined;
   readonly error: Error | null;
   readonly loading: boolean;
-  readonly onBack: () => void;
+  readonly onBack?: (() => void) | undefined;
   readonly onOpen: (id: string) => void;
   readonly onRemove: (id: string) => void;
   readonly onRetry: () => void;
 }) {
   return (
     <Screen
-      leading={<BackControl label="Back" onPress={onBack} />}
+      leading={onBack ? <BackControl label="Back" onPress={onBack} /> : undefined}
       eyebrow="Saved cars"
       title="Wishlist"
       subtitle="Cars you save will appear here."
@@ -4010,7 +4215,9 @@ function LocationSheet({
   appliedStart,
   appliedEnd,
   locationEstablished,
+  locationSource,
   datesEstablished,
+  initialSection,
   onClose,
   onClearError,
   onCurrent,
@@ -4022,13 +4229,33 @@ function LocationSheet({
   readonly appliedStart: Date;
   readonly appliedEnd: Date;
   readonly locationEstablished: boolean;
+  readonly locationSource: DiscoveryLocationSource;
   readonly datesEstablished: boolean;
+  readonly initialSection: 'default' | 'dates' | 'location';
   readonly onClose: () => void;
   readonly onClearError: () => void;
   readonly onCurrent: () => Promise<SearchLocation | null>;
   readonly onSearch: (draft: SearchDraft) => void;
   readonly error: string;
 }) {
+  const [measuredContentHeight, setMeasuredContentHeight] = useState(0);
+  const [measuredHeaderHeight, setMeasuredHeaderHeight] = useState(0);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const bottomAllowance = Math.max(safeArea.bottom, spacing.lg);
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight: measuredContentHeight,
+        headerHeight: measuredHeaderHeight,
+        maxSafeViewportHeight: maximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [maximumHeight, measuredContentHeight, measuredHeaderHeight],
+  );
+  const sheetHeight = useSharedValue(Math.min(560, maximumHeight));
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
   const [whereExpanded, setWhereExpanded] = useState(true);
   const [whenExpanded, setWhenExpanded] = useState(false);
   const [draftSelected, setDraftSelected] = useState(selected);
@@ -4046,6 +4273,19 @@ function LocationSheet({
   const [retryNonce, setRetryNonce] = useState(0);
   const session = useRef(searchLocationSession());
   const request = useRef(0);
+  useEffect(() => {
+    if (!open || measuredContentHeight <= 0 || measuredHeaderHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
+  }, [
+    measuredContentHeight,
+    measuredHeaderHeight,
+    measuredLayout.height,
+    open,
+    sheetHeight,
+    viewportHeight,
+  ]);
   function resetForOpen() {
     request.current += 1;
     session.current = searchLocationSession();
@@ -4055,8 +4295,13 @@ function LocationSheet({
     setDraftEnd(appliedEnd);
     setDraftDatesEstablished(datesEstablished);
     setDraftDatesCleared(false);
-    setWhereExpanded(!locationEstablished);
-    setWhenExpanded(locationEstablished && !datesEstablished);
+    setWhereExpanded(
+      initialSection === 'location' || (!locationEstablished && initialSection !== 'dates'),
+    );
+    setWhenExpanded(
+      initialSection === 'dates' ||
+        (initialSection === 'default' && locationEstablished && !datesEstablished),
+    );
     setQuery('');
     setSuggestions([]);
     setProviderError('');
@@ -4142,209 +4387,229 @@ function LocationSheet({
       animationType="slide"
       onShow={resetForOpen}
       onRequestClose={close}
-      presentationStyle="pageSheet"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      transparent
       visible={open}
     >
-      <Screen
-        leading={<BackControl label="Close search" onPress={close} />}
-        title="Search cars"
-        subtitle="Choose a discovery area. Pickup, Delivery, Return, and Collection locations are confirmed later."
-      >
-        {whereExpanded ? (
-          <Card style={styles.whereCardActive}>
-            <Text accessibilityRole="header" style={styles.whereTitle}>
-              Where?
-            </Text>
-            <Text style={styles.whereCopy}>Search destinations, cities or places</Text>
-            <View style={styles.placeSearch}>
-              <Icon name="search" size={18} />
-              <TextInput
-                accessibilityLabel="Search destinations, cities or places"
-                autoFocus
-                onChangeText={(value) => {
-                  setQuery(value);
-                  setProviderError('');
-                  if (value.trim().length < 3) {
-                    request.current += 1;
-                    setSuggestions([]);
-                    setPending(false);
-                  }
+      <View style={styles.searchSheetRoot}>
+        <View style={styles.searchSheetBackdrop} />
+        <Reanimated.View
+          accessibilityViewIsModal
+          style={[styles.searchSheetSurface, animatedSheetStyle]}
+        >
+          <Screen
+            contentBottomPadding={bottomAllowance}
+            contentGrows={false}
+            contentTopPadding={spacing.xxs}
+            leading={<BackControl label="Close search" onPress={close} />}
+            onContentSizeChange={(_width, height) => setMeasuredContentHeight(height)}
+            onHeaderLayout={(event) => setMeasuredHeaderHeight(event.nativeEvent.layout.height)}
+            safeTop={false}
+            scrollEnabled={measuredLayout.scrollEnabled}
+            title="Search cars"
+            subtitle="Choose a discovery area. Pickup, Delivery, Return, and Collection locations are confirmed later."
+          >
+            {whereExpanded ? (
+              <Card style={styles.whereCardActive}>
+                <Text accessibilityRole="header" style={styles.whereTitle}>
+                  Where?
+                </Text>
+                <Text style={styles.whereCopy}>Search destinations, cities or places</Text>
+                <View style={styles.placeSearch}>
+                  <Icon name="search" size={18} />
+                  <TextInput
+                    accessibilityLabel="Search destinations, cities or places"
+                    autoFocus
+                    onChangeText={(value) => {
+                      setQuery(value);
+                      setProviderError('');
+                      if (value.trim().length < 3) {
+                        request.current += 1;
+                        setSuggestions([]);
+                        setPending(false);
+                      }
+                    }}
+                    placeholder="Search destinations, cities or places"
+                    placeholderTextColor={colors.placeholder}
+                    returnKeyType="search"
+                    style={styles.placeSearchInput}
+                    value={query}
+                  />
+                  {query.length > 0 ? (
+                    <IconButton
+                      icon="close-circle"
+                      label="Clear location search"
+                      onPress={() => {
+                        request.current += 1;
+                        setQuery('');
+                        setSuggestions([]);
+                        setProviderError('');
+                        setPending(false);
+                      }}
+                    />
+                  ) : null}
+                </View>
+                {pending ? (
+                  <Text accessibilityLiveRegion="polite" style={styles.note}>
+                    Searching places…
+                  </Text>
+                ) : null}
+                {providerError ? (
+                  <View style={styles.whereError}>
+                    <Text accessibilityRole="alert" style={styles.error}>
+                      {providerError}
+                    </Text>
+                    {query.trim().length >= 3 ? (
+                      <Button
+                        label="Retry place search"
+                        onPress={() => setRetryNonce((value) => value + 1)}
+                        variant="secondary"
+                      />
+                    ) : null}
+                  </View>
+                ) : null}
+                {suggestions.map((item) => (
+                  <Pressable
+                    accessibilityLabel={[item.displayName, item.secondaryText]
+                      .filter(Boolean)
+                      .join(', ')}
+                    accessibilityRole="button"
+                    key={item.providerReference}
+                    onPress={() => void selectSuggestion(item.providerReference)}
+                    style={styles.locationOption}
+                  >
+                    <View style={styles.searchIcon}>
+                      <Icon color={colors.primary} name="location-outline" />
+                    </View>
+                    <View style={styles.flex}>
+                      <Text style={styles.cardTitle}>{item.displayName}</Text>
+                      <Text style={styles.body}>{item.secondaryText}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+                <Pressable
+                  accessibilityLabel="Nearby, find cars around your current area"
+                  accessibilityRole="button"
+                  disabled={pending}
+                  onPress={() => void selectNearby()}
+                  style={styles.nearbyOption}
+                >
+                  <View style={styles.nearbyIcon}>
+                    <Icon color={colors.primary} name="navigate" size={22} />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text style={styles.cardTitle}>Nearby</Text>
+                    <Text style={styles.body}>Find cars around your current area</Text>
+                  </View>
+                </Pressable>
+                {error ? (
+                  <Text accessibilityRole="alert" style={styles.error}>
+                    {error}
+                  </Text>
+                ) : null}
+                <Text style={styles.whereSelectionNote}>
+                  Current selection:{' '}
+                  {locationSource === 'DEVICE_LOCATION'
+                    ? 'Near your current location'
+                    : draftSelected.label}
+                  . It stays selected until a replacement is confirmed.
+                </Text>
+              </Card>
+            ) : (
+              <Pressable
+                accessibilityLabel={`Where, ${draftSelected.label}. Edit discovery location`}
+                accessibilityRole="button"
+                onPress={() => {
+                  setWhenExpanded(false);
+                  setWhereExpanded(true);
                 }}
-                placeholder="Search destinations, cities or places"
-                placeholderTextColor={colors.placeholder}
-                returnKeyType="search"
-                style={styles.placeSearchInput}
-                value={query}
-              />
-              {query.length > 0 ? (
-                <IconButton
-                  icon="close-circle"
-                  label="Clear location search"
-                  onPress={() => {
-                    request.current += 1;
-                    setQuery('');
-                    setSuggestions([]);
-                    setProviderError('');
-                    setPending(false);
+                style={styles.searchCollapsedCard}
+              >
+                <View>
+                  <Text style={styles.searchCollapsedLabel}>Where</Text>
+                  <Text numberOfLines={1} style={styles.searchCollapsedValue}>
+                    {draftSelected.label}
+                  </Text>
+                </View>
+                <Text style={styles.searchEdit}>Edit</Text>
+              </Pressable>
+            )}
+            {whenExpanded ? (
+              <Card style={styles.whenCardActive}>
+                <Text accessibilityRole="header" style={styles.whereTitle}>
+                  When?
+                </Text>
+                <Text style={styles.whereCopy}>Select your trip dates</Text>
+                <TripDateCalendar
+                  appliedEnd={draftEnd}
+                  appliedStart={draftStart}
+                  preselect={!draftDatesCleared}
+                  onApply={(start, end) => {
+                    setDraftStart(start);
+                    setDraftEnd(end);
+                    setDraftDatesEstablished(true);
+                    setDraftDatesCleared(false);
+                    setWhenExpanded(false);
+                  }}
+                  onClear={() => {
+                    setDraftDatesEstablished(false);
+                    setDraftDatesCleared(true);
                   }}
                 />
-              ) : null}
-            </View>
-            {pending ? (
-              <Text accessibilityLiveRegion="polite" style={styles.note}>
-                Searching places…
-              </Text>
-            ) : null}
-            {providerError ? (
-              <View style={styles.whereError}>
-                <Text accessibilityRole="alert" style={styles.error}>
-                  {providerError}
+                <Text style={styles.whereSelectionNote}>
+                  Discovery uses 9:00 AM search assumptions for both dates. Final handover times are
+                  confirmed later.
                 </Text>
-                {query.trim().length >= 3 ? (
-                  <Button
-                    label="Retry place search"
-                    onPress={() => setRetryNonce((value) => value + 1)}
-                    variant="secondary"
-                  />
-                ) : null}
-              </View>
-            ) : null}
-            {suggestions.map((item) => (
+              </Card>
+            ) : !whereExpanded && draftDatesEstablished ? (
               <Pressable
-                accessibilityLabel={[item.displayName, item.secondaryText]
-                  .filter(Boolean)
-                  .join(', ')}
+                accessibilityLabel={`When, ${tripDateSummary(draftStart, draftEnd)}. Edit trip dates`}
                 accessibilityRole="button"
-                key={item.providerReference}
-                onPress={() => void selectSuggestion(item.providerReference)}
-                style={styles.locationOption}
+                onPress={() => setWhenExpanded(true)}
+                style={styles.searchCollapsedCard}
               >
-                <View style={styles.searchIcon}>
-                  <Icon color={colors.primary} name="location-outline" />
+                <View>
+                  <Text style={styles.searchCollapsedLabel}>When</Text>
+                  <Text style={styles.searchCollapsedValue}>
+                    {tripDateSummary(draftStart, draftEnd)}
+                  </Text>
                 </View>
-                <View style={styles.flex}>
-                  <Text style={styles.cardTitle}>{item.displayName}</Text>
-                  <Text style={styles.body}>{item.secondaryText}</Text>
-                </View>
+                <Text style={styles.searchEdit}>Edit</Text>
               </Pressable>
-            ))}
-            <Pressable
-              accessibilityLabel="Nearby, find cars around your current area"
-              accessibilityRole="button"
-              disabled={pending}
-              onPress={() => void selectNearby()}
-              style={styles.nearbyOption}
-            >
-              <View style={styles.nearbyIcon}>
-                <Icon color={colors.primary} name="navigate" size={22} />
-              </View>
-              <View style={styles.flex}>
-                <Text style={styles.cardTitle}>Nearby</Text>
-                <Text style={styles.body}>Find cars around your current area</Text>
-              </View>
-            </Pressable>
-            {error ? (
-              <Text accessibilityRole="alert" style={styles.error}>
-                {error}
-              </Text>
+            ) : (
+              <Card style={styles.whenCardCollapsed}>
+                <Text accessibilityRole="header" style={styles.searchCollapsedLabel}>
+                  When
+                </Text>
+                <Text style={styles.searchCollapsedValue}>Add trip dates</Text>
+              </Card>
+            )}
+            {!whereExpanded && !whenExpanded ? (
+              <>
+                <Button
+                  disabled={!draftWhereEstablished || !draftDatesEstablished}
+                  icon="search"
+                  label="Search"
+                  onPress={() =>
+                    onSearch({
+                      datesExplicit: draftDatesEstablished,
+                      end: draftEnd,
+                      place: draftSelected,
+                      start: draftStart,
+                    })
+                  }
+                />
+                {!draftWhereEstablished || !draftDatesEstablished ? (
+                  <Text accessibilityLiveRegion="polite" style={styles.whereSelectionNote}>
+                    Select and apply trip dates to search.
+                  </Text>
+                ) : null}
+              </>
             ) : null}
-            <Text style={styles.whereSelectionNote}>
-              Current selection: {draftSelected.label}. It stays selected until a replacement is
-              confirmed.
-            </Text>
-          </Card>
-        ) : (
-          <Pressable
-            accessibilityLabel={`Where, ${draftSelected.label}. Edit discovery location`}
-            accessibilityRole="button"
-            onPress={() => {
-              setWhenExpanded(false);
-              setWhereExpanded(true);
-            }}
-            style={styles.searchCollapsedCard}
-          >
-            <View>
-              <Text style={styles.searchCollapsedLabel}>Where</Text>
-              <Text numberOfLines={1} style={styles.searchCollapsedValue}>
-                {draftSelected.label}
-              </Text>
-            </View>
-            <Text style={styles.searchEdit}>Edit</Text>
-          </Pressable>
-        )}
-        {whenExpanded ? (
-          <Card style={styles.whenCardActive}>
-            <Text accessibilityRole="header" style={styles.whereTitle}>
-              When?
-            </Text>
-            <Text style={styles.whereCopy}>Select your trip dates</Text>
-            <TripDateCalendar
-              appliedEnd={draftEnd}
-              appliedStart={draftStart}
-              preselect={!draftDatesCleared}
-              onApply={(start, end) => {
-                setDraftStart(start);
-                setDraftEnd(end);
-                setDraftDatesEstablished(true);
-                setDraftDatesCleared(false);
-                setWhenExpanded(false);
-              }}
-              onClear={() => {
-                setDraftDatesEstablished(false);
-                setDraftDatesCleared(true);
-              }}
-            />
-            <Text style={styles.whereSelectionNote}>
-              Discovery uses 9:00 AM search assumptions for both dates. Final handover times are
-              confirmed later.
-            </Text>
-          </Card>
-        ) : !whereExpanded && draftDatesEstablished ? (
-          <Pressable
-            accessibilityLabel={`When, ${tripDateSummary(draftStart, draftEnd)}. Edit trip dates`}
-            accessibilityRole="button"
-            onPress={() => setWhenExpanded(true)}
-            style={styles.searchCollapsedCard}
-          >
-            <View>
-              <Text style={styles.searchCollapsedLabel}>When</Text>
-              <Text style={styles.searchCollapsedValue}>
-                {tripDateSummary(draftStart, draftEnd)}
-              </Text>
-            </View>
-            <Text style={styles.searchEdit}>Edit</Text>
-          </Pressable>
-        ) : (
-          <Card style={styles.whenCardCollapsed}>
-            <Text accessibilityRole="header" style={styles.searchCollapsedLabel}>
-              When
-            </Text>
-            <Text style={styles.searchCollapsedValue}>Add trip dates</Text>
-          </Card>
-        )}
-        {!whereExpanded && !whenExpanded ? (
-          <>
-            <Button
-              disabled={!draftWhereEstablished || !draftDatesEstablished}
-              icon="search"
-              label="Search"
-              onPress={() =>
-                onSearch({
-                  datesExplicit: draftDatesEstablished,
-                  end: draftEnd,
-                  place: draftSelected,
-                  start: draftStart,
-                })
-              }
-            />
-            {!draftWhereEstablished || !draftDatesEstablished ? (
-              <Text accessibilityLiveRegion="polite" style={styles.whereSelectionNote}>
-                Select and apply trip dates to search.
-              </Text>
-            ) : null}
-          </>
-        ) : null}
-      </Screen>
+          </Screen>
+        </Reanimated.View>
+      </View>
     </Modal>
   );
 }
@@ -4621,6 +4886,41 @@ function activeFilterCount(filters: Record<string, string>) {
   return Object.values(filters).filter(Boolean).length;
 }
 
+function ExploreEmptyState({
+  datesSelected,
+  filtersActive,
+  locationSource,
+  onChangeLocation,
+  onClearFilters,
+}: {
+  readonly datesSelected: boolean;
+  readonly filtersActive: boolean;
+  readonly locationSource: DiscoveryLocationSource;
+  readonly onChangeLocation: () => void;
+  readonly onClearFilters: () => void;
+}) {
+  const copy = exploreEmptyStateCopy({ datesSelected, locationSource });
+  return (
+    <View style={styles.exploreEmptyRegion}>
+      <View style={styles.exploreEmptyState}>
+        <View style={styles.exploreEmptyIcon}>
+          <Icon color={colors.primary} name="car-outline" size={30} />
+        </View>
+        <Text accessibilityRole="header" style={styles.exploreEmptyTitle}>
+          {copy.title}
+        </Text>
+        <Text style={styles.exploreEmptyMessage}>{copy.message}</Text>
+        <View style={styles.exploreEmptyActions}>
+          <Button label="Change location" onPress={onChangeLocation} />
+        </View>
+        {filtersActive ? (
+          <Button compact label="Clear filters" onPress={onClearFilters} variant="ghost" />
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 function fulfillmentFeeLabel(amountMinor: number | null | undefined, currency: string) {
   if (amountMinor === 0) return 'Free';
   return amountMinor == null
@@ -4836,6 +5136,41 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.lg,
     textAlign: 'center',
   },
+  exploreEmptyActions: { gap: spacing.sm, marginTop: spacing.xs, width: '100%' },
+  exploreEmptyIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    height: 60,
+    justifyContent: 'center',
+    width: 60,
+  },
+  exploreEmptyMessage: {
+    color: colors.subtleText,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+  exploreEmptyRegion: {
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+    paddingVertical: spacing.lg,
+    width: '100%',
+  },
+  exploreEmptyState: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    maxWidth: 360,
+    padding: spacing.lg,
+    width: '100%',
+  },
+  exploreEmptyTitle: { color: colors.ink, fontSize: 20, fontWeight: '900', textAlign: 'center' },
   estimate: {
     backgroundColor: colors.primarySoft,
     borderRadius: radius.sm,
@@ -4884,6 +5219,12 @@ const styles = StyleSheet.create({
   },
   exploreSearchSummary: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
   exploreSearchTitle: { color: colors.ink, fontSize: 16, fontWeight: '900' },
+  exploreStickyControls: {
+    backgroundColor: colors.background,
+    gap: spacing.xs,
+    paddingBottom: spacing.xs,
+    paddingTop: spacing.xxs,
+  },
   exploreSection: { gap: spacing.xs },
   exploreSectionHeader: {
     alignItems: 'center',
@@ -5177,7 +5518,12 @@ const styles = StyleSheet.create({
   priceBox: { alignItems: 'flex-end', maxWidth: '35%' },
   quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   quoteCard: { gap: spacing.sm },
-  resultList: { gap: spacing.md, paddingBottom: 100, paddingHorizontal: spacing.md },
+  resultList: {
+    flexGrow: 1,
+    gap: spacing.md,
+    paddingBottom: 100,
+    paddingHorizontal: spacing.md,
+  },
   resultsComposition: { flex: 1 },
   resultsHeader: {
     alignItems: 'center',
@@ -5305,6 +5651,17 @@ const styles = StyleSheet.create({
   },
   row: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
   searchCard: { gap: spacing.md },
+  searchSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(8, 24, 18, 0.32)',
+  },
+  searchSheetRoot: { flex: 1, justifyContent: 'flex-end' },
+  searchSheetSurface: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    overflow: 'hidden',
+  },
   searchDetail: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
   searchIcon: {
     alignItems: 'center',

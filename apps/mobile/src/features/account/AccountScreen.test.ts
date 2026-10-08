@@ -53,15 +53,20 @@ describe('renter profile persona presentation', () => {
     expect(source).not.toContain('<LogoutButton variant="secondary" />');
   });
 
-  it('keeps Reviews directly below Personal information in Account', () => {
-    const personalInformation = renterProfile.indexOf('label="Personal information"');
+  it('removes redundant Personal information and keeps Reviews first in Account', () => {
     const reviews = renterProfile.indexOf('label="Reviews"');
     const verification = renterProfile.indexOf('label="Verification"');
-    expect(personalInformation).toBeGreaterThan(-1);
-    expect(reviews).toBeGreaterThan(personalInformation);
+    expect(renterProfile).not.toContain('label="Personal information"');
+    expect(reviews).toBeGreaterThan(-1);
     expect(verification).toBeGreaterThan(reviews);
-    expect(renterProfile.slice(personalInformation, reviews).match(/<MenuRow/g)).toHaveLength(1);
     expect(renterProfile).toContain("navigation.navigate('Reviews')");
+  });
+
+  it('uses the active uploaded profile photo with the initial avatar as fallback', () => {
+    expect(renterProfile).toContain("definition?.code === 'PROFILE_PHOTO' && !replacedAt");
+    expect(renterProfile).toContain('<AuthorizedDocumentPreview');
+    expect(renterProfile).toContain('fallback={avatarFallback}');
+    expect(renterProfile).toContain('fileAssetId={profilePhoto.fileAsset.id}');
   });
 
   it('removes renter Profile Wishlist and Notifications rows without orphaned sections', () => {

@@ -7,6 +7,10 @@ const source = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), 'TripDateCalendar.tsx'),
   'utf8',
 );
+const sharedCalendar = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../ui/CalendarMonth.tsx'),
+  'utf8',
+);
 const policy = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), 'trip-date-policy.ts'),
   'utf8',
@@ -31,12 +35,12 @@ describe('TripDateCalendar source authority', () => {
   });
 
   it('provides non-color range semantics and accessible month controls', () => {
-    expect(source).toContain("'selected, range start'");
-    expect(source).toContain("'selected, range end'");
-    expect(source).toContain("'selected, in range'");
-    expect(source).toContain('accessibilityLabel="Previous month"');
-    expect(source).toContain('accessibilityLabel="Next month"');
-    expect(source).toContain('accessibilityState={{ disabled: previousDisabled }}');
-    expect(source).toContain("textDecorationLine: 'line-through'");
+    expect(sharedCalendar).toContain("'selected, range start'");
+    expect(sharedCalendar).toContain("'selected, range end'");
+    expect(sharedCalendar).toContain("'selected, in range'");
+    expect(sharedCalendar).toContain('accessibilityLabel="Previous month"');
+    expect(sharedCalendar).toContain('accessibilityLabel="Next month"');
+    expect(sharedCalendar).toContain('accessibilityState={{ disabled: previousDisabled }}');
+    expect(sharedCalendar).toContain("textDecorationLine: 'line-through'");
   });
 });

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
 
 const source = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), 'DiscoveryScreen.tsx'),
@@ -11,17 +12,73 @@ const primitivesSource = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '../../ui/primitives.tsx'),
   'utf8',
 );
+const navigationSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../navigation/AppNavigation.tsx'),
+  'utf8',
+);
 
 describe('vehicle-detail responsive regression', () => {
-  it('keeps search first, then a compact recovery alert and the Where experience', () => {
+  it('omits the Back control when Wishlist is presented as its bottom tab', () => {
+    expect(source).toContain('readonly wishlistTab?: boolean | undefined;');
+    expect(source).toContain(
+      "onBack={wishlistTab ? undefined : (onExit ?? (() => setMode('form')))}",
+    );
+    expect(source).toContain(
+      'leading={onBack ? <BackControl label="Back" onPress={onBack} /> : undefined}',
+    );
+    expect(navigationSource).toMatch(
+      /name="Wishlist"[\s\S]*?<DiscoveryScreen[\s\S]*?initialMode="favorites"[\s\S]*?wishlistTab/,
+    );
+  });
+
+  it('uses content-driven, capped sizing for the Explore search sheet', () => {
+    const searchSheet = source.slice(
+      source.indexOf('function LocationSheet('),
+      source.indexOf('type FilterProperties'),
+    );
+    expect(searchSheet).toContain('adaptiveSheetLayout({');
+    expect(searchSheet).toContain('contentHeight: measuredContentHeight');
+    expect(searchSheet).toContain('headerHeight: measuredHeaderHeight');
+    expect(searchSheet).toContain('maxSafeViewportHeight: maximumHeight');
+    expect(searchSheet).toContain('contentGrows={false}');
+    expect(searchSheet).toContain('scrollEnabled={measuredLayout.scrollEnabled}');
+    expect(searchSheet).toContain('onContentSizeChange=');
+    expect(searchSheet).toContain('onHeaderLayout=');
+    expect(searchSheet).toContain('presentationStyle="overFullScreen"');
+    expect(searchSheet).not.toContain('presentationStyle="pageSheet"');
+    expect(searchSheet).toContain('label="Close search"');
+    expect(searchSheet).not.toContain('label="Cancel"');
+
+    expect(
+      adaptiveSheetLayout({
+        contentHeight: 420,
+        headerHeight: 96,
+        maxSafeViewportHeight: 780,
+        safeAreaAllowance: 0,
+      }),
+    ).toEqual({ height: 516, intrinsicHeight: 516, scrollEnabled: false });
+    expect(
+      adaptiveSheetLayout({
+        contentHeight: 900,
+        headerHeight: 96,
+        maxSafeViewportHeight: 780,
+        safeAreaAllowance: 0,
+      }),
+    ).toEqual({ height: 780, intrinsicHeight: 996, scrollEnabled: true });
+  });
+
+  it('keeps search and categories in one sticky group above recovery and discovery content', () => {
     const startSearch = source.indexOf('accessibilityLabel="Start your search"');
     const alert = source.indexOf('style={({ pressed }) => [styles.recoveryAlert');
     const categories = source.indexOf('accessibilityLabel="Vehicle discovery categories"');
     const section = source.indexOf('<ExploreVehicleSection');
     const searchCard = source.indexOf('<Card style={styles.searchCard}>');
     expect(startSearch).toBeGreaterThan(-1);
-    expect(alert).toBeGreaterThan(startSearch);
-    expect(categories).toBeGreaterThan(alert);
+    expect(categories).toBeGreaterThan(startSearch);
+    expect(alert).toBeGreaterThan(categories);
+    expect(source).toContain('const homeDiscoveryHeader = home ? (');
+    expect(source).toContain('stickyHeader={homeDiscoveryHeader}');
+    expect(source).toContain('style={styles.exploreStickyControls}');
     expect(source).not.toContain('<PendingHandoverRecoveryBanner');
     expect(source).toContain("title={home ? undefined : 'Search cars'}");
     expect(source).toMatch(/action=\{\s*home \? undefined : \(/);
@@ -43,11 +100,12 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain(
       "navigation.navigate('BookingRecovery', { bookingId: action.reference })",
     );
-    expect(categories).toBeGreaterThan(startSearch);
     expect(section).toBeGreaterThan(categories);
     expect(searchCard).toBeGreaterThan(startSearch);
     expect(source).toContain('function openExploreSearch()');
-    expect(source).toMatch(/function openExploreSearch\(\) \{\s*setLocationOpen\(true\)/);
+    expect(source).toMatch(
+      /function openExploreSearch\(\) \{\s*setSearchSheetInitialSection\('default'\);\s*setLocationOpen\(true\)/,
+    );
     expect(source).not.toContain('function openLegacySearch');
   });
 
@@ -99,8 +157,42 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('onPress={() => void selectNearby()}');
     expect(source).toContain('const selectedCurrentArea = await onCurrent()');
     expect(source).toContain('if (selectedCurrentArea)');
-    expect(source).toContain("label: 'Current area'");
+    expect(source).toContain("label: 'Near your current location'");
     expect(source).toContain('Location.requestForegroundPermissionsAsync()');
+  });
+
+  it('prioritizes persisted manual discovery locations before a one-shot device default', () => {
+    expect(source).toContain('discoveryLocationStorage.get(discoveryLocationAccountId)');
+    expect(source).toMatch(
+      /if \(stored\) \{[\s\S]*setDiscoveryLocationSource\('USER_SELECTED'\);[\s\S]*return;/,
+    );
+    expect(source).toContain('automaticDeviceLocationAttempts.has(discoveryLocationAccountId)');
+    expect(source).toContain('automaticDeviceLocationAttempts.add(discoveryLocationAccountId)');
+    expect(source).toContain('const result = await deviceDiscoveryLocation()');
+    expect(source).toContain("setDiscoveryLocationSource('DEVICE_LOCATION')");
+    expect(source).toContain("useState<DiscoveryLocationSource>('FALLBACK')");
+    expect(source).not.toContain('watchPositionAsync');
+  });
+
+  it('keeps Explore usable when device permission or lookup fails', () => {
+    expect(source).toContain('if (!permission.granted)');
+    expect(source).toContain('Location access is off. Choose an area to explore cars.');
+    expect(source).toContain('Current location is unavailable. Choose an area to explore cars.');
+    expect(source).toContain(
+      'new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000))',
+    );
+    expect(source).toMatch(
+      /if \(!result\.location\) \{[\s\S]*setLocationError\(result\.error\);[\s\S]*return;/,
+    );
+  });
+
+  it('persists only manual authority and lets Nearby explicitly restore device authority', () => {
+    expect(source).toContain("nextPlace.source === 'DEVICE' ? 'DEVICE_LOCATION' : 'USER_SELECTED'");
+    expect(source).toContain('discoveryLocationStorage.set(discoveryLocationAccountId, nextPlace)');
+    expect(source).toContain('discoveryLocationStorage.clear(discoveryLocationAccountId)');
+    expect(source).toContain('locationSource={discoveryLocationSource}');
+    expect(source).toContain("locationSource === 'DEVICE_LOCATION'");
+    expect(source).toContain('Near your current location');
   });
 
   it('collapses a valid Where selection into the Task 5 placeholder', () => {
@@ -167,7 +259,7 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain(
       'accessibilityLabel={`${activePlace.label}, ${tripDateSummary(pickup, returnAt)}`}',
     );
-    expect(source).toContain('onPress={() => setLocationOpen(true)}');
+    expect(source).toContain('onPress={openExploreSearch}');
     expect(source).toContain('{searchEditor}');
     expect(source).toContain('selected={discoveryLocationEstablished ? activePlace : place}');
     expect(source).toContain('tripDateSummary(pickup, returnAt)');
@@ -244,7 +336,8 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('vehicle.displayPrice.amountMinor');
     expect(source).not.toContain('vehicle.location.latitude');
     expect(source).toContain('if (items.length === 0) return null;');
-    expect(source).toContain('title="Electric cars"');
+    expect(source).toContain('contextualExploreRails({');
+    expect(source).toContain('title={rail.title}');
     expect(source).toContain('title="Available for your trip"');
   });
 
@@ -256,10 +349,12 @@ describe('vehicle-detail responsive regression', () => {
   });
 
   it('keeps rail queries independent, hearts shared, and trip See all faithful to Results', () => {
-    expect(source).toContain("exploreRailQuery(activePlace, activeRadiusKm, 'AREA', {");
-    expect(source).toContain("exploreRailQuery(activePlace, activeRadiusKm, 'ELECTRIC')");
+    expect(source).toContain("'AREA',\n    exploreRailFilters");
+    expect(source).toContain("'ELECTRIC',\n    exploreRailFilters");
+    expect(source).toContain("'RECENT',\n    exploreRailFilters");
     expect(source).toContain("queryKey: ['public-search', 'rail', areaRailQueryString]");
     expect(source).toContain("queryKey: ['public-search', 'rail', electricRailQueryString]");
+    expect(source).toContain("queryKey: ['public-search', 'rail', recentRailQueryString]");
     expect(source).toContain(
       'const tripRailEligible = showTripRail(tripDatesEstablished, pickup, returnAt)',
     );
@@ -272,7 +367,7 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('{onSeeAll ? (');
   });
 
-  it('places optional account history rails before contextual rails without changing active search', () => {
+  it('places the primary contextual rail before optional account history rails', () => {
     expect(source).toContain("queryKey: ['renter-history', 'searches', user?.id]");
     expect(source).toContain("queryKey: ['renter-history', 'vehicles', user?.id]");
     expect(source).toContain("enabled: home && mode === 'form' && authenticatedRenter");
@@ -289,11 +384,11 @@ describe('vehicle-detail responsive regression', () => {
     );
     expect(source).toContain('title="Recently viewed"');
     expect(source).toContain("title={continuedSearch?.title ?? 'Continue exploring'}");
-    expect(source.indexOf('title="Recently viewed"')).toBeLessThan(
+    expect(source.indexOf('{contextualRails.map((rail) => (')).toBeLessThan(
       source.indexOf("title={continuedSearch?.title ?? 'Continue exploring'}"),
     );
     expect(source.indexOf("title={continuedSearch?.title ?? 'Continue exploring'}")).toBeLessThan(
-      source.indexOf('title="Electric cars"'),
+      source.indexOf('title="Recently viewed"'),
     );
     expect(source).toMatch(
       /onSeeAll=\{\s*continuedSearch\?\.start && continuedSearch\.end \? openContinuedResults : undefined\s*\}/,
@@ -304,11 +399,11 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain(
       "void client.invalidateQueries({ queryKey: ['renter-history', 'vehicles'] })",
     );
-    expect(source).toContain('const areaRailQueryString = exploreRailQuery(activePlace');
+    expect(source).toContain('const areaRailQueryString = exploreRailQuery(');
     expect(source).toContain('if (items.length === 0) return null;');
   });
 
-  it('isolates the authenticated saved-similarity rail between history and contextual rails', () => {
+  it('keeps the authenticated saved-similarity rail separate from contextual rails', () => {
     expect(source).toContain("'renter-recommendations',");
     expect(source).toContain("'saved-similar',");
     expect(source).toContain('/me/discovery-recommendations/saved-similar?');
@@ -320,8 +415,8 @@ describe('vehicle-detail responsive regression', () => {
     expect(source.indexOf('title="More like cars you\'ve saved"')).toBeGreaterThan(
       source.indexOf("title={continuedSearch?.title ?? 'Continue exploring'}"),
     );
-    expect(source.indexOf('title="More like cars you\'ve saved"')).toBeLessThan(
-      source.indexOf('title="Electric cars"'),
+    expect(source.indexOf('title="More like cars you\'ve saved"')).toBeGreaterThan(
+      source.indexOf('{contextualRails.map((rail) => ('),
     );
     expect(source).toContain('if (!discoveryLocationEstablished) return');
     expect(source).toContain('if (tripDatesEstablished)');

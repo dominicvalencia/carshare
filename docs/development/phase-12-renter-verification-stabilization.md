@@ -17,10 +17,10 @@ emergency contact, and the active jurisdiction-configured document checklist. Th
 number is normalized and hashed; only its last four characters are retained for review display.
 
 Pilot document requirements are seeded as data: driver-license front/back, additional government ID,
-proof of address, and a newly captured selfie. Accepted MIME types and maximum bytes are enforced by
+proof of address, profile photo, and selfie with driver's license. Accepted MIME types and maximum bytes are enforced by
 the API. All evidence must be a READY, SENSITIVE file owned by the renter. Every renter-verification
 document is camera-only in the mobile workflow: IDs and proof of address default to the rear camera,
-the selfie defaults to the front camera, and every capture has preview, Retake, and Use photo steps.
+the identity photos default to the front camera, and every capture has preview, Retake, and Use photo steps.
 Permission denial explains the requirement and links to system Settings; there is no gallery, photo
 library, file-picker, or silent fallback. Camera capture is not represented as proof of authenticity or
 liveness.
@@ -53,26 +53,16 @@ five-minute background policy gates protected mobile content without changing AP
 former custom PIN/PBKDF2 implementation and benchmark switch are not present; legacy PIN records are
 deleted during storage loading so they cannot trap a user.
 
-## Contact verification and local manual testing
+## Contact verification
 
-The Contact Information card shows the account email, email verification status, Philippine mobile
+The shared Contact verification step shows the account email, email verification status, Philippine mobile
 entry, and mobile verification status. A changed mobile number is normalized server-side and clears
 the previous verification timestamp before a fresh OTP is issued. Booking eligibility continues to
 read these authoritative contact timestamps.
 
-For a new, non-demo account in a local development build:
-
-1. Register, open **Profile → Verification**, and tap **Verify email**.
-2. Tap **Open local verification inbox**, then **Use latest email token**, and **Confirm email**.
-3. Enter a Philippine number such as `09171234567` and tap **Send verification code**.
-4. Reopen the local inbox, tap **Use latest mobile code**, and tap **Verify mobile**.
-
-The viewer calls authenticated `GET /api/v1/development/auth-deliveries` and returns only deliveries
-whose normalized recipient belongs to the signed-in account. It exists in the app only when `__DEV__`
-is true and the API returns data only when `APP_ENV` is `local` or `test` and
-`AUTH_DELIVERY_PROVIDER=development`. Production configuration rejects the development provider.
-Tokens and OTPs are held in process memory, remain subject to the existing expiry, attempt, and
-cooldown rules, and are never written to normal delivery logs. Restarting the API clears the viewer.
+The normal renter UI does not render the former local verification-inbox development card. Local/test
+delivery adapters remain environment guarded for automated and operator testing; production configuration
+rejects the development provider. Tokens and OTPs retain their existing expiry, attempt, and cooldown rules.
 
 ## Refresh, messaging, notification, and availability
 

@@ -235,7 +235,13 @@ const renterDocumentDefinitions = [
     'PROOF_OF_ADDRESS',
     VerificationType.IDENTITY,
   ],
-  ['SELFIE', 'New camera selfie for manual review', 'SELFIE', VerificationType.IDENTITY],
+  ['PROFILE_PHOTO', 'Profile photo', 'IDENTITY_PHOTO', VerificationType.IDENTITY],
+  [
+    'SELFIE_WITH_LICENSE',
+    'Selfie with driver’s license',
+    'IDENTITY_PHOTO',
+    VerificationType.IDENTITY,
+  ],
 ] as const;
 
 async function seed(): Promise<void> {
@@ -401,7 +407,7 @@ async function seed(): Promise<void> {
         },
         update: {
           acceptedMimeTypes:
-            code === 'SELFIE'
+            code === 'PROFILE_PHOTO' || code === 'SELFIE_WITH_LICENSE'
               ? ['image/jpeg', 'image/png']
               : ['image/jpeg', 'image/png', 'application/pdf'],
           active: true,
