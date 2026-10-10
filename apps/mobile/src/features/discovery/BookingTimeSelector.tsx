@@ -13,6 +13,7 @@ export function BookingTimeSelector({
   label = 'Trip time',
   actionLabel,
   hideValidationError = false,
+  minimumNoticeMinutes = 0,
   onChange,
   onValidationErrorChange,
   onValidityChange,
@@ -23,6 +24,7 @@ export function BookingTimeSelector({
   readonly label?: string;
   readonly actionLabel?: string;
   readonly hideValidationError?: boolean;
+  readonly minimumNoticeMinutes?: number;
   readonly onChange: (value: Date) => void;
   readonly onValidationErrorChange?: (message: string) => void;
   readonly onValidityChange?: (valid: boolean) => void;
@@ -43,8 +45,12 @@ export function BookingTimeSelector({
       return;
     }
     const minutes = selected.getHours() * 60 + selected.getMinutes();
-    if (!isBookingTimeSlotSelectable(pickupDate, minutes)) {
-      updateValidation("Choose a later time for today's pickup.");
+    if (!isBookingTimeSlotSelectable(pickupDate, minutes, new Date(), minimumNoticeMinutes)) {
+      updateValidation(
+        minimumNoticeMinutes > 0
+          ? "Choose a later time that meets the vehicle's preparation window."
+          : "Choose a later time for today's pickup.",
+      );
       return;
     }
     updateValidation('');

@@ -12,6 +12,13 @@ label/value rows, mutually exclusive segmented choices, adaptive bottom sheets, 
 and the native time picker. Owner and renter actions use role-specific copy and hierarchy while
 calling the existing commands.
 
+## Renter Explore navigation
+
+Selecting the renter **Explore** tab restores the Explore root instead of preserving a nested
+Vehicle Details presentation. The current discovery area, dates, shared time, and filter selections
+remain available where intended; only nested presentation state is cleared. A direct Vehicle Details
+deep link is still parented to Explore and keeps its existing routing behavior.
+
 ## Booking dates and shared handover time
 
 A renter selects a pickup calendar date, a return calendar date, and one shared clock time. The
@@ -19,8 +26,12 @@ shared time is applied to both dates, producing two exact ISO timestamps. Those 
 date-only calendar values or formatted summaries, are sent to the API and remain authoritative.
 
 - Today is selectable when the domain's availability policy permits it; past calendar dates are
-  disabled.
-- A same-day pickup time must be later than the current authoritative local threshold.
+  disabled. Today is disabled only when no valid booking-time slot remains in that calendar day.
+- The calendar decides whether a day can contain a valid pickup; the time selector decides which
+  slots on that day are valid.
+- A same-day pickup time must be later than the current authoritative local threshold. Fulfillment
+  minimum notice is evaluated against the composed pickup date and selected shared time rather than
+  against a date-only midnight value.
 - Booking times are aligned to the current 30-minute increment policy.
 - Calendar calculations use local calendar days for selection and presentation. ISO timestamps carry
   the actual instants across the API boundary.
@@ -30,6 +41,19 @@ date-only calendar values or formatted summaries, are sent to the API and remain
 
 Date/time summaries show the pickup-to-return date range followed by the one shared time. They do not
 imply the former fixed 9:00 AM presentation assumption.
+
+## Role-specific booking details
+
+Booking-detail screens order state according to the participant's next meaningful decision. Trip
+and vehicle identity remain easy to scan; required payment or Security Deposit action precedes
+handover progress; current lifecycle guidance appears as the next step; secondary booking actions
+remain subordinate; and cancellation appears only while the authoritative lifecycle allows it.
+
+After custody transfer, renter and owner screens project the active-rental, return-pending, and
+post-return states instead of retaining pre-trip cancellation or pickup guidance. During
+`RETURN_PENDING`, the renter sees the submitted return evidence/readings while the owner sees the
+receipt-review action. After receipt, both roles project the authoritative claim window and current
+claim state without exposing internal Operations copy.
 
 ## Check price and Your trip
 
@@ -126,3 +150,12 @@ required** state after the booking projection reports completion.
 
 These presentation rules do not change provider execution, settlement, capture, release, or recovery
 authority. Security Deposit settlement execution remains controlled by its existing phase boundary.
+
+## Cancelled booking summary
+
+A cancelled renter booking is presented as a final receipt-style summary from the existing
+cancellation settlement projection. The refund is the primary outcome, refund status remains a
+structured status, and the original total is shown only when it already exists in the booking
+pricing projection. Zero-value retained/refunded components are suppressed for presentation only;
+the cancellation calculation, persisted settlement, payment behavior, and API contracts are
+unchanged.

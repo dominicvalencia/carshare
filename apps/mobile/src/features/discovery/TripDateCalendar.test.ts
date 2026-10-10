@@ -4,9 +4,11 @@ import {
   applySharedBookingTime,
   bookingCalendarMinimumDate,
   discoveryDateForCalendarDay,
+  hasSelectableBookingTimeSlot,
   isBookingTimeSlotSelectable,
   isBookingTimeAligned,
   isBookingCalendarDateSelectable,
+  minutesSinceMidnight,
   tripDateSummary,
   tripDateTimeSummary,
 } from './trip-date-policy';
@@ -23,12 +25,14 @@ describe('TripDateCalendar discovery-date policy', () => {
     expect(Number.isFinite(Date.parse(selected.toISOString()))).toBe(true);
   });
 
-  it('allows today after the discovery hour while keeping yesterday disabled', () => {
-    const lateToday = new Date(2030, 8, 25, 23, 58);
-    const minimumDate = bookingCalendarMinimumDate(lateToday);
+  it('allows today while a future slot remains and keeps yesterday disabled', () => {
+    const now = new Date(2030, 8, 25, 13, 7);
+    const minimumDate = bookingCalendarMinimumDate(now);
 
     expect(minimumDate).toEqual(new Date(2030, 8, 25, 9));
-    expect(isBookingCalendarDateSelectable(new Date(2030, 8, 25, 12), { minimumDate })).toBe(true);
+    expect(isBookingCalendarDateSelectable(new Date(2030, 8, 25, 12), { minimumDate, now })).toBe(
+      true,
+    );
     expect(isBookingCalendarDateSelectable(new Date(2030, 8, 24, 23, 59), { minimumDate })).toBe(
       false,
     );
@@ -88,6 +92,47 @@ describe('TripDateCalendar discovery-date policy', () => {
     expect(isBookingTimeSlotSelectable(new Date(2030, 8, 25), 10 * 60, now)).toBe(false);
     expect(isBookingTimeSlotSelectable(new Date(2030, 8, 25), 10 * 60 + 30, now)).toBe(true);
     expect(isBookingTimeSlotSelectable(new Date(2030, 8, 26), 10 * 60, now)).toBe(true);
+  });
+
+  it('applies authoritative notice to the combined same-day timestamp', () => {
+    const now = new Date(2030, 8, 25, 13, 7);
+    expect(isBookingTimeSlotSelectable(new Date(2030, 8, 25), 13 * 60 + 30, now, 120)).toBe(false);
+    expect(isBookingTimeSlotSelectable(new Date(2030, 8, 25), 15 * 60 + 30, now, 120)).toBe(true);
+  });
+
+  it('disables today only when no valid half-hour slot remains', () => {
+    const closeToMidnight = new Date(2030, 8, 25, 23, 31);
+    const minimumDate = bookingCalendarMinimumDate(closeToMidnight);
+    expect(hasSelectableBookingTimeSlot(closeToMidnight, closeToMidnight)).toBe(false);
+    expect(
+      isBookingCalendarDateSelectable(closeToMidnight, { minimumDate, now: closeToMidnight }),
+    ).toBe(false);
+    expect(
+      isBookingCalendarDateSelectable(new Date(2030, 8, 26), {
+        minimumDate,
+        now: closeToMidnight,
+      }),
+    ).toBe(true);
+  });
+
+  it('disables today when notice pushes the next valid slot into tomorrow', () => {
+    const now = new Date(2030, 8, 25, 22, 15);
+    expect(hasSelectableBookingTimeSlot(now, now, 120)).toBe(false);
+    expect(hasSelectableBookingTimeSlot(new Date(2030, 8, 26), now, 120)).toBe(true);
+  });
+
+  it('uses the selected shared time instead of the legacy discovery hour', () => {
+    const now = new Date(2030, 8, 25, 13, 7);
+    const selected = applySharedBookingTime(
+      discoveryDateForCalendarDay(now),
+      discoveryDateForCalendarDay(new Date(2030, 8, 26)),
+      13 * 60 + 30,
+    );
+    expect(selected.start.getHours()).toBe(13);
+    expect(selected.start.getMinutes()).toBe(30);
+    expect(
+      isBookingTimeSlotSelectable(selected.start, minutesSinceMidnight(selected.start), now),
+    ).toBe(true);
   });
 
   it('accepts only times aligned to the booking half-hour policy', () => {

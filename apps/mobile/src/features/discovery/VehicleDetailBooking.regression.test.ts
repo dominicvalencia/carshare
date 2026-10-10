@@ -221,9 +221,10 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
     expect(detail).toContain('const bookingBarTripContext = properties.datesExplicit');
     expect(detail).toContain('tripDateTimeSummary(properties.pickup, properties.returnAt)');
     expect(detail).toContain(": 'Add dates'");
-    expect(detail).toContain(
-      'draftDatesExplicit && draftTimeExplicit && draftReturnAt > draftPickup',
-    );
+    expect(detail).toContain('draftDatesExplicit &&');
+    expect(detail).toContain('draftTimeExplicit &&');
+    expect(detail).toContain('draftTimeValid &&');
+    expect(detail).toContain('draftReturnAt > draftPickup');
   });
 
   it('expires quote authority and requires a current server price', () => {

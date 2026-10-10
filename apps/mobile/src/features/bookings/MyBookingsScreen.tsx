@@ -48,6 +48,7 @@ import { bookingGroup, type BookingGroup } from './booking-presentation';
 import { BookingCancellationSheet } from './BookingCancellationSheet';
 import { BookingAmendmentSheet } from './BookingAmendmentSheet';
 import { SecurityDepositSummary } from './SecurityDepositSummary';
+import { cancellationSettlementRows } from './cancellation-settlement-presentation';
 import type { BookingSecurityDepositReadModel } from '@carrental/api-contracts';
 
 interface ContentGrant {
@@ -872,44 +873,47 @@ function BookingDetail({
                 }
               }}
             >
-              <Card style={styles.notice}>
-                <Text style={styles.vehicle}>Booking cancelled</Text>
-                <Text style={styles.body}>
+              <Card style={styles.cancelledSummary}>
+                <View style={styles.cancelledHeader}>
+                  <Text accessibilityRole="header" style={styles.sectionTitle}>
+                    Booking cancelled
+                  </Text>
+                  <StatusBadge label="Cancelled" tone="neutral" />
+                </View>
+                <Text style={styles.cancelledCopy}>
                   Your rental did not start and custody was not transferred.
                 </Text>
-                <Detail
+                {booking.pricing ? (
+                  <FinancialSummaryRow
+                    icon="card-outline"
+                    label="Original total"
+                    value={money(booking.pricing.totalMinor, booking.pricing.currency)}
+                  />
+                ) : null}
+                <FinancialSummaryRow
+                  emphasized
+                  icon="return-down-back-outline"
                   label="Refund"
                   value={money(
                     Number(booking.cancellationSettlement.refundAmountMinor),
                     booking.cancellationSettlement.currency,
                   )}
-                  icon="return-down-back-outline"
                 />
-                <Detail
-                  label="CarShare commission retained"
-                  value={money(
-                    Number(booking.cancellationSettlement.commissionRetainedMinor),
-                    booking.cancellationSettlement.currency,
-                  )}
-                  icon="receipt-outline"
-                />
-                <Detail
-                  label="Delivery retained / refunded"
-                  value={`${money(Number(booking.cancellationSettlement.deliveryRetainedMinor), booking.cancellationSettlement.currency)} / ${money(Number(booking.cancellationSettlement.deliveryRefundedMinor), booking.cancellationSettlement.currency)}`}
-                  icon="navigate-outline"
-                />
-                <Detail
-                  label="Collection refunded"
-                  value={money(
-                    Number(booking.cancellationSettlement.collectionRefundedMinor),
-                    booking.cancellationSettlement.currency,
-                  )}
-                  icon="return-down-back-outline"
-                />
-                <Text style={styles.body}>
-                  Refund status:{' '}
-                  {titleCase(booking.cancellationSettlement.refundStatus ?? 'processing')}
-                </Text>
+                {cancellationSettlementRows(booking.cancellationSettlement).map((row) => (
+                  <FinancialSummaryRow
+                    key={row.label}
+                    icon={row.icon}
+                    label={row.label}
+                    value={money(row.amountMinor, booking.cancellationSettlement!.currency)}
+                  />
+                ))}
+                <View style={styles.refundStatusRow}>
+                  <Text style={styles.detailLabel}>Refund status</Text>
+                  <StatusBadge
+                    label={titleCase(booking.cancellationSettlement.refundStatus ?? 'processing')}
+                    tone={refundStatusTone(booking.cancellationSettlement.refundStatus)}
+                  />
+                </View>
               </Card>
             </View>
           ) : null}
@@ -1133,6 +1137,37 @@ function Detail({
   );
 }
 
+function FinancialSummaryRow({
+  emphasized = false,
+  icon,
+  label,
+  value,
+}: {
+  readonly emphasized?: boolean;
+  readonly icon: Parameters<typeof Icon>[0]['name'];
+  readonly label: string;
+  readonly value: string;
+}) {
+  return (
+    <View accessible accessibilityLabel={`${label}, ${value}`} style={styles.financialRow}>
+      <View importantForAccessibility="no" style={styles.detailIcon}>
+        <Icon color={colors.primary} name={icon} size={20} />
+      </View>
+      <View style={styles.flex}>
+        <Text style={styles.detailLabel}>{label}</Text>
+        <Text style={[styles.detailValue, emphasized && styles.refundValue]}>{value}</Text>
+      </View>
+    </View>
+  );
+}
+
+function refundStatusTone(status: string | null): 'success' | 'warning' | 'neutral' | 'danger' {
+  if (status === 'COMPLETED') return 'success';
+  if (status === 'FAILED') return 'danger';
+  if (status === 'PENDING' || status === 'PROCESSING') return 'warning';
+  return 'neutral';
+}
+
 function BookingAction({
   label,
   onPress,
@@ -1228,6 +1263,13 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(8, 24, 18, 0.32)',
   },
   bookingDetailsCard: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  cancelledCopy: { color: colors.subtleText, lineHeight: 20 },
+  cancelledHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  cancelledSummary: { gap: spacing.xs, padding: spacing.md },
   bookingDetailsModalRoot: { flex: 1, justifyContent: 'flex-end' },
   bookingDetailsSheet: {
     backgroundColor: colors.background,
@@ -1288,11 +1330,29 @@ const styles = StyleSheet.create({
   },
   detailValue: { color: colors.ink, fontSize: 14, fontWeight: '700', marginTop: 2 },
   flex: { flex: 1, minWidth: 0 },
+  financialRow: {
+    alignItems: 'center',
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minHeight: 48,
+  },
   hero: { borderRadius: radius.lg, height: 176, width: '100%' },
   image: { borderRadius: radius.md, height: 124, width: 112 },
   notice: { backgroundColor: colors.warningSoft },
   price: { color: colors.ink, fontSize: 16, fontWeight: '900', marginTop: spacing.xs },
   reference: { color: colors.subtleText, flex: 1, fontSize: 11 },
+  refundStatusRow: {
+    alignItems: 'center',
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 42,
+    paddingTop: spacing.xs,
+  },
+  refundValue: { color: colors.primaryDark, fontWeight: '900' },
   sectionTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
   summaryRow: {
     alignItems: 'center',

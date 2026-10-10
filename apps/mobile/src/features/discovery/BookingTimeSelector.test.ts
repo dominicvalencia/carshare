@@ -30,7 +30,10 @@ describe('shared renter booking-time selection', () => {
 
   it('rejects non-30-minute values and elapsed same-day times without applying them', () => {
     expect(selector).toContain('isBookingTimeAligned(selected)');
-    expect(selector).toContain('isBookingTimeSlotSelectable(pickupDate, minutes)');
+    expect(selector).toContain(
+      'isBookingTimeSlotSelectable(pickupDate, minutes, new Date(), minimumNoticeMinutes)',
+    );
+    expect(selector).toContain("meets the vehicle's preparation window");
     expect(selector).toContain('Choose a time on the hour or half hour.');
     expect(selector).toContain("Choose a later time for today's pickup.");
     expect(selector).toContain('accessibilityRole="alert"');

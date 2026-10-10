@@ -15,6 +15,7 @@ describe('deep-link parent state', () => {
     ['Conversation', 'Messages'],
     ['Notifications', 'Messages'],
     ['Claim', 'Bookings'],
+    ['BookingRecovery', 'Bookings'],
     ['VehicleDetails', 'Home'],
     ['HostProfile', 'Home'],
     ['Favorites', 'Home'],

@@ -133,4 +133,20 @@ describe('confirmed-booking cancellation UX', () => {
     expect(sheet).toContain('value={penalty}');
     expect(sheet).not.toContain('Your renter will receive the authoritative refund.');
   });
+
+  it('presents the cancelled renter booking as a compact, final financial summary', () => {
+    expect(renter).toContain('Booking cancelled');
+    expect(renter).toContain('Your rental did not start and custody was not transferred.');
+    expect(renter).toContain('style={styles.cancelledSummary}');
+    expect(renter).toContain('<StatusBadge label="Cancelled" tone="neutral" />');
+    expect(renter).toContain('label="Original total"');
+    expect(renter).toContain('booking.pricing.totalMinor');
+    expect(renter).toContain('label="Refund"');
+    expect(renter).toContain('booking.cancellationSettlement.refundAmountMinor');
+    expect(renter).toContain('cancellationSettlementRows(booking.cancellationSettlement)');
+    expect(renter).toContain('label={titleCase(booking.cancellationSettlement.refundStatus');
+    expect(renter).not.toContain('label="CarShare commission retained"');
+    expect(renter).not.toContain('label="Delivery retained / refunded"');
+    expect(renter).not.toContain('label="Collection refunded"');
+  });
 });

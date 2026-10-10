@@ -28,6 +28,7 @@ export function TripDateCalendar({
   appliedEnd,
   disabledDate,
   minimumDate,
+  minimumNoticeMinutes = 0,
   preselect,
   applyLabel = 'Apply dates',
   showClear = true,
@@ -38,6 +39,7 @@ export function TripDateCalendar({
   readonly appliedEnd: Date;
   readonly disabledDate?: (date: Date) => boolean;
   readonly minimumDate?: Date;
+  readonly minimumNoticeMinutes?: number;
   readonly preselect: boolean;
   readonly applyLabel?: string;
   readonly showClear?: boolean;
@@ -78,6 +80,7 @@ export function TripDateCalendar({
           !isBookingCalendarDateSelectable(day, {
             ...(disabledDate ? { disabledDate } : {}),
             minimumDate: earliest,
+            minimumNoticeMinutes,
           })
         }
         minimumDate={earliest}

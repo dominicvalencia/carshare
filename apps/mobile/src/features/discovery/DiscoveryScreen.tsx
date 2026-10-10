@@ -87,6 +87,8 @@ import { TripDateCalendar } from './TripDateCalendar';
 import { BookingDateTimeEditorSummary } from './BookingDateTimeEditorSummary';
 import {
   applySharedBookingTime,
+  isBookingTimeSlotSelectable,
+  minutesSinceMidnight,
   nextBookingTimeSlot,
   tripDateTimeSummary,
 } from './trip-date-policy';
@@ -396,6 +398,7 @@ function fullMapVisualProgress(progress: number) {
 }
 
 export function DiscoveryScreen({
+  exploreRootRequest = 0,
   home = false,
   initialMode = 'form',
   initialVehicleId,
@@ -403,6 +406,7 @@ export function DiscoveryScreen({
   onTabBarHiddenChange,
   wishlistTab = false,
 }: {
+  readonly exploreRootRequest?: number;
   readonly home?: boolean;
   readonly initialMode?: 'form' | 'favorites';
   readonly initialVehicleId?: string | undefined;
@@ -464,6 +468,17 @@ export function DiscoveryScreen({
   const fullMapPeekHeight = Math.max(88, Math.min(104, 64 + bottomSafeArea));
   const validDates = returnAt.getTime() > pickup.getTime();
   const discoveryLocationAccountId = user?.id ?? 'guest';
+  const handledExploreRootRequest = useRef(exploreRootRequest);
+  useEffect(() => {
+    if (!home || handledExploreRootRequest.current === exploreRootRequest) return;
+    handledExploreRootRequest.current = exploreRootRequest;
+    setMode('form');
+    setVehicleId(null);
+    setFullMap(false);
+    setSelectedMapVehicleId(null);
+    setFiltersOpen(false);
+    setLocationOpen(false);
+  }, [exploreRootRequest, home]);
   useEffect(() => {
     if (!home || booting) return;
     let cancelled = false;
@@ -2663,6 +2678,14 @@ function VehicleView(properties: {
   const [draftReturnAt, setDraftReturnAt] = useState(properties.returnAt);
   const [draftDatesExplicit, setDraftDatesExplicit] = useState(properties.datesExplicit);
   const [draftTimeExplicit, setDraftTimeExplicit] = useState(properties.datesExplicit);
+  const [draftTimeValid, setDraftTimeValid] = useState(() =>
+    isBookingTimeSlotSelectable(
+      properties.pickup,
+      minutesSinceMidnight(properties.pickup),
+      new Date(),
+      vehicle?.fulfillment.fulfillmentMinimumNoticeMinutes ?? 0,
+    ),
+  );
   const [draftStartMethod, setDraftStartMethod] = useState(startMethod);
   const [draftEndMethod, setDraftEndMethod] = useState(endMethod);
   const [draftSameAsDelivery, setDraftSameAsDelivery] = useState(sameAsDelivery);
@@ -2948,6 +2971,14 @@ function VehicleView(properties: {
     setDraftReturnAt(properties.returnAt);
     setDraftDatesExplicit(properties.datesExplicit);
     setDraftTimeExplicit(properties.datesExplicit);
+    setDraftTimeValid(
+      isBookingTimeSlotSelectable(
+        properties.pickup,
+        minutesSinceMidnight(properties.pickup),
+        new Date(),
+        vehicle.fulfillment.fulfillmentMinimumNoticeMinutes ?? 0,
+      ),
+    );
     setDraftStartMethod(startMethod);
     setDraftEndMethod(endMethod);
     setDraftSameAsDelivery(sameAsDelivery);
@@ -2970,7 +3001,11 @@ function VehicleView(properties: {
       (draftStartMethod === 'OWNER_DELIVERY' && draftSameAsDelivery) ||
       Boolean(draftCollectionLocation));
   const draftTripValid =
-    draftDatesExplicit && draftTimeExplicit && draftReturnAt > draftPickup && draftFulfillmentValid;
+    draftDatesExplicit &&
+    draftTimeExplicit &&
+    draftTimeValid &&
+    draftReturnAt > draftPickup &&
+    draftFulfillmentValid;
   const draftChargeableDays = chargeableDays(draftPickup, draftReturnAt);
   const draftDiscountMessage = draftDatesExplicit
     ? durationDiscountMessage(draftChargeableDays, durationDiscounts)
@@ -3382,6 +3417,7 @@ function VehicleView(properties: {
                 </Text>
                 <BookingDateTimeEditorSummary
                   end={draftReturnAt}
+                  minimumNoticeMinutes={vehicle.fulfillment.fulfillmentMinimumNoticeMinutes ?? 0}
                   onChangeDates={() => setTripCalendarOpen(true)}
                   onChangeTime={(value) => {
                     const shared = applySharedBookingTime(
@@ -3393,6 +3429,7 @@ function VehicleView(properties: {
                     setDraftReturnAt(shared.end);
                     setDraftTimeExplicit(true);
                   }}
+                  onValidityChange={setDraftTimeValid}
                   start={draftPickup}
                   timeEstablished={draftDatesExplicit && draftTimeExplicit}
                 />
@@ -3445,6 +3482,9 @@ function VehicleView(properties: {
                       <TripDateCalendar
                         appliedEnd={draftReturnAt}
                         appliedStart={draftPickup}
+                        minimumNoticeMinutes={
+                          vehicle.fulfillment.fulfillmentMinimumNoticeMinutes ?? 0
+                        }
                         preselect={draftDatesExplicit}
                         showClear={false}
                         onApply={(start, end) => {
@@ -3456,6 +3496,14 @@ function VehicleView(properties: {
                           setDraftPickup(shared.start);
                           setDraftReturnAt(shared.end);
                           setDraftDatesExplicit(true);
+                          setDraftTimeValid(
+                            isBookingTimeSlotSelectable(
+                              shared.start,
+                              minutesSinceMidnight(shared.start),
+                              new Date(),
+                              vehicle.fulfillment.fulfillmentMinimumNoticeMinutes ?? 0,
+                            ),
+                          );
                           setTripCalendarOpen(false);
                         }}
                         onClear={() => undefined}
@@ -4485,6 +4533,9 @@ function LocationSheet({
   const [draftEnd, setDraftEnd] = useState(appliedEnd);
   const [draftDatesEstablished, setDraftDatesEstablished] = useState(datesEstablished);
   const [draftTimeEstablished, setDraftTimeEstablished] = useState(timeEstablished);
+  const [draftTimeValid, setDraftTimeValid] = useState(() =>
+    isBookingTimeSlotSelectable(appliedStart, minutesSinceMidnight(appliedStart)),
+  );
   const [draftDateRangeReady, setDraftDateRangeReady] = useState(false);
   const [draftDateTimeEditing, setDraftDateTimeEditing] = useState(false);
   const [draftDatesCleared, setDraftDatesCleared] = useState(false);
@@ -4519,6 +4570,9 @@ function LocationSheet({
     setDraftEnd(appliedEnd);
     setDraftDatesEstablished(datesEstablished);
     setDraftTimeEstablished(timeEstablished);
+    setDraftTimeValid(
+      isBookingTimeSlotSelectable(appliedStart, minutesSinceMidnight(appliedStart)),
+    );
     setDraftDateRangeReady(datesEstablished);
     setDraftDateTimeEditing(false);
     setDraftDatesCleared(false);
@@ -4786,6 +4840,12 @@ function LocationSheet({
                       setDraftStart(shared.start);
                       setDraftEnd(shared.end);
                       setDraftDatesEstablished(true);
+                      setDraftTimeValid(
+                        isBookingTimeSlotSelectable(
+                          shared.start,
+                          minutesSinceMidnight(shared.start),
+                        ),
+                      );
                       setDraftDatesCleared(false);
                       setDraftDateRangeReady(true);
                       setDraftDateTimeEditing(true);
@@ -4811,11 +4871,12 @@ function LocationSheet({
                         setDraftEnd(shared.end);
                         setDraftTimeEstablished(true);
                       }}
+                      onValidityChange={setDraftTimeValid}
                       start={draftStart}
                       timeEstablished={draftTimeEstablished}
                     />
                     <Button
-                      disabled={!draftDatesEstablished || !draftTimeEstablished}
+                      disabled={!draftDatesEstablished || !draftTimeEstablished || !draftTimeValid}
                       label="Done editing"
                       onPress={() => setDraftDateTimeEditing(false)}
                     />
@@ -4879,7 +4940,10 @@ function LocationSheet({
               <>
                 <Button
                   disabled={
-                    !draftWhereEstablished || !draftDatesEstablished || !draftTimeEstablished
+                    !draftWhereEstablished ||
+                    !draftDatesEstablished ||
+                    !draftTimeEstablished ||
+                    !draftTimeValid
                   }
                   icon="search"
                   label="Search"

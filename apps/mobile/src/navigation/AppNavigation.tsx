@@ -139,6 +139,7 @@ function RenterNavigation({
   const badges = useBadges('renter');
   const insets = useSafeAreaInsets();
   const [renterTabsHidden, setRenterTabsHidden] = useState(false);
+  const [exploreRootRequest, setExploreRootRequest] = useState(0);
   return (
     <RenterTabs.Navigator
       screenOptions={({ route }) => {
@@ -156,10 +157,19 @@ function RenterNavigation({
       }}
     >
       <RenterTabs.Screen
+        listeners={{
+          tabPress: () => setExploreRootRequest((current) => current + 1),
+        }}
         name="Home"
         options={{ tabBarAccessibilityLabel: 'Explore tab', tabBarLabel: 'Explore' }}
       >
-        {() => <DiscoveryScreen home onTabBarHiddenChange={setRenterTabsHidden} />}
+        {() => (
+          <DiscoveryScreen
+            exploreRootRequest={exploreRootRequest}
+            home
+            onTabBarHiddenChange={setRenterTabsHidden}
+          />
+        )}
       </RenterTabs.Screen>
       <RenterTabs.Screen
         name="Wishlist"

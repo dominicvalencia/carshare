@@ -14,11 +14,17 @@ export function isBookingCalendarDateSelectable(
   policy: {
     readonly disabledDate?: (date: Date) => boolean;
     readonly minimumDate: Date;
+    readonly minimumNoticeMinutes?: number;
+    readonly now?: Date;
   },
 ) {
   const calendarDate = discoveryDateForCalendarDay(value);
   const minimumDate = discoveryDateForCalendarDay(policy.minimumDate);
-  return calendarDate >= minimumDate && !(policy.disabledDate?.(calendarDate) ?? false);
+  return (
+    calendarDate >= minimumDate &&
+    hasSelectableBookingTimeSlot(calendarDate, policy.now, policy.minimumNoticeMinutes) &&
+    !(policy.disabledDate?.(calendarDate) ?? false)
+  );
 }
 
 export function tripDateSummary(
@@ -75,21 +81,47 @@ export function isBookingTimeAligned(value: Date) {
   return value.getMinutes() % BOOKING_TIME_INCREMENT_MINUTES === 0;
 }
 
-export function nextBookingTimeSlot(now: Date = new Date()) {
-  const current = minutesSinceMidnight(now);
+export function nextBookingTimeSlot(now: Date = new Date(), minimumNoticeMinutes = 0) {
+  const threshold = new Date(now.getTime() + minimumNoticeMinutes * 60_000);
+  const current = minutesSinceMidnight(threshold);
   const next =
     Math.ceil((current + 1) / BOOKING_TIME_INCREMENT_MINUTES) * BOOKING_TIME_INCREMENT_MINUTES;
   return Math.min(next, 24 * 60 - BOOKING_TIME_INCREMENT_MINUTES);
+}
+
+export function hasSelectableBookingTimeSlot(
+  pickupDate: Date,
+  now: Date = new Date(),
+  minimumNoticeMinutes = 0,
+) {
+  const day = discoveryDateForCalendarDay(pickupDate);
+  const today = discoveryDateForCalendarDay(now);
+  if (day < today) return false;
+  if (day > today) return true;
+  const threshold = new Date(now.getTime() + minimumNoticeMinutes * 60_000);
+  if (
+    threshold.getFullYear() !== day.getFullYear() ||
+    threshold.getMonth() !== day.getMonth() ||
+    threshold.getDate() !== day.getDate()
+  )
+    return false;
+  const nextSlot = nextBookingTimeSlot(now, minimumNoticeMinutes);
+  return isBookingTimeSlotSelectable(day, nextSlot, now, minimumNoticeMinutes);
 }
 
 export function isBookingTimeSlotSelectable(
   pickupDate: Date,
   slotMinutes: number,
   now: Date = new Date(),
+  minimumNoticeMinutes = 0,
 ) {
   const sameLocalDay =
     pickupDate.getFullYear() === now.getFullYear() &&
     pickupDate.getMonth() === now.getMonth() &&
     pickupDate.getDate() === now.getDate();
-  return !sameLocalDay || applyBookingTime(pickupDate, slotMinutes) > now;
+  if (!sameLocalDay)
+    return discoveryDateForCalendarDay(pickupDate) > discoveryDateForCalendarDay(now);
+  const threshold = new Date(now.getTime() + minimumNoticeMinutes * 60_000);
+  const pickupAt = applyBookingTime(pickupDate, slotMinutes);
+  return pickupAt > now && pickupAt >= threshold;
 }

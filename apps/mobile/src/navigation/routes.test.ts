@@ -71,8 +71,8 @@ describe('compact mobile navigation', () => {
     expect(navigationSource).toMatch(
       /tabBarStyle: renterTabsHidden[\s\S]*display: 'none' as const[\s\S]*: tabBarStyle/,
     );
-    expect(navigationSource).toContain(
-      '<DiscoveryScreen home onTabBarHiddenChange={setRenterTabsHidden} />',
+    expect(navigationSource).toMatch(
+      /<DiscoveryScreen[\s\S]*exploreRootRequest=\{exploreRootRequest\}[\s\S]*home[\s\S]*onTabBarHiddenChange=\{setRenterTabsHidden\}/,
     );
     expect(navigationSource).toMatch(
       /initialMode="favorites"[\s\S]*onTabBarHiddenChange=\{setRenterTabsHidden\}/,

@@ -15,6 +15,7 @@ export function BookingDateTimeEditorSummary({
   onChangeDates,
   onChangeTime,
   onValidityChange,
+  minimumNoticeMinutes = 0,
   start,
   timeEstablished = true,
 }: {
@@ -22,6 +23,7 @@ export function BookingDateTimeEditorSummary({
   readonly onChangeDates: () => void;
   readonly onChangeTime: (value: Date) => void;
   readonly onValidityChange?: (valid: boolean) => void;
+  readonly minimumNoticeMinutes?: number;
   readonly start: Date;
   readonly timeEstablished?: boolean;
 }) {
@@ -29,10 +31,13 @@ export function BookingDateTimeEditorSummary({
   const currentMinutes = start.getHours() * 60 + start.getMinutes();
   const currentValueError =
     !timeEstablished ||
-    (isBookingTimeAligned(start) && isBookingTimeSlotSelectable(start, currentMinutes))
+    (isBookingTimeAligned(start) &&
+      isBookingTimeSlotSelectable(start, currentMinutes, new Date(), minimumNoticeMinutes))
       ? ''
       : isBookingTimeAligned(start)
-        ? "Choose a later time for today's pickup."
+        ? minimumNoticeMinutes > 0
+          ? "Choose a later time that meets the vehicle's preparation window."
+          : "Choose a later time for today's pickup."
         : 'Choose a time on the hour or half hour.';
   const validationError = selectionError || currentValueError;
 
@@ -58,6 +63,7 @@ export function BookingDateTimeEditorSummary({
           established={timeEstablished}
           hideValidationError
           label="Pickup & return time"
+          minimumNoticeMinutes={minimumNoticeMinutes}
           pickupDate={start}
           value={start}
           onChange={onChangeTime}
