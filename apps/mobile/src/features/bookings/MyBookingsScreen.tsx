@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -7,16 +7,27 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type ScrollView,
 } from 'react-native';
 import type { NavigationProp, RouteProp } from '@react-navigation/native';
 import { useNavigation, useRoute } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { apiClient } from '../../auth/api-client';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import type { RenterTabParamList, RootStackParamList } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
-import { bookingStatusLabel, dateLabel, dateTimeLabel, money, titleCase } from '../../ui/format';
+import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
+import {
+  bookingStatusLabel,
+  dateLabel,
+  dateTimeLabel,
+  money,
+  timeLabel,
+  titleCase,
+} from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import {
   Button,
@@ -30,6 +41,7 @@ import {
   StatusBadge,
 } from '../../ui/primitives';
 import { RenterClaimsPanel } from '../claims/ClaimsPanels';
+import { tripDateSummary } from '../discovery/trip-date-policy';
 import { RenterRentalPanel } from '../rentals/RentalOperationsPanels';
 import { ReviewPanel } from '../reviews/ReviewPanel';
 import { bookingGroup, type BookingGroup } from './booking-presentation';
@@ -511,8 +523,27 @@ function BookingDetail({
   const scrollToCancelledSummaryAfterLayout = useRef(false);
   const [now, setNow] = useState(0);
   const [bookingDetailsOpen, setBookingDetailsOpen] = useState(false);
+  const [bookingDetailsContentHeight, setBookingDetailsContentHeight] = useState(0);
+  const [bookingDetailsHeaderHeight, setBookingDetailsHeaderHeight] = useState(0);
   const [cancellationOpen, setCancellationOpen] = useState(false);
   const [amendmentOpen, setAmendmentOpen] = useState(false);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
+  const bookingDetailsMaximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const bookingDetailsLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight: bookingDetailsContentHeight,
+        headerHeight: bookingDetailsHeaderHeight,
+        maxSafeViewportHeight: bookingDetailsMaximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [bookingDetailsContentHeight, bookingDetailsHeaderHeight, bookingDetailsMaximumHeight],
+  );
+  const bookingDetailsSheetHeight = useSharedValue(Math.min(720, bookingDetailsMaximumHeight));
+  const bookingDetailsSheetStyle = useAnimatedStyle(() => ({
+    height: bookingDetailsSheetHeight.value,
+  }));
   useEffect(() => {
     const initialize = setTimeout(() => setNow(Date.now()), 0);
     const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -521,6 +552,17 @@ function BookingDetail({
       clearInterval(timer);
     };
   }, []);
+  useEffect(() => {
+    if (!bookingDetailsOpen || bookingDetailsContentHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    bookingDetailsSheetHeight.value = withTiming(bookingDetailsLayout.height, { duration: 220 });
+  }, [
+    bookingDetailsContentHeight,
+    bookingDetailsLayout.height,
+    bookingDetailsOpen,
+    bookingDetailsSheetHeight,
+  ]);
   if (loading)
     return (
       <Screen leading={<BackControl label="All bookings" onPress={onBack} />} title="Booking">
@@ -551,6 +593,23 @@ function BookingDetail({
   ].includes(booking.status);
   const pickupHasBegun =
     operational && now >= new Date(booking.pickupWindow?.opensAt ?? booking.rentalStart).getTime();
+  const acceptedUpcoming =
+    !pickupHasBegun && ['CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status);
+  const securityDepositPlaced =
+    !booking.securityDeposit.required ||
+    (booking.securityDeposit.status === 'AUTHORIZED' &&
+      booking.securityDeposit.heldMinor >= (booking.securityDeposit.amountMinor ?? 0));
+  const securityDepositPending = booking.securityDeposit.required && !securityDepositPlaced;
+  const canChangeBooking = ['CONFIRMED', 'READY_FOR_PICKUP', 'ACTIVE'].includes(booking.status);
+  const changeBookingLabel =
+    booking.latestAmendment &&
+    !['APPLIED', 'DECLINED', 'WITHDRAWN', 'EXPIRED', 'FAILED'].includes(
+      booking.latestAmendment.status,
+    )
+      ? 'View booking change'
+      : booking.status === 'ACTIVE'
+        ? 'Extend Trip'
+        : 'Change Booking';
   const rentalOperations = operational ? (
     <RenterRentalPanel
       focusOverdueRecovery={focusRecovery}
@@ -569,8 +628,17 @@ function BookingDetail({
       scrollToRecoveryResponse={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
     />
   ) : null;
+  const upcomingRentalSection = (section: 'travel' | 'next-step') => (
+    <RenterRentalPanel
+      reference={booking.publicReference}
+      securityDepositPending={securityDepositPending}
+      upcomingSection={section}
+    />
+  );
   return (
     <Screen
+      compactNestedHeader
+      contentTopPadding={spacing.sm}
       onScroll={({ nativeEvent }) => {
         scrollOffsetY.current = nativeEvent.contentOffset.y;
       }}
@@ -587,128 +655,163 @@ function BookingDetail({
       {pickupHasBegun && rentalOperations}
       {pickupHasBegun && (
         <>
-          <Button
-            icon="information-circle-outline"
-            label="View booking details"
-            onPress={() => setBookingDetailsOpen(true)}
-            variant="secondary"
-          />
+          <View
+            style={[
+              styles.bookingActionsSection,
+              booking.status === 'RETURN_PENDING' && styles.bookingActionsSectionCompact,
+            ]}
+          >
+            <Text style={styles.sectionTitle}>Booking actions</Text>
+            <View
+              style={[
+                styles.bookingActionGrid,
+                booking.status === 'RETURN_PENDING' && styles.bookingActionGridBalanced,
+              ]}
+            >
+              <BookingAction label="Booking details" onPress={() => setBookingDetailsOpen(true)} />
+              {canChangeBooking && (
+                <BookingAction label={changeBookingLabel} onPress={() => setAmendmentOpen(true)} />
+              )}
+              {booking.conversationId && (
+                <BookingAction label="Message" onPress={() => onMessage(booking.conversationId!)} />
+              )}
+            </View>
+          </View>
           <Modal
-            animationType="slide"
+            animationType="fade"
             onRequestClose={() => setBookingDetailsOpen(false)}
-            presentationStyle="pageSheet"
+            presentationStyle="overFullScreen"
+            statusBarTranslucent
+            transparent
             visible={bookingDetailsOpen}
           >
-            <Screen
-              action={
-                <Pressable
-                  accessibilityLabel="Close booking details"
-                  accessibilityRole="button"
-                  hitSlop={spacing.md}
-                  onPress={() => setBookingDetailsOpen(false)}
+            <View style={styles.bookingDetailsModalRoot}>
+              <View style={styles.bookingDetailsBackdrop} />
+              <Reanimated.View
+                accessibilityViewIsModal
+                style={[styles.bookingDetailsSheet, bookingDetailsSheetStyle]}
+              >
+                <Screen
+                  constrainOverscroll
+                  contentBottomPadding={Math.max(safeArea.bottom, spacing.lg)}
+                  contentGrows={false}
+                  leading={
+                    <BackControl label="Back" onPress={() => setBookingDetailsOpen(false)} />
+                  }
+                  onContentSizeChange={(_width, height) => setBookingDetailsContentHeight(height)}
+                  onHeaderLayout={({ nativeEvent }) =>
+                    setBookingDetailsHeaderHeight(nativeEvent.layout.height)
+                  }
+                  safeTop={false}
+                  scrollEnabled={bookingDetailsLayout.scrollEnabled}
+                  eyebrow="Booking details"
+                  title={
+                    booking.vehicle.make && booking.vehicle.model
+                      ? `${booking.vehicle.make} ${booking.vehicle.model}`
+                      : booking.publicReference
+                  }
+                  subtitle={`Reference ${booking.publicReference}`}
                 >
-                  <Icon color={colors.primary} name="close" size={28} />
-                </Pressable>
-              }
-              eyebrow="Booking details"
-              title={
-                booking.vehicle.make && booking.vehicle.model
-                  ? `${booking.vehicle.make} ${booking.vehicle.model}`
-                  : booking.publicReference
-              }
-              subtitle={`Reference ${booking.publicReference}`}
-            >
-              <Card>
-                <Detail
-                  label="Pickup"
-                  value={dateTimeLabel(booking.rentalStart)}
-                  icon="calendar-outline"
-                />
-                <Detail
-                  label="Return"
-                  value={dateTimeLabel(booking.rentalEnd)}
-                  icon="return-down-back-outline"
-                />
-                <Detail
-                  label="Payment"
-                  value={rentalPayment ? paymentLabel(rentalPayment.status) : 'No payment yet'}
-                  icon="card-outline"
-                />
-                {booking.vehicle.location && (
-                  <Detail
-                    label="Pickup area"
-                    value={`${booking.vehicle.location.city}, ${booking.vehicle.location.province}`}
-                    icon="location-outline"
-                  />
-                )}
-              </Card>
-              <Card>
-                <Text style={styles.vehicle}>Contractual handover</Text>
-                <Detail
-                  label="How you'll receive the car"
-                  value={
-                    booking.fulfillment.startMethod === 'OWNER_DELIVERY'
-                      ? 'Owner Delivery'
-                      : 'Pick up the car'
-                  }
-                  icon="navigate-outline"
-                />
-                {booking.fulfillment.startLocation && (
-                  <Detail
-                    label="Start location"
-                    value={fulfillmentLocation(booking.fulfillment.startLocation)}
-                    icon="location-outline"
-                  />
-                )}
-                {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
-                  <Detail
-                    label="Delivery fee"
-                    value={money(booking.fulfillment.deliveryFeeMinor, bookingCurrency(booking))}
-                    icon="cash-outline"
-                  />
-                )}
-                <Detail
-                  label="How you'll return the car"
-                  value={
-                    booking.fulfillment.endMethod === 'OWNER_COLLECTION'
-                      ? 'Owner Collection'
-                      : 'Return it yourself'
-                  }
-                  icon="return-down-back-outline"
-                />
-                {booking.fulfillment.endLocation && (
-                  <Detail
-                    label="End location"
-                    value={fulfillmentLocation(booking.fulfillment.endLocation)}
-                    icon="location-outline"
-                  />
-                )}
-                {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
-                  <Detail
-                    label="Collection fee"
-                    value={money(booking.fulfillment.collectionFeeMinor, bookingCurrency(booking))}
-                    icon="cash-outline"
-                  />
-                )}
-              </Card>
-              <SecurityDepositSummary
-                busy={securityDepositMutation.isPending}
-                errorMessage={securityDepositMutation.error?.message}
-                onPlace={() => securityDepositMutation.mutate(booking)}
-                securityDeposit={booking.securityDeposit}
-              />
-              {booking.conversationId && (
-                <Button
-                  icon="chatbubble-outline"
-                  label="Message owner"
-                  onPress={() => {
-                    setBookingDetailsOpen(false);
-                    onMessage(booking.conversationId!);
-                  }}
-                  variant="secondary"
-                />
-              )}
-            </Screen>
+                  <Card style={styles.bookingDetailsCard}>
+                    <Detail
+                      compact
+                      label="Pickup"
+                      value={dateTimeLabel(booking.rentalStart)}
+                      icon="calendar-outline"
+                    />
+                    <Detail
+                      compact
+                      label="Return"
+                      value={dateTimeLabel(booking.rentalEnd)}
+                      icon="return-down-back-outline"
+                    />
+                    <Detail
+                      compact
+                      label="Payment"
+                      value={rentalPayment ? paymentLabel(rentalPayment.status) : 'No payment yet'}
+                      icon="card-outline"
+                    />
+                    {booking.vehicle.location && (
+                      <Detail
+                        compact
+                        label="Pickup area"
+                        value={`${booking.vehicle.location.city}, ${booking.vehicle.location.province}`}
+                        icon="location-outline"
+                      />
+                    )}
+                  </Card>
+                  <Card style={styles.bookingDetailsCard}>
+                    <Text style={styles.vehicle}>Handover details</Text>
+                    <Detail
+                      compact
+                      label="Pickup method"
+                      value={
+                        booking.fulfillment.startMethod === 'OWNER_DELIVERY'
+                          ? 'Owner Delivery'
+                          : 'Pick up the car'
+                      }
+                      icon="navigate-outline"
+                    />
+                    {booking.fulfillment.startLocation && (
+                      <Detail
+                        compact
+                        label="Start location"
+                        value={fulfillmentLocation(booking.fulfillment.startLocation)}
+                        icon="location-outline"
+                      />
+                    )}
+                    {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
+                      <Detail
+                        compact
+                        label="Delivery fee"
+                        value={money(
+                          booking.fulfillment.deliveryFeeMinor,
+                          bookingCurrency(booking),
+                        )}
+                        icon="cash-outline"
+                      />
+                    )}
+                    <Detail
+                      compact
+                      label="Return method"
+                      value={
+                        booking.fulfillment.endMethod === 'OWNER_COLLECTION'
+                          ? 'Owner Collection'
+                          : 'Return it yourself'
+                      }
+                      icon="return-down-back-outline"
+                    />
+                    {booking.fulfillment.endLocation && (
+                      <Detail
+                        compact
+                        label="End location"
+                        value={fulfillmentLocation(booking.fulfillment.endLocation)}
+                        icon="location-outline"
+                      />
+                    )}
+                    {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
+                      <Detail
+                        compact
+                        label="Collection fee"
+                        value={money(
+                          booking.fulfillment.collectionFeeMinor,
+                          bookingCurrency(booking),
+                        )}
+                        icon="cash-outline"
+                      />
+                    )}
+                  </Card>
+                  {booking.securityDeposit.required && (
+                    <SecurityDepositSummary
+                      busy={securityDepositMutation.isPending}
+                      errorMessage={securityDepositMutation.error?.message}
+                      onPlace={() => securityDepositMutation.mutate(booking)}
+                      securityDeposit={booking.securityDeposit}
+                    />
+                  )}
+                </Screen>
+              </Reanimated.View>
+            </View>
           </Modal>
         </>
       )}
@@ -732,24 +835,25 @@ function BookingDetail({
             />
             <Text style={styles.total}>{bookingTotalLabel(booking)}</Text>
           </View>
-          <Card>
+          <Card style={styles.bookingDetailsCard}>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>
+              Trip summary
+            </Text>
             <Detail
-              label="Pickup"
-              value={dateTimeLabel(booking.rentalStart)}
+              compact
+              label="Dates & time"
+              value={bookingTripSummary(booking.rentalStart, booking.rentalEnd)}
               icon="calendar-outline"
             />
             <Detail
-              label="Return"
-              value={dateTimeLabel(booking.rentalEnd)}
-              icon="return-down-back-outline"
-            />
-            <Detail
+              compact
               label="Payment"
               value={rentalPayment ? paymentLabel(rentalPayment.status) : 'No payment yet'}
               icon="card-outline"
             />
             {booking.vehicle.location && (
               <Detail
+                compact
                 label="Pickup area"
                 value={`${booking.vehicle.location.city}, ${booking.vehicle.location.province}`}
                 icon="location-outline"
@@ -809,10 +913,21 @@ function BookingDetail({
               </Card>
             </View>
           ) : null}
-          <Card>
-            <Text style={styles.vehicle}>Contractual handover</Text>
+          {booking.securityDeposit.required && (
+            <SecurityDepositSummary
+              busy={securityDepositMutation.isPending}
+              compact={acceptedUpcoming && securityDepositPlaced}
+              errorMessage={securityDepositMutation.error?.message}
+              onPlace={() => securityDepositMutation.mutate(booking)}
+              securityDeposit={booking.securityDeposit}
+            />
+          )}
+          {acceptedUpcoming && securityDepositPlaced && upcomingRentalSection('travel')}
+          <Card style={styles.bookingDetailsCard}>
+            <Text style={styles.vehicle}>Handover details</Text>
             <Detail
-              label="How you'll receive the car"
+              compact
+              label="Start of rental"
               value={
                 booking.fulfillment.startMethod === 'OWNER_DELIVERY'
                   ? 'Owner Delivery'
@@ -822,6 +937,7 @@ function BookingDetail({
             />
             {booking.fulfillment.startLocation && (
               <Detail
+                compact
                 label="Start location"
                 value={fulfillmentLocation(booking.fulfillment.startLocation)}
                 icon="location-outline"
@@ -829,13 +945,15 @@ function BookingDetail({
             )}
             {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
               <Detail
+                compact
                 label="Delivery fee"
                 value={money(booking.fulfillment.deliveryFeeMinor, bookingCurrency(booking))}
                 icon="cash-outline"
               />
             )}
             <Detail
-              label="How you'll return the car"
+              compact
+              label="End of rental"
               value={
                 booking.fulfillment.endMethod === 'OWNER_COLLECTION'
                   ? 'Owner Collection'
@@ -845,6 +963,7 @@ function BookingDetail({
             />
             {booking.fulfillment.endLocation && (
               <Detail
+                compact
                 label="End location"
                 value={fulfillmentLocation(booking.fulfillment.endLocation)}
                 icon="location-outline"
@@ -852,25 +971,32 @@ function BookingDetail({
             )}
             {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
               <Detail
+                compact
                 label="Collection fee"
                 value={money(booking.fulfillment.collectionFeeMinor, bookingCurrency(booking))}
                 icon="cash-outline"
               />
             )}
           </Card>
-          <SecurityDepositSummary
-            busy={securityDepositMutation.isPending}
-            errorMessage={securityDepositMutation.error?.message}
-            onPlace={() => securityDepositMutation.mutate(booking)}
-            securityDeposit={booking.securityDeposit}
-          />
-          {booking.conversationId && (
-            <Button
-              icon="chatbubble-outline"
-              label="Message owner"
-              onPress={() => onMessage(booking.conversationId!)}
-              variant="secondary"
-            />
+          {acceptedUpcoming && upcomingRentalSection('next-step')}
+          {(booking.conversationId || canChangeBooking) && (
+            <View style={[styles.bookingActionsSection, styles.bookingActionsSectionCompact]}>
+              <Text style={styles.sectionTitle}>Booking actions</Text>
+              <View style={styles.bookingActionGrid}>
+                {booking.conversationId && (
+                  <BookingAction
+                    label="Message"
+                    onPress={() => onMessage(booking.conversationId!)}
+                  />
+                )}
+                {canChangeBooking && (
+                  <BookingAction
+                    label={changeBookingLabel}
+                    onPress={() => setAmendmentOpen(true)}
+                  />
+                )}
+              </View>
+            </View>
           )}
         </>
       )}
@@ -920,69 +1046,9 @@ function BookingDetail({
           onAction={onBack}
         />
       )}
-      {!pickupHasBegun && rentalOperations}
-      {['CONFIRMED', 'READY_FOR_PICKUP', 'ACTIVE'].includes(booking.status) && (
-        <Button
-          icon="calendar-outline"
-          label={
-            booking.latestAmendment &&
-            !['APPLIED', 'DECLINED', 'WITHDRAWN', 'EXPIRED', 'FAILED'].includes(
-              booking.latestAmendment.status,
-            )
-              ? 'View booking change'
-              : booking.status === 'ACTIVE'
-                ? 'Extend Trip'
-                : 'Change Booking'
-          }
-          onPress={() => setAmendmentOpen(true)}
-          variant="secondary"
-        />
-      )}
+      {!pickupHasBegun && !acceptedUpcoming && rentalOperations}
       <RenterClaimsPanel bookingReference={booking.publicReference} />
       {booking.status === 'COMPLETED' && <ReviewPanel bookingReference={booking.publicReference} />}
-      <SectionHeader title="Trip timeline" />
-      <Card>
-        {booking.statusHistory.map((entry, index) => (
-          <View key={`${entry.occurredAt}-${entry.toStatus}`} style={styles.timelineRow}>
-            <View style={styles.timelineTrack}>
-              <View style={styles.timelineDot} />
-              {index < booking.statusHistory.length - 1 && <View style={styles.timelineLine} />}
-            </View>
-            <View style={styles.flex}>
-              <Text style={styles.vehicle}>
-                {entry.reasonCode === 'START_INSPECTION_EVIDENCE_WAIVED'
-                  ? 'Start inspection evidence waived'
-                  : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_START_REPORTED'
-                    ? 'Owner reported Pickup without inspection'
-                    : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_RETURN_REPORTED'
-                      ? 'Owner reported Return without inspection'
-                      : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_BOTH_REPORTED'
-                        ? 'Owner reported Pickup and Return without inspections'
-                        : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_CONFIRMED'
-                          ? 'Overdue handover report confirmed'
-                          : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_DISPUTED'
-                            ? 'Overdue handover report disputed'
-                            : entry.reasonCode === 'OVERDUE_HANDOVER_RECOVERY_ACCEPTED'
-                              ? 'Overdue handover report accepted'
-                              : entry.reasonCode === 'RETURN_INSPECTION_EVIDENCE_WAIVED'
-                                ? 'Return inspection evidence waived'
-                                : entry.reasonCode ===
-                                    'RETURN_CONFIRMED_WITHOUT_INSPECTION_EVIDENCE'
-                                  ? 'Return completed without inspection evidence'
-                                  : entry.reasonCode ===
-                                      'PICKUP_CONFIRMED_WITHOUT_INSPECTION_EVIDENCE'
-                                    ? 'Handover completed without inspection evidence'
-                                    : entry.reasonCode === 'PICKUP_CONFIRMED'
-                                      ? 'Verified handover'
-                                      : entry.reasonCode === 'RETURN_CONFIRMED'
-                                        ? 'Verified return'
-                                        : bookingStatusLabel(entry.toStatus)}
-              </Text>
-              <Text style={styles.body}>{dateTimeLabel(entry.occurredAt)}</Text>
-            </View>
-          </View>
-        ))}
-      </Card>
       {['HOLD', 'AWAITING_PAYMENT', 'AWAITING_OWNER'].includes(booking.status) && (
         <Button
           disabled={cancel.isPending}
@@ -1005,7 +1071,18 @@ function BookingDetail({
         />
       )}
       {['CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status) && (
-        <Button label="Cancel booking" onPress={() => setCancellationOpen(true)} variant="danger" />
+        <Card style={styles.dangerZone}>
+          <Text style={styles.dangerEyebrow}>Danger zone</Text>
+          <Text style={styles.dangerTitle}>Cancel booking</Text>
+          <Text style={styles.dangerCopy}>
+            Only cancel when necessary. Existing cancellation rules still apply.
+          </Text>
+          <Button
+            label="Cancel booking"
+            onPress={() => setCancellationOpen(true)}
+            variant="danger"
+          />
+        </Card>
       )}
       <BookingCancellationSheet
         bookingReference={booking.publicReference}
@@ -1033,16 +1110,18 @@ function fulfillmentLocation(location: {
 }
 
 function Detail({
+  compact = false,
   label,
   value,
   icon,
 }: {
+  readonly compact?: boolean;
   readonly label: string;
   readonly value: string;
   readonly icon: Parameters<typeof Icon>[0]['name'];
 }) {
   return (
-    <View style={styles.detail}>
+    <View style={[styles.detail, compact && styles.detailCompact]}>
       <View style={styles.detailIcon}>
         <Icon color={colors.primary} name={icon} size={20} />
       </View>
@@ -1053,6 +1132,21 @@ function Detail({
     </View>
   );
 }
+
+function BookingAction({
+  label,
+  onPress,
+}: {
+  readonly label: string;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} style={styles.bookingAction}>
+      <Text style={styles.bookingActionText}>{label}</Text>
+    </Pressable>
+  );
+}
+
 function refresh(client: ReturnType<typeof useQueryClient>, selected: string | null) {
   void client.invalidateQueries({ queryKey: ['bookings'] });
   void client.invalidateQueries({ queryKey: ['booking', selected] });
@@ -1086,6 +1180,15 @@ function bookingTotalLabel(booking: RenterBookingView) {
     : 'Total unavailable';
 }
 
+function bookingTripSummary(start: string, end: string) {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  const startTime = timeLabel(startDate);
+  const endTime = timeLabel(endDate);
+  const time = startTime === endTime ? startTime : `${startTime}–${endTime}`;
+  return `${tripDateSummary(startDate, endDate, { alwaysShowYear: true })} · ${time}`;
+}
+
 function paymentLabel(status: string) {
   return (
     {
@@ -1102,7 +1205,36 @@ function paymentLabel(status: string) {
 const styles = StyleSheet.create({
   actionCopy: { color: colors.primary, fontSize: 12, fontWeight: '800' },
   body: { color: colors.subtleText, lineHeight: 21, marginTop: 3 },
+  bookingAction: {
+    alignItems: 'center',
+    borderColor: colors.primary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexBasis: '47%',
+    flexGrow: 1,
+    justifyContent: 'center',
+    minHeight: 48,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  bookingActionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  bookingActionGridBalanced: { flexWrap: 'nowrap' },
+  bookingActionsSection: { gap: spacing.sm, marginTop: spacing.lg },
+  bookingActionsSectionCompact: { marginTop: spacing.md },
+  bookingActionText: { color: colors.primary, fontWeight: '800', textAlign: 'center' },
   bookingCard: { flexDirection: 'row', gap: spacing.sm, padding: spacing.sm },
+  bookingDetailsBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(8, 24, 18, 0.32)',
+  },
+  bookingDetailsCard: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  bookingDetailsModalRoot: { flex: 1, justifyContent: 'flex-end' },
+  bookingDetailsSheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    overflow: 'hidden',
+  },
   bookingTabs: {
     backgroundColor: colors.background,
     borderBottomColor: colors.border,
@@ -1122,6 +1254,15 @@ const styles = StyleSheet.create({
   },
   dates: { color: colors.subtleText, fontSize: 13, marginBottom: spacing.xs, marginTop: 3 },
   dateSection: { gap: spacing.sm },
+  dangerCopy: { color: colors.subtleText, lineHeight: 20 },
+  dangerEyebrow: {
+    color: colors.danger,
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  dangerTitle: { color: colors.danger, fontSize: 17, fontWeight: '800' },
+  dangerZone: { borderColor: colors.dangerSoft, gap: spacing.sm, marginTop: spacing.lg },
   detail: {
     alignItems: 'center',
     borderBottomColor: colors.border,
@@ -1130,6 +1271,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     minHeight: 66,
   },
+  detailCompact: { minHeight: 56 },
   detailIcon: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
@@ -1146,21 +1288,18 @@ const styles = StyleSheet.create({
   },
   detailValue: { color: colors.ink, fontSize: 14, fontWeight: '700', marginTop: 2 },
   flex: { flex: 1, minWidth: 0 },
-  hero: { borderRadius: radius.lg, height: 210, width: '100%' },
+  hero: { borderRadius: radius.lg, height: 176, width: '100%' },
   image: { borderRadius: radius.md, height: 124, width: 112 },
   notice: { backgroundColor: colors.warningSoft },
   price: { color: colors.ink, fontSize: 16, fontWeight: '900', marginTop: spacing.xs },
   reference: { color: colors.subtleText, flex: 1, fontSize: 11 },
-  summaryRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  timelineDot: {
-    backgroundColor: colors.primary,
-    borderRadius: radius.pill,
-    height: 12,
-    width: 12,
+  sectionTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
+  summaryRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: -spacing.xs,
   },
-  timelineLine: { backgroundColor: colors.border, flex: 1, marginVertical: 3, width: 2 },
-  timelineRow: { flexDirection: 'row', gap: spacing.sm, minHeight: 62 },
-  timelineTrack: { alignItems: 'center', width: 16 },
   total: { color: colors.ink, fontSize: 22, fontWeight: '900' },
   vehicle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
 });

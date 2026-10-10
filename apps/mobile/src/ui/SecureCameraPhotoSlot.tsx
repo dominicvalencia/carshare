@@ -7,6 +7,7 @@ import { Button, Icon } from './primitives';
 export function SecureCameraPhotoSlot({
   busy,
   captureLabel,
+  checklist = false,
   compactRemoveOverlay = false,
   guidance,
   hideHeader = false,
@@ -20,6 +21,7 @@ export function SecureCameraPhotoSlot({
 }: {
   readonly busy: boolean;
   readonly captureLabel?: string | undefined;
+  readonly checklist?: boolean | undefined;
   readonly compactRemoveOverlay?: boolean | undefined;
   readonly guidance: string;
   readonly hideHeader?: boolean | undefined;
@@ -33,18 +35,30 @@ export function SecureCameraPhotoSlot({
 }) {
   const hasPreview = Boolean(previewUri || persistedPreview);
   return (
-    <View style={styles.slot}>
+    <View style={[styles.slot, checklist && styles.checklistSlot]}>
       {!hideHeader ? (
         <>
-          <Text style={styles.title}>
-            {name}
-            {required ? ' *' : ''}
-          </Text>
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>
+              {name}
+              {required ? ' *' : ''}
+            </Text>
+            {checklist ? (
+              <Text
+                accessibilityLabel={`${name}, ${hasPreview ? 'Added' : 'Not added'}`}
+                style={[styles.status, hasPreview && styles.statusAdded]}
+              >
+                {hasPreview ? 'Added' : 'Not added'}
+              </Text>
+            ) : null}
+          </View>
           <Text style={styles.guidance}>{guidance}</Text>
         </>
       ) : null}
-      {uploaded && <Text style={styles.success}>✓ Captured and securely uploaded</Text>}
-      {hasPreview ? (
+      {uploaded && !checklist ? (
+        <Text style={styles.success}>✓ Captured and securely uploaded</Text>
+      ) : null}
+      {hasPreview && !checklist ? (
         <View style={styles.previewFrame}>
           {previewUri ? (
             <Image
@@ -70,7 +84,34 @@ export function SecureCameraPhotoSlot({
           ) : null}
         </View>
       ) : null}
-      {!hasPreview || !compactRemoveOverlay ? (
+      {checklist ? (
+        <View style={hasPreview ? styles.checklistCompleted : undefined}>
+          {hasPreview ? (
+            <View style={styles.checklistPreviewFrame}>
+              {previewUri ? (
+                <Image
+                  accessibilityLabel={`${name} camera preview`}
+                  contentFit="cover"
+                  source={{ uri: previewUri }}
+                  style={styles.checklistPreview}
+                />
+              ) : (
+                persistedPreview
+              )}
+            </View>
+          ) : null}
+          <Button
+            compact
+            disabled={busy}
+            icon="camera-outline"
+            label={
+              busy ? 'Uploading securely…' : hasPreview ? 'Retake' : (captureLabel ?? 'Capture')
+            }
+            onPress={onCapture}
+            variant="secondary"
+          />
+        </View>
+      ) : !hasPreview || !compactRemoveOverlay ? (
         <Button
           disabled={busy}
           icon={hasPreview ? undefined : 'camera-outline'}
@@ -81,7 +122,7 @@ export function SecureCameraPhotoSlot({
           variant="secondary"
         />
       ) : null}
-      {hasPreview && onRemove && !compactRemoveOverlay ? (
+      {hasPreview && onRemove && !compactRemoveOverlay && !checklist ? (
         <Button disabled={busy} label="Remove photo" onPress={onRemove} variant="danger" />
       ) : null}
     </View>
@@ -96,6 +137,15 @@ export const securePhotoPreviewStyle = {
 };
 
 const styles = StyleSheet.create({
+  checklistCompleted: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  checklistPreview: { borderRadius: radius.sm, height: 72, width: 96 },
+  checklistPreviewFrame: { overflow: 'hidden' },
+  checklistSlot: { paddingBottom: spacing.sm, paddingTop: spacing.sm },
   guidance: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
   preview: securePhotoPreviewStyle,
   previewFrame: { position: 'relative' },
@@ -120,5 +170,22 @@ const styles = StyleSheet.create({
     paddingTop: spacing.xs,
   },
   success: { color: colors.primary, fontWeight: '800' },
+  status: {
+    backgroundColor: colors.muted,
+    borderRadius: radius.pill,
+    color: colors.subtleText,
+    fontSize: 12,
+    fontWeight: '800',
+    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  statusAdded: { backgroundColor: colors.primarySoft, color: colors.primaryDark },
   title: { color: colors.ink, fontSize: 15, fontWeight: '800' },
+  titleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
 });

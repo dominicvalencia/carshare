@@ -2,10 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
 import { Image } from 'expo-image';
+import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Alert,
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,15 +19,19 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { apiClient } from '../../auth/api-client';
-import { colors, spacing } from '../../theme/tokens';
-import { dateTimeLabel, domainLabel, money } from '../../ui/format';
+import { colors, radius, spacing } from '../../theme/tokens';
+import { dateTimeLabel, domainLabel, money, timeLabel } from '../../ui/format';
 import { invalidateBookingLifecycle } from '../../query/booking-invalidation';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import { SecureCameraPhotoSlot, securePhotoPreviewStyle } from '../../ui/SecureCameraPhotoSlot';
 import { ensureCameraPermission } from '../../ui/camera-permission';
 import { SearchableReferenceSelector } from '../../ui/SearchableReferenceSelector';
+import { DateOnlyField } from '../../ui/DateOnlyField';
 import { DateTimeField } from '../../ui/DateTimeField';
+import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
+import { BackControl, Icon, StatusBadge } from '../../ui/primitives';
 import { HANDOVER_EVIDENCE_WAIVER_ACKNOWLEDGEMENT_VERSION } from '@carrental/api-contracts';
+import { tripDateSummary } from '../discovery/trip-date-policy';
 
 const perspectives = [
   'FRONT',
@@ -35,6 +43,10 @@ const perspectives = [
   'ODOMETER',
   'FUEL_OR_BATTERY_DISPLAY',
 ] as const;
+type InspectionPerspective = (typeof perspectives)[number];
+const readingPerspectives = ['ODOMETER', 'FUEL_OR_BATTERY_DISPLAY'] as const;
+const exteriorPerspectives = ['FRONT', 'REAR', 'DRIVER_SIDE', 'PASSENGER_SIDE'] as const;
+const interiorPerspectives = ['INTERIOR', 'DASHBOARD'] as const;
 const multiPerspectives = ['INTERIOR', 'DASHBOARD', 'ADDITIONAL'] as const;
 
 const claimCategories = [
@@ -380,6 +392,8 @@ function CancellationSummary({
 
 export function RenterRentalPanel({
   focusOverdueRecovery = false,
+  upcomingSection,
+  securityDepositPending = false,
   reference,
   onCancellationCompleted,
   onContinueResolving,
@@ -389,6 +403,8 @@ export function RenterRentalPanel({
   scrollResolutionFormBy,
 }: {
   readonly focusOverdueRecovery?: boolean;
+  readonly upcomingSection?: 'travel' | 'next-step';
+  readonly securityDepositPending?: boolean;
   readonly reference: string;
   readonly onCancellationCompleted?: () => void;
   readonly onContinueResolving?: () => void;
@@ -420,6 +436,7 @@ export function RenterRentalPanel({
     (typeof handoverCancellationReasons)[number]
   >('OWNER_RENTER_COULD_NOT_AGREE');
   const [cancellationExplanation, setCancellationExplanation] = useState('');
+  const [postReturnClock, setPostReturnClock] = useState(0);
   const [cancellationQuote, setCancellationQuote] = useState<HandoverCancellationQuote | null>(
     null,
   );
@@ -444,6 +461,14 @@ export function RenterRentalPanel({
     });
     return () => keyboardShown.remove();
   }, [scrollResolutionFormBy]);
+  useEffect(() => {
+    const initialize = setTimeout(() => setPostReturnClock(Date.now()), 0);
+    const timer = setInterval(() => setPostReturnClock(Date.now()), 30_000);
+    return () => {
+      clearTimeout(initialize);
+      clearInterval(timer);
+    };
+  }, []);
   useRefreshOnFocusAndForeground(() => void rental.refetch());
   const capture = useMutation({
     mutationFn: async ({
@@ -607,7 +632,8 @@ export function RenterRentalPanel({
     },
   });
   const detail = rental.data;
-  if (!detail) return <Text style={styles.body}>Loading rental operations…</Text>;
+  if (!detail)
+    return upcomingSection ? null : <Text style={styles.body}>Loading rental operations…</Text>;
   const pickup = detail.inspections.find(({ type }) => type === 'PICKUP');
   const pickupReview = pickup?.confirmations?.find(({ role }) => role === 'RENTER');
   const approvedPickupCorrection = pickup?.amendments?.find(({ status }) => status === 'APPROVED');
@@ -624,33 +650,141 @@ export function RenterRentalPanel({
       new Date(detail.rentalEnd).getTime() +
         detail.operationalPolicy.returnConfirmationGraceMinutes * 60_000;
   const returnOverdue = returnWorkflowOverdue || returnRecoveryOverdue;
-  const bothPhasesOverdue = pickupOverdue && returnOverdue;
+  const pickupRecoveryRequired = pickupOverdue && !pickup && !startWaiverSubmitted;
+  const bothPhasesOverdue = pickupRecoveryRequired && returnOverdue;
   const returnHandoverReady =
     detail.fulfillment.endMethod !== 'OWNER_COLLECTION' ||
     detail.handoverTravel.returnStatus === 'ARRIVED';
   const returnRecoveryReady = returnHandoverReady || returnOverdue;
+  const renterStatusLabel =
+    detail.overdueHandoverRecovery && !detail.overdueHandoverRecovery.acceptance
+      ? detail.overdueHandoverRecovery.response?.decision === 'DISPUTED'
+        ? `${detail.overdueHandoverRecovery.scope === 'START' ? 'Pickup' : detail.overdueHandoverRecovery.scope === 'RETURN' ? 'Return' : 'Pickup and Return'} report under Operations review`
+        : `${detail.overdueHandoverRecovery.scope === 'START' ? 'Pickup' : detail.overdueHandoverRecovery.scope === 'RETURN' ? 'Return' : 'Pickup and Return'} report awaiting your response`
+      : bothPhasesOverdue
+        ? 'Pickup and Return overdue'
+        : pickupRecoveryRequired
+          ? 'Pickup overdue'
+          : returnOverdue
+            ? 'Return overdue'
+            : friendlyStatus(detail.status);
+  const renterNextStep = renterNextStepMessage(detail.status, {
+    hasPickupCode: Boolean(pickupCode),
+    hasPickupInspection: Boolean(pickup),
+    pickupHandoverConfirmed: detail.pickupHandoverReport?.response?.decision === 'CONFIRMED',
+    hasReturnInspection: Boolean(returned),
+    pickupReviewDecision: pickupReview?.decision,
+    returnHandoverReady,
+    returnInspectionStarted,
+    startWaived,
+  });
+  if (upcomingSection === 'travel') {
+    if (
+      securityDepositPending ||
+      detail.fulfillment.startMethod !== 'OWNER_DELIVERY' ||
+      pickupOverdue ||
+      !['CONFIRMED', 'READY_FOR_PICKUP'].includes(detail.status)
+    )
+      return null;
+    return <UpcomingDeliveryStatus detail={detail} />;
+  }
+  if (upcomingSection === 'next-step') {
+    return (
+      <View accessibilityLiveRegion="polite" style={styles.nextStepCard}>
+        <Text style={styles.actionEyebrow}>Next step</Text>
+        <Text style={styles.nextStepText}>
+          {securityDepositPending
+            ? 'Place the security deposit to complete your pre-pickup requirements.'
+            : upcomingNextStepMessage(detail)}
+        </Text>
+      </View>
+    );
+  }
+  const returnInspectionReady = hasRequiredPhotos(files) && Boolean(odometer);
+  const renderReturnPhoto = (perspective: InspectionPerspective | 'ADDITIONAL') => {
+    const captured = files[perspective] ?? [];
+    const latest = captured.at(-1);
+    const multiple = (multiPerspectives as readonly string[]).includes(perspective);
+    return (
+      <View key={perspective}>
+        <SecureCameraPhotoSlot
+          busy={capture.isPending && capture.variables?.perspective === perspective}
+          captureLabel="Capture"
+          checklist
+          guidance={inspectionPhotoGuidance(perspective)}
+          name={domainLabel(perspective)}
+          onCapture={() => capture.mutate({ mode: 'replace', perspective })}
+          previewUri={latest?.uri}
+          required={perspective !== 'ADDITIONAL'}
+          uploaded={Boolean(latest)}
+        />
+        {multiple && latest ? (
+          <View style={styles.additionalPhotoAction}>
+            <SecondaryAction
+              disabled={capture.isPending && capture.variables?.perspective === perspective}
+              inline
+              label={`Add another ${domainLabel(perspective).toLowerCase()} photo`}
+              onPress={() => capture.mutate({ mode: 'append', perspective })}
+            />
+          </View>
+        ) : null}
+        {captured.length > 1 ? (
+          <CapturedPreviews files={captured.slice(0, -1)} perspective={perspective} />
+        ) : null}
+      </View>
+    );
+  };
   return (
     <View
       onLayout={({ nativeEvent }) => {
         panelOffsetY.current = nativeEvent.layout.y;
       }}
-      style={styles.panel}
+      style={[styles.panel, styles.renterPanel]}
     >
-      <Text style={styles.heading}>Rental operations</Text>
-      <Text style={styles.status}>
-        {detail.overdueHandoverRecovery && !detail.overdueHandoverRecovery.acceptance
-          ? detail.overdueHandoverRecovery.response?.decision === 'DISPUTED'
-            ? `${detail.overdueHandoverRecovery.scope === 'START' ? 'Pickup' : detail.overdueHandoverRecovery.scope === 'RETURN' ? 'Return' : 'Pickup and Return'} report under Operations review`
-            : `${detail.overdueHandoverRecovery.scope === 'START' ? 'Pickup' : detail.overdueHandoverRecovery.scope === 'RETURN' ? 'Return' : 'Pickup and Return'} report awaiting your response`
-          : bothPhasesOverdue
-            ? 'Pickup and Return overdue'
-            : pickupOverdue
-              ? 'Pickup overdue'
-              : returnOverdue
-                ? 'Return overdue'
-                : friendlyStatus(detail.status)}
-      </Text>
-      <Text style={styles.body}>Pickup scheduled: {dateTimeLabel(detail.rentalStart)}</Text>
+      <View style={styles.rentalSummaryCard}>
+        <View style={styles.rentalSummaryHeader}>
+          <Text style={styles.summaryLabel}>Status</Text>
+          <StatusBadge label={renterStatusLabel} />
+        </View>
+        <View style={styles.rentalScheduleRows}>
+          <RentalScheduleRow
+            label="Dates & time"
+            value={rentalTripSummary(detail.rentalStart, detail.rentalEnd)}
+          />
+          {['ACTIVE', 'RETURN_PENDING', 'RETURNED', 'COMPLETED'].includes(detail.status) &&
+          detail.actualPickupAt ? (
+            <RentalScheduleRow
+              label="Actual handover"
+              value={dateTimeLabel(detail.actualPickupAt)}
+            />
+          ) : null}
+          {['RETURNED', 'COMPLETED'].includes(detail.status) && detail.actualReturnAt ? (
+            <RentalScheduleRow
+              label="Vehicle received"
+              value={dateTimeLabel(detail.actualReturnAt)}
+            />
+          ) : null}
+          {detail.pickupWindowStart && detail.status === 'READY_FOR_PICKUP' && !pickupOverdue && (
+            <RentalScheduleRow
+              label="Handover available"
+              value={dateTimeLabel(detail.pickupWindowStart)}
+            />
+          )}
+        </View>
+      </View>
+      {!['RETURNED', 'COMPLETED'].includes(detail.status) ? (
+        <View accessibilityLiveRegion="polite" style={styles.nextStepCard}>
+          <Text style={styles.actionEyebrow}>Next step</Text>
+          <Text style={styles.nextStepText}>
+            {detail.status === 'ACTIVE'
+              ? `Return the vehicle by ${dateTimeLabel(detail.rentalEnd)}.`
+              : renterNextStep}
+          </Text>
+          {detail.status === 'ACTIVE' && !returnOverdue ? (
+            <Action label="Start return" onPress={() => action.mutate('return')} />
+          ) : null}
+        </View>
+      ) : null}
       {bothPhasesOverdue && !detail.overdueHandoverRecovery && (
         <View style={styles.overdueCard}>
           <Text style={styles.cardTitle}>Pickup and Return are overdue</Text>
@@ -664,66 +798,59 @@ export function RenterRentalPanel({
           </Text>
         </View>
       )}
-      {pickupOverdue &&
-        !returnOverdue &&
-        !startWaiverSubmitted &&
-        !detail.overdueHandoverRecovery && (
-          <View style={styles.overdueCard}>
-            <Text style={styles.cardTitle}>Handover overdue</Text>
-            <Text style={styles.cardTitle}>Protect your handover evidence</Text>
-            <Text style={styles.body}>
-              {domainLabel(
-                detail.workflowCompliance?.start.outstandingStep ?? 'OWNER_INSPECTION_REQUIRED',
-              )}
-            </Text>
-            <Text style={styles.body}>
-              Complete the required vehicle handover in CarShare as soon as possible. Photos and
-              condition details help protect both parties if a later condition or damage dispute
-              occurs.
-            </Text>
-            <Text style={styles.body}>
-              Complete the outstanding step below. If owner action is required, wait for the owner
-              before continuing.
-            </Text>
-            {![
-              'OWNER_DELIVERY_ARRIVAL_REQUIRED',
-              'OWNER_INSPECTION_REQUIRED',
-              'OPERATIONS_HOLD',
-            ].includes(detail.workflowCompliance?.start.outstandingStep ?? '') &&
-            (detail.workflowCompliance?.start.outstandingStep !==
-              'DISCREPANCY_RESOLUTION_REQUIRED' ||
-              (pickupReview?.discrepancyResponse &&
-                !pickupReview.discrepancyResponse.resolutionReview)) ? (
-              <Action
-                label="Complete handover"
-                onPress={() =>
-                  scrollToCancellationForm?.(
-                    panelOffsetY.current + (workflowOffsets.current.start ?? 0) - spacing.md,
-                  )
-                }
-              />
-            ) : (
-              <Text style={styles.body}>
-                Waiting for the owner or Operations to complete the outstanding step.
-              </Text>
-            )}
-          </View>
-        )}
-      {detail.pickupWindowStart && detail.status === 'READY_FOR_PICKUP' && !pickupOverdue && (
-        <Text style={styles.body}>
-          Vehicle handover is available from {dateTimeLabel(detail.pickupWindowStart)}.
-        </Text>
-      )}
-      {returnOverdue && !pickupOverdue && !returnWaived && !detail.overdueHandoverRecovery && (
+      {pickupRecoveryRequired && !returnOverdue && !detail.overdueHandoverRecovery && (
         <View style={styles.overdueCard}>
-          <Text style={styles.cardTitle}>Return process overdue</Text>
+          <Text style={styles.cardTitle}>Handover overdue</Text>
+          <Text style={styles.cardTitle}>Protect your handover evidence</Text>
           <Text style={styles.body}>
-            Waiting for the owner to report the overdue Return without inspection. You will be
-            notified and can confirm or disagree with the reported handover time.
+            {domainLabel(
+              detail.workflowCompliance?.start.outstandingStep ?? 'OWNER_INSPECTION_REQUIRED',
+            )}
           </Text>
+          <Text style={styles.body}>
+            Complete the required vehicle handover in CarShare as soon as possible. Photos and
+            condition details help protect both parties if a later condition or damage dispute
+            occurs.
+          </Text>
+          <Text style={styles.body}>
+            Complete the outstanding step below. If owner action is required, wait for the owner
+            before continuing.
+          </Text>
+          {![
+            'OWNER_DELIVERY_ARRIVAL_REQUIRED',
+            'OWNER_INSPECTION_REQUIRED',
+            'OPERATIONS_HOLD',
+          ].includes(detail.workflowCompliance?.start.outstandingStep ?? '') &&
+          (detail.workflowCompliance?.start.outstandingStep !== 'DISCREPANCY_RESOLUTION_REQUIRED' ||
+            (pickupReview?.discrepancyResponse &&
+              !pickupReview.discrepancyResponse.resolutionReview)) ? (
+            <Action
+              label="Complete handover"
+              onPress={() =>
+                scrollToCancellationForm?.(
+                  panelOffsetY.current + (workflowOffsets.current.start ?? 0) - spacing.md,
+                )
+              }
+            />
+          ) : (
+            <Text style={styles.body}>
+              Waiting for the owner or Operations to complete the outstanding step.
+            </Text>
+          )}
         </View>
       )}
-      <Text style={styles.body}>Scheduled return: {dateTimeLabel(detail.rentalEnd)}</Text>
+      {returnOverdue &&
+        !pickupRecoveryRequired &&
+        !returnWaived &&
+        !detail.overdueHandoverRecovery && (
+          <View style={styles.overdueCard}>
+            <Text style={styles.cardTitle}>Return process overdue</Text>
+            <Text style={styles.body}>
+              Waiting for the owner to report the overdue Return without inspection. You will be
+              notified and can confirm or disagree with the reported handover time.
+            </Text>
+          </View>
+        )}
       {detail.status === 'CANCELLED' && detail.cancellationSettlement ? (
         <CancellationSummary detail={detail} audience="renter" />
       ) : null}
@@ -739,11 +866,7 @@ export function RenterRentalPanel({
       {detail.fulfillment.endMethod === 'OWNER_COLLECTION' &&
         !returnOverdue &&
         ['ACTIVE', 'RETURN_PENDING'].includes(detail.status) && (
-          <HandoverTravelSummary
-            address={detail.fulfillment.endLocation}
-            label="Owner collection"
-            status={detail.handoverTravel.returnStatus}
-          />
+          <OwnerCollectionStatus detail={detail} />
         )}
       {detail.status === 'READY_FOR_PICKUP' && pickup && !pickupCode && (
         <View
@@ -751,126 +874,140 @@ export function RenterRentalPanel({
             workflowOffsets.current.start = nativeEvent.layout.y;
           }}
         >
-          <InspectionEvidence title="Pickup inspection · Submitted by owner" inspection={pickup} />
-          <Text style={styles.cardTitle}>Document the vehicle before handover</Text>
-          <Text style={styles.body}>
-            Photos and condition details create the handover record used if a later dispute occurs.
-            Review the inspection before requesting your pickup code.
-          </Text>
-          {!pickupReview && (
-            <>
-              <Action label="Confirm condition" onPress={() => action.mutate('pickup-agree')} />
-              <TextInput
-                multiline
-                onChangeText={setPickupDiscrepancy}
-                placeholder="Describe the condition discrepancy"
-                placeholderTextColor={colors.placeholder}
-                style={styles.input}
-                value={pickupDiscrepancy}
-              />
-              <SecondaryAction
-                label="Report discrepancy"
-                onPress={() => action.mutate('pickup-disagree')}
-              />
-            </>
-          )}
-          {pickupReview?.decision === 'AGREED' && (
-            <Action label="Get pickup code" onPress={() => action.mutate('pickup')} />
-          )}
-          {pickupReview?.decision === 'DISAGREED' && (
-            <View style={styles.warningCard}>
-              <Text style={styles.cardTitle}>Handover paused</Text>
-              <Text style={styles.body}>
-                You reported a difference in the vehicle condition. The rental has not started and
-                you do not yet have custody of the vehicle.
-              </Text>
-              {pickupReview.reason ? (
-                <Text style={styles.body}>Your report: {pickupReview.reason}</Text>
-              ) : null}
-              {pickupReview.discrepancyResponse ? (
-                <>
-                  {(pickupReview.discrepancyResponses?.length ?? 0) > 1 ? (
-                    <View style={styles.infoCard}>
-                      <Text style={styles.cardTitle}>Resolution history</Text>
-                      {pickupReview.discrepancyResponses?.map((response) => (
-                        <View key={response.id}>
-                          <Text style={styles.body}>
-                            Round {response.roundNumber}: {response.responseText}
-                          </Text>
-                          <Text style={styles.body}>
-                            Renter response:{' '}
-                            {domainLabel(response.resolutionReview?.decision ?? 'Awaiting review')}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
-                  ) : null}
-                  <Text style={styles.cardTitle}>Owner responded to your discrepancy</Text>
-                  <Text style={styles.body}>{pickupReview.discrepancyResponse.responseText}</Text>
-                  {!pickupReview.discrepancyResponse.resolutionReview ? (
-                    <>
-                      <Action
-                        label="Accept resolution"
-                        onPress={() => action.mutate('resolution-accept')}
-                      />
-                      <TextInput
-                        ref={resolutionReasonRef}
-                        multiline
-                        onChangeText={setResolutionReason}
-                        placeholder="Why does this still need resolution?"
-                        placeholderTextColor={colors.placeholder}
-                        style={styles.input}
-                        value={resolutionReason}
-                      />
-                      <SecondaryAction
-                        label="Still disagree"
-                        onPress={() => action.mutate('resolution-disagree')}
-                      />
-                    </>
-                  ) : pickupReview.discrepancyResponse.resolutionReview.decision === 'ACCEPTED' ? (
-                    <>
-                      <Text style={styles.success}>✓ You accepted the resolution</Text>
-                      {!pickup.conditionIssues?.some(
-                        ({ classification }) => classification === 'SAFETY_CRITICAL',
-                      ) ? (
-                        <Action label="Get pickup code" onPress={() => action.mutate('pickup')} />
-                      ) : null}
-                    </>
-                  ) : (
-                    <>
-                      <Text style={styles.body}>
-                        You and the owner haven’t agreed on the vehicle condition. Your rental has
-                        not started and you do not have custody of the vehicle.
-                      </Text>
-                      {onContinueResolving ? (
-                        <SecondaryAction label="Continue resolving" onPress={onContinueResolving} />
-                      ) : (
-                        <Text style={styles.body}>
-                          Use CarShare support if you cannot continue with the owner in the booking
-                          conversation.
-                        </Text>
-                      )}
-                      <SecondaryAction
-                        label="Contact CarShare support"
-                        onPress={() => action.mutate('discrepancy-support')}
-                      />
-                    </>
-                  )}
-                </>
-              ) : (
-                <Text style={styles.body}>Waiting for the owner to review your report.</Text>
-              )}
-              {pickupReview.discrepancyResponse?.resolutionReview?.decision !== 'ACCEPTED' ? (
-                <SecondaryAction
-                  label="Cancel booking"
-                  onPress={() => {
-                    scrollToCancellationFormAfterLayout.current = true;
-                    setShowCancellation(true);
-                  }}
+          <View style={styles.submittedInspectionStatus}>
+            <Text style={styles.sectionTitle}>Pickup inspection</Text>
+            <StatusBadge label="Submitted" />
+          </View>
+          <PickupInspectionSummary inspection={pickup} />
+          <View style={styles.pickupVerificationCard}>
+            <Text style={styles.actionEyebrow}>Next step</Text>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>
+              Review pickup condition
+            </Text>
+            <Text style={styles.body}>
+              Review the owner&apos;s inspection before requesting your single-use pickup code.
+            </Text>
+            {!pickupReview && (
+              <>
+                <Action label="Confirm condition" onPress={() => action.mutate('pickup-agree')} />
+                <TextInput
+                  multiline
+                  onChangeText={setPickupDiscrepancy}
+                  placeholder="Describe the condition discrepancy"
+                  placeholderTextColor={colors.placeholder}
+                  style={styles.input}
+                  value={pickupDiscrepancy}
                 />
-              ) : null}
-            </View>
-          )}
+                <SecondaryAction
+                  label="Report discrepancy"
+                  onPress={() => action.mutate('pickup-disagree')}
+                />
+              </>
+            )}
+            {pickupReview?.decision === 'AGREED' && (
+              <Action label="Get pickup code" onPress={() => action.mutate('pickup')} />
+            )}
+            {pickupReview?.decision === 'DISAGREED' && (
+              <View style={styles.warningCard}>
+                <Text style={styles.cardTitle}>Handover paused</Text>
+                <Text style={styles.body}>
+                  You reported a difference in the vehicle condition. The rental has not started and
+                  you do not yet have custody of the vehicle.
+                </Text>
+                {pickupReview.reason ? (
+                  <Text style={styles.body}>Your report: {pickupReview.reason}</Text>
+                ) : null}
+                {pickupReview.discrepancyResponse ? (
+                  <>
+                    {(pickupReview.discrepancyResponses?.length ?? 0) > 1 ? (
+                      <View style={styles.infoCard}>
+                        <Text style={styles.cardTitle}>Resolution history</Text>
+                        {pickupReview.discrepancyResponses?.map((response) => (
+                          <View key={response.id}>
+                            <Text style={styles.body}>
+                              Round {response.roundNumber}: {response.responseText}
+                            </Text>
+                            <Text style={styles.body}>
+                              Renter response:{' '}
+                              {domainLabel(
+                                response.resolutionReview?.decision ?? 'Awaiting review',
+                              )}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                    <Text style={styles.cardTitle}>Owner responded to your discrepancy</Text>
+                    <Text style={styles.body}>{pickupReview.discrepancyResponse.responseText}</Text>
+                    {!pickupReview.discrepancyResponse.resolutionReview ? (
+                      <>
+                        <Action
+                          label="Accept resolution"
+                          onPress={() => action.mutate('resolution-accept')}
+                        />
+                        <TextInput
+                          ref={resolutionReasonRef}
+                          multiline
+                          onChangeText={setResolutionReason}
+                          placeholder="Why does this still need resolution?"
+                          placeholderTextColor={colors.placeholder}
+                          style={styles.input}
+                          value={resolutionReason}
+                        />
+                        <SecondaryAction
+                          label="Still disagree"
+                          onPress={() => action.mutate('resolution-disagree')}
+                        />
+                      </>
+                    ) : pickupReview.discrepancyResponse.resolutionReview.decision ===
+                      'ACCEPTED' ? (
+                      <>
+                        <Text style={styles.success}>✓ You accepted the resolution</Text>
+                        {!pickup.conditionIssues?.some(
+                          ({ classification }) => classification === 'SAFETY_CRITICAL',
+                        ) ? (
+                          <Action label="Get pickup code" onPress={() => action.mutate('pickup')} />
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.body}>
+                          You and the owner haven’t agreed on the vehicle condition. Your rental has
+                          not started and you do not have custody of the vehicle.
+                        </Text>
+                        {onContinueResolving ? (
+                          <SecondaryAction
+                            label="Continue resolving"
+                            onPress={onContinueResolving}
+                          />
+                        ) : (
+                          <Text style={styles.body}>
+                            Use CarShare support if you cannot continue with the owner in the
+                            booking conversation.
+                          </Text>
+                        )}
+                        <SecondaryAction
+                          label="Contact CarShare support"
+                          onPress={() => action.mutate('discrepancy-support')}
+                        />
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <Text style={styles.body}>Waiting for the owner to review your report.</Text>
+                )}
+                {pickupReview.discrepancyResponse?.resolutionReview?.decision !== 'ACCEPTED' ? (
+                  <SecondaryAction
+                    label="Cancel booking"
+                    onPress={() => {
+                      scrollToCancellationFormAfterLayout.current = true;
+                      setShowCancellation(true);
+                    }}
+                  />
+                ) : null}
+              </View>
+            )}
+          </View>
           {showCancellation ? (
             <View
               onLayout={({ nativeEvent }) => {
@@ -1064,20 +1201,6 @@ export function RenterRentalPanel({
             </Text>
           </View>
         )}
-      {detail.status === 'READY_FOR_PICKUP' && !pickup && !startWaived && !pickupOverdue && (
-        <Text style={styles.body}>Waiting for the owner to complete the pickup inspection.</Text>
-      )}
-      {detail.status === 'ACTIVE' && detail.actualPickupAt && (
-        <View style={styles.successCard}>
-          <Text style={styles.success}>✓ Vehicle received</Text>
-          <Text style={styles.cardTitle}>
-            {detail.overdueHandoverRecovery?.scope === 'RETURN'
-              ? 'Pickup completed'
-              : 'Rental in progress'}
-          </Text>
-          <Text style={styles.body}>Started {dateTimeLabel(detail.actualPickupAt)}</Text>
-        </View>
-      )}
       {approvedPickupCorrection && (
         <View style={styles.infoCard}>
           <Text style={styles.cardTitle}>Pickup inspection corrected</Text>
@@ -1093,18 +1216,15 @@ export function RenterRentalPanel({
             workflowOffsets.current.return = nativeEvent.layout.y;
           }}
         >
-          {!startWaived && (
-            <Text style={styles.body}>
-              Pickup odometer: {odometerLabel(pickup?.odometerMeters)}
-            </Text>
-          )}
-          {!returnOverdue && (
-            <Action label="Start return" onPress={() => action.mutate('return')} />
-          )}
-          <SecondaryAction
-            label="Report an operational issue"
-            onPress={() => action.mutate('incident')}
-          />
+          {!startWaived && pickup ? <RentalVehicleReadings inspection={pickup} /> : null}
+          <View style={styles.rentalActionsSection}>
+            <Text style={styles.sectionTitle}>Trip actions</Text>
+            <SecondaryAction
+              compact
+              label="Report operational issue"
+              onPress={() => action.mutate('incident')}
+            />
+          </View>
         </View>
       )}
       {detail.status === 'RETURN_PENDING' && returnWaived && (
@@ -1156,91 +1276,120 @@ export function RenterRentalPanel({
               workflowOffsets.current.return = nativeEvent.layout.y;
             }}
           >
-            <View style={styles.inspectionHeader}>
-              <Text style={styles.cardTitle}>Document the vehicle return</Text>
-              <Text style={styles.progress}>
-                {photoCount(files)} photos · {completedRequired(files)} of {perspectives.length}{' '}
-                required
+            <View style={styles.inspectionIntro}>
+              <Text accessibilityRole="header" style={styles.inspectionTitle}>
+                Return inspection
+              </Text>
+              <Text style={styles.body}>Document the vehicle condition before returning it.</Text>
+              <Text accessibilityLiveRegion="polite" style={styles.progress}>
+                {completedRequired(files)} of {perspectives.length} required photos added
               </Text>
             </View>
-            <Text style={styles.body}>
-              Capture the vehicle and dashboard at handover. The owner will acknowledge this exact
-              evidence; any disagreement opens the controlled review path.
-            </Text>
-            <TextInput
-              style={styles.input}
-              value={odometer}
-              onChangeText={setOdometer}
-              keyboardType="number-pad"
-              placeholder="Odometer reading (km)"
-              placeholderTextColor={colors.placeholder}
-            />
-            {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' && (
-              <TextInput
-                style={styles.input}
-                value={fuel}
-                onChangeText={setFuel}
-                keyboardType="decimal-pad"
-                placeholder="Fuel percentage"
-                placeholderTextColor={colors.placeholder}
-              />
-            )}
-            {['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID'].includes(detail.vehicle.powertrain ?? '') && (
-              <TextInput
-                style={styles.input}
-                value={soc}
-                onChangeText={setSoc}
-                keyboardType="decimal-pad"
-                placeholder="Battery SOC percentage"
-                placeholderTextColor={colors.placeholder}
-              />
-            )}
-            {[...perspectives, 'ADDITIONAL' as const].map((perspective) => {
-              const captured = files[perspective] ?? [];
-              const latest = captured.at(-1);
-              const multiple = (multiPerspectives as readonly string[]).includes(perspective);
-              return (
-                <View key={perspective}>
-                  <SecureCameraPhotoSlot
-                    busy={capture.isPending && capture.variables?.perspective === perspective}
-                    guidance={inspectionPhotoGuidance(perspective)}
-                    name={domainLabel(perspective)}
-                    onCapture={() => capture.mutate({ mode: 'replace', perspective })}
-                    previewUri={latest?.uri}
-                    required={perspective !== 'ADDITIONAL'}
-                    uploaded={Boolean(latest)}
+            <View style={styles.inspectionSection}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Vehicle readings
+              </Text>
+              <View style={styles.readingField}>
+                <Text style={styles.readingLabel}>Odometer</Text>
+                <View style={styles.readingInputRow}>
+                  <TextInput
+                    accessibilityLabel="Return odometer in kilometres"
+                    keyboardType="number-pad"
+                    onChangeText={setOdometer}
+                    placeholder="Enter reading"
+                    placeholderTextColor={colors.placeholder}
+                    style={[styles.input, styles.readingInput]}
+                    value={odometer}
                   />
-                  {multiple && latest && (
-                    <SecondaryAction
-                      label={`Add another ${domainLabel(perspective).toLowerCase()} photo`}
-                      onPress={() => capture.mutate({ mode: 'append', perspective })}
-                    />
-                  )}
-                  {captured.length > 1 && (
-                    <CapturedPreviews files={captured.slice(0, -1)} perspective={perspective} />
-                  )}
+                  <Text style={styles.readingUnit}>km</Text>
                 </View>
-              );
-            })}
-            <TextInput
-              multiline
-              onChangeText={setNotes}
-              placeholder="Return condition notes (optional)"
-              placeholderTextColor={colors.placeholder}
-              style={styles.input}
-              value={notes}
-            />
+              </View>
+              {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' ? (
+                <View style={styles.readingField}>
+                  <Text style={styles.readingLabel}>Fuel level</Text>
+                  <View style={styles.readingInputRow}>
+                    <TextInput
+                      accessibilityLabel="Return fuel percentage"
+                      keyboardType="decimal-pad"
+                      onChangeText={setFuel}
+                      placeholder="Enter level"
+                      placeholderTextColor={colors.placeholder}
+                      style={[styles.input, styles.readingInput]}
+                      value={fuel}
+                    />
+                    <Text style={styles.readingUnit}>%</Text>
+                  </View>
+                </View>
+              ) : null}
+              {['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID'].includes(detail.vehicle.powertrain ?? '') ? (
+                <View style={styles.readingField}>
+                  <Text style={styles.readingLabel}>Battery level</Text>
+                  <View style={styles.readingInputRow}>
+                    <TextInput
+                      accessibilityLabel="Return battery percentage"
+                      keyboardType="decimal-pad"
+                      onChangeText={setSoc}
+                      placeholder="Enter level"
+                      placeholderTextColor={colors.placeholder}
+                      style={[styles.input, styles.readingInput]}
+                      value={soc}
+                    />
+                    <Text style={styles.readingUnit}>%</Text>
+                  </View>
+                </View>
+              ) : null}
+              {readingPerspectives.map(renderReturnPhoto)}
+            </View>
+            <View style={styles.inspectionSection}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Exterior photos
+              </Text>
+              {exteriorPerspectives.map(renderReturnPhoto)}
+            </View>
+            <View style={styles.inspectionSection}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Interior and dashboard
+              </Text>
+              {interiorPerspectives.map(renderReturnPhoto)}
+            </View>
+            <View style={styles.inspectionSection}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Additional evidence
+              </Text>
+              <Text style={styles.body}>
+                Add optional photos if another detail should be recorded.
+              </Text>
+              {renderReturnPhoto('ADDITIONAL')}
+            </View>
+            <View style={styles.inspectionSection}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Return notes · Optional
+              </Text>
+              <TextInput
+                multiline
+                onChangeText={setNotes}
+                placeholder="Add anything the owner should know about the vehicle condition."
+                placeholderTextColor={colors.placeholder}
+                style={[styles.input, styles.notesInput]}
+                value={notes}
+              />
+            </View>
+            {returnInspectionReady ? (
+              <View accessibilityLiveRegion="polite" style={styles.readyState}>
+                <Text style={styles.cardTitle}>Ready to return</Text>
+                <Text style={styles.body}>All required return evidence has been added.</Text>
+              </View>
+            ) : null}
             <Action
-              label="Confirm vehicle return"
-              disabled={!hasRequiredPhotos(files) || !odometer}
+              disabled={!returnInspectionReady || action.isPending}
+              label={action.isPending ? 'Confirming…' : 'Confirm vehicle return'}
               onPress={() => action.mutate('inspection')}
             />
           </View>
         )}
       {detail.status === 'RETURN_PENDING' && returned && (
         <>
-          <Text style={styles.body}>Return odometer: {odometerLabel(returned.odometerMeters)}</Text>
-          <Text style={styles.body}>Waiting for owner to confirm vehicle receipt.</Text>
+          <RentalVehicleReadings inspection={returned} title="Return readings" />
           {returnOverdue && (
             <Text style={styles.warning}>
               Owner return confirmation overdue. Your return evidence is preserved for operations
@@ -1256,7 +1405,17 @@ export function RenterRentalPanel({
         </>
       )}
       {(detail.status === 'RETURNED' || detail.status === 'COMPLETED') && (
-        <UsageSummary detail={detail} />
+        <>
+          <UsageSummary audience="renter" detail={detail} />
+          <RenterPostReturnStatus
+            claimWindowOpen={
+              Boolean(detail.claimDeadlineAt) &&
+              new Date(detail.claimDeadlineAt ?? 0).getTime() >
+                (postReturnClock || rental.dataUpdatedAt)
+            }
+            detail={detail}
+          />
+        </>
       )}
       {action.isError && <Text style={styles.error}>{action.error.message}</Text>}
       {capture.isError && <Text style={styles.error}>{capture.error.message}</Text>}
@@ -1265,19 +1424,20 @@ export function RenterRentalPanel({
 }
 
 export function OwnerRentalPanel({
+  onOpenConversation,
   reference,
   scrollConditionFormBy,
   scrollToConditionForm,
 }: {
+  readonly onOpenConversation?: () => void;
   readonly reference: string;
   readonly scrollConditionFormBy?: (delta: number) => void;
   readonly scrollToConditionForm?: (y: number) => void;
 }) {
   const client = useQueryClient();
-  const { width: viewportWidth } = useWindowDimensions();
-  const scrollToConditionFormAfterLayout = useRef(false);
+  const { height: viewportHeight, width: viewportWidth } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
   const panelOffsetY = useRef(0);
-  const conditionCardOffsetY = useRef(0);
   const ownerWorkflowOffsets = useRef<Record<string, number>>({});
   const conditionDescriptionRef = useRef<TextInput>(null);
   const ownerDiscrepancyResponseRef = useRef<TextInput>(null);
@@ -1304,6 +1464,8 @@ export function OwnerRentalPanel({
   const [conditionDescriptionError, setConditionDescriptionError] = useState('');
   const [editingConditionIssue, setEditingConditionIssue] = useState<number | null>(null);
   const [showConditionIssueForm, setShowConditionIssueForm] = useState(false);
+  const [conditionSheetContentHeight, setConditionSheetContentHeight] = useState(0);
+  const [conditionSheetFooterHeight, setConditionSheetFooterHeight] = useState(0);
   const [conditionGallery, setConditionGallery] = useState<readonly string[]>([]);
   const [conditionEvidenceIds, setConditionEvidenceIds] = useState<readonly string[]>([]);
   const [ownerDiscrepancyResponse, setOwnerDiscrepancyResponse] = useState('');
@@ -1313,6 +1475,43 @@ export function OwnerRentalPanel({
   const [claimCategory, setClaimCategory] =
     useState<(typeof claimCategories)[number]>('EXCESS_MILEAGE');
   const [claimDescription, setClaimDescription] = useState('');
+  const [showClaimSheet, setShowClaimSheet] = useState(false);
+  const [claimClock, setClaimClock] = useState(0);
+  useEffect(() => {
+    const initialize = setTimeout(() => setClaimClock(Date.now()), 0);
+    const timer = setInterval(() => setClaimClock(Date.now()), 30_000);
+    return () => {
+      clearTimeout(initialize);
+      clearInterval(timer);
+    };
+  }, []);
+  const conditionSheetBottomAllowance = Math.max(safeArea.bottom, spacing.md);
+  const conditionSheetMaximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const conditionSheetLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight: conditionSheetContentHeight,
+        headerHeight: conditionSheetFooterHeight,
+        maxSafeViewportHeight: conditionSheetMaximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [conditionSheetContentHeight, conditionSheetFooterHeight, conditionSheetMaximumHeight],
+  );
+  const conditionSheetHeight = useSharedValue(Math.min(720, conditionSheetMaximumHeight));
+  const conditionSheetAnimatedStyle = useAnimatedStyle(() => ({
+    height: conditionSheetHeight.value,
+  }));
+  useEffect(() => {
+    if ((!showConditionIssueForm && !showClaimSheet) || conditionSheetContentHeight <= 0) return;
+    // eslint-disable-next-line react-hooks/immutability
+    conditionSheetHeight.value = withTiming(conditionSheetLayout.height, { duration: 220 });
+  }, [
+    conditionSheetContentHeight,
+    conditionSheetHeight,
+    conditionSheetLayout.height,
+    showClaimSheet,
+    showConditionIssueForm,
+  ]);
   const [correctionOdometer, setCorrectionOdometer] = useState('');
   const [correctionReason, setCorrectionReason] = useState('');
   const [files, setFiles] = useState<Record<string, CapturedFile[]>>({});
@@ -1343,11 +1542,9 @@ export function OwnerRentalPanel({
   });
   useEffect(() => {
     const keyboardShown = Keyboard.addListener('keyboardDidShow', ({ endCoordinates }) => {
-      const focusedInput = conditionDescriptionRef.current?.isFocused()
-        ? conditionDescriptionRef.current
-        : ownerDiscrepancyResponseRef.current?.isFocused()
-          ? ownerDiscrepancyResponseRef.current
-          : null;
+      const focusedInput = ownerDiscrepancyResponseRef.current?.isFocused()
+        ? ownerDiscrepancyResponseRef.current
+        : null;
       if (focusedInput) {
         focusedInput.measureInWindow((_x, y, _width, height) => {
           const overlap = y + height + spacing.sm - endCoordinates.screenY;
@@ -1604,6 +1801,10 @@ export function OwnerRentalPanel({
         setCorrectionOdometer('');
         setCorrectionReason('');
       }
+      if (operation === 'claim') {
+        setClaimDescription('');
+        setShowClaimSheet(false);
+      }
       invalidateRentalQueries(client, reference);
     },
     onError: (error, operation) => {
@@ -1650,9 +1851,9 @@ export function OwnerRentalPanel({
       new Date(detail.rentalEnd).getTime() +
         detail.operationalPolicy.returnConfirmationGraceMinutes * 60_000;
   const overdueRecoveryScope: 'START' | 'RETURN' | 'BOTH' | null =
-    pickupOverdue && returnRecoveryOverdue
+    pickupOverdue && !pickup && !startWaived && returnRecoveryOverdue
       ? 'BOTH'
-      : pickupOverdue
+      : pickupOverdue && !pickup && !startWaived
         ? 'START'
         : returnRecoveryOverdue
           ? 'RETURN'
@@ -1663,27 +1864,181 @@ export function OwnerRentalPanel({
   const pickupHandoverReady =
     detail.fulfillment.startMethod !== 'OWNER_DELIVERY' ||
     detail.handoverTravel.startStatus === 'ARRIVED';
+  const statusLabel =
+    overdueRecoveryScope === 'BOTH'
+      ? 'Pickup and Return overdue'
+      : overdueRecoveryScope === 'START'
+        ? 'Pickup overdue'
+        : overdueRecoveryScope === 'RETURN'
+          ? 'Return overdue'
+          : friendlyStatus(detail.status);
+  const showCompactRentalActions =
+    !handoverStarted && ['READY_FOR_PICKUP', 'ACTIVE', 'RETURN_PENDING'].includes(detail.status);
+  const claimWindowOpen = Boolean(
+    detail.claimDeadlineAt &&
+    new Date(detail.claimDeadlineAt).getTime() > (claimClock || rental.dataUpdatedAt),
+  );
+  const eligibleClaimCategories = claimCategories.filter((category) => {
+    if (category === 'EXCESS_MILEAGE') return (detail.usageSummary?.excessDistanceKm ?? 0) > 0;
+    if (category === 'FUEL_DEFICIENCY')
+      return (detail.usageSummary?.fuelDeficiencyBasisPoints ?? 0) > 0;
+    if (category === 'EV_BATTERY_DEFICIENCY')
+      return (detail.usageSummary?.socDeficiencyBasisPoints ?? 0) > 0;
+    if (category === 'LATE_RETURN') return (detail.usageSummary?.lateDurationSeconds ?? 0) > 0;
+    return true;
+  });
+  const closeClaimSheet = () => {
+    Keyboard.dismiss();
+    setClaimDescription('');
+    setShowClaimSheet(false);
+  };
+  const openClaimSheet = () => {
+    const firstCategory = eligibleClaimCategories[0];
+    if (firstCategory) setClaimCategory(firstCategory);
+    setConditionSheetContentHeight(0);
+    setShowClaimSheet(true);
+  };
+  const inspectionReady =
+    hasRequiredPhotos(inspectionFiles) &&
+    Boolean(odometer) &&
+    conditionDisclosureState !== 'NOT_REVIEWED' &&
+    !(conditionDisclosureState === 'ISSUES_REPORTED' && conditionIssues.length === 0);
+  const resetConditionIssueDraft = () => {
+    Keyboard.dismiss();
+    setConditionDescription('');
+    setConditionEvidenceIds([]);
+    setConditionDescriptionError('');
+    setEditingConditionIssue(null);
+  };
+  const openNewConditionIssue = () => {
+    resetConditionIssueDraft();
+    setConditionSheetContentHeight(0);
+    setShowConditionIssueForm(true);
+  };
+  const closeConditionIssueSheet = () => {
+    resetConditionIssueDraft();
+    setShowConditionIssueForm(false);
+  };
+  const saveConditionIssue = () => {
+    const issue: ConditionIssueDraft = {
+      category: conditionCategory,
+      vehicleArea: conditionArea,
+      classification: conditionClassification,
+      description: conditionDescription.trim(),
+      evidenceFileAssetIds: conditionEvidenceIds,
+      persistAsKnownIssue: editingConditionIssue === null,
+    };
+    Keyboard.dismiss();
+    if (issue.description.length < 3) {
+      setConditionDescriptionError('Please enter at least 3 characters.');
+      return;
+    }
+    setConditionIssues((current) =>
+      editingConditionIssue === null
+        ? [...current, issue]
+        : current.map((value, index) => (index === editingConditionIssue ? issue : value)),
+    );
+    closeConditionIssueSheet();
+  };
+  const renderInspectionPhoto = (perspective: InspectionPerspective) => {
+    const captured = inspectionFiles[perspective] ?? [];
+    const latest = captured.at(-1);
+    const multiple = (multiPerspectives as readonly string[]).includes(perspective);
+    return (
+      <View key={perspective}>
+        <SecureCameraPhotoSlot
+          busy={capture.isPending && capture.variables?.perspective === perspective}
+          captureLabel="Capture"
+          checklist
+          guidance={inspectionPhotoGuidance(perspective)}
+          name={domainLabel(perspective)}
+          onCapture={() => capture.mutate({ mode: 'replace', perspective })}
+          persistedPreview={
+            latest && !latest.uri ? (
+              <AuthorizedInspectionImage
+                fileAssetId={latest.id}
+                label={`${domainLabel(perspective)} secure draft preview`}
+              />
+            ) : undefined
+          }
+          previewUri={latest?.uri}
+          required
+          uploaded={Boolean(latest)}
+        />
+        {capture.isError && capture.variables?.perspective === perspective ? (
+          <View>
+            <Text accessibilityRole="alert" style={styles.error}>
+              {attachmentUploaded
+                ? `Photo uploaded, but could not be attached. ${capture.error.message} Retry without taking another photo.`
+                : capture.error.message}
+            </Text>
+            <SecondaryAction
+              label="Retry"
+              onPress={() =>
+                capture.mutate({
+                  mode: capture.variables?.mode ?? 'replace',
+                  perspective,
+                  retry: Boolean(pendingAttachment.current),
+                })
+              }
+            />
+          </View>
+        ) : null}
+        {multiple && latest ? (
+          <View style={styles.additionalPhotoAction}>
+            <SecondaryAction
+              disabled={capture.isPending && capture.variables?.perspective === perspective}
+              inline
+              label={`Add another ${domainLabel(perspective).toLowerCase()} photo`}
+              onPress={() => capture.mutate({ mode: 'append', perspective })}
+            />
+          </View>
+        ) : null}
+        {captured.length > 1 ? (
+          <CapturedPreviews files={captured.slice(0, -1)} perspective={perspective} />
+        ) : null}
+      </View>
+    );
+  };
   return (
     <View
       onLayout={({ nativeEvent }) => {
         panelOffsetY.current = nativeEvent.layout.y;
       }}
-      style={styles.panel}
+      style={[styles.panel, styles.ownerPanel]}
     >
-      <Text style={styles.heading}>
-        {detail.vehicle.make} {detail.vehicle.model}
-      </Text>
-      <Text style={styles.status}>
-        {overdueRecoveryScope === 'BOTH'
-          ? 'Pickup and Return overdue'
-          : overdueRecoveryScope === 'START'
-            ? 'Pickup overdue'
-            : overdueRecoveryScope === 'RETURN'
-              ? 'Return overdue'
-              : friendlyStatus(detail.status)}
-      </Text>
-      <Text style={styles.body}>Pickup scheduled: {dateTimeLabel(detail.rentalStart)}</Text>
-      <Text style={styles.body}>Return scheduled: {dateTimeLabel(detail.rentalEnd)}</Text>
+      <View style={styles.rentalSummaryCard}>
+        <View style={styles.rentalSummaryHeader}>
+          <Text style={[styles.heading, styles.rentalSummaryTitle]}>
+            {detail.vehicle.make} {detail.vehicle.model}
+          </Text>
+          <StatusBadge label={statusLabel} />
+        </View>
+        <View style={styles.rentalScheduleRows}>
+          <RentalScheduleRow
+            label="Dates & time"
+            value={rentalTripSummary(detail.rentalStart, detail.rentalEnd)}
+          />
+          {['ACTIVE', 'RETURN_PENDING'].includes(detail.status) && detail.actualPickupAt ? (
+            <RentalScheduleRow
+              label="Actual handover"
+              value={dateTimeLabel(detail.actualPickupAt)}
+            />
+          ) : null}
+          {detail.pickupWindowStart && detail.status === 'READY_FOR_PICKUP' && !pickupOverdue && (
+            <RentalScheduleRow
+              label="Handover available"
+              value={dateTimeLabel(detail.pickupWindowStart)}
+            />
+          )}
+        </View>
+      </View>
+      {detail.status === 'ACTIVE' && !returnRecoveryOverdue ? (
+        <View accessibilityLiveRegion="polite" style={styles.nextStepCard}>
+          <Text style={styles.actionEyebrow}>Next step</Text>
+          <Text style={styles.nextStepText}>Waiting for the renter to begin return.</Text>
+        </View>
+      ) : null}
       {overdueRecoveryScope && !detail.overdueHandoverRecovery && (
         <OwnerOverdueRecoveryAction
           detail={detail}
@@ -1692,30 +2047,17 @@ export function OwnerRentalPanel({
         />
       )}
       {detail.overdueHandoverRecovery && !detail.overdueHandoverRecovery.acceptance && (
-        <View style={styles.warningCard}>
-          <Text style={styles.cardTitle}>Waiting for renter response</Text>
-          <Text style={styles.body}>
-            The renter has until {dateTimeLabel(detail.overdueHandoverRecovery.responseDeadlineAt)}{' '}
-            to disagree. No response accepts the report automatically.
-          </Text>
-        </View>
+        <OwnerOverdueRecoverySubmittedStatus recovery={detail.overdueHandoverRecovery} />
       )}
-      {pickupOverdue && !startWaived && !overdueRecoveryScope && (
-        <View style={styles.overdueCard}>
+      {pickupOverdue && !pickup && !startWaived && !overdueRecoveryScope && (
+        <View accessibilityRole="alert" style={[styles.overdueCard, styles.compactOverdueCard]}>
           <Text style={styles.cardTitle}>Handover overdue</Text>
           {detail.workflowCompliance?.workflow === 'B4' && (
-            <Text style={styles.cardTitle}>Your payout is not yet eligible</Text>
+            <Text style={styles.overdueStatus}>Payout remains pending</Text>
           )}
           <Text style={styles.body}>
-            {domainLabel(
-              detail.workflowCompliance?.start.outstandingStep ?? 'OWNER_INSPECTION_REQUIRED',
-            )}
-          </Text>
-          <Text style={styles.body}>
-            Complete the inspection or explicitly acknowledge an evidence waiver, then complete
-            pickup verification. A waiver reduces condition evidence, but never replaces custody
-            confirmation. Payout also remains subject to Return completion and existing financial
-            holds.
+            Complete the outstanding handover step. If custody already transferred, record the
+            actual transfer time.
           </Text>
           {[
             'OWNER_DELIVERY_ARRIVAL_REQUIRED',
@@ -1727,7 +2069,7 @@ export function OwnerRentalPanel({
               renterPickupReview.discrepancyResponse.resolutionReview?.decision ===
                 'STILL_DISAGREES')) ? (
             <Action
-              label="Complete handover"
+              label="Continue handover"
               onPress={() =>
                 scrollToConditionForm?.(
                   panelOffsetY.current + (ownerWorkflowOffsets.current.start ?? 0) - spacing.md,
@@ -1735,9 +2077,7 @@ export function OwnerRentalPanel({
               }
             />
           ) : (
-            <Text style={styles.body}>
-              Waiting for the renter or Operations to complete the outstanding step.
-            </Text>
+            <Text style={styles.body}>Waiting for the outstanding handover step to complete.</Text>
           )}
           {needsInspection &&
             pickupHandoverReady &&
@@ -1835,11 +2175,6 @@ export function OwnerRentalPanel({
             />
           </View>
         )}
-      {detail.pickupWindowStart && detail.status === 'READY_FOR_PICKUP' && !pickupOverdue && (
-        <Text style={styles.body}>
-          Handover available from {dateTimeLabel(detail.pickupWindowStart)}.
-        </Text>
-      )}
       {needsInspection && !handoverStarted && !pickupHandoverReady && !pickupOverdue && (
         <View style={styles.actionCard}>
           <Text style={styles.actionEyebrow}>Delivery</Text>
@@ -1860,12 +2195,10 @@ export function OwnerRentalPanel({
           <Text style={styles.cardTitle}>Complete pickup inspection</Text>
           <Text style={styles.body}>Document the vehicle before handing it to the renter.</Text>
           {detail.workflowCompliance?.workflow === 'B4' && (
-            <Text style={styles.cardTitle}>Complete the handover to protect your payout</Text>
+            <Text style={styles.actionNote}>
+              Complete the recorded handover to keep payout eligibility on track.
+            </Text>
           )}
-          <Text style={styles.body}>
-            Inspection, condition disclosure, renter review and pickup verification establish the
-            CarShare-recorded custody transfer.
-          </Text>
           <Action
             label="Start handover"
             onPress={() => {
@@ -1888,449 +2221,490 @@ export function OwnerRentalPanel({
           />
         </View>
       )}
+      {detail.status === 'READY_FOR_PICKUP' && showCompactRentalActions && !pickup && (
+        <View style={styles.rentalActionsSection}>
+          <Text style={styles.sectionTitle}>Rental actions</Text>
+          <View style={styles.rentalActionRow}>
+            <SecondaryAction
+              compact
+              label="Report incident"
+              onPress={() => action.mutate('incident')}
+            />
+            {onOpenConversation ? (
+              <SecondaryAction compact label="Message" onPress={onOpenConversation} />
+            ) : null}
+          </View>
+        </View>
+      )}
       {needsInspection && handoverStarted && (
         <>
           <View
-            style={styles.inspectionHeader}
+            style={styles.inspectionIntro}
             onLayout={({ nativeEvent }) => {
               ownerWorkflowOffsets.current.start = nativeEvent.layout.y;
             }}
           >
-            <Text style={styles.cardTitle}>Pickup inspection</Text>
-            <Text style={styles.progress}>
-              {photoCount(inspectionFiles)} photos · {completedRequired(inspectionFiles)} of{' '}
-              {perspectives.length} required
+            <Text accessibilityRole="header" style={styles.inspectionTitle}>
+              Pickup inspection
+            </Text>
+            <Text style={styles.body}>
+              Document the vehicle condition before handing it to the renter.
+            </Text>
+            <Text accessibilityLiveRegion="polite" style={styles.progress}>
+              {completedRequired(inspectionFiles)} of {perspectives.length} required photos added
             </Text>
           </View>
-          <Text style={styles.body}>
-            Capture each guided view, then record the physical readings exactly as shown.
-          </Text>
-          <TextInput
-            style={styles.input}
-            value={odometer}
-            onChangeText={setOdometer}
-            keyboardType="number-pad"
-            placeholder="Odometer reading (km)"
-            placeholderTextColor={colors.placeholder}
-          />
-          {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' && (
-            <TextInput
-              style={styles.input}
-              value={fuel}
-              onChangeText={setFuel}
-              keyboardType="decimal-pad"
-              placeholder="Fuel percentage"
-              placeholderTextColor={colors.placeholder}
-            />
-          )}
-          {['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID'].includes(detail.vehicle.powertrain ?? '') && (
-            <TextInput
-              style={styles.input}
-              value={soc}
-              onChangeText={setSoc}
-              keyboardType="decimal-pad"
-              placeholder="Battery SOC percentage"
-              placeholderTextColor={colors.placeholder}
-            />
-          )}
-          {perspectives.map((perspective) => {
-            const captured = inspectionFiles[perspective] ?? [];
-            const latest = captured.at(-1);
-            const multiple = (multiPerspectives as readonly string[]).includes(perspective);
-            return (
-              <View key={perspective}>
-                <SecureCameraPhotoSlot
-                  busy={capture.isPending && capture.variables?.perspective === perspective}
-                  guidance={inspectionPhotoGuidance(perspective)}
-                  name={domainLabel(perspective)}
-                  onCapture={() => capture.mutate({ mode: 'replace', perspective })}
-                  persistedPreview={
-                    latest && !latest.uri ? (
-                      <AuthorizedInspectionImage
-                        fileAssetId={latest.id}
-                        label={`${domainLabel(perspective)} secure draft preview`}
-                        large
-                      />
-                    ) : undefined
-                  }
-                  previewUri={latest?.uri}
-                  required
-                  uploaded={Boolean(latest)}
-                />
-                {capture.isError && capture.variables?.perspective === perspective && (
-                  <View>
-                    <Text accessibilityRole="alert" style={styles.error}>
-                      {attachmentUploaded
-                        ? `Photo uploaded, but could not be attached. ${capture.error.message} Retry without taking another photo.`
-                        : capture.error.message}
-                    </Text>
-                    <SecondaryAction
-                      label="Retry"
-                      onPress={() =>
-                        capture.mutate({
-                          mode: capture.variables?.mode ?? 'replace',
-                          perspective,
-                          retry: Boolean(pendingAttachment.current),
-                        })
-                      }
-                    />
-                  </View>
-                )}
-                {multiple && latest && (
-                  <SecondaryAction
-                    label={`Add another ${domainLabel(perspective).toLowerCase()} photo`}
-                    onPress={() => capture.mutate({ mode: 'append', perspective })}
-                  />
-                )}
-                {captured.length > 1 && (
-                  <CapturedPreviews files={captured.slice(0, -1)} perspective={perspective} />
-                )}
-              </View>
-            );
-          })}
-          <TextInput
-            multiline
-            onChangeText={setNotes}
-            placeholder="Pickup condition notes (optional)"
-            placeholderTextColor={colors.placeholder}
-            style={styles.input}
-            value={notes}
-          />
-          <View
-            onLayout={({ nativeEvent }) => {
-              conditionCardOffsetY.current = nativeEvent.layout.y;
-            }}
-            style={styles.actionCard}
-          >
-            <Text style={styles.cardTitle}>Existing vehicle condition</Text>
-            <Text style={styles.body}>
-              Record any existing damage or condition issues before handing over the vehicle. These
-              become part of the pre-rental condition.
+          <View style={styles.inspectionSection}>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>
+              Vehicle readings
             </Text>
-            <SecondaryAction
-              label="No known existing issues"
-              onPress={() => {
-                if (conditionIssues.some(({ knownIssueId }) => knownIssueId)) {
-                  Alert.alert(
-                    'Active known issues must be addressed',
-                    'Include each active issue or mark it resolved before declaring no known existing issues.',
-                  );
-                  return;
-                }
-                const selectNoIssues = () => {
-                  setConditionIssues([]);
-                  setEditingConditionIssue(null);
-                  setShowConditionIssueForm(false);
-                  setConditionDisclosureState('NO_KNOWN_ISSUES');
-                };
-                if (conditionIssues.length) {
-                  Alert.alert(
-                    'Remove existing issue drafts?',
-                    'Choosing no known issues will remove the issues you added to this inspection.',
-                    [
-                      { text: 'Keep issues', style: 'cancel' },
-                      { text: 'Remove drafts', style: 'destructive', onPress: selectNoIssues },
-                    ],
-                  );
-                } else selectNoIssues();
-              }}
+            <View style={styles.readingField}>
+              <Text style={styles.readingLabel}>Odometer</Text>
+              <View style={styles.readingInputRow}>
+                <TextInput
+                  accessibilityLabel="Odometer reading in kilometers"
+                  style={[styles.input, styles.readingInput]}
+                  value={odometer}
+                  onChangeText={setOdometer}
+                  keyboardType="number-pad"
+                  placeholder="24,320"
+                  placeholderTextColor={colors.placeholder}
+                />
+                <Text style={styles.readingUnit}>km</Text>
+              </View>
+            </View>
+            {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' ? (
+              <View style={styles.readingField}>
+                <Text style={styles.readingLabel}>Fuel level</Text>
+                <View style={styles.readingInputRow}>
+                  <TextInput
+                    accessibilityLabel="Fuel level percentage"
+                    style={[styles.input, styles.readingInput]}
+                    value={fuel}
+                    onChangeText={setFuel}
+                    keyboardType="decimal-pad"
+                    placeholder="Enter fuel level"
+                    placeholderTextColor={colors.placeholder}
+                  />
+                  <Text style={styles.readingUnit}>%</Text>
+                </View>
+              </View>
+            ) : null}
+            {['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID'].includes(detail.vehicle.powertrain ?? '') ? (
+              <View style={styles.readingField}>
+                <Text style={styles.readingLabel}>Battery level</Text>
+                <View style={styles.readingInputRow}>
+                  <TextInput
+                    accessibilityLabel="Battery state of charge percentage"
+                    style={[styles.input, styles.readingInput]}
+                    value={soc}
+                    onChangeText={setSoc}
+                    keyboardType="decimal-pad"
+                    placeholder="Enter battery level"
+                    placeholderTextColor={colors.placeholder}
+                  />
+                  <Text style={styles.readingUnit}>%</Text>
+                </View>
+              </View>
+            ) : null}
+            <View style={styles.inspectionChecklist}>
+              {readingPerspectives.map(renderInspectionPhoto)}
+            </View>
+          </View>
+          <View style={styles.inspectionSection}>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>
+              Exterior photos
+            </Text>
+            <View style={styles.inspectionChecklist}>
+              {exteriorPerspectives.map(renderInspectionPhoto)}
+            </View>
+          </View>
+          <View style={styles.inspectionSection}>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>
+              Interior photos
+            </Text>
+            <View style={styles.inspectionChecklist}>
+              {interiorPerspectives.map(renderInspectionPhoto)}
+            </View>
+          </View>
+          <View style={styles.inspectionSection}>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>
+              Pickup notes · Optional
+            </Text>
+            <TextInput
+              multiline
+              onChangeText={setNotes}
+              placeholder="Add anything the renter should know about the vehicle condition."
+              placeholderTextColor={colors.placeholder}
+              style={[styles.input, styles.notesInput]}
+              value={notes}
             />
-            <SecondaryAction
-              label="Report existing issues"
-              onPress={() => {
-                setConditionDisclosureState('ISSUES_REPORTED');
-                setShowConditionIssueForm(false);
-              }}
-            />
+          </View>
+          <View style={styles.inspectionSection}>
+            <View style={styles.conditionHeader}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Existing vehicle condition
+              </Text>
+              <Text style={styles.conditionStatus}>
+                {conditionDisclosureState === 'NO_KNOWN_ISSUES'
+                  ? 'No known issues'
+                  : conditionDisclosureState === 'ISSUES_REPORTED'
+                    ? `${conditionIssues.length} ${conditionIssues.length === 1 ? 'issue' : 'issues'}`
+                    : 'Review required'}
+              </Text>
+            </View>
+            <Text style={styles.body}>
+              Confirm the existing condition before handing over the vehicle.
+            </Text>
+            <View
+              accessibilityLabel="Existing vehicle condition"
+              accessibilityRole="radiogroup"
+              style={styles.conditionChoiceGroup}
+            >
+              <ConditionDisclosureOption
+                label="No known issues"
+                onPress={() => {
+                  if (conditionIssues.some(({ knownIssueId }) => knownIssueId)) {
+                    Alert.alert(
+                      'Active known issues must be addressed',
+                      'Include each active issue or mark it resolved before declaring no known existing issues.',
+                    );
+                    return;
+                  }
+                  const selectNoIssues = () => {
+                    setConditionIssues([]);
+                    closeConditionIssueSheet();
+                    setConditionDisclosureState('NO_KNOWN_ISSUES');
+                  };
+                  if (conditionIssues.length) {
+                    Alert.alert(
+                      'Remove existing issue drafts?',
+                      'Choosing no known issues will remove the issues you added to this inspection.',
+                      [
+                        { text: 'Keep issues', style: 'cancel' },
+                        { text: 'Remove drafts', style: 'destructive', onPress: selectNoIssues },
+                      ],
+                    );
+                  } else selectNoIssues();
+                }}
+                selected={conditionDisclosureState === 'NO_KNOWN_ISSUES'}
+              />
+              <ConditionDisclosureOption
+                label="Report issues"
+                onPress={() => {
+                  setConditionDisclosureState('ISSUES_REPORTED');
+                  openNewConditionIssue();
+                }}
+                selected={conditionDisclosureState === 'ISSUES_REPORTED'}
+              />
+            </View>
             {conditionDisclosureState === 'ISSUES_REPORTED' ? (
               <>
-                <Text style={[styles.cardTitle, styles.knownIssuesHeading]}>
-                  Known issues from your vehicle (
-                  {conditionIssues.filter(({ knownIssueId }) => knownIssueId).length})
-                </Text>
-                {conditionIssues.filter(({ knownIssueId }) => knownIssueId).length === 0 ? (
-                  <Text style={styles.body}>
-                    No active known issues are recorded for this vehicle.
-                  </Text>
-                ) : null}
-                {conditionIssues.map((issue, index) =>
-                  issue.knownIssueId ? (
-                    <View
-                      key={`${issue.category}-${issue.vehicleArea}-${index}`}
-                      style={styles.issueCard}
-                    >
-                      <Text style={styles.cardTitle}>
-                        {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+                <View style={styles.conditionIssueSummary}>
+                  <View>
+                    <Text style={styles.sectionTitle}>Existing issues</Text>
+                    <Text accessibilityLiveRegion="polite" style={styles.conditionIssueCount}>
+                      {conditionIssues.length} recorded
+                    </Text>
+                  </View>
+                  <SecondaryAction inline label="Add another" onPress={openNewConditionIssue} />
+                </View>
+                {conditionIssues.some(({ knownIssueId }) => knownIssueId) ? (
+                  <>
+                    <View style={styles.conditionSubsectionHeader}>
+                      <Text style={styles.cardTitle}>Known vehicle issues</Text>
+                      <Text style={styles.conditionIssueCount}>
+                        {conditionIssues.filter(({ knownIssueId }) => knownIssueId).length} recorded
                       </Text>
-                      <Text style={styles.body}>{domainLabel(issue.classification)}</Text>
-                      <Text style={styles.body}>{issue.description}</Text>
-                      {issue.knownIssueEvidenceFileAssetIds?.length ? (
-                        <SecondaryAction
-                          label={`View supporting photos (${issue.knownIssueEvidenceFileAssetIds.length})`}
-                          onPress={() =>
-                            setConditionGallery(issue.knownIssueEvidenceFileAssetIds ?? [])
-                          }
-                        />
-                      ) : null}
                     </View>
-                  ) : null,
-                )}
-                {conditionIssues.some(({ knownIssueId }) => !knownIssueId) ? (
-                  <Text style={styles.cardTitle}>
-                    New findings (
-                    {conditionIssues.filter(({ knownIssueId }) => !knownIssueId).length})
-                  </Text>
+                    {conditionIssues.map((issue, index) =>
+                      issue.knownIssueId ? (
+                        <View
+                          key={`${issue.category}-${issue.vehicleArea}-${index}`}
+                          style={styles.issueCard}
+                        >
+                          <Text style={styles.cardTitle}>
+                            {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+                          </Text>
+                          <Text style={styles.body}>{domainLabel(issue.classification)}</Text>
+                          <Text style={styles.body}>{issue.description}</Text>
+                          {issue.knownIssueEvidenceFileAssetIds?.length ? (
+                            <SecondaryAction
+                              label={`View supporting photos (${issue.knownIssueEvidenceFileAssetIds.length})`}
+                              onPress={() =>
+                                setConditionGallery(issue.knownIssueEvidenceFileAssetIds ?? [])
+                              }
+                            />
+                          ) : null}
+                        </View>
+                      ) : null,
+                    )}
+                  </>
                 ) : null}
-                {conditionIssues.map((issue, index) =>
-                  !issue.knownIssueId ? (
-                    <View
-                      key={`${issue.category}-${issue.vehicleArea}-${index}`}
-                      style={styles.issueCard}
-                    >
-                      <Text style={styles.cardTitle}>
-                        {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+                {conditionIssues.some(({ knownIssueId }) => !knownIssueId) ? (
+                  <>
+                    <View style={styles.conditionSubsectionHeader}>
+                      <Text style={styles.cardTitle}>New issues</Text>
+                      <Text style={styles.conditionIssueCount}>
+                        {conditionIssues.filter(({ knownIssueId }) => !knownIssueId).length}{' '}
+                        recorded
                       </Text>
-                      <Text style={styles.body}>{domainLabel(issue.classification)}</Text>
-                      <Text style={styles.body}>{issue.description}</Text>
-                      <View style={styles.inlineActions}>
-                        <SecondaryAction
-                          label="Edit"
-                          onPress={() => {
-                            scrollToConditionFormAfterLayout.current = true;
-                            setConditionCategory(issue.category);
-                            setConditionArea(issue.vehicleArea);
-                            setConditionClassification(issue.classification);
-                            setConditionDescription(issue.description);
-                            setConditionEvidenceIds(issue.evidenceFileAssetIds);
-                            setEditingConditionIssue(index);
-                            setShowConditionIssueForm(true);
-                          }}
-                        />
-                        <SecondaryAction
-                          label="Remove"
-                          onPress={() =>
-                            Alert.alert('Remove issue?', 'This removes the issue from the draft.', [
-                              { text: 'Cancel', style: 'cancel' },
-                              {
-                                text: 'Remove',
-                                style: 'destructive',
-                                onPress: () => {
+                    </View>
+                    {conditionIssues.map((issue, index) =>
+                      !issue.knownIssueId ? (
+                        <View
+                          key={`${issue.category}-${issue.vehicleArea}-${index}`}
+                          style={styles.issueCard}
+                        >
+                          <Text style={styles.cardTitle}>
+                            {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+                          </Text>
+                          <Text style={styles.body}>{domainLabel(issue.classification)}</Text>
+                          <Text style={styles.body}>{issue.description}</Text>
+                          <View style={styles.inlineActions}>
+                            <SecondaryAction
+                              compact
+                              label={`Edit ${domainLabel(issue.category)} issue`}
+                              onPress={() => {
+                                setConditionCategory(issue.category);
+                                setConditionArea(issue.vehicleArea);
+                                setConditionClassification(issue.classification);
+                                setConditionDescription(issue.description);
+                                setConditionEvidenceIds(issue.evidenceFileAssetIds);
+                                setEditingConditionIssue(index);
+                                setConditionSheetContentHeight(0);
+                                setShowConditionIssueForm(true);
+                              }}
+                            />
+                            <Pressable
+                              accessibilityLabel={`Remove ${domainLabel(issue.category)} issue`}
+                              accessibilityRole="button"
+                              onPress={() =>
+                                Alert.alert(
+                                  'Remove issue?',
+                                  'This removes the issue from the draft.',
+                                  [
+                                    { text: 'Cancel', style: 'cancel' },
+                                    {
+                                      text: 'Remove',
+                                      style: 'destructive',
+                                      onPress: () => {
+                                        setFiles((current) => {
+                                          const captured = Object.keys(current).length
+                                            ? current
+                                            : draftFiles;
+                                          return {
+                                            ...captured,
+                                            ADDITIONAL: (captured.ADDITIONAL ?? []).filter(
+                                              ({ id }) => !issue.evidenceFileAssetIds.includes(id),
+                                            ),
+                                          };
+                                        });
+                                        setConditionIssues((current) =>
+                                          current.filter((_, issueIndex) => issueIndex !== index),
+                                        );
+                                      },
+                                    },
+                                  ],
+                                )
+                              }
+                              style={styles.destructiveSecondary}
+                            >
+                              <Text style={styles.destructiveSecondaryText}>Remove</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      ) : null,
+                    )}
+                  </>
+                ) : null}
+                <Modal
+                  animationType="slide"
+                  onRequestClose={closeConditionIssueSheet}
+                  presentationStyle="overFullScreen"
+                  statusBarTranslucent
+                  transparent
+                  visible={showConditionIssueForm}
+                >
+                  <KeyboardAvoidingView
+                    behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                    style={styles.conditionSheetRoot}
+                  >
+                    <View style={styles.exceptionBackdrop} />
+                    <Reanimated.View
+                      accessibilityViewIsModal
+                      style={[styles.conditionSheet, conditionSheetAnimatedStyle]}
+                    >
+                      <ScrollView
+                        automaticallyAdjustKeyboardInsets
+                        contentContainerStyle={[
+                          styles.conditionSheetContent,
+                          { paddingBottom: spacing.md },
+                        ]}
+                        keyboardShouldPersistTaps="handled"
+                        onContentSizeChange={(_width, height) =>
+                          setConditionSheetContentHeight(height)
+                        }
+                        scrollEnabled={conditionSheetLayout.scrollEnabled}
+                        showsVerticalScrollIndicator={conditionSheetLayout.scrollEnabled}
+                      >
+                        <BackControl label="Back" onPress={closeConditionIssueSheet} />
+                        <Text accessibilityRole="header" style={styles.exceptionTitle}>
+                          {editingConditionIssue === null
+                            ? 'Report existing issue'
+                            : 'Edit existing issue'}
+                        </Text>
+                        <Text style={styles.conditionSheetHelper}>
+                          Record any damage or condition already present before handover.
+                        </Text>
+                        <View style={styles.issueForm}>
+                          <SearchableReferenceSelector
+                            label="Issue type"
+                            onChange={setConditionCategory}
+                            options={conditionCategoryOptions}
+                            sheetDismissLabel="Back"
+                            value={conditionCategory}
+                          />
+                          <SearchableReferenceSelector
+                            label="Location"
+                            onChange={setConditionArea}
+                            options={conditionAreaOptions}
+                            sheetDismissLabel="Back"
+                            value={conditionArea}
+                          />
+                          <SearchableReferenceSelector
+                            label="Severity"
+                            onChange={setConditionClassification}
+                            options={conditionClassificationOptions}
+                            sheetDismissLabel="Back"
+                            value={conditionClassification}
+                          />
+                          <Text
+                            accessibilityLiveRegion="polite"
+                            style={styles.classificationHelper}
+                          >
+                            {conditionClassificationExplanation(conditionClassification)}
+                          </Text>
+                          <Text style={styles.cardTitle}>Description</Text>
+                          <TextInput
+                            accessibilityLabel="Description"
+                            multiline
+                            ref={conditionDescriptionRef}
+                            onChangeText={(value) => {
+                              setConditionDescription(value);
+                              if (value.trim().length >= 3) setConditionDescriptionError('');
+                            }}
+                            placeholder="Describe the existing issue"
+                            placeholderTextColor={colors.placeholder}
+                            style={[styles.input, styles.issueDescriptionInput]}
+                            value={conditionDescription}
+                          />
+                          {conditionDescriptionError ? (
+                            <Text accessibilityRole="alert" style={styles.error}>
+                              {conditionDescriptionError}
+                            </Text>
+                          ) : null}
+                          <Text style={styles.cardTitle}>Supporting photos</Text>
+                          <Text style={styles.body}>
+                            Photos are private and visible only to authorized reviewers.
+                          </Text>
+                          <View style={styles.conditionIssuePhotos}>
+                            {conditionEvidence.map((file, index) => (
+                              <SecureCameraPhotoSlot
+                                busy={capture.isPending}
+                                compactRemoveOverlay
+                                guidance="Capture the affected area clearly."
+                                key={file.id}
+                                name={`Photo ${index + 1}`}
+                                onCapture={() =>
+                                  capture.mutate({ mode: 'append', perspective: 'ADDITIONAL' })
+                                }
+                                onRemove={() =>
                                   setFiles((current) => {
+                                    setConditionEvidenceIds((ids) =>
+                                      ids.filter((id) => id !== file.id),
+                                    );
                                     const captured = Object.keys(current).length
                                       ? current
                                       : draftFiles;
                                     return {
                                       ...captured,
                                       ADDITIONAL: (captured.ADDITIONAL ?? []).filter(
-                                        ({ id }) => !issue.evidenceFileAssetIds.includes(id),
+                                        ({ id }) => id !== file.id,
                                       ),
                                     };
-                                  });
-                                  setConditionIssues((current) =>
-                                    current.filter((_, issueIndex) => issueIndex !== index),
-                                  );
-                                },
-                              },
-                            ])
-                          }
-                        />
-                      </View>
-                    </View>
-                  ) : null,
-                )}
-                {!showConditionIssueForm ? (
-                  <SecondaryAction
-                    label="+ Add another issue"
-                    onPress={() => {
-                      scrollToConditionFormAfterLayout.current = true;
-                      setEditingConditionIssue(null);
-                      setConditionDescription('');
-                      setConditionEvidenceIds([]);
-                      setConditionDescriptionError('');
-                      setShowConditionIssueForm(true);
-                    }}
-                  />
-                ) : (
-                  <View
-                    onLayout={({ nativeEvent }) => {
-                      if (scrollToConditionFormAfterLayout.current) {
-                        scrollToConditionFormAfterLayout.current = false;
-                        scrollToConditionForm?.(
-                          Math.max(
-                            0,
-                            panelOffsetY.current +
-                              conditionCardOffsetY.current +
-                              nativeEvent.layout.y -
-                              spacing.md,
-                          ),
-                        );
-                      }
-                    }}
-                    style={styles.issueForm}
-                  >
-                    <Text style={styles.cardTitle}>
-                      {editingConditionIssue === null ? 'Add another issue' : 'Edit new finding'}
-                    </Text>
-                    <SearchableReferenceSelector
-                      label="What’s the issue?"
-                      onChange={setConditionCategory}
-                      options={conditionCategoryOptions}
-                      value={conditionCategory}
-                    />
-                    <SearchableReferenceSelector
-                      label="Where is it?"
-                      onChange={setConditionArea}
-                      options={conditionAreaOptions}
-                      value={conditionArea}
-                    />
-                    <SearchableReferenceSelector
-                      label="How serious is it?"
-                      onChange={setConditionClassification}
-                      options={conditionClassificationOptions}
-                      value={conditionClassification}
-                    />
-                    <Text accessibilityLiveRegion="polite" style={styles.classificationHelper}>
-                      {conditionClassificationExplanation(conditionClassification)}
-                    </Text>
-                    <Text style={styles.cardTitle}>Describe the issue</Text>
-                    <TextInput
-                      accessibilityLabel="Describe the issue"
-                      multiline
-                      ref={conditionDescriptionRef}
-                      onChangeText={(value) => {
-                        setConditionDescription(value);
-                        if (value.trim().length >= 3) setConditionDescriptionError('');
-                      }}
-                      placeholder="Add a clear description"
-                      placeholderTextColor={colors.placeholder}
-                      style={[styles.input, styles.issueDescriptionInput]}
-                      value={conditionDescription}
-                    />
-                    {conditionDescriptionError ? (
-                      <Text accessibilityRole="alert" style={styles.error}>
-                        {conditionDescriptionError}
-                      </Text>
-                    ) : null}
-                    <Text style={styles.cardTitle}>Supporting photos</Text>
-                    <Text style={styles.body}>
-                      Add private evidence of this finding. Photos are visible only to authorized
-                      reviewers.
-                    </Text>
-                    <View style={styles.conditionIssuePhotos}>
-                      {conditionEvidence.map((file, index) => (
-                        <SecureCameraPhotoSlot
-                          busy={capture.isPending}
-                          compactRemoveOverlay
-                          guidance="Capture the affected area clearly."
-                          key={file.id}
-                          name={`Photo ${index + 1}`}
-                          onCapture={() =>
-                            capture.mutate({ mode: 'append', perspective: 'ADDITIONAL' })
-                          }
-                          onRemove={() =>
-                            setFiles((current) => {
-                              setConditionEvidenceIds((ids) => ids.filter((id) => id !== file.id));
-                              const captured = Object.keys(current).length ? current : draftFiles;
-                              return {
-                                ...captured,
-                                ADDITIONAL: (captured.ADDITIONAL ?? []).filter(
-                                  ({ id }) => id !== file.id,
-                                ),
-                              };
-                            })
-                          }
-                          persistedPreview={
-                            !file.uri ? (
-                              <AuthorizedInspectionImage
-                                fileAssetId={file.id}
-                                label={`Supporting photo ${index + 1} secure draft preview`}
-                                large
+                                  })
+                                }
+                                persistedPreview={
+                                  !file.uri ? (
+                                    <AuthorizedInspectionImage
+                                      fileAssetId={file.id}
+                                      label={`Supporting photo ${index + 1} secure draft preview`}
+                                      large
+                                    />
+                                  ) : undefined
+                                }
+                                previewUri={file.uri}
+                                required={false}
+                                uploaded
                               />
-                            ) : undefined
-                          }
-                          previewUri={file.uri}
-                          required={false}
-                          uploaded
-                        />
-                      ))}
-                      {conditionEvidence.length < 10 ? (
-                        <SecureCameraPhotoSlot
-                          busy={
-                            capture.isPending && capture.variables?.perspective === 'ADDITIONAL'
-                          }
-                          captureLabel="Add photo"
-                          guidance="Use the rear camera to add supporting condition evidence."
-                          hideHeader
-                          name="Add photo"
-                          onCapture={() =>
-                            capture.mutate({ mode: 'append', perspective: 'ADDITIONAL' })
-                          }
-                          required={false}
-                          uploaded={false}
-                        />
-                      ) : null}
-                    </View>
-                    {capture.isError && capture.variables?.perspective === 'ADDITIONAL' && (
-                      <View>
-                        <Text accessibilityRole="alert" style={styles.error}>
-                          {attachmentUploaded
-                            ? `Photo uploaded, but could not be attached. ${capture.error.message}`
-                            : capture.error.message}
-                        </Text>
-                        <SecondaryAction
-                          label="Retry"
-                          onPress={() =>
-                            capture.mutate({
-                              mode: 'append',
-                              perspective: 'ADDITIONAL',
-                              retry: Boolean(pendingAttachment.current),
-                            })
-                          }
+                            ))}
+                            {conditionEvidence.length < 10 ? (
+                              <SecureCameraPhotoSlot
+                                busy={
+                                  capture.isPending &&
+                                  capture.variables?.perspective === 'ADDITIONAL'
+                                }
+                                captureLabel="Add photo"
+                                guidance="Use the rear camera to add supporting condition evidence."
+                                hideHeader
+                                name="Add photo"
+                                onCapture={() =>
+                                  capture.mutate({ mode: 'append', perspective: 'ADDITIONAL' })
+                                }
+                                required={false}
+                                uploaded={false}
+                              />
+                            ) : null}
+                          </View>
+                          {capture.isError && capture.variables?.perspective === 'ADDITIONAL' && (
+                            <View>
+                              <Text accessibilityRole="alert" style={styles.error}>
+                                {attachmentUploaded
+                                  ? `Photo uploaded, but could not be attached. ${capture.error.message}`
+                                  : capture.error.message}
+                              </Text>
+                              <SecondaryAction
+                                label="Retry"
+                                onPress={() =>
+                                  capture.mutate({
+                                    mode: 'append',
+                                    perspective: 'ADDITIONAL',
+                                    retry: Boolean(pendingAttachment.current),
+                                  })
+                                }
+                              />
+                            </View>
+                          )}
+                        </View>
+                      </ScrollView>
+                      <View
+                        onLayout={({ nativeEvent }) =>
+                          setConditionSheetFooterHeight(nativeEvent.layout.height)
+                        }
+                        style={[
+                          styles.conditionSheetFooter,
+                          { paddingBottom: conditionSheetBottomAllowance },
+                        ]}
+                      >
+                        <Action
+                          label={editingConditionIssue === null ? 'Save issue' : 'Save changes'}
+                          onPress={saveConditionIssue}
                         />
                       </View>
-                    )}
-                    <SecondaryAction
-                      label={editingConditionIssue === null ? 'Save issue' : 'Save changes'}
-                      onPress={() => {
-                        const issue: ConditionIssueDraft = {
-                          category: conditionCategory,
-                          vehicleArea: conditionArea,
-                          classification: conditionClassification,
-                          description: conditionDescription.trim(),
-                          evidenceFileAssetIds: conditionEvidenceIds,
-                          persistAsKnownIssue: editingConditionIssue === null,
-                        };
-                        Keyboard.dismiss();
-                        if (issue.description.length < 3) {
-                          setConditionDescriptionError('Please enter at least 3 characters.');
-                          return;
-                        }
-                        setConditionIssues((current) =>
-                          editingConditionIssue === null
-                            ? [...current, issue]
-                            : current.map((value, index) =>
-                                index === editingConditionIssue ? issue : value,
-                              ),
-                        );
-                        setConditionDescription('');
-                        setConditionEvidenceIds([]);
-                        setEditingConditionIssue(null);
-                        setShowConditionIssueForm(false);
-                      }}
-                    />
-                    <SecondaryAction
-                      label="Cancel"
-                      onPress={() => {
-                        Keyboard.dismiss();
-                        setConditionDescription('');
-                        setConditionEvidenceIds([]);
-                        setConditionDescriptionError('');
-                        setEditingConditionIssue(null);
-                        setShowConditionIssueForm(false);
-                      }}
-                    />
-                  </View>
-                )}
+                    </Reanimated.View>
+                  </KeyboardAvoidingView>
+                </Modal>
                 <Modal
                   animationType="fade"
                   onRequestClose={() => setConditionGallery([])}
@@ -2373,14 +2747,19 @@ export function OwnerRentalPanel({
               </>
             ) : null}
           </View>
+          {inspectionReady ? (
+            <View accessibilityLiveRegion="polite" style={styles.readyState}>
+              <Text style={styles.cardTitle}>Ready to submit</Text>
+              <Text style={styles.body}>All required pickup evidence has been added.</Text>
+            </View>
+          ) : null}
           <Action
-            label="Submit inspection"
-            disabled={
-              !hasRequiredPhotos(inspectionFiles) ||
-              !odometer ||
-              conditionDisclosureState === 'NOT_REVIEWED' ||
-              (conditionDisclosureState === 'ISSUES_REPORTED' && conditionIssues.length === 0)
+            label={
+              action.isPending && action.variables === 'inspection'
+                ? 'Submitting…'
+                : 'Submit inspection'
             }
+            disabled={!inspectionReady || (action.isPending && action.variables === 'inspection')}
             onPress={() => action.mutate('inspection')}
           />
         </>
@@ -2390,35 +2769,60 @@ export function OwnerRentalPanel({
           detail.workflowCompliance?.start.evidenceOutcome === 'WAIVED') &&
         !pickupDiscrepancyUnresolved && (
           <View
-            style={styles.actionCard}
             onLayout={({ nativeEvent }) => {
               ownerWorkflowOffsets.current.start = nativeEvent.layout.y;
             }}
           >
-            <Text style={styles.actionEyebrow}>Action required</Text>
-            <Text style={styles.cardTitle}>Confirm vehicle handover</Text>
-            <Text style={styles.body}>
-              Ask the renter for their 6-digit pickup code only when physically handing over the
-              vehicle. Pickup verification is required even when inspection evidence was waived.
-            </Text>
-            {pickup && <InspectionEvidence title="Submitted pickup evidence" inspection={pickup} />}
-            <TextInput
-              style={styles.input}
-              value={code}
-              onChangeText={setCode}
-              keyboardType="number-pad"
-              maxLength={6}
-              placeholder="6-digit pickup code"
-              placeholderTextColor={colors.placeholder}
-            />
-            <Action
-              label={action.isPending ? 'Verifying…' : 'Verify pickup code'}
-              disabled={code.length !== 6 || action.isPending}
-              onPress={() => {
-                Keyboard.dismiss();
-                action.mutate('verify');
-              }}
-            />
+            {pickup ? (
+              <>
+                <View style={styles.submittedInspectionStatus}>
+                  <Text style={styles.sectionTitle}>Pickup inspection</Text>
+                  <StatusBadge label="Submitted" />
+                </View>
+                <PickupInspectionSummary inspection={pickup} />
+              </>
+            ) : null}
+            <View style={styles.pickupVerificationCard}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Pickup verification
+              </Text>
+              <Text style={styles.body}>
+                Enter the renter&apos;s 6-digit pickup code to confirm the handover.
+              </Text>
+              <TextInput
+                accessibilityLabel="6-digit pickup code"
+                style={styles.input}
+                value={code}
+                onChangeText={setCode}
+                keyboardType="number-pad"
+                maxLength={6}
+                placeholder="6-digit pickup code"
+                placeholderTextColor={colors.placeholder}
+              />
+              <Action
+                label={action.isPending ? 'Verifying…' : 'Verify pickup code'}
+                disabled={code.length !== 6 || action.isPending}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  action.mutate('verify');
+                }}
+              />
+            </View>
+            {showCompactRentalActions ? (
+              <View style={styles.rentalActionsSection}>
+                <Text style={styles.sectionTitle}>Rental actions</Text>
+                <View style={styles.rentalActionRow}>
+                  <SecondaryAction
+                    compact
+                    label="Report incident"
+                    onPress={() => action.mutate('incident')}
+                  />
+                  {onOpenConversation ? (
+                    <SecondaryAction compact label="Message" onPress={onOpenConversation} />
+                  ) : null}
+                </View>
+              </View>
+            ) : null}
           </View>
         )}
       {detail.status === 'READY_FOR_PICKUP' && pickupDiscrepancyUnresolved && pickup ? (
@@ -2526,11 +2930,6 @@ export function OwnerRentalPanel({
           )}
         </View>
       ) : null}
-      {detail.status === 'ACTIVE' && detail.actualPickupAt && (
-        <Text style={styles.success}>
-          Vehicle handed over · {dateTimeLabel(detail.actualPickupAt)}
-        </Text>
-      )}
       {latestCorrection && (
         <View style={styles.infoCard}>
           <Text style={styles.cardTitle}>
@@ -2561,12 +2960,22 @@ export function OwnerRentalPanel({
           )}
         </View>
       )}
-      {detail.status === 'ACTIVE' && !returnRecoveryOverdue && (
-        <Text style={styles.body}>
-          Rental in progress. The renter can start return when the vehicle reaches the agreed
-          location.
-        </Text>
-      )}
+      {detail.status === 'ACTIVE' && pickup ? <RentalVehicleReadings inspection={pickup} /> : null}
+      {detail.status === 'ACTIVE' ? (
+        <View style={styles.rentalActionsSection}>
+          <Text style={styles.sectionTitle}>Rental actions</Text>
+          <View style={styles.rentalActionRow}>
+            <SecondaryAction
+              compact
+              label="Report incident"
+              onPress={() => action.mutate('incident')}
+            />
+            {onOpenConversation ? (
+              <SecondaryAction compact label="Message" onPress={onOpenConversation} />
+            ) : null}
+          </View>
+        </View>
+      ) : null}
       <EvidenceWaiverWarnings detail={detail} />
       {detail.status === 'RETURN_PENDING' &&
         detail.fulfillment.endMethod === 'OWNER_COLLECTION' &&
@@ -2608,9 +3017,15 @@ export function OwnerRentalPanel({
         !returned &&
         detail.workflowCompliance?.return.evidenceOutcome !== 'WAIVED' &&
         !overdueRecoveryScope && (
-          <Text style={styles.body}>
-            Waiting for the renter to submit the return photos and dashboard readings.
-          </Text>
+          <View accessibilityLiveRegion="polite" style={styles.nextStepCard}>
+            <Text style={styles.actionEyebrow}>Next step</Text>
+            <Text style={styles.nextStepText}>
+              Waiting for the renter to complete the return inspection.
+            </Text>
+            <Text style={styles.body}>
+              Return photos and vehicle readings will appear here once submitted.
+            </Text>
+          </View>
         )}
       {detail.status === 'RETURN_PENDING' && returned && (
         <View
@@ -2618,47 +3033,179 @@ export function OwnerRentalPanel({
             ownerWorkflowOffsets.current.return = nativeEvent.layout.y;
           }}
         >
-          <InspectionEvidence title="Return evidence · Submitted by renter" inspection={returned} />
-          <Text style={styles.body}>
-            Review the renter’s immutable evidence and confirm physical receipt. If the condition
-            differs, report an issue to open the controlled dispute and optional evidence pathway.
-          </Text>
-          <Action label="Confirm vehicle received" onPress={() => action.mutate('agree')} />
-          <SecondaryAction label="Report an issue" onPress={() => action.mutate('disagree')} />
+          <RentalVehicleReadings inspection={returned} title="Return readings" />
+          <ReturnInspectionEvidence inspection={returned} />
+          {latestCorrection?.status === 'PENDING_REVIEW' ? (
+            <View style={styles.infoCard}>
+              <Text style={styles.cardTitle}>Waiting for administrator review</Text>
+              <Text style={styles.body}>
+                Your pickup odometer correction has been submitted. Vehicle receipt cannot be
+                confirmed until an administrator reviews the corrected reading. We’ll refresh this
+                rental when a decision is recorded.
+              </Text>
+            </View>
+          ) : (
+            <View accessibilityLiveRegion="polite" style={styles.nextStepCard}>
+              <Text style={styles.actionEyebrow}>Next step</Text>
+              <Text style={styles.nextStepText}>
+                Review the renter&apos;s return evidence and confirm the vehicle was received.
+              </Text>
+              <Action label="Confirm vehicle received" onPress={() => action.mutate('agree')} />
+              <SecondaryAction
+                label="Report return discrepancy"
+                onPress={() => action.mutate('disagree')}
+              />
+            </View>
+          )}
         </View>
       )}
       {detail.status === 'RETURNED' && (
         <>
-          <UsageSummary detail={detail} />
-          <Text style={styles.cardTitle}>Start a controlled claim</Text>
-          <Text style={styles.body}>
-            Select the measured issue. You cannot enter a charge amount.
-          </Text>
-          {claimCategories.map((category) => (
-            <SecondaryAction
-              key={category}
-              label={`${claimCategory === category ? '✓ ' : ''}${domainLabel(category)}`}
-              onPress={() => setClaimCategory(category)}
-            />
-          ))}
-          <TextInput
-            style={styles.input}
-            value={claimDescription}
-            onChangeText={setClaimDescription}
-            placeholder="Describe the specific issue"
-            placeholderTextColor={colors.placeholder}
-            multiline
-          />
-          <Action
-            label="Submit evidence for renter and admin review"
-            disabled={claimDescription.trim().length < 3}
-            onPress={() => action.mutate('claim')}
-          />
+          <UsageSummary audience="owner" detail={detail} />
+          <View style={styles.postInspectionCard}>
+            <Text accessibilityRole="header" style={styles.sectionTitle}>
+              Claims
+            </Text>
+            {detail.postReturnClaims.length ? (
+              <>
+                <Text style={styles.body}>
+                  {detail.postReturnClaims.length}{' '}
+                  {detail.postReturnClaims.length === 1 ? 'claim submitted' : 'claims submitted'}
+                </Text>
+                {detail.postReturnClaims.map((claim) => (
+                  <View key={claim.id} style={styles.claimSummaryRow}>
+                    <Text style={styles.rentalScheduleValue}>{domainLabel(claim.category)}</Text>
+                    <StatusBadge label={domainLabel(claim.status)} />
+                  </View>
+                ))}
+              </>
+            ) : (
+              <>
+                <Text style={styles.rentalScheduleValue}>No claim submitted yet.</Text>
+                <Text style={styles.body}>
+                  Approved claims are reviewed before any additional charge is applied.
+                </Text>
+              </>
+            )}
+            {claimWindowOpen ? (
+              <SecondaryAction
+                inline
+                label={detail.postReturnClaims.length ? 'Add another claim' : 'Start a claim'}
+                onPress={openClaimSheet}
+              />
+            ) : (
+              <Text accessibilityLiveRegion="polite" style={styles.status}>
+                Claim window closed
+              </Text>
+            )}
+          </View>
+          <Modal
+            animationType="slide"
+            onRequestClose={closeClaimSheet}
+            presentationStyle="overFullScreen"
+            statusBarTranslucent
+            transparent
+            visible={showClaimSheet}
+          >
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={styles.conditionSheetRoot}
+            >
+              <View style={styles.exceptionBackdrop} />
+              <Reanimated.View
+                accessibilityViewIsModal
+                style={[styles.conditionSheet, conditionSheetAnimatedStyle]}
+              >
+                <ScrollView
+                  automaticallyAdjustKeyboardInsets
+                  contentContainerStyle={styles.conditionSheetContent}
+                  keyboardShouldPersistTaps="handled"
+                  onContentSizeChange={(_width, height) => setConditionSheetContentHeight(height)}
+                  scrollEnabled={conditionSheetLayout.scrollEnabled}
+                  showsVerticalScrollIndicator={conditionSheetLayout.scrollEnabled}
+                >
+                  <BackControl label="Back" onPress={closeClaimSheet} />
+                  <Text accessibilityRole="header" style={styles.exceptionTitle}>
+                    Start a claim
+                  </Text>
+                  <Text style={styles.conditionSheetHelper}>
+                    Select the return issue you want to report.
+                  </Text>
+                  <View style={styles.issueForm}>
+                    <SearchableReferenceSelector
+                      label="Claim type"
+                      onChange={(value) =>
+                        setClaimCategory(value as (typeof claimCategories)[number])
+                      }
+                      options={eligibleClaimCategories.map((value) => ({
+                        code: value,
+                        id: value,
+                        name: domainLabel(value),
+                      }))}
+                      sheetDismissLabel="Back"
+                      value={claimCategory}
+                    />
+                    <ClaimMeasuredValue category={claimCategory} detail={detail} />
+                    <Text style={styles.cardTitle}>Description</Text>
+                    <TextInput
+                      accessibilityLabel="Claim description"
+                      multiline
+                      onChangeText={setClaimDescription}
+                      placeholder="Describe the specific return issue"
+                      placeholderTextColor={colors.placeholder}
+                      style={[styles.input, styles.issueDescriptionInput]}
+                      value={claimDescription}
+                    />
+                    <Text style={styles.conditionSheetHelper}>
+                      Claim amounts are calculated from booking records and reviewed before any
+                      additional charge is applied.
+                    </Text>
+                    {action.isError ? (
+                      <Text accessibilityRole="alert" style={styles.error}>
+                        {action.error.message}
+                      </Text>
+                    ) : null}
+                  </View>
+                </ScrollView>
+                <View
+                  onLayout={({ nativeEvent }) =>
+                    setConditionSheetFooterHeight(nativeEvent.layout.height)
+                  }
+                  style={[
+                    styles.conditionSheetFooter,
+                    { paddingBottom: conditionSheetBottomAllowance },
+                  ]}
+                >
+                  <Action
+                    disabled={claimDescription.trim().length < 3 || action.isPending}
+                    label={action.isPending ? 'Submitting…' : 'Submit claim'}
+                    onPress={() => action.mutate('claim')}
+                  />
+                </View>
+              </Reanimated.View>
+            </KeyboardAvoidingView>
+          </Modal>
         </>
       )}
-      {['READY_FOR_PICKUP', 'ACTIVE', 'RETURN_PENDING'].includes(detail.status) && (
-        <SecondaryAction label="Report incident" onPress={() => action.mutate('incident')} />
-      )}
+      {['RETURN_PENDING', 'RETURNED'].includes(detail.status) ? (
+        <View style={styles.rentalActionsSection}>
+          <Text style={styles.sectionTitle}>Rental actions</Text>
+          <View style={styles.rentalActionRow}>
+            <SecondaryAction
+              compact
+              label="Report incident"
+              onPress={() => action.mutate('incident')}
+            />
+            {onOpenConversation ? (
+              <SecondaryAction compact label="Message" onPress={onOpenConversation} />
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+      {['READY_FOR_PICKUP', 'RETURN_PENDING'].includes(detail.status) &&
+        !showCompactRentalActions && (
+          <SecondaryAction label="Report incident" onPress={() => action.mutate('incident')} />
+        )}
       {action.isError && !ownerDiscrepancyResponseError && (
         <Text style={styles.error}>{action.error.message}</Text>
       )}
@@ -2727,6 +3274,243 @@ function CapturedPreviews({
         </View>
       ))}
     </View>
+  );
+}
+
+function PickupInspectionSummary({
+  inspection,
+}: {
+  readonly inspection: RentalDetail['inspections'][number];
+}) {
+  const { width: viewportWidth } = useWindowDimensions();
+  const [gallery, setGallery] = useState<
+    readonly { readonly fileAssetId: string; readonly title: string }[]
+  >([]);
+  const issues = inspection.conditionIssues ?? [];
+  const ownerNotes =
+    inspection.notes === 'Pickup inspection submitted from owner mobile mode.'
+      ? null
+      : inspection.notes;
+  return (
+    <>
+      <View style={styles.postInspectionCard}>
+        <Text accessibilityRole="header" style={styles.sectionTitle}>
+          Vehicle condition
+        </Text>
+        <Text style={[styles.body, styles.compactPostInspectionText]}>
+          {issues.length
+            ? `${issues.length} existing ${issues.length === 1 ? 'issue' : 'issues'} recorded`
+            : 'No existing issues recorded'}
+        </Text>
+        {issues.map((issue) => {
+          const evidenceItems =
+            issue.evidence?.map(({ inspectionMedia }) => ({
+              fileAssetId: inspectionMedia.fileAsset.id,
+              title: `${domainLabel(issue.category)} · ${domainLabel(issue.vehicleArea)}`,
+            })) ?? [];
+          return (
+            <View key={issue.id} style={styles.compactSubmittedIssue}>
+              <Text style={styles.cardTitle}>
+                {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+              </Text>
+              <Text style={[styles.body, styles.compactPostInspectionText]}>
+                {domainLabel(issue.classification)} · {issue.description}
+              </Text>
+              {evidenceItems.length ? (
+                <SecondaryAction
+                  inline
+                  label={`View supporting photos (${evidenceItems.length})`}
+                  onPress={() => setGallery(evidenceItems)}
+                />
+              ) : null}
+            </View>
+          );
+        })}
+        {ownerNotes ? (
+          <View style={styles.compactSummaryRow}>
+            <Text style={styles.summaryLabel}>Notes</Text>
+            <Text style={styles.rentalScheduleValue}>{ownerNotes}</Text>
+          </View>
+        ) : null}
+      </View>
+      <View style={styles.postInspectionCard}>
+        <Text accessibilityRole="header" style={styles.sectionTitle}>
+          Vehicle readings
+        </Text>
+        <View style={styles.compactSummaryRow}>
+          <Text style={styles.summaryLabel}>Odometer</Text>
+          <Text style={styles.rentalScheduleValue}>{odometerLabel(inspection.odometerMeters)}</Text>
+        </View>
+        {inspection.fuelBasisPoints !== null ? (
+          <View style={styles.compactSummaryRow}>
+            <Text style={styles.summaryLabel}>Fuel</Text>
+            <Text style={styles.rentalScheduleValue}>{inspection.fuelBasisPoints / 100}%</Text>
+          </View>
+        ) : null}
+        {inspection.batterySocBasisPoints !== null ? (
+          <View style={styles.compactSummaryRow}>
+            <Text style={styles.summaryLabel}>Battery</Text>
+            <Text style={styles.rentalScheduleValue}>
+              {inspection.batterySocBasisPoints / 100}%
+            </Text>
+          </View>
+        ) : null}
+      </View>
+      <View style={styles.postInspectionCard}>
+        <Text accessibilityRole="header" style={styles.sectionTitle}>
+          Evidence
+        </Text>
+        <Text style={[styles.body, styles.compactPostInspectionText]}>
+          {inspection.media.length} inspection {inspection.media.length === 1 ? 'photo' : 'photos'}
+        </Text>
+        {inspection.media.length ? (
+          <SecondaryAction
+            inline
+            label="View photos"
+            onPress={() =>
+              setGallery(
+                inspection.media.map(({ fileAsset, perspective }) => ({
+                  fileAssetId: fileAsset.id,
+                  title: domainLabel(perspective),
+                })),
+              )
+            }
+          />
+        ) : null}
+      </View>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setGallery([])}
+        visible={gallery.length > 0}
+      >
+        <View style={styles.conditionGallery}>
+          <Pressable
+            accessibilityLabel="Close inspection photos"
+            accessibilityRole="button"
+            hitSlop={spacing.md}
+            onPress={() => setGallery([])}
+            style={styles.conditionGalleryClose}
+          >
+            <Text style={styles.conditionGalleryCloseText}>Close</Text>
+          </Pressable>
+          <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
+            {gallery.map((item, index) => (
+              <Pressable
+                accessibilityLabel="Close inspection photos"
+                accessibilityRole="button"
+                key={`${item.fileAssetId}-${index}`}
+                onPress={() => setGallery([])}
+                style={[styles.conditionGalleryPage, { width: viewportWidth }]}
+              >
+                <Text style={styles.conditionGalleryCount}>
+                  {item.title} · {index + 1} / {gallery.length}
+                </Text>
+                <Pressable accessible={false} onPress={() => undefined}>
+                  <AuthorizedInspectionImage
+                    fileAssetId={item.fileAssetId}
+                    label={`${item.title} secure evidence preview`}
+                    large
+                  />
+                </Pressable>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
+function ReturnInspectionEvidence({
+  inspection,
+}: {
+  readonly inspection: RentalDetail['inspections'][number];
+}) {
+  const { width: viewportWidth } = useWindowDimensions();
+  const [gallery, setGallery] = useState<
+    readonly { readonly fileAssetId: string; readonly title: string }[]
+  >([]);
+  const conditionNotes =
+    inspection.notes === 'Return inspection submitted by the renter during vehicle handover.'
+      ? null
+      : inspection.notes;
+
+  return (
+    <>
+      <View style={styles.postInspectionCard}>
+        <View style={styles.compactSummaryRow}>
+          <Text accessibilityRole="header" style={styles.sectionTitle}>
+            Return evidence
+          </Text>
+          <Text style={styles.summaryLabel}>Submitted by renter</Text>
+        </View>
+        {conditionNotes ? (
+          <View style={styles.compactSummaryRow}>
+            <Text style={styles.summaryLabel}>Condition notes</Text>
+            <Text style={styles.rentalScheduleValue}>{conditionNotes}</Text>
+          </View>
+        ) : null}
+        <View style={styles.compactSummaryRow}>
+          <Text style={styles.summaryLabel}>Evidence</Text>
+          <Text style={styles.rentalScheduleValue}>
+            {inspection.media.length} {inspection.media.length === 1 ? 'photo' : 'photos'}
+          </Text>
+        </View>
+        {inspection.media.length ? (
+          <SecondaryAction
+            inline
+            label="View photos"
+            onPress={() =>
+              setGallery(
+                inspection.media.map(({ fileAsset, perspective }) => ({
+                  fileAssetId: fileAsset.id,
+                  title: domainLabel(perspective),
+                })),
+              )
+            }
+          />
+        ) : null}
+      </View>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setGallery([])}
+        visible={gallery.length > 0}
+      >
+        <View style={styles.conditionGallery}>
+          <Pressable
+            accessibilityLabel="Back from return photos"
+            accessibilityRole="button"
+            hitSlop={spacing.md}
+            onPress={() => setGallery([])}
+            style={styles.conditionGalleryClose}
+          >
+            <Text style={styles.conditionGalleryCloseText}>Back</Text>
+          </Pressable>
+          <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
+            {gallery.map((item, index) => (
+              <Pressable
+                accessibilityLabel="Back from return photos"
+                accessibilityRole="button"
+                key={`${item.fileAssetId}-${index}`}
+                onPress={() => setGallery([])}
+                style={[styles.conditionGalleryPage, { width: viewportWidth }]}
+              >
+                <Text style={styles.conditionGalleryCount}>
+                  {item.title} · {index + 1} of {gallery.length}
+                </Text>
+                <Pressable accessible={false} onPress={() => undefined}>
+                  <AuthorizedInspectionImage
+                    fileAssetId={item.fileAssetId}
+                    label={`${item.title} return evidence photo`}
+                    large
+                  />
+                </Pressable>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -2893,24 +3677,141 @@ function AuthorizedInspectionImage({
   );
 }
 
-function UsageSummary({ detail }: { readonly detail: RentalDetail }) {
+function ClaimMeasuredValue({
+  category,
+  detail,
+}: {
+  readonly category: string;
+  readonly detail: RentalDetail;
+}) {
+  const usage = detail.usageSummary;
+  if (!usage) return null;
+  const measured =
+    category === 'EXCESS_MILEAGE'
+      ? { label: 'Measured excess mileage', value: `${usage.excessDistanceKm} km` }
+      : category === 'FUEL_DEFICIENCY' && usage.fuelDeficiencyBasisPoints
+        ? { label: 'Measured fuel deficiency', value: `${usage.fuelDeficiencyBasisPoints / 100}%` }
+        : category === 'EV_BATTERY_DEFICIENCY' && usage.socDeficiencyBasisPoints
+          ? {
+              label: 'Measured battery deficiency',
+              value: `${usage.socDeficiencyBasisPoints / 100}%`,
+            }
+          : category === 'LATE_RETURN'
+            ? {
+                label: 'Measured late return',
+                value: `${Math.ceil(usage.lateDurationSeconds / 60)} min`,
+              }
+            : null;
+  if (!measured) return null;
+  return (
+    <View accessibilityLabel={`${measured.label}: ${measured.value}`} style={styles.measuredClaim}>
+      <Text style={styles.summaryLabel}>{measured.label}</Text>
+      <Text style={styles.rentalScheduleValue}>{measured.value}</Text>
+    </View>
+  );
+}
+
+function UsageSummary({
+  audience,
+  detail,
+}: {
+  readonly audience: 'owner' | 'renter';
+  readonly detail: RentalDetail;
+}) {
   const usage = detail.usageSummary;
   if (!usage) return <Text style={styles.body}>Return evidence is under review.</Text>;
   return (
-    <View style={styles.summary}>
-      <Text style={styles.cardTitle}>Measured usage</Text>
-      <Text style={styles.body}>Travelled: {usage.distanceTravelledKm} km</Text>
-      <Text style={styles.body}>Included: {usage.includedDistanceKm ?? 'Unlimited'} km</Text>
-      <Text style={styles.body}>Excess: {usage.excessDistanceKm} km</Text>
-      <Text style={styles.body}>Late: {Math.ceil(usage.lateDurationSeconds / 60)} minutes</Text>
-      <Text style={styles.body}>
-        Claim window ends: {detail.claimDeadlineAt ? dateTimeLabel(detail.claimDeadlineAt) : '—'}
+    <>
+      <View style={styles.postInspectionCard}>
+        <Text accessibilityRole="header" style={styles.sectionTitle}>
+          Measured usage
+        </Text>
+        <RentalScheduleRow label="Distance travelled" value={`${usage.distanceTravelledKm} km`} />
+        <RentalScheduleRow
+          label="Included mileage"
+          value={usage.includedDistanceKm === null ? 'Unlimited' : `${usage.includedDistanceKm} km`}
+        />
+        <RentalScheduleRow label="Excess mileage" value={`${usage.excessDistanceKm} km`} />
+        <RentalScheduleRow
+          label="Late return"
+          value={`${Math.ceil(usage.lateDurationSeconds / 60)} min`}
+        />
+      </View>
+      <View style={styles.postInspectionCard}>
+        <Text accessibilityRole="header" style={styles.sectionTitle}>
+          Claim window
+        </Text>
+        <RentalScheduleRow
+          label="Ends"
+          value={detail.claimDeadlineAt ? dateTimeLabel(detail.claimDeadlineAt) : '—'}
+        />
+        <Text style={styles.body}>
+          {audience === 'owner'
+            ? 'Submit any eligible return claims before this deadline.'
+            : 'The owner may submit eligible return claims before this deadline.'}
+        </Text>
+      </View>
+    </>
+  );
+}
+
+function RenterPostReturnStatus({
+  claimWindowOpen,
+  detail,
+}: {
+  readonly claimWindowOpen: boolean;
+  readonly detail: RentalDetail;
+}) {
+  if (detail.postReturnClaims.length) {
+    return (
+      <View accessibilityLiveRegion="polite" style={styles.postInspectionCard}>
+        <Text accessibilityRole="header" style={styles.sectionTitle}>
+          Return claim
+        </Text>
+        {detail.postReturnClaims.map((claim) => (
+          <View key={claim.id} style={styles.renterClaimSummary}>
+            <View style={styles.renterClaimCopy}>
+              <Text style={styles.rentalScheduleValue}>{domainLabel(claim.category)}</Text>
+              <ClaimMeasuredValue category={claim.category} detail={detail} />
+            </View>
+            <StatusBadge label={renterClaimStatusLabel(claim.status)} />
+          </View>
+        ))}
+        <Text style={styles.body}>We’ll notify you when the claim review is complete.</Text>
+      </View>
+    );
+  }
+  return (
+    <View accessibilityLiveRegion="polite" style={styles.postInspectionCard}>
+      <Text accessibilityRole="header" style={styles.sectionTitle}>
+        {claimWindowOpen ? 'Next step' : 'Return complete'}
       </Text>
-      <Text style={styles.body}>
-        No additional charge has been created. Administrator approval is required.
+      <Text style={styles.rentalScheduleValue}>
+        {claimWindowOpen
+          ? 'No additional charges have been submitted.'
+          : 'The claim window has closed and no return claim was submitted.'}
       </Text>
+      {claimWindowOpen ? (
+        <Text style={styles.body}>
+          Your return is complete. We’ll notify you if the owner submits a claim before the
+          deadline.
+        </Text>
+      ) : null}
     </View>
   );
+}
+
+function renterClaimStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    DRAFT: 'Being prepared',
+    PAYMENT_PENDING: 'Payment pending',
+    RENTER_REVIEW: 'Needs your review',
+    RESOLVED: 'Resolved',
+    SUBMITTED: 'Submitted',
+    UNDER_ADMIN_REVIEW: 'Under review',
+    WITHDRAWN: 'Withdrawn',
+  };
+  return labels[status] ?? 'Under review';
 }
 
 function OperationsResolutionStatus({ outcome }: { readonly outcome: string | undefined }) {
@@ -3019,6 +3920,97 @@ function travelLabel(status: string | null) {
   return status === 'ON_THE_WAY' ? 'On the way' : domainLabel(status);
 }
 
+function rentalTripSummary(start: string, end: string) {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  const startTime = timeLabel(startDate);
+  const endTime = timeLabel(endDate);
+  const time = startTime === endTime ? startTime : `${startTime}–${endTime}`;
+  return `${tripDateSummary(startDate, endDate, { alwaysShowYear: true })} · ${time}`;
+}
+
+function collectionLocationLabel(location: ContractLocation) {
+  const normalize = (value: string) => value.trim().toLocaleLowerCase();
+  const addressParts = (location.addressLine1 ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const cityIndex = addressParts.findIndex((part) => normalize(part) === normalize(location.city));
+  const localityParts =
+    cityIndex >= 0 && addressParts[cityIndex + 1]
+      ? addressParts.slice(cityIndex, cityIndex + 2)
+      : [location.city, location.province];
+
+  return localityParts
+    .filter(
+      (part, index, parts) =>
+        parts.findIndex((candidate) => normalize(candidate) === normalize(part)) === index,
+    )
+    .join(', ');
+}
+
+function OwnerCollectionStatus({ detail }: { readonly detail: RentalDetail }) {
+  const status = detail.handoverTravel.returnStatus;
+  return (
+    <View style={[styles.rentalSummaryCard, styles.ownerCollectionCard]}>
+      <View style={styles.rentalSummaryHeader}>
+        <Text accessibilityRole="header" style={styles.cardTitle}>
+          Owner collection
+        </Text>
+        <StatusBadge label={travelLabel(status)} />
+      </View>
+      <View style={styles.rentalScheduleRows}>
+        {detail.fulfillment.endLocation ? (
+          <RentalScheduleRow
+            label="Collection location"
+            value={collectionLocationLabel(detail.fulfillment.endLocation)}
+          />
+        ) : null}
+        <RentalScheduleRow label="Scheduled collection" value={dateTimeLabel(detail.rentalEnd)} />
+      </View>
+    </View>
+  );
+}
+
+function UpcomingDeliveryStatus({ detail }: { readonly detail: RentalDetail }) {
+  const status = detail.handoverTravel.startStatus;
+  return (
+    <View style={styles.rentalSummaryCard}>
+      <View style={styles.rentalSummaryHeader}>
+        <Text accessibilityRole="header" style={styles.cardTitle}>
+          Delivery
+        </Text>
+        <StatusBadge label={travelLabel(status)} />
+      </View>
+      <View style={styles.rentalScheduleRows}>
+        {detail.fulfillment.startLocation ? (
+          <RentalScheduleRow
+            label="Delivery address"
+            value={locationLabel(detail.fulfillment.startLocation)}
+          />
+        ) : null}
+        <RentalScheduleRow label="Scheduled handover" value={dateTimeLabel(detail.rentalStart)} />
+      </View>
+    </View>
+  );
+}
+
+function upcomingNextStepMessage(detail: RentalDetail) {
+  if (detail.fulfillment.startMethod !== 'OWNER_DELIVERY') {
+    return `Your booking is confirmed. Be ready at the pickup location by ${dateTimeLabel(detail.rentalStart)}.`;
+  }
+  if (detail.handoverTravel.startStatus === 'ON_THE_WAY') {
+    return 'Your vehicle is on the way.';
+  }
+  if (detail.handoverTravel.startStatus === 'ARRIVED') {
+    return 'The owner has arrived. Continue with the pickup handover.';
+  }
+  if (detail.handoverTravel.startStatus === 'PREPARING') {
+    return 'The owner is preparing your vehicle for delivery.';
+  }
+  return `Be ready at the delivery location by ${timeLabel(detail.rentalStart)}.`;
+}
+
 function locationLabel(location: ContractLocation) {
   return [
     location.addressLine1,
@@ -3089,6 +4081,111 @@ function PickupHandoverReportResponse({
   );
 }
 
+type OverdueRecoveryScope = 'START' | 'RETURN' | 'BOTH';
+
+function overdueRecoveryPresentation(scope: OverdueRecoveryScope) {
+  if (scope === 'RETURN') {
+    return {
+      alertTitle: 'Complete return without inspection?',
+      completedAction: 'Complete return',
+      completingAction: 'Completing…',
+      confirmedTitle: 'Return report confirmed',
+      errorMessage: 'We couldn’t complete the return. Review the time and try again.',
+      helper:
+        'Use this only if the vehicle was already returned without completing the inspection.',
+      preSubmitAction: 'Complete return without inspection',
+      recordedTitle: 'Return recorded',
+      renterConfirmAction: 'Confirm return report',
+      renterEyebrow: 'Return exception',
+      renterExplanation: 'The return was recorded without completing the normal inspection.',
+      renterTitle: 'Return reported without inspection',
+      sheetTitle: 'Complete return without inspection',
+      warningTitle: 'Return overdue',
+    } as const;
+  }
+  if (scope === 'BOTH') {
+    return {
+      alertTitle: 'Complete handover recovery without inspections?',
+      completedAction: 'Complete handover recovery',
+      completingAction: 'Completing…',
+      confirmedTitle: 'Handover report confirmed',
+      errorMessage: 'We couldn’t complete the recovery. Review the times and try again.',
+      helper:
+        'Use this only if pickup and return both happened without completing the normal inspections.',
+      preSubmitAction: 'Complete handover recovery without inspections',
+      recordedTitle: 'Handover recorded',
+      renterConfirmAction: 'Confirm handover report',
+      renterEyebrow: 'Handover exception',
+      renterExplanation:
+        'Pickup and return were recorded without completing the normal inspections.',
+      renterTitle: 'Handover reported without inspections',
+      sheetTitle: 'Complete handover recovery without inspections',
+      warningTitle: 'Handover overdue',
+    } as const;
+  }
+  return {
+    alertTitle: 'Complete handover without inspection?',
+    completedAction: 'Complete handover',
+    completingAction: 'Completing…',
+    confirmedTitle: 'Handover report confirmed',
+    errorMessage: 'We couldn’t complete the handover. Review the time and try again.',
+    helper:
+      'Use this only if the vehicle was already handed over without completing the inspection.',
+    preSubmitAction: 'Complete handover without inspection',
+    recordedTitle: 'Handover recorded',
+    renterConfirmAction: 'Confirm handover report',
+    renterEyebrow: 'Handover exception',
+    renterExplanation: 'The handover was recorded without completing the normal pickup inspection.',
+    renterTitle: 'Handover reported without inspection',
+    sheetTitle: 'Complete handover without inspection',
+    warningTitle: 'Handover overdue',
+  } as const;
+}
+
+function OwnerOverdueRecoverySubmittedStatus({
+  recovery,
+}: {
+  readonly recovery: NonNullable<RentalDetail['overdueHandoverRecovery']>;
+}) {
+  const disputed = recovery.response?.decision === 'DISPUTED';
+  const presentation = overdueRecoveryPresentation(recovery.scope);
+  return (
+    <View accessibilityLiveRegion="polite" style={styles.recoverySubmittedCard}>
+      <View style={styles.rentalSummaryHeader}>
+        <Text accessibilityRole="header" style={styles.cardTitle}>
+          {presentation.recordedTitle}
+        </Text>
+        <StatusBadge label={disputed ? 'Operations review' : 'Awaiting renter'} />
+      </View>
+      <View style={styles.rentalScheduleRows}>
+        {recovery.reportedPickupAt ? (
+          <RentalScheduleRow
+            label="Actual handover"
+            value={dateTimeLabel(recovery.reportedPickupAt)}
+          />
+        ) : null}
+        {recovery.reportedReturnAt ? (
+          <RentalScheduleRow
+            label="Actual return"
+            value={dateTimeLabel(recovery.reportedReturnAt)}
+          />
+        ) : null}
+        {!disputed ? (
+          <RentalScheduleRow
+            label="Renter response due"
+            value={dateTimeLabel(recovery.responseDeadlineAt)}
+          />
+        ) : null}
+      </View>
+      <Text style={styles.recoverySubmittedHelper}>
+        {disputed
+          ? 'The renter disputed the reported time. CarShare Operations will review it.'
+          : 'The renter can confirm or dispute the reported time. No response accepts the report automatically.'}
+      </Text>
+    </View>
+  );
+}
+
 function OwnerOverdueRecoveryAction({
   detail,
   reference,
@@ -3096,106 +4193,298 @@ function OwnerOverdueRecoveryAction({
 }: {
   readonly detail: RentalDetail;
   readonly reference: string;
-  readonly scope: 'START' | 'RETURN' | 'BOTH';
+  readonly scope: OverdueRecoveryScope;
 }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
-  const now = new Date();
+  const initialNow = new Date();
   const [pickupAt, setPickupAt] = useState(
-    new Date(Math.min(now.getTime(), new Date(detail.rentalEnd).getTime() - 1)),
+    new Date(Math.min(initialNow.getTime(), new Date(detail.rentalEnd).getTime() - 1)),
   );
-  const [returnAt, setReturnAt] = useState(now);
+  const [returnAt, setReturnAt] = useState(initialNow);
+  const [maximumDate, setMaximumDate] = useState(initialNow);
+  const [contentHeight, setContentHeight] = useState(0);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
+  const bottomAllowance = Math.max(safeArea.bottom, spacing.md);
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight,
+        headerHeight: 0,
+        maxSafeViewportHeight: maximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [contentHeight, maximumHeight],
+  );
+  const sheetHeight = useSharedValue(Math.min(520, maximumHeight));
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
+  useEffect(() => {
+    if (!open || contentHeight <= 0) return;
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
+  }, [contentHeight, measuredLayout.height, open, sheetHeight]);
+  const openSheet = () => {
+    const now = new Date();
+    setMaximumDate(now);
+    setPickupAt(new Date(Math.min(now.getTime(), new Date(detail.rentalEnd).getTime() - 1)));
+    setReturnAt(now);
+    setContentHeight(0);
+    setOpen(true);
+  };
+  const timestampError = overdueTimestampError({
+    maximumDate,
+    minimumPickupDate: new Date(detail.rentalStart),
+    minimumReturnDate:
+      scope === 'BOTH' ? pickupAt : new Date(detail.actualPickupAt ?? detail.rentalStart),
+    pickupAt,
+    returnAt,
+    scope,
+  });
   const action = useMutation({
     mutationFn: () =>
-      apiClient.request(`/owner/bookings/${reference}/rental/overdue-handover-recovery`, {
-        method: 'POST',
-        body: JSON.stringify({
-          acknowledged: true,
-          acknowledgementVersion: 'OVERDUE_HANDOVER_RECOVERY_V1',
-          scope,
-          ...(scope !== 'RETURN' ? { reportedPickupAt: pickupAt.toISOString() } : {}),
-          ...(scope !== 'START' ? { reportedReturnAt: returnAt.toISOString() } : {}),
-        }),
-      }),
-    onSuccess: () => {
+      apiClient.request<RentalDetail>(
+        `/owner/bookings/${reference}/rental/overdue-handover-recovery`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            acknowledged: true,
+            acknowledgementVersion: 'OVERDUE_HANDOVER_RECOVERY_V1',
+            scope,
+            ...(scope !== 'RETURN' ? { reportedPickupAt: pickupAt.toISOString() } : {}),
+            ...(scope !== 'START' ? { reportedReturnAt: returnAt.toISOString() } : {}),
+          }),
+        },
+      ),
+    onSuccess: (result) => {
+      client.setQueryData(['owner-rental', reference], result);
       setOpen(false);
       invalidateRentalQueries(client, reference);
     },
   });
+  const presentation = overdueRecoveryPresentation(scope);
   return (
-    <View style={styles.overdueCard}>
-      <Text style={styles.cardTitle}>
-        {scope === 'BOTH'
-          ? 'Complete booking without inspections'
-          : `Complete overdue ${scope === 'START' ? 'handover' : 'Return'} without inspection`}
-      </Text>
-      {scope !== 'START' && <Text style={styles.cardTitle}>Your payout remains pending</Text>}
-      <Text accessibilityRole="alert" style={styles.body}>
-        Without the normal CarShare inspection process, CarShare will have limited evidence to help
-        with disputes, damage, condition, mileage, fuel, or battery issues.
-      </Text>
+    <View accessibilityRole="alert" style={[styles.overdueCard, styles.compactOverdueCard]}>
+      <Text style={styles.cardTitle}>{presentation.warningTitle}</Text>
+      {scope !== 'START' ? <Text style={styles.overdueStatus}>Payout remains pending</Text> : null}
       <Text style={styles.body}>
-        The renter will be notified and has 24 hours to disagree. If the renter does not respond,
-        {scope === 'BOTH'
-          ? ' both reported handover times are accepted automatically.'
-          : scope === 'START'
-            ? ' the reported pickup time is accepted automatically.'
-            : ' the reported Return time is accepted automatically.'}
+        {scope === 'RETURN'
+          ? 'Complete the return and record the actual transfer time.'
+          : 'Complete the handover and record the actual transfer time.'}
       </Text>
-      {!open ? (
-        <SecondaryAction label="Complete without inspection" onPress={() => setOpen(true)} />
-      ) : (
-        <View style={styles.actionCard}>
-          {scope !== 'RETURN' && (
-            <DateTimeField
-              label="Vehicle given to renter"
-              maximumDate={scope === 'BOTH' ? returnAt : now}
-              minimumDate={new Date(detail.rentalStart)}
-              onChange={setPickupAt}
-              value={pickupAt}
-            />
-          )}
-          {scope !== 'START' && (
-            <DateTimeField
-              label="Vehicle returned to owner"
-              maximumDate={now}
-              minimumDate={scope === 'BOTH' ? pickupAt : new Date(detail.actualPickupAt!)}
-              onChange={setReturnAt}
-              value={returnAt}
-            />
-          )}
-          <Action
-            disabled={action.isPending || (scope === 'BOTH' && returnAt < pickupAt)}
-            label={
-              action.isPending
-                ? 'Submitting…'
-                : scope === 'START'
-                  ? 'Report handover'
-                  : scope === 'RETURN'
-                    ? 'Report return'
-                    : 'Report both handovers'
-            }
-            onPress={() =>
-              Alert.alert(
-                'Complete without inspections?',
-                'This records reduced-evidence handover times and notifies the renter. No inspection measurements or condition baseline will be created.',
-                [
-                  { text: 'Go back', style: 'cancel' },
-                  { text: 'Submit report', style: 'destructive', onPress: () => action.mutate() },
-                ],
-              )
-            }
-          />
-          <SecondaryAction label="Cancel" onPress={() => setOpen(false)} />
-          {action.isError && (
-            <Text accessibilityRole="alert" style={styles.error}>
-              {action.error.message}
-            </Text>
-          )}
+      <Text style={styles.overdueDetail}>
+        The renter is notified and has 24 hours to disagree with the reported time.
+      </Text>
+      <SecondaryAction inline label={presentation.preSubmitAction} onPress={openSheet} />
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setOpen(false)}
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
+        transparent
+        visible={open}
+      >
+        <View style={styles.exceptionModalRoot}>
+          <View style={styles.exceptionBackdrop} />
+          <Reanimated.View style={[styles.exceptionSheet, animatedSheetStyle]}>
+            <ScrollView
+              contentContainerStyle={[
+                styles.exceptionSheetContent,
+                { paddingBottom: bottomAllowance },
+              ]}
+              onContentSizeChange={(_width, height) => setContentHeight(height)}
+              scrollEnabled={measuredLayout.scrollEnabled}
+              showsVerticalScrollIndicator={measuredLayout.scrollEnabled}
+            >
+              <BackControl label="Cancel" onPress={() => setOpen(false)} />
+              <Text accessibilityRole="header" style={styles.exceptionTitle}>
+                {presentation.sheetTitle}
+              </Text>
+              <Text style={styles.exceptionHelper}>{presentation.helper}</Text>
+              <View style={styles.recoveryFormSurface}>
+                {scope !== 'RETURN' && (
+                  <HandoverDateTimeControl
+                    dateLabel="Date of handover"
+                    maximumDate={scope === 'BOTH' ? returnAt : maximumDate}
+                    minimumDate={new Date(detail.rentalStart)}
+                    onChange={setPickupAt}
+                    timeLabel="Time of handover"
+                    value={pickupAt}
+                  />
+                )}
+                {scope !== 'START' && (
+                  <HandoverDateTimeControl
+                    dateLabel="Date of return"
+                    maximumDate={maximumDate}
+                    minimumDate={scope === 'BOTH' ? pickupAt : new Date(detail.actualPickupAt!)}
+                    onChange={setReturnAt}
+                    timeLabel="Time of return"
+                    value={returnAt}
+                  />
+                )}
+              </View>
+              {timestampError ? (
+                <Text accessibilityRole="alert" style={styles.inlineError}>
+                  {timestampError}
+                </Text>
+              ) : null}
+              <Text style={styles.exceptionConsequence}>
+                The renter will be notified and has 24 hours to confirm or dispute the reported
+                time.
+              </Text>
+              <Action
+                disabled={action.isPending || Boolean(timestampError)}
+                label={
+                  action.isPending ? presentation.completingAction : presentation.completedAction
+                }
+                onPress={() =>
+                  Alert.alert(
+                    presentation.alertTitle,
+                    'No inspection measurements or condition baseline will be created.',
+                    [
+                      { text: 'Go back', style: 'cancel' },
+                      {
+                        text: presentation.completedAction,
+                        style: 'destructive',
+                        onPress: () => action.mutate(),
+                      },
+                    ],
+                  )
+                }
+              />
+              {action.isError && (
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {presentation.errorMessage}
+                </Text>
+              )}
+            </ScrollView>
+          </Reanimated.View>
         </View>
-      )}
+      </Modal>
     </View>
   );
+}
+
+function HandoverDateTimeControl({
+  dateLabel,
+  maximumDate,
+  minimumDate,
+  onChange,
+  timeLabel,
+  value,
+}: {
+  readonly dateLabel: string;
+  readonly maximumDate: Date;
+  readonly minimumDate: Date;
+  readonly onChange: (value: Date) => void;
+  readonly timeLabel: string;
+  readonly value: Date;
+}) {
+  const selectedDate = localDateKey(value);
+  const timeMinimum = sameLocalDate(value, minimumDate) ? minimumDate : undefined;
+  const timeMaximum = sameLocalDate(value, maximumDate) ? maximumDate : undefined;
+
+  return (
+    <View style={styles.handoverDateTimeControl}>
+      <DateOnlyField
+        label={dateLabel}
+        maximumDate={maximumDate}
+        minimumDate={minimumDate}
+        onChange={(date) =>
+          onChange(clampDateTime(mergeLocalDate(value, date), minimumDate, maximumDate))
+        }
+        value={selectedDate}
+      />
+      <DateTimeField
+        compact
+        label={timeLabel}
+        {...(timeMaximum ? { maximumDate: timeMaximum } : {})}
+        {...(timeMinimum ? { minimumDate: timeMinimum } : {})}
+        mode="time"
+        onChange={(time) =>
+          onChange(clampDateTime(mergeLocalTime(value, time), minimumDate, maximumDate))
+        }
+        value={value}
+      />
+    </View>
+  );
+}
+
+function ConditionDisclosureOption({
+  label,
+  onPress,
+  selected,
+}: {
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly selected: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected, selected }}
+      onPress={onPress}
+      style={[styles.conditionChoice, selected && styles.conditionChoiceSelected]}
+    >
+      {selected ? <Icon color={colors.onPrimary} name="checkmark" size={16} /> : null}
+      <Text style={[styles.conditionChoiceText, selected && styles.conditionChoiceTextSelected]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function overdueTimestampError({
+  maximumDate,
+  minimumPickupDate,
+  minimumReturnDate,
+  pickupAt,
+  returnAt,
+  scope,
+}: {
+  readonly maximumDate: Date;
+  readonly minimumPickupDate: Date;
+  readonly minimumReturnDate: Date;
+  readonly pickupAt: Date;
+  readonly returnAt: Date;
+  readonly scope: 'START' | 'RETURN' | 'BOTH';
+}) {
+  if (scope !== 'RETURN' && (pickupAt < minimumPickupDate || pickupAt > maximumDate)) {
+    return 'Choose a handover time within the allowed period.';
+  }
+  if (scope !== 'START' && (returnAt < minimumReturnDate || returnAt > maximumDate)) {
+    return 'Return time must be after handover and cannot be in the future.';
+  }
+  return null;
+}
+
+function localDateKey(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(
+    value.getDate(),
+  ).padStart(2, '0')}`;
+}
+
+function sameLocalDate(left: Date, right: Date) {
+  return localDateKey(left) === localDateKey(right);
+}
+
+function mergeLocalDate(current: Date, date: string) {
+  const [year, month, day] = date.split('-').map(Number);
+  const next = new Date(current);
+  next.setFullYear(year!, month! - 1, day!);
+  return next;
+}
+
+function mergeLocalTime(current: Date, time: Date) {
+  const next = new Date(current);
+  next.setHours(time.getHours(), time.getMinutes(), 0, 0);
+  return next;
+}
+
+function clampDateTime(value: Date, minimumDate: Date, maximumDate: Date) {
+  if (value < minimumDate) return new Date(minimumDate);
+  if (value > maximumDate) return new Date(maximumDate);
+  return value;
 }
 
 function OverdueRecoveryResponse({
@@ -3211,68 +4500,86 @@ function OverdueRecoveryResponse({
   const [disagreeing, setDisagreeing] = useState(false);
   const action = useMutation({
     mutationFn: (decision: 'CONFIRMED' | 'DISPUTED') =>
-      apiClient.request(`/bookings/${reference}/rental/overdue-handover-recovery/respond`, {
-        method: 'POST',
-        body: JSON.stringify({ decision, ...(decision === 'DISPUTED' ? { reason } : {}) }),
-      }),
-    onSuccess: () => invalidateRentalQueries(client, reference),
+      apiClient.request<RentalDetail>(
+        `/bookings/${reference}/rental/overdue-handover-recovery/respond`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ decision, ...(decision === 'DISPUTED' ? { reason } : {}) }),
+        },
+      ),
+    onSuccess: (result) => {
+      client.setQueryData(['rental', reference], result);
+      invalidateRentalQueries(client, reference);
+    },
   });
+  const presentation = overdueRecoveryPresentation(recovery.scope);
   if (recovery.response)
     return (
       <View style={styles.warningCard}>
         <Text style={styles.cardTitle}>
           {recovery.response.decision === 'DISPUTED'
             ? 'Disagreement sent to Operations'
-            : 'Handover report confirmed'}
+            : presentation.confirmedTitle}
         </Text>
         {recovery.response.reason && <Text style={styles.body}>{recovery.response.reason}</Text>}
       </View>
     );
   return (
-    <View style={styles.warningCard}>
-      <Text style={styles.cardTitle}>
-        {recovery.scope === 'START'
-          ? 'Owner reported Pickup without inspection'
-          : recovery.scope === 'RETURN'
-            ? 'Owner reported Return without inspection'
-            : 'Owner reported Pickup and Return without inspections'}
+    <View accessibilityLiveRegion="polite" style={styles.recoveryResponseCard}>
+      <Text style={styles.actionEyebrow}>{presentation.renterEyebrow}</Text>
+      <Text accessibilityRole="header" style={styles.cardTitle}>
+        {presentation.renterTitle}
       </Text>
-      {recovery.reportedPickupAt && (
-        <Text style={styles.body}>Pickup: {dateTimeLabel(recovery.reportedPickupAt)}</Text>
-      )}
-      {recovery.reportedReturnAt && (
-        <Text style={styles.body}>Return: {dateTimeLabel(recovery.reportedReturnAt)}</Text>
-      )}
-      <Text style={styles.body}>
-        Respond by {dateTimeLabel(recovery.responseDeadlineAt)}. No response accepts this report
-        automatically.{' '}
-        {recovery.scope === 'BOTH'
-          ? 'CarShare has limited evidence because the normal Pickup and Return inspections were skipped.'
-          : `CarShare has limited evidence because the normal ${recovery.scope === 'START' ? 'Pickup' : 'Return'} inspection was skipped.`}
+      <View style={styles.rentalScheduleRows}>
+        {recovery.reportedPickupAt ? (
+          <RentalScheduleRow
+            label="Reported handover"
+            value={dateTimeLabel(recovery.reportedPickupAt)}
+          />
+        ) : null}
+        {recovery.reportedReturnAt ? (
+          <RentalScheduleRow
+            label="Reported return"
+            value={dateTimeLabel(recovery.reportedReturnAt)}
+          />
+        ) : null}
+        <RentalScheduleRow label="Respond by" value={dateTimeLabel(recovery.responseDeadlineAt)} />
+      </View>
+      <View style={styles.recoveryResponseExplanation}>
+        <Text style={styles.body}>{presentation.renterExplanation}</Text>
+        <Text style={styles.recoverySubmittedHelper}>
+          Limited evidence is available because the normal inspection was skipped.
+        </Text>
+      </View>
+      <View style={styles.recoveryResponseActions}>
+        <Action
+          disabled={action.isPending}
+          label={presentation.renterConfirmAction}
+          onPress={() => action.mutate('CONFIRMED')}
+        />
+        {!disagreeing ? (
+          <SecondaryAction label="Dispute report" onPress={() => setDisagreeing(true)} />
+        ) : (
+          <View>
+            <TextInput
+              style={styles.input}
+              value={reason}
+              onChangeText={setReason}
+              placeholder="Explain what is incorrect"
+              placeholderTextColor={colors.placeholder}
+              multiline
+            />
+            <SecondaryAction
+              disabled={action.isPending || reason.trim().length < 3}
+              label="Send disagreement to Operations"
+              onPress={() => action.mutate('DISPUTED')}
+            />
+          </View>
+        )}
+      </View>
+      <Text style={styles.recoveryResponseFootnote}>
+        If you do not respond by the deadline, the report is accepted automatically.
       </Text>
-      <Action
-        label={`Confirm ${recovery.scope === 'START' ? 'Pickup' : recovery.scope === 'RETURN' ? 'Return' : 'both'} report`}
-        onPress={() => action.mutate('CONFIRMED')}
-      />
-      {!disagreeing ? (
-        <SecondaryAction label="I disagree" onPress={() => setDisagreeing(true)} />
-      ) : (
-        <View>
-          <TextInput
-            style={styles.input}
-            value={reason}
-            onChangeText={setReason}
-            placeholder="Explain what is incorrect"
-            placeholderTextColor={colors.placeholder}
-            multiline
-          />
-          <SecondaryAction
-            disabled={action.isPending || reason.trim().length < 3}
-            label="Send disagreement to Operations"
-            onPress={() => action.mutate('DISPUTED')}
-          />
-        </View>
-      )}
       {action.isError && (
         <Text accessibilityRole="alert" style={styles.error}>
           {action.error.message}
@@ -3518,6 +4825,75 @@ function EvidenceWaiverWarnings({ detail }: { readonly detail: RentalDetail }) {
   );
 }
 
+function RentalScheduleRow({ label, value }: { readonly label: string; readonly value: string }) {
+  return (
+    <View accessible accessibilityLabel={`${label}: ${value}`} style={styles.rentalScheduleRow}>
+      <Text style={styles.rentalScheduleLabel}>{label}</Text>
+      <Text style={styles.rentalScheduleValue}>{value}</Text>
+    </View>
+  );
+}
+
+function RentalVehicleReadings({
+  inspection,
+  title = 'Vehicle readings',
+}: {
+  readonly inspection: RentalDetail['inspections'][number];
+  readonly title?: string;
+}) {
+  return (
+    <View style={styles.postInspectionCard}>
+      <Text accessibilityRole="header" style={styles.sectionTitle}>
+        {title}
+      </Text>
+      <RentalScheduleRow label="Odometer" value={odometerLabel(inspection.odometerMeters)} />
+      {inspection.fuelBasisPoints !== null ? (
+        <RentalScheduleRow label="Fuel" value={`${inspection.fuelBasisPoints / 100}%`} />
+      ) : null}
+      {inspection.batterySocBasisPoints !== null ? (
+        <RentalScheduleRow label="Battery" value={`${inspection.batterySocBasisPoints / 100}%`} />
+      ) : null}
+    </View>
+  );
+}
+
+function renterNextStepMessage(
+  status: string,
+  state: {
+    readonly hasPickupCode: boolean;
+    readonly hasPickupInspection: boolean;
+    readonly pickupHandoverConfirmed: boolean;
+    readonly hasReturnInspection: boolean;
+    readonly pickupReviewDecision: string | undefined;
+    readonly returnHandoverReady: boolean;
+    readonly returnInspectionStarted: boolean;
+    readonly startWaived: boolean;
+  },
+) {
+  if (status === 'READY_FOR_PICKUP') {
+    if (state.hasPickupCode) return 'Show the pickup code to the owner during handover.';
+    if (state.pickupHandoverConfirmed)
+      return 'Get your pickup code when you are ready to receive the vehicle.';
+    if (state.startWaived) return 'Waiting for the owner to report the pickup handover.';
+    if (!state.hasPickupInspection) return 'Waiting for the owner to complete pickup inspection.';
+    if (state.pickupReviewDecision === 'DISAGREED')
+      return 'Resolve the reported condition difference before pickup.';
+    if (state.pickupReviewDecision === 'AGREED' && !state.hasPickupCode)
+      return 'Get your pickup code when you are ready to receive the vehicle.';
+    return 'Review the vehicle condition recorded by the owner.';
+  }
+  if (status === 'ACTIVE') return 'Your rental is in progress. Start the return when ready.';
+  if (status === 'RETURN_PENDING') {
+    if (state.hasReturnInspection) return 'Waiting for the owner to confirm vehicle receipt.';
+    if (!state.returnHandoverReady) return 'Waiting for the owner to arrive for collection.';
+    if (state.returnInspectionStarted) return 'Complete the return inspection and handover.';
+    return 'Complete the return inspection when you hand back the vehicle.';
+  }
+  if (status === 'RETURNED') return 'Your return is being finalized.';
+  if (status === 'COMPLETED') return 'Your trip is complete.';
+  return `Your booking is ${friendlyStatus(status).toLowerCase()}.`;
+}
+
 function Action({
   label,
   onPress,
@@ -3540,10 +4916,14 @@ function Action({
   );
 }
 function SecondaryAction({
+  compact = false,
+  inline = false,
   disabled = false,
   label,
   onPress,
 }: {
+  readonly compact?: boolean;
+  readonly inline?: boolean;
   readonly disabled?: boolean;
   readonly label: string;
   readonly onPress: () => void;
@@ -3551,7 +4931,12 @@ function SecondaryAction({
   return (
     <Pressable
       disabled={disabled}
-      style={[styles.secondary, disabled && styles.disabled]}
+      style={[
+        styles.secondary,
+        compact && styles.secondaryCompact,
+        inline && styles.secondaryInline,
+        disabled && styles.disabled,
+      ]}
       accessibilityRole="button"
       accessibilityState={{ disabled: Boolean(disabled) }}
       onPress={onPress}
@@ -3651,10 +5036,6 @@ function conditionIssuePayload(issue: ConditionIssueDraft) {
   };
 }
 
-function photoCount(files: Record<string, CapturedFile[]>) {
-  return Object.values(files).reduce((total, entries) => total + entries.length, 0);
-}
-
 function completedRequired(files: Record<string, CapturedFile[]>) {
   return perspectives.filter((perspective) => Boolean(files[perspective]?.length)).length;
 }
@@ -3689,6 +5070,8 @@ function invalidateRentalQueries(
 }
 
 const styles = StyleSheet.create({
+  additionalPhotoAction: { alignItems: 'flex-end' },
+  actionNote: { color: colors.subtleText, fontSize: 13, lineHeight: 18, marginTop: spacing.xs },
   actionCard: {
     backgroundColor: colors.surface,
     borderColor: colors.primary,
@@ -3749,14 +5132,33 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
     borderWidth: 2,
   },
+  claimSummaryRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  renterClaimCopy: { flex: 1, gap: spacing.xxs },
+  renterClaimSummary: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
   choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginTop: spacing.xs },
+  compactOverdueCard: { gap: spacing.xs, padding: spacing.md },
+  compactSubmittedIssue: {
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: 0,
+    paddingTop: spacing.xs,
+  },
+  compactPostInspectionText: { marginTop: 0 },
+  compactSummaryRow: { gap: spacing.xxs },
   classificationHelper: {
-    backgroundColor: colors.muted,
-    borderRadius: 12,
-    color: colors.ink,
-    lineHeight: 21,
-    marginTop: spacing.md,
-    padding: spacing.md,
+    color: colors.subtleText,
+    fontSize: 13,
+    lineHeight: 18,
   },
   conditionGallery: { backgroundColor: colors.ink, flex: 1, justifyContent: 'center' },
   conditionGalleryClose: {
@@ -3773,7 +5175,76 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   conditionGalleryPage: { justifyContent: 'center', padding: spacing.lg },
+  conditionChoice: {
+    alignItems: 'center',
+    borderRadius: radius.sm,
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 0,
+    paddingHorizontal: spacing.xs,
+  },
+  conditionChoiceGroup: {
+    backgroundColor: colors.muted,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    padding: spacing.xxs,
+  },
+  conditionChoiceSelected: { backgroundColor: colors.primary },
+  conditionChoiceText: {
+    color: colors.ink,
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  conditionChoiceTextSelected: { color: colors.onPrimary },
+  conditionHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
   conditionIssuePhotos: { gap: spacing.md },
+  conditionIssueSummary: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+    marginTop: spacing.xs,
+  },
+  conditionIssueCount: { color: colors.subtleText, fontSize: 13, marginTop: spacing.xxs },
+  conditionSheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    overflow: 'hidden',
+  },
+  conditionSheetContent: { gap: spacing.md, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  conditionSheetFooter: {
+    backgroundColor: colors.surface,
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.lg,
+  },
+  conditionSheetHelper: { color: colors.subtleText, fontSize: 15, lineHeight: 21 },
+  conditionSheetRoot: { flex: 1, justifyContent: 'flex-end' },
+  conditionStatus: {
+    backgroundColor: colors.muted,
+    borderRadius: 999,
+    color: colors.subtleText,
+    fontSize: 12,
+    fontWeight: '800',
+    overflow: 'hidden',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  conditionSubsectionHeader: { gap: spacing.xxs, marginTop: spacing.sm },
   countdown: { color: colors.primary, fontWeight: '800', marginTop: spacing.sm },
   dangerButton: {
     alignItems: 'center',
@@ -3782,6 +5253,18 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   disabled: { opacity: 0.45 },
+  destructiveSecondary: {
+    alignItems: 'center',
+    borderColor: colors.danger,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexBasis: 0,
+    flexGrow: 1,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: spacing.sm,
+  },
+  destructiveSecondaryText: { color: colors.danger, fontWeight: '800', textAlign: 'center' },
   error: { color: '#A12626', marginTop: spacing.md },
   evidenceCard: {
     backgroundColor: colors.surface,
@@ -3820,17 +5303,70 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: 12,
     borderWidth: 1,
-    marginTop: spacing.sm,
+    marginTop: spacing.xs,
+    padding: spacing.sm,
+  },
+  issueDescriptionInput: { minHeight: 76, textAlignVertical: 'top' },
+  issueForm: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.sm,
     padding: spacing.md,
   },
-  issueDescriptionInput: { minHeight: 96, textAlignVertical: 'top' },
-  issueForm: { gap: spacing.sm, marginTop: spacing.md },
-  knownIssuesHeading: { marginTop: spacing.lg },
+  measuredClaim: {
+    backgroundColor: colors.muted,
+    borderRadius: radius.sm,
+    gap: spacing.xxs,
+    padding: spacing.sm,
+  },
+  nextStepCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  nextStepText: { color: colors.ink, fontSize: 15, fontWeight: '700', lineHeight: 21 },
   inspectionHeader: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginTop: spacing.md,
+  },
+  inspectionChecklist: { gap: 0 },
+  inspectionIntro: { gap: spacing.xs, marginTop: spacing.md },
+  inspectionSection: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  inspectionTitle: { color: colors.ink, fontSize: 24, fontWeight: '900' },
+  exceptionBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(8, 24, 18, 0.32)',
+  },
+  exceptionConsequence: { color: colors.subtleText, fontSize: 13, lineHeight: 18 },
+  exceptionHelper: { color: colors.subtleText, fontSize: 15, lineHeight: 21 },
+  exceptionModalRoot: { flex: 1, justifyContent: 'flex-end' },
+  exceptionSheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    overflow: 'hidden',
+  },
+  exceptionSheetContent: { gap: spacing.md, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  exceptionTitle: { color: colors.ink, fontSize: 26, fontWeight: '900' },
+  handoverDateTimeControl: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: spacing.sm,
   },
   infoCard: {
     backgroundColor: colors.primarySoft,
@@ -3844,6 +5380,18 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     padding: spacing.md,
   },
+  overdueStatus: { color: colors.warning, fontSize: 13, fontWeight: '800' },
+  overdueDetail: { color: colors.subtleText, fontSize: 13, lineHeight: 18, marginTop: spacing.xs },
+  ownerPanel: { borderTopWidth: 0, marginTop: 0, paddingTop: 0 },
+  ownerCollectionCard: { marginTop: spacing.md },
+  pickupVerificationCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
   panel: {
     borderTopColor: colors.border,
     borderTopWidth: 1,
@@ -3851,6 +5399,80 @@ const styles = StyleSheet.create({
     paddingTop: spacing.lg,
   },
   progress: { color: colors.primary, fontSize: 12, fontWeight: '800' },
+  postInspectionCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+  },
+  notesInput: { marginTop: 0, minHeight: 84, textAlignVertical: 'top' },
+  readingField: { gap: spacing.xs },
+  readingInput: { flex: 1, marginTop: 0 },
+  readingInputRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  readingLabel: { color: colors.ink, fontSize: 14, fontWeight: '800' },
+  readingUnit: { color: colors.subtleText, fontSize: 15, fontWeight: '700' },
+  readyState: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: 14,
+    gap: spacing.xxs,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  recoverySubmittedCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  recoverySubmittedHelper: { color: colors.subtleText, fontSize: 13, lineHeight: 18 },
+  recoveryFormSurface: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.sm,
+    padding: spacing.md,
+  },
+  recoveryResponseActions: { gap: spacing.xs },
+  recoveryResponseCard: {
+    backgroundColor: colors.warningSoft,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  recoveryResponseExplanation: { gap: spacing.xs },
+  recoveryResponseFootnote: { color: colors.subtleText, fontSize: 12, lineHeight: 17 },
+  rentalActionRow: { flexDirection: 'row', gap: spacing.sm },
+  rentalActionsSection: { gap: spacing.sm, marginTop: spacing.lg },
+  rentalScheduleLabel: {
+    color: colors.subtleText,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  rentalScheduleRow: { gap: spacing.xxs },
+  rentalScheduleRows: { gap: spacing.sm },
+  rentalScheduleValue: { color: colors.ink, fontSize: 15, fontWeight: '700', lineHeight: 20 },
+  rentalSummaryCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: spacing.md,
+    padding: spacing.md,
+  },
+  rentalSummaryHeader: { alignItems: 'flex-start', gap: spacing.xs },
+  rentalSummaryTitle: { marginTop: 0 },
+  renterPanel: { borderTopWidth: 0, marginTop: 0, paddingTop: 0 },
+  sectionTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
   secondary: {
     alignItems: 'center',
     borderColor: colors.primary,
@@ -3859,8 +5481,37 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     padding: spacing.md,
   },
-  secondaryText: { color: colors.primary, fontWeight: '800' },
+  secondaryCompact: {
+    flexBasis: 0,
+    flexGrow: 1,
+    justifyContent: 'center',
+    marginTop: 0,
+    minHeight: 48,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  secondaryInline: {
+    alignSelf: 'flex-start',
+    justifyContent: 'center',
+    marginTop: spacing.xs,
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  secondaryText: { color: colors.primary, fontWeight: '800', textAlign: 'center' },
   status: { color: colors.primary, fontWeight: '700', marginTop: spacing.xs },
+  submittedInspectionStatus: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  summaryLabel: { color: colors.subtleText, fontSize: 12, fontWeight: '700' },
   success: { color: colors.primary, fontWeight: '800', marginTop: spacing.sm },
   successCard: {
     backgroundColor: colors.muted,

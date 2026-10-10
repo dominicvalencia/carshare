@@ -53,6 +53,22 @@ describe('searchable reference selector sheet', () => {
     expect(source).toContain('listContent: { flexGrow: 0, paddingBottom: spacing.sm }');
   });
 
+  it('supports nested sheets with a top Back action and no bottom Cancel', () => {
+    expect(source).toContain('readonly sheetDismissLabel?: string;');
+    expect(source).toContain("<BackControl label={sheetDismissLabel ?? 'Back'} onPress={close} />");
+    expect(source).toContain('usesTopDismiss ? (');
+    expect(source).toContain('(!usesTopDismiss && footerHeight <= 0)');
+    expect(source).toContain('animationType="slide"');
+  });
+
+  it('places the selected check before the option label', () => {
+    const option = source.slice(source.indexOf('function Option'), source.indexOf('const styles'));
+    expect(option.indexOf('name="checkmark-circle"')).toBeLessThan(
+      option.indexOf('style={styles.optionLabel}'),
+    );
+    expect(source).toContain('gap: spacing.sm');
+  });
+
   it('keeps keyboard-aware behavior within the safe viewport', () => {
     expect(source).toContain("behavior={Platform.OS === 'ios' ? 'padding' : undefined}");
     expect(source).toContain("automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}");

@@ -131,7 +131,22 @@ export const bookingInclude = {
           type: 'RENTER' as const,
         },
       },
-      verifications: { select: { expiresAt: true, status: true, type: true } },
+      verifications: {
+        select: {
+          documents: {
+            select: {
+              fileAsset: { select: { classification: true, id: true, status: true } },
+            },
+            where: {
+              definition: { code: 'PROFILE_PHOTO' },
+              replacedAt: null,
+            },
+          },
+          expiresAt: true,
+          status: true,
+          type: true,
+        },
+      },
     },
   },
   statusHistory: { orderBy: { occurredAt: 'asc' as const } },
@@ -522,7 +537,9 @@ export class BookingProjectionService {
       driverLicenseVerified &&
       emailVerified &&
       mobileVerified;
-    const avatar = profile?.avatarFile;
+    const avatar =
+      profile?.avatarFile ??
+      booking.renter.verifications.flatMap(({ documents }) => documents)[0]?.fileAsset;
     const ratings = booking.renter.subjectReviews.map(({ rating }) => rating);
     return {
       ...this.renter(booking),
@@ -542,9 +559,8 @@ export class BookingProjectionService {
         memberSince: booking.renter.createdAt,
         mobileVerified,
         profilePhoto:
-          avatar?.classification === FileClassification.PUBLIC &&
-          avatar.status === FileAssetStatus.READY
-            ? this.files.trustedPublicGrant(avatar.id)
+          avatar?.status === FileAssetStatus.READY
+            ? this.files.trustedAuthorizedGrant(avatar.id)
             : null,
         reviewCount: ratings.length,
         verificationLabel: verified

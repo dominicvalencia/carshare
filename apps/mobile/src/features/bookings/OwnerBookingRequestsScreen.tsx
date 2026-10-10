@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Image } from 'expo-image';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import {
@@ -44,6 +45,7 @@ interface OwnerBookingView extends BookingView {
     identityVerified: boolean;
     memberSince: string;
     mobileVerified: boolean;
+    profilePhoto: { readonly contentPath: string; readonly expiresAt: string } | null;
     reviewCount: number;
     verificationLabel: string;
     verified: boolean;
@@ -66,6 +68,7 @@ export function OwnerBookingRequestsScreen({
   initialAmendmentReference,
   initialBookingReference,
   onOpenAmendment,
+  onOpenBookingRequest,
   onHistory,
   onClose,
 }: {
@@ -77,6 +80,7 @@ export function OwnerBookingRequestsScreen({
     readonly amendmentReference: string;
     readonly bookingReference: string;
   }) => void;
+  readonly onOpenBookingRequest?: (bookingReference: string) => void;
   readonly onHistory?: () => void;
   readonly onClose?: () => void;
 } = {}) {
@@ -368,7 +372,7 @@ export function OwnerBookingRequestsScreen({
           key={booking.publicReference}
           accessibilityRole="button"
           accessibilityLabel={`New booking request for ${booking.renter.displayName}, ${booking.vehicle.make} ${booking.vehicle.model}${booking.ownerResponseDeadlineAt ? `, respond by ${dateTimeLabel(booking.ownerResponseDeadlineAt)}` : ''}.`}
-          onPress={() => setSelected(booking.publicReference)}
+          onPress={() => (onOpenBookingRequest ?? setSelected)(booking.publicReference)}
         >
           <Card style={styles.requestCard}>
             <VehicleImage
@@ -714,19 +718,13 @@ function OwnerRequestDetail({
   const [cancellationOpen, setCancellationOpen] = useState(false);
   if (loading)
     return (
-      <Screen
-        leading={<BackControl label="All requests" onPress={onBack} />}
-        title="Booking request"
-      >
+      <Screen leading={<BackControl label="Back" onPress={onBack} />} title="Booking request">
         <StateView loading title="Loading request…" />
       </Screen>
     );
   if (error || !booking)
     return (
-      <Screen
-        leading={<BackControl label="All requests" onPress={onBack} />}
-        title="Booking request"
-      >
+      <Screen leading={<BackControl label="Back" onPress={onBack} />} title="Booking request">
         <StateView
           icon="alert-circle-outline"
           title="Request unavailable"
@@ -738,122 +736,80 @@ function OwnerRequestDetail({
     );
   return (
     <Screen
-      leading={<BackControl label="All requests" onPress={onBack} />}
-      eyebrow="Booking request"
+      leading={<BackControl label="Back" onPress={onBack} />}
+      eyebrow={booking.status === 'AWAITING_OWNER' ? 'Booking request' : 'Booking details'}
       title={`${booking.vehicle.make} ${booking.vehicle.model}`}
     >
-      <VehicleImage contentPath={booking.vehicle.coverPhoto?.contentPath} style={styles.hero} />
-      <View style={styles.metaRow}>
-        <View style={styles.statusSlot}>
+      <VehicleImage
+        accessibilityLabel={`${booking.vehicle.make} ${booking.vehicle.model}`}
+        contentPath={booking.vehicle.coverPhoto?.contentPath}
+        style={styles.requestHero}
+      />
+      <Card style={styles.requestSummary}>
+        <View style={styles.requestSummaryHeader}>
           <StatusBadge
             label={bookingStatusLabel(booking.status, 'owner')}
             tone={booking.status === 'AWAITING_OWNER' ? 'warning' : 'success'}
           />
+          {booking.ownerResponseDeadlineAt && (
+            <Text style={styles.requestDeadline}>
+              Respond by {dateTimeLabel(booking.ownerResponseDeadlineAt)}
+            </Text>
+          )}
         </View>
-        <Text style={styles.price}>
-          {money(booking.pricing.totalMinor, booking.pricing.currency)}
-        </Text>
-      </View>
-      {booking.status === 'AWAITING_OWNER' && (
-        <Card style={styles.notice}>
-          <Text style={styles.title}>Waiting for your response</Text>
-          <Text style={styles.body}>
-            The renter is waiting for you to accept or decline this booking request.
-          </Text>
-        </Card>
-      )}
-      <Card>
-        <Info icon="person-outline" label="Renter" value={booking.renter.displayName} />
-        <Info icon="calendar-outline" label="Pickup" value={dateTimeLabel(booking.rentalStart)} />
-        <Info
-          icon="return-down-back-outline"
-          label="Return"
-          value={dateTimeLabel(booking.rentalEnd)}
-        />
-        {booking.ownerResponseDeadlineAt && (
-          <Info
-            icon="time-outline"
-            label="Respond by"
-            value={dateTimeLabel(booking.ownerResponseDeadlineAt)}
+        <View style={styles.requestSummaryValues}>
+          <RequestDetailRow
+            emphasized
+            label="Booking total"
+            value={money(booking.pricing.totalMinor, booking.pricing.currency)}
           />
-        )}
-      </Card>
-      <Card>
-        <Text style={styles.title}>Handover request</Text>
-        <Info
-          icon="navigate-outline"
-          label="Start"
-          value={
-            booking.fulfillment.startMethod === 'OWNER_DELIVERY'
-              ? 'Deliver to renter'
-              : 'Renter pickup'
-          }
-        />
-        {booking.fulfillment.startLocation && (
-          <Info
-            icon="location-outline"
-            label="Start location"
-            value={ownerFulfillmentLocation(booking.fulfillment.startLocation)}
-          />
-        )}
-        {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
-          <Info
-            icon="cash-outline"
-            label="Delivery fee"
-            value={money(booking.fulfillment.deliveryFeeMinor, booking.pricing.currency)}
-          />
-        )}
-        <Info
-          icon="return-down-back-outline"
-          label="End"
-          value={
-            booking.fulfillment.endMethod === 'OWNER_COLLECTION'
-              ? 'Owner collection'
-              : 'Renter return'
-          }
-        />
-        {booking.fulfillment.endLocation && (
-          <Info
-            icon="location-outline"
-            label="End location"
-            value={ownerFulfillmentLocation(booking.fulfillment.endLocation)}
-          />
-        )}
-        {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
-          <Info
-            icon="cash-outline"
-            label="Collection fee"
-            value={money(booking.fulfillment.collectionFeeMinor, booking.pricing.currency)}
-          />
-        )}
-      </Card>
-      <SecurityDepositSummary securityDeposit={booking.securityDeposit} />
-      <Card style={styles.notice}>
-        <Text style={styles.title}>Payment is authorized, not captured</Text>
-        <Text style={styles.body}>
-          Accepting starts payment capture. The booking becomes confirmed only after the provider
-          confirms capture. Rejecting releases the authorization.
-        </Text>
-      </Card>
-      <Card>
-        <View style={styles.metaRow}>
-          <Text style={styles.title}>Renter verification</Text>
-          <StatusBadge
-            label={booking.renter.verificationLabel}
-            tone={booking.renter.verified ? 'success' : 'warning'}
-          />
+          <RequestDetailRow label="Reference" value={booking.publicReference} />
         </View>
-        <Text style={styles.body}>
-          Identity {verified(booking.renter.identityVerified)} · Email{' '}
-          {verified(booking.renter.emailVerified)} · Mobile{' '}
-          {verified(booking.renter.mobileVerified)} · Driver’s license{' '}
-          {verified(booking.renter.driverLicenseVerified)}
+      </Card>
+
+      <Card style={styles.requestSection}>
+        <Text accessibilityRole="header" style={styles.requestSectionTitle}>
+          Renter
         </Text>
-        <Button
-          label={trustProfileOpen ? 'Hide renter profile' : 'View renter trust profile'}
-          onPress={() => setTrustProfileOpen(!trustProfileOpen)}
-          variant="ghost"
-        />
+        <View style={styles.renterIdentity}>
+          {booking.renter.profilePhoto?.contentPath ? (
+            <Image
+              accessible
+              accessibilityLabel={`${booking.renter.displayName}'s profile photo`}
+              contentFit="cover"
+              source={{ uri: apiClient.assetUrl(booking.renter.profilePhoto.contentPath) }}
+              style={styles.renterAvatarImage}
+              transition={180}
+            />
+          ) : (
+            <View
+              accessible
+              accessibilityLabel={`${booking.renter.displayName}, profile photo unavailable`}
+              style={styles.renterAvatarFallback}
+            >
+              <Icon color={colors.primary} name="person" size={26} />
+            </View>
+          )}
+          <View style={styles.renterIdentityCopy}>
+            <Text numberOfLines={2} style={styles.renterName}>
+              {booking.renter.displayName}
+            </Text>
+            <View style={styles.renterStatus}>
+              <StatusBadge
+                label={booking.renter.verificationLabel}
+                tone={booking.renter.verified ? 'success' : 'warning'}
+              />
+            </View>
+            <View style={styles.renterTrustAction}>
+              <Button
+                compact
+                label={trustProfileOpen ? 'Hide trust profile' : 'View trust profile'}
+                onPress={() => setTrustProfileOpen(!trustProfileOpen)}
+                variant="ghost"
+              />
+            </View>
+          </View>
+        </View>
         {trustProfileOpen && (
           <View style={styles.trustProfile}>
             <Info icon="person-circle-outline" label="Renter" value={booking.renter.displayName} />
@@ -877,14 +833,90 @@ function OwnerRequestDetail({
               value={titleCase(booking.renter.accountStanding)}
             />
             <Text style={styles.note}>
-              Identity documents, license numbers, and residential address are reviewed only by
-              authorized platform staff and are never shown here.
+              Sensitive identity evidence is available only to authorized platform staff.
             </Text>
           </View>
         )}
       </Card>
+
+      <Card style={styles.requestSection}>
+        <Text accessibilityRole="header" style={styles.requestSectionTitle}>
+          Trip
+        </Text>
+        <RequestDetailRow
+          label="Dates & time"
+          value={requestTripSummary(booking.rentalStart, booking.rentalEnd)}
+        />
+      </Card>
+
+      <Card style={styles.requestSection}>
+        <Text accessibilityRole="header" style={styles.requestSectionTitle}>
+          Handover
+        </Text>
+        <RequestDetailRow
+          label="Start"
+          value={
+            booking.fulfillment.startMethod === 'OWNER_DELIVERY'
+              ? 'Deliver to renter'
+              : 'Renter pickup'
+          }
+        />
+        {booking.fulfillment.startLocation && (
+          <RequestDetailRow
+            label="Start location"
+            value={ownerFulfillmentLocation(booking.fulfillment.startLocation)}
+          />
+        )}
+        {booking.fulfillment.startMethod === 'OWNER_DELIVERY' && (
+          <RequestDetailRow
+            label="Delivery fee"
+            value={money(booking.fulfillment.deliveryFeeMinor, booking.pricing.currency)}
+          />
+        )}
+        <View style={styles.requestSectionDivider} />
+        <RequestDetailRow
+          label="End"
+          value={
+            booking.fulfillment.endMethod === 'OWNER_COLLECTION'
+              ? 'Owner collection'
+              : 'Renter return'
+          }
+        />
+        {booking.fulfillment.endLocation && (
+          <RequestDetailRow
+            label="End location"
+            value={ownerFulfillmentLocation(booking.fulfillment.endLocation)}
+          />
+        )}
+        {booking.fulfillment.endMethod === 'OWNER_COLLECTION' && (
+          <RequestDetailRow
+            label="Collection fee"
+            value={money(booking.fulfillment.collectionFeeMinor, booking.pricing.currency)}
+          />
+        )}
+      </Card>
+
+      <Card style={styles.requestSection}>
+        <View style={styles.requestSectionHeader}>
+          <Text accessibilityRole="header" style={styles.requestSectionTitle}>
+            Payment
+          </Text>
+          <StatusBadge label="Authorized" tone="success" />
+        </View>
+        <Text style={styles.body}>
+          Payment is authorized and will be captured according to the booking flow.
+        </Text>
+      </Card>
+      {booking.securityDeposit.required && (
+        <SecurityDepositSummary compact securityDeposit={booking.securityDeposit} />
+      )}
+
       {booking.status === 'AWAITING_OWNER' ? (
-        <>
+        <Card style={styles.decisionCard}>
+          <Text accessibilityRole="header" style={styles.requestSectionTitle}>
+            Owner decision
+          </Text>
+          <Text style={styles.body}>Review the renter and trip details before responding.</Text>
           <Button
             disabled={decision.isPending}
             label={decision.isPending ? 'Processing decision…' : 'Accept request'}
@@ -923,32 +955,24 @@ function OwnerRequestDetail({
             }
             variant="danger"
           />
-        </>
-      ) : (
-        <Card>
-          <Text style={styles.title}>Next step</Text>
-          <Text style={styles.body}>{nextStep(booking)}</Text>
         </Card>
+      ) : (
+        <OwnerNextStep booking={booking} />
       )}
-      <Card>
-        <Text style={styles.title}>Booking timeline</Text>
-        <Text style={styles.note}>Only recorded booking events appear here.</Text>
-        {booking.statusHistory.map((entry, index) => (
-          <View key={`${entry.occurredAt}-${entry.toStatus}`} style={styles.timelineRow}>
-            <View style={styles.timelineTrack}>
-              <View style={styles.timelineDot} />
-              {index < booking.statusHistory.length - 1 && <View style={styles.timelineLine} />}
-            </View>
-            <View style={styles.flex}>
-              <Text style={styles.infoValue}>{bookingStatusLabel(entry.toStatus, 'owner')}</Text>
-              <Text style={styles.body}>{dateTimeLabel(entry.occurredAt)}</Text>
-            </View>
-          </View>
-        ))}
-      </Card>
       {decision.isError && <Text style={styles.error}>{decision.error.message}</Text>}
       {['CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status) && (
-        <Button label="Cancel booking" onPress={() => setCancellationOpen(true)} variant="danger" />
+        <Card style={styles.dangerZone}>
+          <Text style={styles.dangerEyebrow}>Danger zone</Text>
+          <Text style={styles.dangerTitle}>Cancel booking</Text>
+          <Text style={styles.dangerCopy}>
+            Only cancel when necessary. Existing cancellation rules still apply.
+          </Text>
+          <Button
+            label="Cancel booking"
+            onPress={() => setCancellationOpen(true)}
+            variant="danger"
+          />
+        </Card>
       )}
       <BookingCancellationSheet
         bookingReference={booking.publicReference}
@@ -1091,6 +1115,15 @@ function accessibleDateRange(start: string, end: string) {
   return `${tripDateSummary(startDate, endDate, { alwaysShowYear: true })}. Pickup ${timeLabel(startDate)}. Return ${timeLabel(endDate)}`;
 }
 
+function requestTripSummary(start: string, end: string) {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  const startTime = timeLabel(startDate);
+  const endTime = timeLabel(endDate);
+  const time = startTime === endTime ? startTime : `${startTime}–${endTime}`;
+  return `${tripDateSummary(startDate, endDate, { alwaysShowYear: true })} · ${time}`;
+}
+
 function compactDeadline(value: string) {
   const date = new Date(value);
   return `${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · ${timeLabel(date)}`;
@@ -1138,9 +1171,48 @@ function Info({
   );
 }
 
-function verified(value: boolean) {
-  return value ? 'verified' : 'not yet verified';
+function RequestDetailRow({
+  emphasized = false,
+  label,
+  value,
+}: {
+  readonly emphasized?: boolean;
+  readonly label: string;
+  readonly value: string;
+}) {
+  return (
+    <View accessibilityLabel={`${label}, ${value}`} style={styles.requestDetailRow}>
+      <Text style={styles.requestDetailLabel}>{label}</Text>
+      <Text style={[styles.requestDetailValue, emphasized && styles.requestDetailValueEmphasized]}>
+        {value}
+      </Text>
+    </View>
+  );
 }
+
+function OwnerNextStep({ booking }: { readonly booking: OwnerBookingView }) {
+  if (booking.status === 'CONFIRMED')
+    return (
+      <Card style={styles.nextStepCard}>
+        <Text style={styles.nextStepEyebrow}>Next step</Text>
+        <Text style={styles.nextStepTitle}>Prepare the vehicle for pickup.</Text>
+        <View style={styles.nextStepRows}>
+          <RequestDetailRow
+            label="Handover available"
+            value={dateTimeLabel(booking.pickupWindow?.opensAt ?? booking.rentalStart)}
+          />
+          <RequestDetailRow label="Pickup" value={dateTimeLabel(booking.rentalStart)} />
+        </View>
+      </Card>
+    );
+  return (
+    <Card style={styles.nextStepCard}>
+      <Text style={styles.nextStepEyebrow}>Next step</Text>
+      <Text style={styles.nextStepTitle}>{nextStep(booking)}</Text>
+    </Card>
+  );
+}
+
 function nextStep(booking: OwnerBookingView) {
   if (booking.status === 'CAPTURE_PENDING')
     return 'Payment capture is being confirmed. Do not hand over the vehicle yet.';
@@ -1173,6 +1245,16 @@ const styles = StyleSheet.create({
   changeRequests: { gap: spacing.sm },
   changeRenter: { color: colors.ink, fontSize: 16, fontWeight: '900', marginTop: spacing.xxs },
   compactRange: { flex: 1, gap: spacing.xxs, minWidth: 0 },
+  decisionCard: { gap: spacing.sm },
+  dangerCopy: { color: colors.subtleText, lineHeight: 20 },
+  dangerEyebrow: {
+    color: colors.danger,
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  dangerTitle: { color: colors.danger, fontSize: 17, fontWeight: '800' },
+  dangerZone: { borderColor: colors.dangerSoft, gap: spacing.sm, marginTop: spacing.md },
   detailDivider: {
     backgroundColor: colors.border,
     height: StyleSheet.hairlineWidth,
@@ -1202,7 +1284,6 @@ const styles = StyleSheet.create({
   financialValue: { color: colors.ink, fontSize: 14, fontWeight: '800', textAlign: 'right' },
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   flex: { flex: 1, minWidth: 0 },
-  hero: { borderRadius: radius.lg, height: 210, width: '100%' },
   historyIntro: { color: colors.subtleText, lineHeight: 21 },
   handoverChanges: { gap: spacing.sm, marginTop: spacing.sm },
   trustProfile: { borderTopColor: colors.border, borderTopWidth: 1, marginTop: spacing.sm },
@@ -1233,6 +1314,15 @@ const styles = StyleSheet.create({
   metaValue: { color: colors.ink, fontSize: 14, fontWeight: '800', marginTop: spacing.xxs },
   noChange: { color: colors.primary, fontSize: 12, fontWeight: '800', marginTop: spacing.xxs },
   notice: { backgroundColor: colors.warningSoft },
+  nextStepCard: { gap: spacing.xs, paddingVertical: spacing.sm },
+  nextStepEyebrow: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  nextStepRows: { gap: spacing.xxs },
+  nextStepTitle: { color: colors.ink, fontSize: 16, fontWeight: '800', lineHeight: 22 },
   note: { color: colors.subtleText, fontSize: 12, lineHeight: 18, marginTop: spacing.sm },
   price: {
     color: colors.ink,
@@ -1253,21 +1343,64 @@ const styles = StyleSheet.create({
   },
   processingText: { color: colors.primary, fontSize: 12, fontWeight: '800' },
   requestCard: { flexDirection: 'row', gap: spacing.sm },
+  requestDeadline: {
+    color: colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: 'right',
+  },
+  requestDetailLabel: { color: colors.subtleText, fontSize: 12, fontWeight: '700' },
+  requestDetailRow: { gap: 2, paddingVertical: spacing.xs },
+  requestDetailValue: { color: colors.ink, fontSize: 15, fontWeight: '800', lineHeight: 21 },
+  requestDetailValueEmphasized: { fontSize: 19, lineHeight: 25 },
+  requestHero: { borderRadius: radius.lg, height: 210, width: '100%' },
+  requestSection: { paddingVertical: spacing.sm },
+  requestSectionDivider: {
+    backgroundColor: colors.border,
+    height: StyleSheet.hairlineWidth,
+    marginVertical: spacing.xs,
+  },
+  requestSectionHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  requestSectionTitle: {
+    color: colors.ink,
+    fontSize: 17,
+    fontWeight: '900',
+    marginBottom: spacing.xs,
+  },
+  requestSummary: { gap: spacing.sm, paddingVertical: spacing.sm },
+  requestSummaryHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  requestSummaryValues: { gap: spacing.xxs },
+  renterAvatarFallback: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    height: 60,
+    justifyContent: 'center',
+    width: 60,
+  },
+  renterAvatarImage: { borderRadius: radius.pill, height: 60, width: 60 },
+  renterIdentity: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
+  renterIdentityCopy: { flex: 1, minWidth: 0 },
+  renterName: { color: colors.ink, flex: 1, fontSize: 18, fontWeight: '900', minWidth: 0 },
+  renterStatus: { alignSelf: 'flex-start', marginTop: spacing.xxs },
+  renterTrustAction: { alignSelf: 'flex-start', marginLeft: -spacing.md },
   rangeGrid: { flexDirection: 'row', gap: spacing.sm },
   rangeTimes: { color: colors.subtleText, fontSize: 12, lineHeight: 17 },
   rangeValue: { color: colors.ink, fontSize: 15, fontWeight: '900' },
   sectionLabel: { color: colors.ink, fontSize: 16, fontWeight: '900' },
   statusSlot: { flexShrink: 1 },
   thumbnail: { borderRadius: radius.md, height: 128, width: 108 },
-  timelineDot: {
-    backgroundColor: colors.primary,
-    borderRadius: radius.pill,
-    height: 12,
-    width: 12,
-  },
-  timelineLine: { backgroundColor: colors.border, flex: 1, marginVertical: 3, width: 2 },
-  timelineRow: { flexDirection: 'row', gap: spacing.sm, minHeight: 58, marginTop: spacing.sm },
-  timelineTrack: { alignItems: 'center', width: 16 },
   title: { color: colors.ink, fontSize: 15, fontWeight: '800' },
   transition: { gap: spacing.xxs },
 });

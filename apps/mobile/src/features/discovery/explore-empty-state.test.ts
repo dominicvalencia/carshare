@@ -66,7 +66,7 @@ describe('Explore results empty state', () => {
     expect(source).toContain('onChangeLocation={openExploreLocation}');
     expect(source).not.toContain('onAdjustDates=');
     expect(source).not.toContain('label="Adjust dates"');
-    expect(source).toContain('accessibilityLabel={`Trip dates, ${tripDateSummary');
+    expect(source).toContain('accessibilityLabel={`Trip dates and time, ${tripDateTimeSummary');
     expect(source).toContain('onPress={openExploreDates}');
   });
 

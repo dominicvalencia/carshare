@@ -25,11 +25,20 @@ describe('TripDateCalendar source authority', () => {
     expect(policy).not.toMatch(/new Date\(["'`]\d{4}-\d{2}-\d{2}/);
   });
 
+  it('compares local calendar days instead of advancing to tomorrow after 9 AM', () => {
+    expect(policy).toContain('export function bookingCalendarMinimumDate');
+    expect(policy).toContain('export function isBookingCalendarDateSelectable');
+    expect(source).toContain('const earliest = bookingCalendarMinimumDate(minimumDate)');
+    expect(source).not.toContain('earliest.setDate(earliest.getDate() + 1)');
+    expect(source).not.toContain('now.getTime() - 5 * 60_000');
+  });
+
   it('enforces the established range boundaries and explicit apply step', () => {
     expect(source).toContain('const MAX_RANGE_DAYS = 365');
     expect(source).toContain('day.getTime() <= draftStart.getTime()');
     expect(source).toContain('calendarDaysBetween(draftStart, day) > MAX_RANGE_DAYS');
-    expect(source).toContain('label="Apply dates"');
+    expect(source).toContain("applyLabel = 'Apply dates'");
+    expect(source).toContain('label={applyLabel}');
     expect(source).toContain('disabled={!complete}');
     expect(source).toContain('label="Clear dates"');
   });

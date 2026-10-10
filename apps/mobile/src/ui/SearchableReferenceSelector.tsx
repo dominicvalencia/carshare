@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { colors, radius, spacing } from '../theme/tokens';
 import { adaptiveSheetLayout } from './adaptive-sheet-layout';
-import { Button, Icon } from './primitives';
+import { BackControl, Button, Icon } from './primitives';
 
 export interface ReferenceOption {
   readonly id: string;
@@ -29,6 +29,7 @@ export function SearchableReferenceSelector({
   anyLabel = 'Any',
   label,
   options,
+  sheetDismissLabel,
   value,
   onChange,
 }: {
@@ -36,6 +37,7 @@ export function SearchableReferenceSelector({
   readonly anyLabel?: string;
   readonly label: string;
   readonly options: readonly ReferenceOption[];
+  readonly sheetDismissLabel?: string;
   readonly value: string;
   readonly onChange: (value: string) => void;
 }) {
@@ -47,6 +49,7 @@ export function SearchableReferenceSelector({
   const { height: viewportHeight } = useWindowDimensions();
   const safeArea = useSafeAreaInsets();
   const selected = options.find((option) => option.id === value || option.name === value);
+  const usesTopDismiss = Boolean(sheetDismissLabel);
   const filtered = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     return query ? options.filter(({ name }) => name.toLocaleLowerCase().includes(query)) : options;
@@ -68,7 +71,13 @@ export function SearchableReferenceSelector({
   const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
 
   useEffect(() => {
-    if (!open || headerHeight <= 0 || listContentHeight <= 0 || footerHeight <= 0) return;
+    if (
+      !open ||
+      headerHeight <= 0 ||
+      listContentHeight <= 0 ||
+      (!usesTopDismiss && footerHeight <= 0)
+    )
+      return;
     // Reanimated shared values are intentionally mutable UI-thread animation state.
     // eslint-disable-next-line react-hooks/immutability
     sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
@@ -80,6 +89,7 @@ export function SearchableReferenceSelector({
     measuredLayout.height,
     open,
     sheetHeight,
+    usesTopDismiss,
     viewportHeight,
   ]);
 
@@ -113,7 +123,7 @@ export function SearchableReferenceSelector({
         <Icon color={colors.primary} name="chevron-down" size={18} />
       </Pressable>
       <Modal
-        animationType="fade"
+        animationType="slide"
         onRequestClose={close}
         presentationStyle="overFullScreen"
         statusBarTranslucent
@@ -130,6 +140,9 @@ export function SearchableReferenceSelector({
               onLayout={({ nativeEvent }) => setHeaderHeight(nativeEvent.layout.height)}
               style={styles.header}
             >
+              {usesTopDismiss ? (
+                <BackControl label={sheetDismissLabel ?? 'Back'} onPress={close} />
+              ) : null}
               <Text accessibilityRole="header" style={styles.title}>
                 Select {label.toLocaleLowerCase()}
               </Text>
@@ -170,12 +183,19 @@ export function SearchableReferenceSelector({
                 ))}
               </View>
             </ScrollView>
-            <View
-              onLayout={({ nativeEvent }) => setFooterHeight(nativeEvent.layout.height)}
-              style={[styles.footer, { paddingBottom: bottomAllowance }]}
-            >
-              <Button label="Cancel" onPress={close} variant="secondary" />
-            </View>
+            {usesTopDismiss ? (
+              <View
+                onLayout={({ nativeEvent }) => setFooterHeight(nativeEvent.layout.height)}
+                style={{ height: bottomAllowance }}
+              />
+            ) : (
+              <View
+                onLayout={({ nativeEvent }) => setFooterHeight(nativeEvent.layout.height)}
+                style={[styles.footer, { paddingBottom: bottomAllowance }]}
+              >
+                <Button label="Cancel" onPress={close} variant="secondary" />
+              </View>
+            )}
           </Reanimated.View>
         </KeyboardAvoidingView>
       </Modal>
@@ -201,8 +221,8 @@ function Option({
       onPress={onPress}
       style={[styles.option, divider && styles.optionDivider]}
     >
-      <Text style={styles.optionLabel}>{label}</Text>
       {checked && <Icon color={colors.primary} name="checkmark-circle" size={22} />}
+      <Text style={styles.optionLabel}>{label}</Text>
     </Pressable>
   );
 }
@@ -237,7 +257,7 @@ const styles = StyleSheet.create({
   option: {
     alignItems: 'center',
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    gap: spacing.sm,
     minHeight: 52,
     paddingHorizontal: spacing.md,
   },

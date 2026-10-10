@@ -1420,6 +1420,15 @@ describe.sequential('Phase 5 booking concurrency integration', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/bookings/${reference}/rental/return/inspection`)
       .set('Authorization', `Bearer ${renter.token}`)
+      .send({ fuelBasisPoints: 8500, media: returnFiles, odometerMeters: '19900000' })
+      .expect(422)
+      .expect(({ body }) => {
+        expect(body.error.code).toBe('RETURN_ODOMETER_INVALID');
+        expect(body.error.message).toContain('It cannot be lower than the pickup reading.');
+      });
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${reference}/rental/return/inspection`)
+      .set('Authorization', `Bearer ${renter.token}`)
       .send({ fuelBasisPoints: 8500, media: returnFiles, odometerMeters: '20520000' })
       .expect(201);
     expect(

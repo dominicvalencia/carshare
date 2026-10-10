@@ -49,7 +49,9 @@ export function OwnerRentalsScreen({
   const items = (rentals.data ?? []).filter(({ status }) => operational.has(status));
   return (
     <NestedScreen
+      compactNestedHeader
       constrainOverscroll
+      contentTopPadding={spacing.sm}
       scrollRef={scrollRef}
       onScroll={({ nativeEvent }) => {
         scrollOffsetY.current = nativeEvent.contentOffset.y;
@@ -81,6 +83,14 @@ export function OwnerRentalsScreen({
       {selected ? (
         <>
           <OwnerRentalPanel
+            {...(selectedBooking?.conversationId
+              ? {
+                  onOpenConversation: () =>
+                    navigation.navigate('Conversation', {
+                      conversationId: selectedBooking.conversationId!,
+                    }),
+                }
+              : {})}
             reference={selected}
             scrollConditionFormBy={(delta) =>
               scrollRef.current?.scrollTo({ animated: true, y: scrollOffsetY.current + delta })
@@ -88,25 +98,20 @@ export function OwnerRentalsScreen({
             scrollToConditionForm={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
           />
           <OwnerClaimsPanel bookingReference={selected} />
-          {selectedBooking?.conversationId && (
-            <Pressable
-              style={styles.action}
-              onPress={() =>
-                navigation.navigate('Conversation', {
-                  conversationId: selectedBooking.conversationId!,
-                })
-              }
-            >
-              <Text style={styles.actionText}>Open booking conversation</Text>
-            </Pressable>
-          )}
           {selectedBooking &&
             ['CONFIRMED', 'READY_FOR_PICKUP'].includes(selectedBooking.status) && (
-              <Button
-                label="Cancel booking"
-                onPress={() => setCancellationOpen(true)}
-                variant="danger"
-              />
+              <Card style={styles.dangerZone}>
+                <Text style={styles.dangerEyebrow}>Danger zone</Text>
+                <Text style={styles.dangerTitle}>Cancel booking</Text>
+                <Text style={styles.dangerCopy}>
+                  Only cancel when necessary. Existing cancellation rules still apply.
+                </Text>
+                <Button
+                  label="Cancel booking"
+                  onPress={() => setCancellationOpen(true)}
+                  variant="danger"
+                />
+              </Card>
             )}
           {selectedBooking && (
             <BookingCancellationSheet
@@ -179,15 +184,6 @@ export function OwnerRentalsScreen({
 }
 
 const styles = StyleSheet.create({
-  action: {
-    alignItems: 'center',
-    borderColor: colors.primary,
-    borderRadius: 12,
-    borderWidth: 1,
-    marginTop: spacing.md,
-    padding: spacing.md,
-  },
-  actionText: { color: colors.primary, fontWeight: '800' },
   body: { color: colors.subtleText, marginTop: spacing.xs },
   card: {
     alignItems: 'center',
@@ -195,6 +191,15 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   cardTitle: { color: colors.ink, fontWeight: '800' },
+  dangerCopy: { color: colors.subtleText, lineHeight: 20 },
+  dangerEyebrow: {
+    color: colors.danger,
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  dangerTitle: { color: colors.danger, fontSize: 17, fontWeight: '800' },
+  dangerZone: { borderColor: colors.dangerSoft, gap: spacing.sm, marginTop: spacing.lg },
   flex: { flex: 1, minWidth: 0 },
   image: { borderRadius: 12, height: 92, width: 92 },
   link: { color: colors.primary, fontWeight: '700', marginTop: spacing.md },

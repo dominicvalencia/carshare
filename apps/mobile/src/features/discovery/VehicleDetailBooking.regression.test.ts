@@ -36,32 +36,33 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
 
   it('removes the inline editor and reuses existing trip authority in a sheet', () => {
     expect(detail).not.toContain('<Card style={styles.tripCard}>');
-    expect(detail).toContain('presentationStyle="pageSheet"');
+    expect(detail).toContain('presentationStyle="overFullScreen"');
     expect(detail).toContain('visible={tripOpen}');
     expect(detail).toContain('title="Your trip"');
-    expect(detail).toContain('value={draftPickup}');
-    expect(detail).toContain('value={draftReturnAt}');
+    expect(detail).toContain('start={draftPickup}');
+    expect(detail).toContain('end={draftReturnAt}');
     expect(detail).toContain('properties.setPickup(draftPickup)');
     expect(detail).toContain('properties.setReturnAt(draftReturnAt)');
-    expect(source).toContain('datesExplicit={tripDatesEstablished || exactTimesSelected}');
+    expect(source).toContain('datesExplicit={tripDatesEstablished && exactTimesSelected}');
     expect(source).toContain('setExactTimesSelected(true)');
     expect(detail).toContain('properties.datesExplicit && properties.returnAt > properties.pickup');
   });
 
-  it('uses one explicit date range with the Search calendar and independent times', () => {
+  it('uses the shared compact When summary for one date range and shared time', () => {
     expect(detail).toContain('<TripDateCalendar');
     expect(detail).toContain('preselect={draftDatesExplicit}');
-    expect(detail).toContain(
-      "draftDatesExplicit ? tripDateSummary(draftPickup, draftReturnAt) : 'Add dates'",
-    );
-    expect(detail).toContain("label={draftDatesExplicit ? 'Change dates' : 'Add dates'}");
+    expect(detail).toContain('showClear={false}');
     expect(detail).toContain('setDraftDatesExplicit(properties.datesExplicit)');
     expect(detail).toContain('setDraftDatesExplicit(true)');
-    expect(detail).toContain('nextPickup.setHours(draftPickup.getHours()');
-    expect(detail).toContain('nextReturnAt.setHours(');
-    expect(detail).toContain('label="Pickup time"');
-    expect(detail).toContain('label="Return time"');
-    expect(detail.match(/mode="time"/g)).toHaveLength(2);
+    expect(detail).toContain('When?');
+    expect(detail).toContain('<BookingDateTimeEditorSummary');
+    expect(detail).toContain('onChangeDates={() => setTripCalendarOpen(true)}');
+    expect(detail).toContain('timeEstablished={draftDatesExplicit && draftTimeExplicit}');
+    expect(detail).toContain('applySharedBookingTime(');
+    expect(detail).not.toContain('<BookingTimeSelector');
+    expect(detail).not.toContain('<Text style={styles.smallLabel}>Trip dates</Text>');
+    expect(detail).not.toContain('label="Pickup time"');
+    expect(detail).not.toContain('label="Return time"');
     expect(detail).not.toContain('label="Pickup"');
     expect(detail).not.toContain('label="Return"');
   });
@@ -75,15 +76,13 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
     expect(detail).toContain('durationDiscountMessage(draftChargeableDays, durationDiscounts)');
     expect(detail).toContain("'Longer-trip discounts available.'");
     expect(detail).toContain('draftDatesExplicit &&');
-    expect(detail).toContain(
-      'Published policy only. Check price for the authoritative discount and total.',
-    );
+    expect(detail).toContain('Published policy only. Check price for the final total.');
     expect(detail).not.toContain('draftChargeableDays * vehicle.pricing.dailyRateMinor');
   });
 
   it('opens from Select trip and preserves draft/save/cancel semantics', () => {
     expect(detail).toContain("label: 'Select trip'");
-    expect(detail).toContain('onPress: openTripConfiguration');
+    expect(detail).toContain('onPress: () => openTripConfiguration(false)');
     expect(detail).toContain('setDraftPickup(properties.pickup)');
     expect(detail).toContain('setDraftDatesExplicit(properties.datesExplicit)');
     expect(detail).toContain('setDraftStartMethod(startMethod)');
@@ -95,7 +94,10 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
     );
     expect(save).toContain('properties.setPickup(draftPickup)');
     expect(save).toContain('setStartMethod(draftStartMethod)');
-    expect(save).not.toContain('properties.quote.mutate');
+    expect(save).toContain('if (checkPriceAfterTripSave)');
+    expect(save).toContain('...draftFulfillmentInput()');
+    expect(save).toContain('pickup: draftPickup');
+    expect(save).toContain('returnAt: draftReturnAt');
   });
 
   it('uses Close only for presentation dismissal and preserves domain cancellation copy', () => {
@@ -103,12 +105,13 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
     expect(detail).toContain(
       '<BackControl label="Close" onPress={() => setTripCalendarOpen(false)} />',
     );
-    expect(detail.match(/dismissLabel="Close"/g)).toHaveLength(3);
+    expect(detail.match(/dismissLabel="Close"/g)).toHaveLength(1);
     expect(detail).not.toContain('<BackControl label="Cancel"');
-    expect(detail).toContain('label="Save"');
+    expect(detail).toContain(": 'Save'");
     expect(dateTimeSource).toContain(
-      '<Button label={dismissLabel} onPress={() => setOpen(false)} variant="ghost" />',
+      '<BackControl label={dismissLabel} onPress={() => setOpen(false)} />',
     );
+    expect(dateTimeSource).not.toContain('<Button label={dismissLabel}');
     expect(locationPickerSource).toContain(
       '<BackControl label={dismissLabel} onPress={onCancel} />',
     );
@@ -116,10 +119,10 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
   });
 
   it('renders only projected fulfillment choices and retains required destinations', () => {
-    expect(detail).toContain('vehicle.fulfillment.renterPickupAvailable &&');
-    expect(detail).toContain('vehicle.fulfillment.ownerDeliveryAvailable &&');
-    expect(detail).toContain('vehicle.fulfillment.renterReturnAvailable &&');
-    expect(detail).toContain('vehicle.fulfillment.ownerCollectionAvailable &&');
+    expect(detail).toContain('!vehicle.fulfillment.ownerDeliveryAvailable');
+    expect(detail).toContain('vehicle.fulfillment.renterPickupAvailable === false');
+    expect(detail).toContain('!vehicle.fulfillment.ownerCollectionAvailable');
+    expect(detail).toContain('vehicle.fulfillment.renterReturnAvailable === false');
     expect(detail).toContain("draftStartMethod === 'OWNER_DELIVERY'");
     expect(detail).toContain("draftEndMethod === 'OWNER_COLLECTION'");
     expect(detail).toContain('<ConfirmedLocationCard');
@@ -158,16 +161,19 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
     expect(source).not.toMatch(/cancel[^\n]*onTabBarHiddenChange/s);
   });
 
-  it('distinguishes advisory pricing, pending quote, and authoritative quoted total', () => {
-    expect(detail).toContain("context: 'Advisory daily price'");
-    expect(detail).toContain('label: `From ${money(vehicle.pricing.dailyRateMinor');
+  it('uses concise daily-price and authoritative-total footer copy', () => {
+    expect(detail).toContain("context: 'Daily price'");
+    expect(detail).toContain('label: money(vehicle.pricing.dailyRateMinor');
     expect(detail).toContain("label: 'Checking price…'");
-    expect(detail).toContain("context: 'Authoritative quoted total'");
+    expect(detail).toContain("context: 'Total'");
     expect(detail).toContain('label: money(quoteData.totalMinor, quoteData.currency)');
     expect(detail).toContain("label: 'Reserve car'");
+    expect(detail).not.toContain("suffix: 'per day'");
+    expect(detail).not.toContain("suffix: 'total'");
+    expect(detail).toContain('{bookingBarTripContext}');
     expect(detail).toContain('properties.reserve.mutate(quoteData.id)');
     expect(detail).toContain('bookingBarTripContext');
-    expect(detail).toContain('tripDateSummary(properties.pickup, properties.returnAt)');
+    expect(detail).toContain('tripDateTimeSummary(properties.pickup, properties.returnAt)');
     expect(quoteCard).toContain('quote.durationDiscountAmountMinor > 0');
     expect(quoteCard).toContain('money(quote.durationDiscountAmountMinor, quote.currency)');
     expect(quoteCard).toContain('money(quote.totalMinor, quote.currency)');
@@ -195,7 +201,8 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
     expect(detail).toContain('<TripDateCalendar');
     expect(detail).toContain('properties.setPickup(draftPickup)');
     expect(detail).toContain('properties.setReturnAt(draftReturnAt)');
-    expect(detail).toContain('properties.quote.mutate(fulfillmentInput())');
+    expect(detail).toContain('...fulfillmentInput()');
+    expect(detail).toContain('...draftFulfillmentInput()');
     expect(detail).toContain('properties.reserve.mutate(quoteData.id)');
     expect(detail).not.toContain('Math.min(draftChargeableDays');
     expect(detail).not.toContain('Math.max(draftChargeableDays');
@@ -212,16 +219,77 @@ describe('Task 14C vehicle-detail trip and booking CTA', () => {
 
   it('uses the same explicit range semantics in the persistent booking bar', () => {
     expect(detail).toContain('const bookingBarTripContext = properties.datesExplicit');
-    expect(detail).toContain('tripDateSummary(properties.pickup, properties.returnAt)');
+    expect(detail).toContain('tripDateTimeSummary(properties.pickup, properties.returnAt)');
     expect(detail).toContain(": 'Add dates'");
-    expect(detail).toContain('draftDatesExplicit && draftReturnAt > draftPickup');
+    expect(detail).toContain(
+      'draftDatesExplicit && draftTimeExplicit && draftReturnAt > draftPickup',
+    );
   });
 
   it('expires quote authority and requires a current server price', () => {
     expect(detail).toContain('quoteExpiresAt <= quoteClock');
-    expect(detail).toContain("'Check current price'");
+    expect(detail).toContain("label: 'Check price'");
     expect(quoteCard).toContain('Price needs refreshing');
     expect(quoteCard).toContain('This quote is no longer current.');
+  });
+
+  it('opens Your trip before quoting only when delivery or collection is supported', () => {
+    expect(detail).toContain('const optionalHandoverAvailable =');
+    expect(detail).toContain('vehicle.fulfillment.ownerDeliveryAvailable ||');
+    expect(detail).toContain('Boolean(vehicle.fulfillment.ownerCollectionAvailable)');
+    expect(detail).toContain('onPress: optionalHandoverAvailable');
+    expect(detail).toContain('? () => openTripConfiguration(true)');
+    expect(detail).toContain(': requestCurrentQuote');
+    expect(detail).toContain('checkPriceAfterTripSave');
+    expect(detail).toContain('...draftFulfillmentInput()');
+    expect(detail).toContain('startMethod: draftStartMethod');
+    expect(detail).toContain('endMethod: draftEndMethod');
+  });
+
+  it('shows only supported handover selectors and compact fixed-method summaries', () => {
+    expect(detail).toContain('Start of rental');
+    expect(detail).toContain('!vehicle.fulfillment.ownerDeliveryAvailable');
+    expect(detail).toContain('<Text style={styles.handoverStaticTitle}>Pick up</Text>');
+    expect(detail).toContain("label: 'Delivery'");
+    expect(detail).toContain('End of rental');
+    expect(detail).toContain('!vehicle.fulfillment.ownerCollectionAvailable');
+    expect(detail).toContain('<Text style={styles.handoverStaticTitle}>Return it</Text>');
+    expect(detail).toContain("label: 'Collection'");
+    expect(detail).toContain('<HandoverSegmentedControl');
+    expect(detail).toContain('accessibilityLabel="Start of rental method"');
+    expect(detail).toContain('accessibilityLabel="End of rental method"');
+    expect(source).toContain('accessibilityRole="radiogroup"');
+    expect(source).toContain('accessibilityRole="radio"');
+    expect(source).toContain(
+      'accessibilityState={{ checked: option.selected, selected: option.selected }}',
+    );
+    expect(detail).toContain('read only');
+  });
+
+  it('keeps the sticky Daily price and Check price footer outside the visual body refinement', () => {
+    expect(detail).toContain('styles.tripSheetBar,');
+    expect(detail).toContain('accessibilityLabel="Daily price"');
+    expect(detail).toContain('<Text style={styles.bookingBarContext}>Daily price</Text>');
+    expect(detail).toContain("? 'Checking price…'");
+    expect(detail).toContain(": 'Check price'");
+    expect(detail).toContain(": 'Save'");
+  });
+
+  it('uses the adaptive measured bottom-sheet pattern for content-driven height', () => {
+    expect(detail).toContain('adaptiveSheetLayout({');
+    expect(detail).toContain('contentHeight: tripMeasuredContentHeight');
+    expect(detail).toContain('headerHeight: tripMeasuredHeaderHeight');
+    expect(detail).toContain('style={[styles.tripSheetSurface, tripSheetAnimatedStyle]}');
+    expect(detail).toContain('onContentSizeChange={(_width, height)');
+    expect(detail).toContain('scrollEnabled={tripMeasuredLayout.scrollEnabled}');
+    expect(detail).toContain('measureBottomAccessory');
+    expect(detail).toContain('contentHeight: tripCalendarContentHeight');
+    expect(detail).toContain('headerHeight: tripCalendarHeaderHeight');
+    expect(detail).toContain('style={[styles.tripSheetSurface, tripCalendarAnimatedStyle]}');
+    expect(detail).toContain('scrollEnabled={tripCalendarLayout.scrollEnabled}');
+    expect(detail).toContain('setTripCalendarContentHeight(height)');
+    expect(detail).toContain('setTripCalendarHeaderHeight(event.nativeEvent.layout.height)');
+    expect(detail).not.toContain('setDraftDatesExplicit(false)');
   });
 
   it('keeps one post-hold payment continuation and no duplicate reserve action', () => {

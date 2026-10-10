@@ -21,7 +21,9 @@ describe('owner booking card responsive metadata', () => {
 
   it('retains the standard card inset and booking-card interaction', () => {
     expect(source).toContain('<Card style={styles.requestCard}>');
-    expect(source).toContain('onPress={() => setSelected(booking.publicReference)}');
+    expect(source).toContain(
+      'onPress={() => (onOpenBookingRequest ?? setSelected)(booking.publicReference)}',
+    );
     expect(source).toContain("requestCard: { flexDirection: 'row', gap: spacing.sm }");
     expect(source).not.toContain(
       "requestCard: { flexDirection: 'row', gap: spacing.sm, padding: spacing.sm }",

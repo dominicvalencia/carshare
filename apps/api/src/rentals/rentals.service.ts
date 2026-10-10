@@ -123,6 +123,12 @@ const requiredPerspectives = [
   InspectionPerspective.FUEL_OR_BATTERY_DISPLAY,
 ] as const;
 
+export function currentOverdueHandoverRecovery<T extends { readonly acceptance: unknown | null }>(
+  recoveries: readonly T[],
+): T | null {
+  return recoveries.find((recovery) => !recovery.acceptance) ?? recoveries[0] ?? null;
+}
+
 const rentalInclude = {
   handoverEvidenceWaivers: true,
   handoverReturnReceipt: true,
@@ -456,6 +462,33 @@ export class RentalsService {
         this.invalidState('Return inspection requires a return-pending booking.');
       }
       this.validatePowertrainMeasurements(booking.vehicle.powertrain, input);
+      if (type === InspectionType.RETURN) {
+        const pickup = await transaction.inspection.findFirst({
+          include: {
+            amendments: {
+              orderBy: { reviewedAt: 'desc' },
+              where: { status: InspectionAmendmentStatus.APPROVED },
+            },
+          },
+          where: {
+            bookingId: booking.id,
+            status: InspectionStatus.FINALIZED,
+            type: InspectionType.PICKUP,
+          },
+        });
+        const effectivePickup = pickup ? this.effectiveInspection(pickup) : null;
+        const returnOdometerMeters = BigInt(input.odometerMeters);
+        if (
+          effectivePickup?.odometerMeters != null &&
+          returnOdometerMeters < effectivePickup.odometerMeters
+        ) {
+          throw new ApplicationException(
+            'RETURN_ODOMETER_INVALID',
+            `Enter a return odometer of at least ${Number(effectivePickup.odometerMeters) / 1000} km. It cannot be lower than the pickup reading.`,
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
+        }
+      }
       await this.assertEvidenceNotWaived(
         transaction,
         booking.id,
@@ -3033,6 +3066,13 @@ export class RentalsService {
             HttpStatus.CONFLICT,
           );
         }
+        if (returned.odometerMeters < effectivePickup.odometerMeters) {
+          throw new ApplicationException(
+            'RETURN_ODOMETER_BELOW_PICKUP',
+            `The return odometer (${Number(returned.odometerMeters) / 1000} km) is below the effective pickup odometer (${Number(effectivePickup.odometerMeters) / 1000} km). Correct the pickup evidence before resolving the physical return.`,
+            HttpStatus.CONFLICT,
+          );
+        }
         if (!booking.policySnapshot || !booking.pricingSnapshot) {
           throw new ApplicationException(
             'BOOKING_SNAPSHOT_MISSING',
@@ -3600,8 +3640,12 @@ export class RentalsService {
       pickupDiscrepancyResponse: incident.pickupDiscrepancyResponses.at(-1) ?? null,
       pickupDiscrepancyResponses: incident.pickupDiscrepancyResponses,
     }));
+    const overdueHandoverRecovery = currentOverdueHandoverRecovery(
+      booking.overdueHandoverRecoveries,
+    );
     return this.toSerializable({
       ...booking,
+      overdueHandoverRecovery,
       workflowCompliance: workflowCompliance(
         booking,
         this.returnConfirmationGraceMinutes,

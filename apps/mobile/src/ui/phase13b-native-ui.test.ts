@@ -7,11 +7,17 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = (path: string) => readFileSync(resolve(root, path), 'utf8');
 
 describe('Phase 13B shared native UI architecture', () => {
-  it('uses shared native date-time controls for booking search and owner availability', () => {
+  it('uses shared booking-time selection and native owner availability controls', () => {
     const discovery = source('features/discovery/DiscoveryScreen.tsx');
+    const bookingSummary = source('features/discovery/BookingDateTimeEditorSummary.tsx');
+    const bookingTime = source('features/discovery/BookingTimeSelector.tsx');
     const vehicles = source('features/vehicles/VehiclesScreen.tsx');
     const dateTime = source('ui/DateTimeField.tsx');
-    expect(discovery.match(/<DateTimeField/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(discovery).toContain('<BookingDateTimeEditorSummary');
+    expect(bookingSummary).toContain('<BookingTimeSelector');
+    expect(bookingTime).toContain('<DateTimeField');
+    expect(bookingTime).toContain('minuteInterval={BOOKING_TIME_INCREMENT_MINUTES}');
+    expect(bookingTime).toContain('The same time applies to pickup and return.');
     expect(vehicles.match(/<DateTimeField/g)?.length).toBeGreaterThanOrEqual(2);
     expect(dateTime).toContain('Keyboard.dismiss()');
     expect(dateTime).toContain('mode="date"');

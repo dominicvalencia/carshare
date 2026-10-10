@@ -208,13 +208,13 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('<TripDateCalendar');
     expect(source).toContain('appliedStart={pickup}');
     expect(source).toContain('appliedEnd={returnAt}');
-    expect(source).toContain('setDraftStart(start)');
-    expect(source).toContain('setDraftEnd(end)');
+    expect(source).toContain('applySharedBookingTime(start, end, selectedMinutes)');
     expect(source).toContain('setPickup(nextStart)');
     expect(source).toContain('setReturnAt(nextEnd)');
     expect(source).toContain('datesExplicit: draftDatesEstablished');
+    expect(source).toContain('timeExplicit: draftTimeEstablished');
     expect(source).toContain('setTripDatesEstablished(datesExplicit)');
-    expect(source).toContain('tripDateSummary(pickup, returnAt)');
+    expect(source).toContain('tripDateTimeSummary(pickup, returnAt)');
     expect(source).toContain('<View style={styles.resultsSearchTextColumn}>');
     expect(source).toContain('style={styles.resultSearchLocation}');
     expect(source).toContain('style={styles.resultsSearchDate}');
@@ -222,18 +222,21 @@ describe('vehicle-detail responsive regression', () => {
       /resultsSearchTextColumn: \{[\s\S]*alignItems: 'flex-start',[\s\S]*minWidth: 0/,
     );
     expect(source).toContain('label="Search"');
-    expect(source).toContain('Select and apply trip dates to search.');
+    expect(source).toContain('Select and apply trip dates and time to search.');
     expect(source).toContain('start: pickup.toISOString()');
     expect(source).toContain('end: returnAt.toISOString()');
   });
 
-  it('keeps Search limited to location and the trip date range', () => {
+  it('keeps Search limited to location and one shared trip date-time editor', () => {
     const searchSheet = source.slice(
       source.indexOf('function LocationSheet'),
       source.indexOf('type FilterProperties'),
     );
     expect(searchSheet).toContain('<TripDateCalendar');
     expect(searchSheet).toContain('Select your trip dates');
+    expect(searchSheet).toContain('Trip dates &amp; time');
+    expect(searchSheet).toContain('Add trip dates and time');
+    expect(searchSheet).toContain('tripDateTimeSummary(draftStart, draftEnd)');
     expect(searchSheet).not.toContain('<DateTimeField');
     expect(searchSheet).not.toContain('Pickup preference');
     expect(searchSheet).not.toContain('Return preference');
@@ -257,12 +260,12 @@ describe('vehicle-detail responsive regression', () => {
     expect(source).toContain('accessibilityLabel="Back to Explore"');
     expect(source).toContain('accessibilityHint="Edit search"');
     expect(source).toContain(
-      'accessibilityLabel={`${activePlace.label}, ${tripDateSummary(pickup, returnAt)}`}',
+      'accessibilityLabel={`${activePlace.label}, ${tripDateTimeSummary(pickup, returnAt)}`}',
     );
     expect(source).toContain('onPress={openExploreSearch}');
     expect(source).toContain('{searchEditor}');
     expect(source).toContain('selected={discoveryLocationEstablished ? activePlace : place}');
-    expect(source).toContain('tripDateSummary(pickup, returnAt)');
+    expect(source).toContain('tripDateTimeSummary(pickup, returnAt)');
   });
 
   it('keeps compact fixed Results controls with a truthful list-owned summary', () => {

@@ -17,17 +17,16 @@ const owner = readFileSync(
 
 describe('B3 booking fulfillment presentation', () => {
   it('supports all start/end selections and same-as-delivery without client fee authority', () => {
-    expect(discovery).toContain('title="Pickup method"');
-    expect(discovery).toContain('Pick up the car');
-    expect(discovery).toContain('Have it delivered');
-    expect(discovery).toContain('title="Return method"');
-    expect(discovery).toContain('Have the owner collect it');
-    expect(discovery).toContain('Pickup only');
-    expect(discovery).toContain('Delivery only');
-    expect(discovery).toContain('Return to owner');
-    expect(discovery).toContain('Owner collection');
-    expect(discovery).toContain('renterPickupAvailable !==');
+    expect(discovery).toContain('Start of rental');
+    expect(discovery).toContain("label: 'Pick up'");
+    expect(discovery).toContain("label: 'Delivery'");
+    expect(discovery).toContain('End of rental');
+    expect(discovery).toContain("label: 'Return it'");
+    expect(discovery).toContain("label: 'Collection'");
+    expect(discovery).toContain('styles.handoverStaticTitle}>Pick up');
+    expect(discovery).toContain('styles.handoverStaticTitle}>Return it');
     expect(discovery).toContain('vehicle.fulfillment.ownerDeliveryAvailable');
+    expect(discovery).toContain('vehicle.fulfillment.ownerCollectionAvailable');
     expect(discovery).toContain('Same as delivery location');
     expect(discovery).not.toContain('insideRadius');
     expect(discovery).not.toContain('serviceable: true');
@@ -35,9 +34,10 @@ describe('B3 booking fulfillment presentation', () => {
 
   it('keeps authoritative fee lines in review and contractual terms in both party details', () => {
     expect(discovery).toContain('quote.lines.map');
-    expect(renter).toContain('Contractual handover');
-    expect(renter).toContain("How you'll receive the car");
-    expect(owner).toContain('Handover request');
+    expect(renter).toContain('Handover details');
+    expect(renter).toContain('label="Start of rental"');
+    expect(renter).toContain('label="End of rental"');
+    expect(owner).toContain('>\n          Handover\n        </Text>');
     expect(owner).toContain('Deliver to renter');
   });
 });

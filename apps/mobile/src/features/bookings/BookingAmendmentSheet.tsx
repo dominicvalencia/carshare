@@ -20,12 +20,17 @@ import type { CarShareLocation } from '../../location/booking-location-provider'
 import { locationLabel } from '../../location/booking-location-provider';
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import { colors, radius, spacing } from '../../theme/tokens';
-import { DateTimeField } from '../../ui/DateTimeField';
 import { dateTimeLabel, money, timeLabel } from '../../ui/format';
 import { BackControl, Button, Card, Chip, Icon, Screen, StateView } from '../../ui/primitives';
 import type { BookingView } from './MyBookingsScreen';
 import { TripDateCalendar } from '../discovery/TripDateCalendar';
-import { tripDateSummary } from '../discovery/trip-date-policy';
+import { BookingDateTimeEditorSummary } from '../discovery/BookingDateTimeEditorSummary';
+import {
+  applySharedBookingTime,
+  isBookingTimeAligned,
+  isBookingTimeSlotSelectable,
+  tripDateSummary,
+} from '../discovery/trip-date-policy';
 import {
   amendmentErrorMessage,
   amendmentPreviewFinancialSummary,
@@ -52,7 +57,7 @@ export function BookingAmendmentSheet({
   onClose,
   visible,
 }: {
-  readonly booking: BookingView;
+  readonly booking: Omit<BookingView, 'pricing'>;
   readonly onClose: () => void;
   readonly visible: boolean;
 }) {
@@ -334,6 +339,8 @@ export function BookingAmendmentSheet({
           ) : stage === 'EDIT' ? (
             <Screen
               {...adaptiveScreen}
+              compactNestedHeader
+              contentTopPadding={spacing.sm}
               leading={<BackControl label="Close" onPress={close} />}
               eyebrow="Booking change"
               title={active ? 'Extend Trip' : 'Change Booking'}
@@ -363,13 +370,13 @@ export function BookingAmendmentSheet({
                   />
                 )}
                 {!active && (
-                  <>
+                  <Card style={styles.handoverCard}>
                     <FulfillmentControl
                       allowed={booking.fulfillment.allowedStartMethods}
                       changeable={booking.fulfillment.startFulfillmentChangeable}
                       changed={startMethod !== booking.fulfillment.startMethod}
                       kind="start"
-                      label="Receive the car"
+                      label="Start of rental"
                       value={startMethod}
                       onChange={setStartMethod}
                     />
@@ -384,12 +391,13 @@ export function BookingAmendmentSheet({
                         variant="secondary"
                       />
                     )}
+                    <View style={styles.handoverDivider} />
                     <FulfillmentControl
                       allowed={booking.fulfillment.allowedEndMethods}
                       changeable={booking.fulfillment.endFulfillmentChangeable}
                       changed={endMethod !== booking.fulfillment.endMethod}
                       kind="end"
-                      label="Return the car"
+                      label="End of rental"
                       value={endMethod}
                       onChange={setEndMethod}
                     />
@@ -404,7 +412,7 @@ export function BookingAmendmentSheet({
                         variant="secondary"
                       />
                     )}
-                  </>
+                  </Card>
                 )}
                 {previewMutation.isError && (
                   <InlineError message={amendmentErrorMessage(previewMutation.error)} />
@@ -578,6 +586,11 @@ function DateRangeEditor({
   readonly onSave: () => void;
 }) {
   const valid = returnAt > pickup;
+  const [timeValid, setTimeValid] = useState(
+    () =>
+      isBookingTimeAligned(pickup) &&
+      isBookingTimeSlotSelectable(pickup, pickup.getHours() * 60 + pickup.getMinutes()),
+  );
   if (calendarOpen)
     return (
       <Screen
@@ -591,11 +604,19 @@ function DateRangeEditor({
           preselect
           showClear={false}
           onApply={(start, end) => {
-            const nextPickup = new Date(start);
-            const nextReturn = new Date(end);
-            nextPickup.setHours(pickup.getHours(), pickup.getMinutes(), 0, 0);
-            nextReturn.setHours(returnAt.getHours(), returnAt.getMinutes(), 0, 0);
-            onChange({ pickup: nextPickup, returnAt: nextReturn });
+            const shared = applySharedBookingTime(
+              start,
+              end,
+              pickup.getHours() * 60 + pickup.getMinutes(),
+            );
+            onChange({ pickup: shared.start, returnAt: shared.end });
+            setTimeValid(
+              isBookingTimeAligned(shared.start) &&
+                isBookingTimeSlotSelectable(
+                  shared.start,
+                  shared.start.getHours() * 60 + shared.start.getMinutes(),
+                ),
+            );
             onCloseCalendar();
           }}
           onClear={() => undefined}
@@ -610,38 +631,27 @@ function DateRangeEditor({
       subtitle="Choose the proposed pickup and return. Your booking stays unchanged until the change is approved."
     >
       <View style={styles.dateEditorBody}>
-        <View style={styles.tripDateRange}>
-          <View style={styles.dateControlCopy}>
-            <Text style={styles.editorLabel}>Trip dates</Text>
-            <Text accessibilityLiveRegion="polite" style={styles.editorValue}>
-              {tripDateSummary(pickup, returnAt)}
-            </Text>
-          </View>
-          <Button compact label="Change dates" onPress={onOpenCalendar} variant="secondary" />
-        </View>
-        <View style={styles.dateGrid}>
-          <DateTimeField
-            dismissLabel="Close"
-            label="Pickup time"
-            mode="time"
-            value={pickup}
-            onChange={(value) => onChange({ pickup: value, returnAt })}
-          />
-          <DateTimeField
-            dismissLabel="Close"
-            label="Return time"
-            mode="time"
-            value={returnAt}
-            onChange={(value) => onChange({ pickup, returnAt: value })}
-          />
-        </View>
+        <BookingDateTimeEditorSummary
+          end={returnAt}
+          onChangeDates={onOpenCalendar}
+          onChangeTime={(value) => {
+            const shared = applySharedBookingTime(
+              pickup,
+              returnAt,
+              value.getHours() * 60 + value.getMinutes(),
+            );
+            onChange({ pickup: shared.start, returnAt: shared.end });
+          }}
+          onValidityChange={setTimeValid}
+          start={pickup}
+        />
         {!valid && (
           <Text accessibilityRole="alert" style={styles.errorText}>
             Return must be after pickup.
           </Text>
         )}
         <View style={styles.bottomAction}>
-          <Button disabled={!valid} label="Done" onPress={onSave} />
+          <Button disabled={!valid || !timeValid} label="Done" onPress={onSave} />
         </View>
       </View>
     </Screen>
@@ -676,10 +686,11 @@ function FulfillmentControl(
   if (!showSelector)
     return (
       <View
+        accessible
         accessibilityLabel={`${props.label}. ${methodLabel(props.value)}`}
         style={styles.fulfillmentSummary}
       >
-        <Text style={styles.summaryLabel}>{props.label}</Text>
+        <Text style={styles.fulfillmentLabel}>{props.label}</Text>
         <View style={styles.summaryValueRow}>
           <Text style={styles.fulfillmentValue}>{methodLabel(props.value)}</Text>
           {props.changed && <Text style={styles.changed}>Changed</Text>}
@@ -689,7 +700,7 @@ function FulfillmentControl(
   return (
     <View style={styles.fulfillmentGroup}>
       <View style={styles.dateLabelRow}>
-        <Text accessibilityRole="header" style={styles.summaryLabel}>
+        <Text accessibilityRole="header" style={styles.fulfillmentLabel}>
           {props.label}
         </Text>
         {props.changed && <Text style={styles.changed}>Changed</Text>}
@@ -731,23 +742,20 @@ function DateRangeControl({
   return (
     <Pressable
       accessibilityHint="Opens the pickup and return date editor"
-      accessibilityLabel={`Dates. Pickup ${dateTimeLabel(pickup.toISOString())}. Return ${dateTimeLabel(returnAt.toISOString())}${changed ? '. Changed' : ''}`}
+      accessibilityLabel={`Dates and time. ${tripDateSummary(pickup, returnAt, { alwaysShowYear: true })}. Shared handover time ${timeLabel(pickup)}${changed ? '. Changed' : ''}`}
       accessibilityRole="button"
       onPress={onPress}
     >
-      <Card>
+      <Card style={styles.dateTimeCard}>
         <View style={styles.dateLabelRow}>
-          <Text style={styles.dateSectionTitle}>Dates</Text>
+          <Text style={styles.dateSectionTitle}>Dates &amp; time</Text>
           {changed && <Text style={styles.changed}>Changed</Text>}
         </View>
         <Text style={styles.dateRangePrimary}>
-          {tripDateSummary(pickup, returnAt, { alwaysShowYear: true })}
-        </Text>
-        <Text style={styles.dateRangeSecondary}>
-          Pickup {timeLabel(pickup)} · Return {timeLabel(returnAt)}
+          {tripDateSummary(pickup, returnAt, { alwaysShowYear: true })} · {timeLabel(pickup)}
         </Text>
         <View style={styles.changeDatesAction}>
-          <Text style={styles.changeDatesText}>Change dates</Text>
+          <Text style={styles.changeDatesText}>Change dates &amp; time</Text>
           <Icon color={colors.primary} name="chevron-forward" size={20} />
         </View>
       </Card>
@@ -1070,14 +1078,14 @@ function Comparison({
           <Text style={styles.summaryLabel}>Handover</Text>
           {startChanged && (
             <TransitionRow
-              label="Receive the car"
+              label="Start of rental"
               current={methodLabel(current.startMethod)}
               proposed={methodLabel(proposed.startMethod)}
             />
           )}
           {endChanged && (
             <TransitionRow
-              label="Return the car"
+              label="End of rental"
               current={methodLabel(current.endMethod)}
               proposed={methodLabel(proposed.endMethod)}
             />
@@ -1222,7 +1230,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xxs,
   },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   changeDatesAction: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -1241,8 +1249,14 @@ const styles = StyleSheet.create({
   dateControlCopy: { flex: 1, gap: spacing.xs },
   dateLabel: { color: colors.subtleText, fontSize: 14, fontWeight: '700' },
   dateLabelRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
-  dateSectionTitle: { color: colors.ink, fontSize: 16, fontWeight: '900' },
-  dateRangePrimary: { color: colors.ink, fontSize: 18, fontWeight: '900', marginTop: spacing.xs },
+  dateSectionTitle: {
+    color: colors.subtleText,
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  dateTimeCard: { paddingVertical: spacing.sm },
+  dateRangePrimary: { color: colors.ink, fontSize: 17, fontWeight: '900', marginTop: spacing.xs },
   dateRangeSecondary: {
     color: colors.subtleText,
     fontSize: 13,
@@ -1266,17 +1280,23 @@ const styles = StyleSheet.create({
   editorLabel: { color: colors.subtleText, fontSize: 14, fontWeight: '700' },
   editorValue: { color: colors.ink, fontSize: 20, fontWeight: '800', marginTop: spacing.xs },
   disabled: { opacity: 0.4 },
-  editBody: { gap: spacing.md, paddingBottom: spacing.sm },
+  editBody: { gap: spacing.sm, paddingBottom: spacing.sm },
   error: { borderColor: colors.danger },
   errorText: { color: colors.danger, fontSize: 16 },
-  fulfillmentGroup: { gap: spacing.sm, paddingVertical: spacing.xs },
+  fulfillmentGroup: { gap: spacing.xs, paddingVertical: spacing.xxs },
+  fulfillmentLabel: {
+    color: colors.subtleText,
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
   fulfillmentSummary: {
-    borderBottomColor: colors.border,
-    borderBottomWidth: StyleSheet.hairlineWidth,
     gap: spacing.xs,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.xxs,
   },
   fulfillmentValue: { color: colors.ink, fontSize: 17, fontWeight: '800' },
+  handoverCard: { gap: spacing.xs, paddingVertical: spacing.sm },
+  handoverDivider: { backgroundColor: colors.border, height: StyleSheet.hairlineWidth },
   heading: {
     color: colors.ink,
     fontSize: 19,
@@ -1330,5 +1350,4 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     width: '100%',
   },
-  tripDateRange: { alignItems: 'center', flexDirection: 'row', gap: spacing.md },
 });

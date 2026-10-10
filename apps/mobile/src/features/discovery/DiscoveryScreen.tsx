@@ -45,7 +45,6 @@ import {
 } from '../../location/location-provider';
 import type { RenterTabParamList, RootStackParamList } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
-import { DateTimeField } from '../../ui/DateTimeField';
 import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
 import { VehicleImage } from '../../ui/VehicleImage';
 import {
@@ -85,7 +84,12 @@ import {
 } from './duration-discount-presentation';
 import { DiscoveryMap, type MapSearchArea } from './DiscoveryMap';
 import { TripDateCalendar } from './TripDateCalendar';
-import { tripDateSummary } from './trip-date-policy';
+import { BookingDateTimeEditorSummary } from './BookingDateTimeEditorSummary';
+import {
+  applySharedBookingTime,
+  nextBookingTimeSlot,
+  tripDateTimeSummary,
+} from './trip-date-policy';
 import { formatResultSummary, uniqueVehicleCount } from './result-summary';
 import {
   areaRailTitle,
@@ -295,6 +299,10 @@ interface QuoteFulfillmentInput {
   readonly collectionDestination?: FulfillmentDestination;
   readonly collectionSameAsDelivery: boolean;
 }
+interface QuoteRequestInput extends QuoteFulfillmentInput {
+  readonly pickup: Date;
+  readonly returnAt: Date;
+}
 interface PaymentSetupResult {
   readonly booking: BookingView;
   readonly customerActionUrl: string | null;
@@ -325,6 +333,7 @@ type SearchDraft = {
   readonly start: Date;
   readonly end: Date;
   readonly datesExplicit: boolean;
+  readonly timeExplicit: boolean;
 };
 
 const locations = developmentLocationSuggestions;
@@ -373,10 +382,11 @@ async function deviceDiscoveryLocation(): Promise<{
   }
 }
 
-function futureDate(days: number, hour = 9) {
+function futureDate(days: number) {
   const value = new Date();
   value.setDate(value.getDate() + days);
-  value.setHours(hour, 0, 0, 0);
+  const time = nextBookingTimeSlot();
+  value.setHours(Math.floor(time / 60), time % 60, 0, 0);
   return value;
 }
 
@@ -1148,11 +1158,15 @@ export function DiscoveryScreen({
     },
   });
   const quote = useMutation({
-    mutationFn: (fulfillment: QuoteFulfillmentInput) =>
+    mutationFn: ({
+      pickup: quotePickup,
+      returnAt: quoteReturnAt,
+      ...fulfillment
+    }: QuoteRequestInput) =>
       apiClient.request<Quote>(`/vehicles/${vehicleId}/quotes`, {
         body: JSON.stringify({
-          start: pickup.toISOString(),
-          end: returnAt.toISOString(),
+          start: quotePickup.toISOString(),
+          end: quoteReturnAt.toISOString(),
           ...fulfillment,
         }),
         method: 'POST',
@@ -1252,7 +1266,7 @@ export function DiscoveryScreen({
     const nextStart = draft?.start ?? pickup;
     const nextEnd = draft?.end ?? returnAt;
     if (nextEnd.getTime() <= nextStart.getTime()) return;
-    const datesExplicit = draft?.datesExplicit ?? (tripDatesEstablished || exactTimesSelected);
+    const datesExplicit = draft?.datesExplicit ?? (tripDatesEstablished && exactTimesSelected);
     if (user?.roles.includes('RENTER')) {
       void apiClient
         .request('/me/discovery-history/searches', {
@@ -1291,6 +1305,7 @@ export function DiscoveryScreen({
       void discoveryLocationStorage.set(discoveryLocationAccountId, nextPlace);
     else void discoveryLocationStorage.clear(discoveryLocationAccountId);
     setTripDatesEstablished(datesExplicit);
+    setExactTimesSelected(draft?.timeExplicit ?? exactTimesSelected);
     resetResultsViewport();
     setMode('results');
   }
@@ -1581,6 +1596,7 @@ export function DiscoveryScreen({
       appliedEnd={returnAt}
       appliedStart={pickup}
       datesEstablished={tripDatesEstablished}
+      timeEstablished={exactTimesSelected}
       error={locationError}
       initialSection={searchSheetInitialSection}
       locationEstablished={discoveryLocationEstablished}
@@ -1628,9 +1644,9 @@ export function DiscoveryScreen({
             {resolvingDefaultLocation
               ? 'Using your location for Explore'
               : discoveryLocationEstablished
-                ? tripDatesEstablished
-                  ? tripDateSummary(pickup, returnAt)
-                  : 'Add trip dates'
+                ? tripDatesEstablished && exactTimesSelected
+                  ? tripDateTimeSummary(pickup, returnAt)
+                  : 'Add trip dates and time'
                 : 'Search destinations, cities or places'}
           </Text>
         </View>
@@ -1707,7 +1723,7 @@ export function DiscoveryScreen({
         error={detail.error}
         pickup={pickup}
         returnAt={returnAt}
-        datesExplicit={tripDatesEstablished || exactTimesSelected}
+        datesExplicit={tripDatesEstablished && exactTimesSelected}
         setPickup={(value) => {
           setPickup(value);
           setExactTimesSelected(true);
@@ -1749,7 +1765,7 @@ export function DiscoveryScreen({
           </Pressable>
           <Pressable
             accessibilityHint="Edit search"
-            accessibilityLabel={`${activePlace.label}, ${tripDateSummary(pickup, returnAt)}`}
+            accessibilityLabel={`${activePlace.label}, ${tripDateTimeSummary(pickup, returnAt)}`}
             accessibilityRole="button"
             onPress={openExploreSearch}
             style={styles.resultsSearchSummary}
@@ -1760,7 +1776,7 @@ export function DiscoveryScreen({
                 {activePlace.label}
               </Text>
               <Text numberOfLines={1} style={styles.resultsSearchDate}>
-                {tripDateSummary(pickup, returnAt)}
+                {tripDateTimeSummary(pickup, returnAt)}
               </Text>
             </View>
           </Pressable>
@@ -1978,7 +1994,7 @@ export function DiscoveryScreen({
                         )}
                         ListEmptyComponent={
                           <ExploreEmptyState
-                            datesSelected={tripDatesEstablished || exactTimesSelected}
+                            datesSelected={tripDatesEstablished && exactTimesSelected}
                             filtersActive={resultsFilterCount > 0}
                             locationSource={discoveryLocationSource}
                             onChangeLocation={openExploreLocation}
@@ -2170,14 +2186,16 @@ export function DiscoveryScreen({
             </Pressable>
             <View style={styles.divider} />
             <Pressable
-              accessibilityLabel={`Trip dates, ${tripDateSummary(pickup, returnAt)}. Change dates`}
+              accessibilityLabel={`Trip dates and time, ${tripDateTimeSummary(pickup, returnAt)}. Change dates and time`}
               accessibilityRole="button"
               onPress={openExploreDates}
               style={styles.searchCollapsedCard}
             >
               <View>
                 <Text style={styles.searchCollapsedLabel}>Trip dates</Text>
-                <Text style={styles.searchCollapsedValue}>{tripDateSummary(pickup, returnAt)}</Text>
+                <Text style={styles.searchCollapsedValue}>
+                  {tripDateTimeSummary(pickup, returnAt)}
+                </Text>
               </View>
               <Text style={styles.searchEdit}>Change</Text>
             </Pressable>
@@ -2242,7 +2260,7 @@ export function DiscoveryScreen({
             />
           ) : homeExploreItemCount === 0 ? (
             <ExploreEmptyState
-              datesSelected={tripDatesEstablished || exactTimesSelected}
+              datesSelected={tripDatesEstablished && exactTimesSelected}
               filtersActive={resultsFilterCount > 0}
               locationSource={discoveryLocationSource}
               onChangeLocation={openExploreLocation}
@@ -2600,7 +2618,7 @@ function VehicleView(properties: {
   readonly setReturnAt: (value: Date) => void;
   readonly onBack: () => void;
   readonly onFavorite: () => void;
-  readonly quote: ReturnType<typeof useMutation<Quote, Error, QuoteFulfillmentInput>>;
+  readonly quote: ReturnType<typeof useMutation<Quote, Error, QuoteRequestInput>>;
   readonly reserve: ReturnType<typeof useMutation<BookingView, Error, string>>;
   readonly continueBooking: ReturnType<typeof useMutation<PaymentSetupResult, Error, string>>;
   readonly mode: ViewMode;
@@ -2608,7 +2626,7 @@ function VehicleView(properties: {
 }) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const { vehicle } = properties;
-  const { width: viewportWidth } = useWindowDimensions();
+  const { height: viewportHeight, width: viewportWidth } = useWindowDimensions();
   const { bottom: bottomSafeArea, top: topSafeArea } = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
   const heroGalleryRef = useRef<FlatList<VehicleGalleryItem>>(null);
@@ -2644,13 +2662,44 @@ function VehicleView(properties: {
   const [draftPickup, setDraftPickup] = useState(properties.pickup);
   const [draftReturnAt, setDraftReturnAt] = useState(properties.returnAt);
   const [draftDatesExplicit, setDraftDatesExplicit] = useState(properties.datesExplicit);
+  const [draftTimeExplicit, setDraftTimeExplicit] = useState(properties.datesExplicit);
   const [draftStartMethod, setDraftStartMethod] = useState(startMethod);
   const [draftEndMethod, setDraftEndMethod] = useState(endMethod);
   const [draftSameAsDelivery, setDraftSameAsDelivery] = useState(sameAsDelivery);
   const [draftDeliveryLocation, setDraftDeliveryLocation] = useState<CarShareLocation>();
   const [draftCollectionLocation, setDraftCollectionLocation] = useState<CarShareLocation>();
+  const [checkPriceAfterTripSave, setCheckPriceAfterTripSave] = useState(false);
+  const [tripMeasuredContentHeight, setTripMeasuredContentHeight] = useState(0);
+  const [tripMeasuredHeaderHeight, setTripMeasuredHeaderHeight] = useState(0);
+  const [tripCalendarContentHeight, setTripCalendarContentHeight] = useState(0);
+  const [tripCalendarHeaderHeight, setTripCalendarHeaderHeight] = useState(0);
   const [picker, setPicker] = useState<'delivery' | 'collection' | null>(null);
   const quoteData = properties.quote.data;
+  const tripMaximumHeight = viewportHeight - Math.max(topSafeArea, spacing.md);
+  const tripMeasuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight: tripMeasuredContentHeight,
+        headerHeight: tripMeasuredHeaderHeight,
+        maxSafeViewportHeight: tripMaximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [tripMaximumHeight, tripMeasuredContentHeight, tripMeasuredHeaderHeight],
+  );
+  const tripSheetHeight = useSharedValue(Math.min(680, tripMaximumHeight));
+  const tripSheetAnimatedStyle = useAnimatedStyle(() => ({ height: tripSheetHeight.value }));
+  const tripCalendarLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight: tripCalendarContentHeight,
+        headerHeight: tripCalendarHeaderHeight,
+        maxSafeViewportHeight: tripMaximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [tripCalendarContentHeight, tripCalendarHeaderHeight, tripMaximumHeight],
+  );
+  const tripCalendarHeight = useSharedValue(Math.min(720, tripMaximumHeight));
+  const tripCalendarAnimatedStyle = useAnimatedStyle(() => ({ height: tripCalendarHeight.value }));
   const hostSummary = useQuery({
     enabled: Boolean(vehicle?.owner.publicReference),
     queryKey: ['public-host', vehicle?.owner.publicReference],
@@ -2703,6 +2752,33 @@ function VehicleView(properties: {
     );
     return () => clearTimeout(timer);
   }, [quoteData]);
+  useEffect(() => {
+    if (!tripOpen || tripMeasuredContentHeight <= 0 || tripMeasuredHeaderHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    tripSheetHeight.value = withTiming(tripMeasuredLayout.height, { duration: 220 });
+  }, [
+    tripMeasuredContentHeight,
+    tripMeasuredHeaderHeight,
+    tripMeasuredLayout.height,
+    tripOpen,
+    tripSheetHeight,
+    viewportHeight,
+  ]);
+  useEffect(() => {
+    if (!tripCalendarOpen || tripCalendarContentHeight <= 0 || tripCalendarHeaderHeight <= 0)
+      return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    tripCalendarHeight.value = withTiming(tripCalendarLayout.height, { duration: 220 });
+  }, [
+    tripCalendarContentHeight,
+    tripCalendarHeaderHeight,
+    tripCalendarHeight,
+    tripCalendarLayout.height,
+    tripCalendarOpen,
+    viewportHeight,
+  ]);
 
   const selectGalleryPage = (index: number) => {
     selectedGalleryIndex.current = index;
@@ -2773,6 +2849,21 @@ function VehicleView(properties: {
     endMethod,
     startMethod,
   });
+  const draftFulfillmentInput = (): QuoteFulfillmentInput => ({
+    collectionSameAsDelivery:
+      draftStartMethod === 'OWNER_DELIVERY' &&
+      draftEndMethod === 'OWNER_COLLECTION' &&
+      draftSameAsDelivery,
+    ...(draftEndMethod === 'OWNER_COLLECTION' &&
+    !(draftStartMethod === 'OWNER_DELIVERY' && draftSameAsDelivery)
+      ? { collectionDestination: destination(draftCollectionLocation!) }
+      : {}),
+    ...(draftStartMethod === 'OWNER_DELIVERY'
+      ? { deliveryDestination: destination(draftDeliveryLocation!) }
+      : {}),
+    endMethod: draftEndMethod,
+    startMethod: draftStartMethod,
+  });
   const fulfillmentValid =
     (startMethod !== 'OWNER_DELIVERY' || Boolean(deliveryLocation)) &&
     (endMethod !== 'OWNER_COLLECTION' ||
@@ -2837,7 +2928,11 @@ function VehicleView(properties: {
   const requestCurrentQuote = () => {
     properties.reserve.reset();
     properties.continueBooking.reset();
-    properties.quote.mutate(fulfillmentInput());
+    properties.quote.mutate({
+      ...fulfillmentInput(),
+      pickup: properties.pickup,
+      returnAt: properties.returnAt,
+    });
   };
   const resetUnheldQuote = () => {
     if (properties.reserve.data) return;
@@ -2845,10 +2940,14 @@ function VehicleView(properties: {
     properties.reserve.reset();
     properties.continueBooking.reset();
   };
-  const openTripConfiguration = () => {
+  const optionalHandoverAvailable =
+    vehicle.fulfillment.ownerDeliveryAvailable ||
+    Boolean(vehicle.fulfillment.ownerCollectionAvailable);
+  const openTripConfiguration = (checkPriceAfterSave = false) => {
     setDraftPickup(properties.pickup);
     setDraftReturnAt(properties.returnAt);
     setDraftDatesExplicit(properties.datesExplicit);
+    setDraftTimeExplicit(properties.datesExplicit);
     setDraftStartMethod(startMethod);
     setDraftEndMethod(endMethod);
     setDraftSameAsDelivery(sameAsDelivery);
@@ -2856,11 +2955,13 @@ function VehicleView(properties: {
     setDraftCollectionLocation(collectionLocation);
     setTripCalendarOpen(false);
     setPicker(null);
+    setCheckPriceAfterTripSave(checkPriceAfterSave);
     setTripOpen(true);
   };
   const closeTripConfiguration = () => {
     setPicker(null);
     setTripCalendarOpen(false);
+    setCheckPriceAfterTripSave(false);
     setTripOpen(false);
   };
   const draftFulfillmentValid =
@@ -2868,7 +2969,8 @@ function VehicleView(properties: {
     (draftEndMethod !== 'OWNER_COLLECTION' ||
       (draftStartMethod === 'OWNER_DELIVERY' && draftSameAsDelivery) ||
       Boolean(draftCollectionLocation));
-  const draftTripValid = draftDatesExplicit && draftReturnAt > draftPickup && draftFulfillmentValid;
+  const draftTripValid =
+    draftDatesExplicit && draftTimeExplicit && draftReturnAt > draftPickup && draftFulfillmentValid;
   const draftChargeableDays = chargeableDays(draftPickup, draftReturnAt);
   const draftDiscountMessage = draftDatesExplicit
     ? durationDiscountMessage(draftChargeableDays, durationDiscounts)
@@ -2892,6 +2994,15 @@ function VehicleView(properties: {
     setSameAsDelivery(draftSameAsDelivery);
     setDeliveryLocation(draftDeliveryLocation);
     setCollectionLocation(draftCollectionLocation);
+    if (checkPriceAfterTripSave) {
+      properties.reserve.reset();
+      properties.continueBooking.reset();
+      properties.quote.mutate({
+        ...draftFulfillmentInput(),
+        pickup: draftPickup,
+        returnAt: draftReturnAt,
+      });
+    }
     closeTripConfiguration();
   };
   const bookingBarAction = properties.reserve.data
@@ -2903,7 +3014,11 @@ function VehicleView(properties: {
     : properties.quote.isPending
       ? { disabled: true, label: 'Checking price…', onPress: requestCurrentQuote }
       : !properties.datesExplicit
-        ? { disabled: false, label: 'Select trip', onPress: openTripConfiguration }
+        ? {
+            disabled: false,
+            label: 'Select trip',
+            onPress: () => openTripConfiguration(false),
+          }
         : properties.reserve.isPending
           ? {
               disabled: true,
@@ -2918,23 +3033,23 @@ function VehicleView(properties: {
               }
             : {
                 disabled: !tripValid,
-                label: quoteNeedsRefresh ? 'Check current price' : 'Check price',
-                onPress: requestCurrentQuote,
+                label: 'Check price',
+                onPress: optionalHandoverAvailable
+                  ? () => openTripConfiguration(true)
+                  : requestCurrentQuote,
               };
   const bookingBarPrice =
     (validQuote || properties.reserve.isPending || properties.reserve.data) && quoteData
       ? {
-          context: 'Authoritative quoted total',
+          context: 'Total',
           label: money(quoteData.totalMinor, quoteData.currency),
-          suffix: 'total',
         }
       : {
-          context: 'Advisory daily price',
-          label: `From ${money(vehicle.pricing.dailyRateMinor, vehicle.pricing.currency)}`,
-          suffix: 'per day',
+          context: 'Daily price',
+          label: money(vehicle.pricing.dailyRateMinor, vehicle.pricing.currency),
         };
   const bookingBarTripContext = properties.datesExplicit
-    ? tripDateSummary(properties.pickup, properties.returnAt)
+    ? tripDateTimeSummary(properties.pickup, properties.returnAt)
     : 'Add dates';
   const revealBookingHold = (
     layout: LayoutChangeEvent['nativeEvent']['layout'],
@@ -2957,10 +3072,10 @@ function VehicleView(properties: {
   const bookingBar = (
     <View style={[styles.bookingBar, { paddingBottom: Math.max(bottomSafeArea, spacing.sm) }]}>
       <Pressable
-        accessibilityLabel={`${bookingBarPrice.label} ${bookingBarPrice.suffix}. ${bookingBarTripContext}. Edit trip`}
+        accessibilityLabel={`${bookingBarPrice.context}, ${bookingBarPrice.label}. ${bookingBarTripContext}. Edit trip`}
         accessibilityRole="button"
         disabled={Boolean(properties.reserve.data)}
-        onPress={openTripConfiguration}
+        onPress={() => openTripConfiguration(false)}
         style={styles.bookingBarPrice}
       >
         <Text accessible={false} style={styles.bookingBarContext}>
@@ -2970,7 +3085,7 @@ function VehicleView(properties: {
           {bookingBarPrice.label}
         </Text>
         <Text accessible={false} style={styles.bookingBarSuffix}>
-          {bookingBarPrice.suffix} · {bookingBarTripContext}
+          {bookingBarTripContext}
         </Text>
       </Pressable>
       <View style={styles.bookingBarAction}>
@@ -3207,218 +3322,280 @@ function VehicleView(properties: {
       <Modal
         animationType="slide"
         onRequestClose={closeTripConfiguration}
-        presentationStyle="pageSheet"
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
+        transparent
         visible={tripOpen}
       >
-        <Screen
-          bottomAccessory={
-            <View
-              style={[styles.tripSheetBar, { paddingBottom: Math.max(bottomSafeArea, spacing.sm) }]}
-            >
-              <View accessible accessibilityLabel="Advisory daily price" style={styles.flex}>
-                <Text style={styles.bookingBarContext}>Advisory daily price</Text>
-                <Text style={styles.bookingBarAmount}>
-                  {money(vehicle.pricing.dailyRateMinor, vehicle.pricing.currency)} / day
-                </Text>
-              </View>
-              <View style={styles.bookingBarAction}>
-                <Button disabled={!draftTripValid} label="Save" onPress={saveTripConfiguration} />
-              </View>
-            </View>
-          }
-          leading={<BackControl label="Close" onPress={closeTripConfiguration} />}
-          title="Your trip"
-        >
-          <Text style={styles.sectionCopy}>
-            Review your dates, times, and handover details. Saving does not request a price.
-          </Text>
-          <View style={styles.tripDateRange}>
-            <View style={styles.flex}>
-              <Text style={styles.smallLabel}>Trip dates</Text>
-              <Text style={styles.tripDateRangeValue}>
-                {draftDatesExplicit ? tripDateSummary(draftPickup, draftReturnAt) : 'Add dates'}
-              </Text>
-            </View>
-            <Button
-              compact
-              label={draftDatesExplicit ? 'Change dates' : 'Add dates'}
-              onPress={() => setTripCalendarOpen(true)}
-              variant="secondary"
-            />
-          </View>
-          {durationDiscounts.length > 0 && draftDiscountMessage && (
-            <View style={styles.tripDurationHint}>
-              <Icon color={colors.primaryDark} name="sparkles-outline" size={17} />
-              <View style={styles.flex}>
-                {draftDatesExplicit && (
-                  <Text style={styles.tripDurationDays}>
-                    {draftChargeableDays} chargeable day{draftChargeableDays === 1 ? '' : 's'}
-                  </Text>
-                )}
-                <Text style={styles.tripDurationCopy}>{draftDiscountMessage}</Text>
-                <Text style={styles.tripDurationAdvisory}>
-                  Published policy only. Check price for the authoritative discount and total.
-                </Text>
-              </View>
-            </View>
-          )}
-          <View style={styles.dateGrid}>
-            <DateTimeField
-              dismissLabel="Close"
-              label="Pickup time"
-              mode="time"
-              value={draftPickup}
-              onChange={setDraftPickup}
-            />
-            <DateTimeField
-              dismissLabel="Close"
-              label="Return time"
-              mode="time"
-              value={draftReturnAt}
-              onChange={setDraftReturnAt}
-            />
-          </View>
-          <Modal
-            animationType="slide"
-            onRequestClose={() => setTripCalendarOpen(false)}
-            presentationStyle="pageSheet"
-            visible={tripCalendarOpen}
+        <View style={styles.tripSheetRoot}>
+          <View style={styles.tripSheetBackdrop} />
+          <Reanimated.View
+            accessibilityViewIsModal
+            style={[styles.tripSheetSurface, tripSheetAnimatedStyle]}
           >
             <Screen
-              leading={<BackControl label="Close" onPress={() => setTripCalendarOpen(false)} />}
-              title="Trip dates"
+              bottomAccessory={
+                <View
+                  style={[
+                    styles.tripSheetBar,
+                    { paddingBottom: Math.max(bottomSafeArea, spacing.sm) },
+                  ]}
+                >
+                  <View accessible accessibilityLabel="Daily price" style={styles.flex}>
+                    <Text style={styles.bookingBarContext}>Daily price</Text>
+                    <Text style={styles.bookingBarAmount}>
+                      {money(vehicle.pricing.dailyRateMinor, vehicle.pricing.currency)}
+                    </Text>
+                  </View>
+                  <View style={styles.bookingBarAction}>
+                    <Button
+                      disabled={!draftTripValid || properties.quote.isPending}
+                      label={
+                        checkPriceAfterTripSave
+                          ? properties.quote.isPending
+                            ? 'Checking price…'
+                            : 'Check price'
+                          : 'Save'
+                      }
+                      onPress={saveTripConfiguration}
+                    />
+                  </View>
+                </View>
+              }
+              contentBottomPadding={spacing.sm}
+              contentGrows={false}
+              contentTopPadding={spacing.xxs}
+              measureBottomAccessory
+              onContentSizeChange={(_width, height) => setTripMeasuredContentHeight(height)}
+              onHeaderLayout={(event) =>
+                setTripMeasuredHeaderHeight(event.nativeEvent.layout.height)
+              }
+              safeTop={false}
+              scrollEnabled={tripMeasuredLayout.scrollEnabled}
+              leading={<BackControl label="Close" onPress={closeTripConfiguration} />}
+              title="Your trip"
             >
-              <TripDateCalendar
-                appliedEnd={draftReturnAt}
-                appliedStart={draftPickup}
-                preselect={draftDatesExplicit}
-                onApply={(start, end) => {
-                  const nextPickup = new Date(start);
-                  const nextReturnAt = new Date(end);
-                  nextPickup.setHours(draftPickup.getHours(), draftPickup.getMinutes(), 0, 0);
-                  nextReturnAt.setHours(draftReturnAt.getHours(), draftReturnAt.getMinutes(), 0, 0);
-                  setDraftPickup(nextPickup);
-                  setDraftReturnAt(nextReturnAt);
-                  setDraftDatesExplicit(true);
-                  setTripCalendarOpen(false);
-                }}
-                onClear={() => {
-                  setDraftDatesExplicit(false);
-                  setTripCalendarOpen(false);
-                }}
-              />
+              <Text style={styles.sectionCopy}>Review your dates, time, and handover details.</Text>
+              <View style={styles.tripContentSection}>
+                <Text accessibilityRole="header" style={styles.tripSectionTitle}>
+                  When?
+                </Text>
+                <BookingDateTimeEditorSummary
+                  end={draftReturnAt}
+                  onChangeDates={() => setTripCalendarOpen(true)}
+                  onChangeTime={(value) => {
+                    const shared = applySharedBookingTime(
+                      draftPickup,
+                      draftReturnAt,
+                      value.getHours() * 60 + value.getMinutes(),
+                    );
+                    setDraftPickup(shared.start);
+                    setDraftReturnAt(shared.end);
+                    setDraftTimeExplicit(true);
+                  }}
+                  start={draftPickup}
+                  timeEstablished={draftDatesExplicit && draftTimeExplicit}
+                />
+              </View>
+              {durationDiscounts.length > 0 && draftDiscountMessage && (
+                <View style={styles.tripDurationHint}>
+                  <Icon color={colors.primaryDark} name="sparkles-outline" size={17} />
+                  <View style={styles.flex}>
+                    {draftDatesExplicit && (
+                      <Text style={styles.tripDurationDays}>
+                        {draftChargeableDays} chargeable day{draftChargeableDays === 1 ? '' : 's'}
+                      </Text>
+                    )}
+                    <Text style={styles.tripDurationCopy}>{draftDiscountMessage}</Text>
+                    <Text style={styles.tripDurationAdvisory}>
+                      Published policy only. Check price for the final total.
+                    </Text>
+                  </View>
+                </View>
+              )}
+              <Modal
+                animationType="slide"
+                onRequestClose={() => setTripCalendarOpen(false)}
+                presentationStyle="overFullScreen"
+                statusBarTranslucent
+                transparent
+                visible={tripCalendarOpen}
+              >
+                <View style={styles.tripSheetRoot}>
+                  <View style={styles.tripSheetBackdrop} />
+                  <Reanimated.View
+                    accessibilityViewIsModal
+                    style={[styles.tripSheetSurface, tripCalendarAnimatedStyle]}
+                  >
+                    <Screen
+                      contentBottomPadding={Math.max(bottomSafeArea, spacing.md)}
+                      contentGrows={false}
+                      contentTopPadding={spacing.xxs}
+                      leading={
+                        <BackControl label="Close" onPress={() => setTripCalendarOpen(false)} />
+                      }
+                      onContentSizeChange={(_width, height) => setTripCalendarContentHeight(height)}
+                      onHeaderLayout={(event) =>
+                        setTripCalendarHeaderHeight(event.nativeEvent.layout.height)
+                      }
+                      safeTop={false}
+                      scrollEnabled={tripCalendarLayout.scrollEnabled}
+                      title="Trip dates"
+                    >
+                      <TripDateCalendar
+                        appliedEnd={draftReturnAt}
+                        appliedStart={draftPickup}
+                        preselect={draftDatesExplicit}
+                        showClear={false}
+                        onApply={(start, end) => {
+                          const shared = applySharedBookingTime(
+                            start,
+                            end,
+                            draftPickup.getHours() * 60 + draftPickup.getMinutes(),
+                          );
+                          setDraftPickup(shared.start);
+                          setDraftReturnAt(shared.end);
+                          setDraftDatesExplicit(true);
+                          setTripCalendarOpen(false);
+                        }}
+                        onClear={() => undefined}
+                      />
+                    </Screen>
+                  </Reanimated.View>
+                </View>
+              </Modal>
+              <View style={styles.tripHandoverSection}>
+                <Text accessibilityRole="header" style={styles.tripSectionTitle}>
+                  Start of rental
+                </Text>
+                {!vehicle.fulfillment.ownerDeliveryAvailable ? (
+                  <View
+                    accessibilityLabel="Start of rental, Pick up, read only"
+                    style={styles.handoverStatic}
+                  >
+                    <Text style={styles.handoverStaticTitle}>Pick up</Text>
+                    <Text style={styles.note}>At the owner&apos;s agreed pickup location.</Text>
+                  </View>
+                ) : vehicle.fulfillment.renterPickupAvailable === false ? (
+                  <View
+                    accessibilityLabel="Start of rental, Delivery, read only"
+                    style={styles.handoverStatic}
+                  >
+                    <Text style={styles.handoverStaticTitle}>Delivery</Text>
+                    <Text style={styles.note}>
+                      The owner will deliver to your selected location.
+                    </Text>
+                  </View>
+                ) : (
+                  <HandoverSegmentedControl
+                    accessibilityLabel="Start of rental method"
+                    options={[
+                      {
+                        label: 'Pick up',
+                        onPress: () => setDraftStartMethod('RENTER_PICKUP'),
+                        selected: draftStartMethod === 'RENTER_PICKUP',
+                      },
+                      {
+                        label: 'Delivery',
+                        onPress: () => setDraftStartMethod('OWNER_DELIVERY'),
+                        selected: draftStartMethod === 'OWNER_DELIVERY',
+                      },
+                    ]}
+                  />
+                )}
+                {draftStartMethod === 'OWNER_DELIVERY' && (
+                  <ConfirmedLocationCard
+                    kind="delivery"
+                    location={draftDeliveryLocation}
+                    onChange={() => setPicker('delivery')}
+                  />
+                )}
+              </View>
+              <View style={styles.tripHandoverSection}>
+                <Text accessibilityRole="header" style={styles.tripSectionTitle}>
+                  End of rental
+                </Text>
+                {!vehicle.fulfillment.ownerCollectionAvailable ? (
+                  <View
+                    accessibilityLabel="End of rental, Return it, read only"
+                    style={styles.handoverStatic}
+                  >
+                    <Text style={styles.handoverStaticTitle}>Return it</Text>
+                    <Text style={styles.note}>At the agreed return location.</Text>
+                  </View>
+                ) : vehicle.fulfillment.renterReturnAvailable === false ? (
+                  <View
+                    accessibilityLabel="End of rental, Collection, read only"
+                    style={styles.handoverStatic}
+                  >
+                    <Text style={styles.handoverStaticTitle}>Collection</Text>
+                    <Text style={styles.note}>
+                      The owner will collect from your selected location.
+                    </Text>
+                  </View>
+                ) : (
+                  <HandoverSegmentedControl
+                    accessibilityLabel="End of rental method"
+                    options={[
+                      {
+                        label: 'Return it',
+                        onPress: () => setDraftEndMethod('RENTER_RETURN'),
+                        selected: draftEndMethod === 'RENTER_RETURN',
+                      },
+                      {
+                        label: 'Collection',
+                        onPress: () => setDraftEndMethod('OWNER_COLLECTION'),
+                        selected: draftEndMethod === 'OWNER_COLLECTION',
+                      },
+                    ]}
+                  />
+                )}
+                {draftEndMethod === 'OWNER_COLLECTION' && draftStartMethod === 'OWNER_DELIVERY' && (
+                  <Pressable
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: draftSameAsDelivery }}
+                    onPress={() => {
+                      setDraftSameAsDelivery(!draftSameAsDelivery);
+                      if (draftSameAsDelivery) setDraftCollectionLocation(undefined);
+                    }}
+                    style={styles.locationRow}
+                  >
+                    <Icon
+                      color={colors.primary}
+                      name={draftSameAsDelivery ? 'checkbox' : 'square-outline'}
+                      size={22}
+                    />
+                    <Text style={styles.body}>Same as delivery location</Text>
+                  </Pressable>
+                )}
+                {draftEndMethod === 'OWNER_COLLECTION' &&
+                  !(draftStartMethod === 'OWNER_DELIVERY' && draftSameAsDelivery) && (
+                    <ConfirmedLocationCard
+                      kind="collection"
+                      location={draftCollectionLocation}
+                      onChange={() => setPicker('collection')}
+                    />
+                  )}
+              </View>
+              {picker && (
+                <LocationPicker
+                  dismissLabel="Close"
+                  visible
+                  kind={picker}
+                  initial={
+                    picker === 'collection' ? draftCollectionLocation : draftDeliveryLocation
+                  }
+                  onCancel={() => setPicker(null)}
+                  onConfirm={(location) => {
+                    if (picker === 'delivery') setDraftDeliveryLocation(location);
+                    else setDraftCollectionLocation(location);
+                    setPicker(null);
+                  }}
+                />
+              )}
             </Screen>
-          </Modal>
-          <SectionHeader title="Pickup method" />
-          {vehicle.fulfillment.renterPickupAvailable !==
-          vehicle.fulfillment.ownerDeliveryAvailable ? (
-            <View style={styles.handoverStatic}>
-              <Text style={styles.handoverStaticTitle}>
-                {vehicle.fulfillment.renterPickupAvailable ? 'Pickup only' : 'Delivery only'}
-              </Text>
-              <Text style={styles.note}>
-                {vehicle.fulfillment.renterPickupAvailable
-                  ? "You'll pick up the vehicle at the owner's agreed pickup location."
-                  : 'The owner will deliver the vehicle to your selected location.'}
-              </Text>
-            </View>
-          ) : (
-            <View style={styles.quickRow}>
-              {vehicle.fulfillment.renterPickupAvailable && (
-                <Chip
-                  label="Pick up the car"
-                  selected={draftStartMethod === 'RENTER_PICKUP'}
-                  onPress={() => setDraftStartMethod('RENTER_PICKUP')}
-                />
-              )}
-              {vehicle.fulfillment.ownerDeliveryAvailable && (
-                <Chip
-                  label="Have it delivered"
-                  selected={draftStartMethod === 'OWNER_DELIVERY'}
-                  onPress={() => setDraftStartMethod('OWNER_DELIVERY')}
-                />
-              )}
-            </View>
-          )}
-          {draftStartMethod === 'OWNER_DELIVERY' && (
-            <ConfirmedLocationCard
-              kind="delivery"
-              location={draftDeliveryLocation}
-              onChange={() => setPicker('delivery')}
-            />
-          )}
-          <SectionHeader title="Return method" />
-          {vehicle.fulfillment.renterReturnAvailable !==
-          vehicle.fulfillment.ownerCollectionAvailable ? (
-            <View style={styles.handoverStatic}>
-              <Text style={styles.handoverStaticTitle}>
-                {vehicle.fulfillment.renterReturnAvailable ? 'Return to owner' : 'Owner collection'}
-              </Text>
-              <Text style={styles.note}>
-                {vehicle.fulfillment.renterReturnAvailable
-                  ? "You'll return the vehicle to the agreed return location."
-                  : 'The owner will collect the vehicle from your selected location.'}
-              </Text>
-            </View>
-          ) : (
-            <View style={styles.quickRow}>
-              {vehicle.fulfillment.renterReturnAvailable && (
-                <Chip
-                  label="Return it yourself"
-                  selected={draftEndMethod === 'RENTER_RETURN'}
-                  onPress={() => setDraftEndMethod('RENTER_RETURN')}
-                />
-              )}
-              {vehicle.fulfillment.ownerCollectionAvailable && (
-                <Chip
-                  label="Have the owner collect it"
-                  selected={draftEndMethod === 'OWNER_COLLECTION'}
-                  onPress={() => setDraftEndMethod('OWNER_COLLECTION')}
-                />
-              )}
-            </View>
-          )}
-          {draftEndMethod === 'OWNER_COLLECTION' && draftStartMethod === 'OWNER_DELIVERY' && (
-            <Pressable
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: draftSameAsDelivery }}
-              onPress={() => {
-                setDraftSameAsDelivery(!draftSameAsDelivery);
-                if (draftSameAsDelivery) setDraftCollectionLocation(undefined);
-              }}
-              style={styles.locationRow}
-            >
-              <Icon
-                color={colors.primary}
-                name={draftSameAsDelivery ? 'checkbox' : 'square-outline'}
-                size={22}
-              />
-              <Text style={styles.body}>Same as delivery location</Text>
-            </Pressable>
-          )}
-          {draftEndMethod === 'OWNER_COLLECTION' &&
-            !(draftStartMethod === 'OWNER_DELIVERY' && draftSameAsDelivery) && (
-              <ConfirmedLocationCard
-                kind="collection"
-                location={draftCollectionLocation}
-                onChange={() => setPicker('collection')}
-              />
-            )}
-          {picker && (
-            <LocationPicker
-              dismissLabel="Close"
-              visible
-              kind={picker}
-              initial={picker === 'collection' ? draftCollectionLocation : draftDeliveryLocation}
-              onCancel={() => setPicker(null)}
-              onConfirm={(location) => {
-                if (picker === 'delivery') setDraftDeliveryLocation(location);
-                else setDraftCollectionLocation(location);
-                setPicker(null);
-              }}
-            />
-          )}
-        </Screen>
+          </Reanimated.View>
+        </View>
       </Modal>
       {properties.quote.isError && (
         <StateView
@@ -3515,20 +3692,22 @@ function VehicleView(properties: {
               : `${vehicle.mileagePolicy.includedKilometersPerChargeableDay} km included per rental day`
           }
         />
-        <PolicyRow
-          accessibilityHint="Opens deposit information"
-          icon="shield-checkmark-outline"
-          onPress={() => setSecurityDepositInfoOpen(true)}
-          title="Security deposit"
-          value={
-            vehicle.securityDeposit.required && vehicle.securityDeposit.amountMinor != null
-              ? `${money(
-                  vehicle.securityDeposit.amountMinor,
-                  vehicle.securityDeposit.currency ?? vehicle.pricing.currency,
-                )} refundable deposit · Separate from the rental price`
-              : 'No security deposit required'
-          }
-        />
+        {vehicle.securityDeposit.required && (
+          <PolicyRow
+            accessibilityHint="Opens deposit information"
+            icon="shield-checkmark-outline"
+            onPress={() => setSecurityDepositInfoOpen(true)}
+            title="Security deposit"
+            value={
+              vehicle.securityDeposit.amountMinor != null
+                ? `${money(
+                    vehicle.securityDeposit.amountMinor,
+                    vehicle.securityDeposit.currency ?? vehicle.pricing.currency,
+                  )} refundable deposit · Separate from the rental price`
+                : 'Refundable deposit required'
+            }
+          />
+        )}
         {typeof vehicle.mileagePolicy.excessKilometerRateMinor === 'number' &&
           vehicle.mileagePolicy.excessKilometerRateMinor > 0 && (
             <PolicyRow
@@ -3989,32 +4168,32 @@ function QuoteCard({
           {quote.chargeableDays}-day booking.
         </Text>
       )}
-      <View
-        accessibilityLabel={
-          quote.securityDeposit.required && quote.securityDeposit.amountMinor != null
-            ? `Security deposit, ${money(
-                quote.securityDeposit.amountMinor,
-                quote.securityDeposit.currency ?? quote.currency,
-              )}, separate from the rental total`
-            : 'Security deposit, no security deposit required'
-        }
-        style={styles.hold}
-      >
-        <Text style={styles.cardTitle}>Security deposit</Text>
-        <Text style={styles.body}>
-          {quote.securityDeposit.required && quote.securityDeposit.amountMinor != null
-            ? `${money(
-                quote.securityDeposit.amountMinor,
-                quote.securityDeposit.currency ?? quote.currency,
-              )} refundable deposit`
-            : 'No security deposit required'}
-        </Text>
-        <Text style={styles.note}>
-          {quote.securityDeposit.required
-            ? 'Separate from rental charges. No deposit hold is placed at this stage.'
-            : 'No refundable deposit is added to this booking.'}
-        </Text>
-      </View>
+      {quote.securityDeposit.required && (
+        <View
+          accessibilityLabel={
+            quote.securityDeposit.amountMinor != null
+              ? `Security deposit, ${money(
+                  quote.securityDeposit.amountMinor,
+                  quote.securityDeposit.currency ?? quote.currency,
+                )}, separate from the rental total`
+              : 'Security deposit required, separate from the rental total'
+          }
+          style={styles.hold}
+        >
+          <Text style={styles.cardTitle}>Security deposit</Text>
+          <Text style={styles.body}>
+            {quote.securityDeposit.amountMinor != null
+              ? `${money(
+                  quote.securityDeposit.amountMinor,
+                  quote.securityDeposit.currency ?? quote.currency,
+                )} refundable deposit`
+              : 'Refundable deposit required'}
+          </Text>
+          <Text style={styles.note}>
+            Separate from rental charges. No deposit hold is placed at this stage.
+          </Text>
+        </View>
+      )}
       <View style={styles.totalLine}>
         <Text style={styles.totalLabel}>Total</Text>
         <Text style={styles.total}>{money(quote.totalMinor, quote.currency)}</Text>
@@ -4108,6 +4287,46 @@ function ConfirmedLocationCard({
       <Text style={styles.note}>
         Confirm the destination. The server checks the owner’s service area and notice requirement.
       </Text>
+    </View>
+  );
+}
+
+function HandoverSegmentedControl({
+  accessibilityLabel,
+  options,
+}: {
+  readonly accessibilityLabel: string;
+  readonly options: readonly {
+    readonly label: string;
+    readonly onPress: () => void;
+    readonly selected: boolean;
+  }[];
+}) {
+  return (
+    <View
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="radiogroup"
+      style={styles.handoverSegmentedControl}
+    >
+      {options.map((option) => (
+        <Pressable
+          accessibilityRole="radio"
+          accessibilityState={{ checked: option.selected, selected: option.selected }}
+          key={option.label}
+          onPress={option.onPress}
+          style={[styles.handoverSegment, option.selected && styles.handoverSegmentSelected]}
+        >
+          {option.selected ? <Icon color={colors.onPrimary} name="checkmark" size={16} /> : null}
+          <Text
+            style={[
+              styles.handoverSegmentText,
+              option.selected && styles.handoverSegmentTextSelected,
+            ]}
+          >
+            {option.label}
+          </Text>
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -4217,6 +4436,7 @@ function LocationSheet({
   locationEstablished,
   locationSource,
   datesEstablished,
+  timeEstablished,
   initialSection,
   onClose,
   onClearError,
@@ -4231,6 +4451,7 @@ function LocationSheet({
   readonly locationEstablished: boolean;
   readonly locationSource: DiscoveryLocationSource;
   readonly datesEstablished: boolean;
+  readonly timeEstablished: boolean;
   readonly initialSection: 'default' | 'dates' | 'location';
   readonly onClose: () => void;
   readonly onClearError: () => void;
@@ -4263,6 +4484,9 @@ function LocationSheet({
   const [draftStart, setDraftStart] = useState(appliedStart);
   const [draftEnd, setDraftEnd] = useState(appliedEnd);
   const [draftDatesEstablished, setDraftDatesEstablished] = useState(datesEstablished);
+  const [draftTimeEstablished, setDraftTimeEstablished] = useState(timeEstablished);
+  const [draftDateRangeReady, setDraftDateRangeReady] = useState(false);
+  const [draftDateTimeEditing, setDraftDateTimeEditing] = useState(false);
   const [draftDatesCleared, setDraftDatesCleared] = useState(false);
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState<
@@ -4294,13 +4518,18 @@ function LocationSheet({
     setDraftStart(appliedStart);
     setDraftEnd(appliedEnd);
     setDraftDatesEstablished(datesEstablished);
+    setDraftTimeEstablished(timeEstablished);
+    setDraftDateRangeReady(datesEstablished);
+    setDraftDateTimeEditing(false);
     setDraftDatesCleared(false);
     setWhereExpanded(
       initialSection === 'location' || (!locationEstablished && initialSection !== 'dates'),
     );
     setWhenExpanded(
       initialSection === 'dates' ||
-        (initialSection === 'default' && locationEstablished && !datesEstablished),
+        (initialSection === 'default' &&
+          locationEstablished &&
+          (!datesEstablished || !timeEstablished)),
     );
     setQuery('');
     setSuggestions([]);
@@ -4540,69 +4769,133 @@ function LocationSheet({
                 <Text accessibilityRole="header" style={styles.whereTitle}>
                   When?
                 </Text>
-                <Text style={styles.whereCopy}>Select your trip dates</Text>
-                <TripDateCalendar
-                  appliedEnd={draftEnd}
-                  appliedStart={draftStart}
-                  preselect={!draftDatesCleared}
-                  onApply={(start, end) => {
-                    setDraftStart(start);
-                    setDraftEnd(end);
-                    setDraftDatesEstablished(true);
-                    setDraftDatesCleared(false);
-                    setWhenExpanded(false);
-                  }}
-                  onClear={() => {
-                    setDraftDatesEstablished(false);
-                    setDraftDatesCleared(true);
-                  }}
-                />
-                <Text style={styles.whereSelectionNote}>
-                  Discovery uses 9:00 AM search assumptions for both dates. Final handover times are
-                  confirmed later.
+                <Text style={styles.whereCopy}>
+                  Select your trip dates and shared handover time
                 </Text>
+                {!draftDateRangeReady ? (
+                  <TripDateCalendar
+                    appliedEnd={draftEnd}
+                    appliedStart={draftStart}
+                    applyLabel="Continue to time"
+                    preselect={!draftDatesCleared}
+                    onApply={(start, end) => {
+                      const selectedMinutes = draftTimeEstablished
+                        ? draftStart.getHours() * 60 + draftStart.getMinutes()
+                        : nextBookingTimeSlot();
+                      const shared = applySharedBookingTime(start, end, selectedMinutes);
+                      setDraftStart(shared.start);
+                      setDraftEnd(shared.end);
+                      setDraftDatesEstablished(true);
+                      setDraftDatesCleared(false);
+                      setDraftDateRangeReady(true);
+                      setDraftDateTimeEditing(true);
+                    }}
+                    onClear={() => {
+                      setDraftDatesEstablished(false);
+                      setDraftTimeEstablished(false);
+                      setDraftDatesCleared(true);
+                    }}
+                  />
+                ) : draftDateTimeEditing ? (
+                  <View style={styles.dateEditorBody}>
+                    <BookingDateTimeEditorSummary
+                      end={draftEnd}
+                      onChangeDates={() => setDraftDateRangeReady(false)}
+                      onChangeTime={(value) => {
+                        const shared = applySharedBookingTime(
+                          draftStart,
+                          draftEnd,
+                          value.getHours() * 60 + value.getMinutes(),
+                        );
+                        setDraftStart(shared.start);
+                        setDraftEnd(shared.end);
+                        setDraftTimeEstablished(true);
+                      }}
+                      start={draftStart}
+                      timeEstablished={draftTimeEstablished}
+                    />
+                    <Button
+                      disabled={!draftDatesEstablished || !draftTimeEstablished}
+                      label="Done editing"
+                      onPress={() => setDraftDateTimeEditing(false)}
+                    />
+                  </View>
+                ) : (
+                  <View style={styles.dateEditorBody}>
+                    <Pressable
+                      accessibilityLabel={`Trip dates and time, ${
+                        draftDatesEstablished && draftTimeEstablished
+                          ? tripDateTimeSummary(draftStart, draftEnd)
+                          : 'Add trip dates and time'
+                      }. Edit.`}
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setDraftDateRangeReady(false);
+                        setDraftDateTimeEditing(true);
+                      }}
+                      style={styles.searchCollapsedCard}
+                    >
+                      <View style={styles.flex}>
+                        <Text style={styles.searchCollapsedLabel}>Trip dates &amp; time</Text>
+                        <Text style={styles.searchCollapsedValue}>
+                          {draftDatesEstablished && draftTimeEstablished
+                            ? tripDateTimeSummary(draftStart, draftEnd)
+                            : 'Add trip dates and time'}
+                        </Text>
+                      </View>
+                      <Text style={styles.searchEdit}>Edit</Text>
+                    </Pressable>
+                    <Button
+                      disabled={!draftDatesEstablished || !draftTimeEstablished}
+                      label="Apply date and time"
+                      onPress={() => setWhenExpanded(false)}
+                    />
+                  </View>
+                )}
               </Card>
-            ) : !whereExpanded && draftDatesEstablished ? (
+            ) : !whereExpanded ? (
               <Pressable
-                accessibilityLabel={`When, ${tripDateSummary(draftStart, draftEnd)}. Edit trip dates`}
+                accessibilityLabel={`Trip dates and time, ${
+                  draftDatesEstablished && draftTimeEstablished
+                    ? tripDateTimeSummary(draftStart, draftEnd)
+                    : 'Add trip dates and time'
+                }. Edit.`}
                 accessibilityRole="button"
                 onPress={() => setWhenExpanded(true)}
                 style={styles.searchCollapsedCard}
               >
-                <View>
-                  <Text style={styles.searchCollapsedLabel}>When</Text>
+                <View style={styles.flex}>
+                  <Text style={styles.searchCollapsedLabel}>Trip dates &amp; time</Text>
                   <Text style={styles.searchCollapsedValue}>
-                    {tripDateSummary(draftStart, draftEnd)}
+                    {draftDatesEstablished && draftTimeEstablished
+                      ? tripDateTimeSummary(draftStart, draftEnd)
+                      : 'Add trip dates and time'}
                   </Text>
                 </View>
                 <Text style={styles.searchEdit}>Edit</Text>
               </Pressable>
-            ) : (
-              <Card style={styles.whenCardCollapsed}>
-                <Text accessibilityRole="header" style={styles.searchCollapsedLabel}>
-                  When
-                </Text>
-                <Text style={styles.searchCollapsedValue}>Add trip dates</Text>
-              </Card>
-            )}
+            ) : null}
             {!whereExpanded && !whenExpanded ? (
               <>
                 <Button
-                  disabled={!draftWhereEstablished || !draftDatesEstablished}
+                  disabled={
+                    !draftWhereEstablished || !draftDatesEstablished || !draftTimeEstablished
+                  }
                   icon="search"
                   label="Search"
                   onPress={() =>
                     onSearch({
                       datesExplicit: draftDatesEstablished,
+                      timeExplicit: draftTimeEstablished,
                       end: draftEnd,
                       place: draftSelected,
                       start: draftStart,
                     })
                   }
                 />
-                {!draftWhereEstablished || !draftDatesEstablished ? (
+                {!draftWhereEstablished || !draftDatesEstablished || !draftTimeEstablished ? (
                   <Text accessibilityLiveRegion="polite" style={styles.whereSelectionNote}>
-                    Select and apply trip dates to search.
+                    Select and apply trip dates and time to search.
                   </Text>
                 ) : null}
               </>
@@ -4995,7 +5288,14 @@ const styles = StyleSheet.create({
   recoveryDeadline: { color: colors.subtleText, fontSize: 13 },
   recoveryReview: { alignItems: 'center', flexDirection: 'row', gap: 2, minHeight: 44 },
   recoveryReviewText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
-  addressFields: { gap: spacing.sm },
+  addressFields: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.sm,
+    padding: spacing.sm,
+  },
   body: { color: colors.subtleText, lineHeight: 21 },
   cardTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
   cardImage: { height: '100%', width: '100%' },
@@ -5506,6 +5806,35 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   handoverStaticTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
+  handoverSegment: {
+    alignItems: 'center',
+    borderRadius: radius.sm,
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 0,
+    paddingHorizontal: spacing.xs,
+  },
+  handoverSegmentedControl: {
+    backgroundColor: colors.muted,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    padding: spacing.xxs,
+  },
+  handoverSegmentSelected: { backgroundColor: colors.primary },
+  handoverSegmentText: {
+    color: colors.ink,
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  handoverSegmentTextSelected: { color: colors.onPrimary },
   ownerAvatar: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
@@ -5736,6 +6065,7 @@ const styles = StyleSheet.create({
   },
   searchCollapsedValue: { color: colors.ink, fontSize: 17, fontWeight: '900', marginTop: 3 },
   searchEdit: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  dateEditorBody: { gap: spacing.md },
   tripSheetBar: {
     alignItems: 'center',
     backgroundColor: colors.surface,
@@ -5746,25 +6076,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
   },
-  tripDateRange: {
-    alignItems: 'center',
+  tripSheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(8, 24, 18, 0.32)',
+  },
+  tripSheetRoot: { flex: 1, justifyContent: 'flex-end' },
+  tripSheetSurface: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    overflow: 'hidden',
+  },
+  tripContentSection: { gap: spacing.xs },
+  tripHandoverSection: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
     borderRadius: radius.md,
     borderWidth: 1,
-    flexDirection: 'row',
-    gap: spacing.md,
-    minHeight: 64,
-    padding: spacing.md,
+    gap: spacing.sm,
+    padding: spacing.sm,
   },
-  tripDateRangeValue: { color: colors.ink, fontSize: 17, fontWeight: '800', marginTop: 2 },
+  tripSectionTitle: { color: colors.ink, fontSize: 18, fontWeight: '900' },
   tripDurationAdvisory: { color: colors.subtleText, fontSize: 11, marginTop: 2 },
   tripDurationCopy: { color: colors.primaryDark, fontSize: 13, lineHeight: 18 },
   tripDurationDays: { color: colors.ink, fontSize: 13, fontWeight: '800', marginBottom: 2 },
   tripDurationHint: {
     alignItems: 'flex-start',
     backgroundColor: colors.primarySoft,
+    borderColor: colors.border,
     borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
     gap: spacing.xs,
     padding: spacing.sm,

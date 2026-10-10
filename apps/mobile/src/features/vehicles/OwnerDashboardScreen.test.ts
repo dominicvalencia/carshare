@@ -333,4 +333,76 @@ describe('Owner Today mobile UI', () => {
       /eyebrow="Booking change request"[\s\S]*title=\{amendment\.actionable \? 'Review requested change'[\s\S]*Respond by/,
     );
   });
+
+  it('hoists standard Booking Request detail into the top-level Owner surface', () => {
+    const detail = source.indexOf('if (selectedBookingReference)');
+    const dashboardScreen = source.indexOf('<Screen\n      stickyHeader={');
+    expect(detail).toBeGreaterThan(0);
+    expect(detail).toBeLessThan(dashboardScreen);
+    expect(source).toContain('onOpenBookingRequest={setSelectedBookingReference}');
+    expect(source).toContain('initialBookingReference={selectedBookingReference}');
+    expect(source).toContain('onClose={() => setSelectedBookingReference(null)}');
+    expect(source).toContain("route.params?.initialTab ?? 'Today'");
+    expect(source).not.toContain("navigation.navigate('Requests')");
+    expect(requestsSource).toContain(
+      '(onOpenBookingRequest ?? setSelected)(booking.publicReference)',
+    );
+  });
+
+  it('keeps the standard request detail compact, accessible, and complete', () => {
+    const detail = requestsSource.slice(requestsSource.indexOf('function OwnerRequestDetail('));
+    expect(detail.match(/<BackControl label="Back"/g)).toHaveLength(3);
+    expect(detail).not.toContain('<BackControl label="All requests"');
+    expect(detail).toContain(
+      "eyebrow={booking.status === 'AWAITING_OWNER' ? 'Booking request' : 'Booking details'}",
+    );
+    expect(detail).toContain('style={styles.requestHero}');
+    expect(detail).toContain(
+      "requestHero: { borderRadius: radius.lg, height: 210, width: '100%' }",
+    );
+    expect(detail).toContain('style={styles.requestSummary}');
+    expect(detail).toContain('label="Booking total"');
+    expect(detail).toContain('label="Reference" value={booking.publicReference}');
+    expect(detail).toContain('Respond by {dateTimeLabel(booking.ownerResponseDeadlineAt)}');
+    expect(detail).toContain('label="Dates & time"');
+    expect(detail).toContain('requestTripSummary(booking.rentalStart, booking.rentalEnd)');
+    const tripCard = detail.slice(
+      detail.indexOf('>\n          Trip\n        </Text>'),
+      detail.indexOf('>\n          Handover\n        </Text>'),
+    );
+    expect(tripCard).not.toContain('<RequestDetailRow label="Pickup"');
+    expect(tripCard).not.toContain('<RequestDetailRow label="Return"');
+    expect(detail).toContain('View trust profile');
+    expect(detail).toContain('style={styles.renterTrustAction}');
+    expect(detail).toContain('booking.renter.profilePhoto?.contentPath');
+    expect(detail).toContain('apiClient.assetUrl(booking.renter.profilePhoto.contentPath)');
+    expect(detail).toContain('style={styles.renterAvatarImage}');
+    expect(detail).toContain('style={styles.renterAvatarFallback}');
+    expect(detail).toContain('name="person" size={26}');
+    expect(detail).not.toContain('SELFIE_WITH_LICENSE');
+    expect(detail).not.toContain('fileAssetId');
+    expect(detail).toContain(
+      'Sensitive identity evidence is available only to authorized platform staff.',
+    );
+    expect(detail).toContain('Payment is authorized and will be captured according to');
+    expect(detail).toContain('booking.securityDeposit.required &&');
+    expect(detail).toContain(
+      '<SecurityDepositSummary compact securityDeposit={booking.securityDeposit} />',
+    );
+    expect(detail).toContain('Owner decision');
+    expect(detail).toContain('<OwnerNextStep booking={booking} />');
+    expect(detail).toContain('Prepare the vehicle for pickup.');
+    expect(detail).toContain('label="Handover available"');
+    expect(detail).toContain('label="Pickup" value={dateTimeLabel(booking.rentalStart)}');
+    expect(detail).toContain('Danger zone');
+    expect(detail).toContain('Existing cancellation rules still apply.');
+    expect(detail).toContain(
+      "label={decision.isPending ? 'Processing decision…' : 'Accept request'}",
+    );
+    expect(detail).toContain('label="Reject request"');
+    expect(detail).not.toContain('Booking timeline');
+    expect(detail).not.toContain('booking.statusHistory.map');
+    expect(detail).not.toContain('The renter is waiting for you to accept or decline');
+    expect(detail).not.toContain('/security-deposit/policy');
+  });
 });

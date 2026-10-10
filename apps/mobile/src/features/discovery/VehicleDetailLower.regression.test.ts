@@ -37,6 +37,17 @@ describe('Task 14D-1 Vehicle Detail lower content', () => {
     expect(detail).toContain('per excess whole kilometer, based on inspection readings');
   });
 
+  it('omits the Things to know deposit row when the vehicle does not require one', () => {
+    const depositRow = detail.slice(
+      detail.indexOf('{vehicle.securityDeposit.required && ('),
+      detail.indexOf("typeof vehicle.mileagePolicy.excessKilometerRateMinor === 'number'"),
+    );
+
+    expect(depositRow).toContain('title="Security deposit"');
+    expect(depositRow).toContain('Refundable deposit required');
+    expect(depositRow).not.toContain('No security deposit required');
+  });
+
   it('uses EV-specific charging copy only for battery-electric vehicles', () => {
     expect(detail).toContain("vehicle.powertrain === 'BATTERY_ELECTRIC'");
     expect(detail).toContain('title="Charging on return"');

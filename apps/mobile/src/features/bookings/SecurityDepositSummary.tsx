@@ -6,11 +6,13 @@ import { Button, Card, Icon, StatusBadge } from '../../ui/primitives';
 
 export function SecurityDepositSummary({
   busy = false,
+  compact = false,
   errorMessage,
   onPlace,
   securityDeposit,
 }: {
   readonly busy?: boolean;
+  readonly compact?: boolean;
   readonly errorMessage?: string | undefined;
   readonly onPlace?: () => void;
   readonly securityDeposit: BookingSecurityDepositReadModel;
@@ -45,7 +47,9 @@ export function SecurityDepositSummary({
       accessible={!renterView}
       accessibilityLabel={!renterView ? accessibilityLabel : undefined}
     >
-      <Card style={!required && styles.compactCard}>
+      <Card
+        style={[!required && styles.compactCard, compact && required && styles.compactRequiredCard]}
+      >
         <View style={styles.headingRow}>
           <View style={styles.icon}>
             <Icon color={colors.primary} name="shield-checkmark-outline" size={20} />
@@ -70,30 +74,40 @@ export function SecurityDepositSummary({
             )}
             {required && (
               <View style={styles.status}>
-                <StatusBadge label={status} tone="warning" />
+                <StatusBadge
+                  label={status}
+                  tone={securityDeposit.status === 'AUTHORIZED' ? 'success' : 'warning'}
+                />
               </View>
             )}
           </View>
         </View>
-        {required && (
-          <Text style={styles.body}>
-            {securityDeposit.status === 'AUTHORIZED'
-              ? 'Your deposit is authorized for this booking. It is not part of the rental price.'
-              : securityDeposit.status === 'UNKNOWN'
-                ? 'CarShare is verifying the authorization. Another attempt is unavailable until this check finishes.'
-                : securityDeposit.status === 'FAILED'
-                  ? renterView
-                    ? 'The authorization was declined. You can try again without risking a duplicate hold.'
-                    : 'The renter needs to place the security deposit before pickup.'
-                  : securityDeposit.actionRequired
-                    ? 'A temporary security deposit hold is required before pickup.'
-                    : securityDeposit.executionAvailable && securityDeposit.availableAt
-                      ? 'You’ll be able to place the deposit closer to pickup.'
-                      : securityDeposit.executionAvailable
-                        ? 'Separate from the rental price. Any hold status shown here comes from the booking record.'
-                        : 'Separate from the rental price. Deposit processing is not yet available, so no hold is placed and pickup is not blocked.'}
+        {required && securityDeposit.status === 'AUTHORIZED' ? (
+          <View style={compact && styles.compactAuthorizedCopy}>
+            <Text style={[styles.body, compact && styles.compactRequiredBody]}>
+              Your deposit is authorized for this booking.
+            </Text>
+            <Text style={[styles.helper, compact && styles.compactHelper]}>
+              This is separate from the rental price.
+            </Text>
+          </View>
+        ) : required ? (
+          <Text style={[styles.body, compact && styles.compactRequiredBody]}>
+            {securityDeposit.status === 'UNKNOWN'
+              ? 'CarShare is verifying the authorization. Another attempt is unavailable until this check finishes.'
+              : securityDeposit.status === 'FAILED'
+                ? renterView
+                  ? 'The authorization was declined. You can try again without risking a duplicate hold.'
+                  : 'The renter needs to place the security deposit before pickup.'
+                : securityDeposit.actionRequired
+                  ? 'Place the temporary deposit hold before pickup.'
+                  : securityDeposit.executionAvailable && securityDeposit.availableAt
+                    ? 'You’ll be able to place the deposit closer to pickup.'
+                    : securityDeposit.executionAvailable
+                      ? 'Separate from the rental price. Any hold status shown here comes from the booking record.'
+                      : 'Separate from the rental price. Deposit processing is not yet available, so no hold is placed and pickup is not blocked.'}
           </Text>
-        )}
+        ) : null}
         {required && securityDeposit.actionRequired && onPlace && (
           <View style={styles.action}>
             <Button
@@ -130,9 +144,14 @@ const styles = StyleSheet.create({
   },
   compactBody: { marginTop: spacing.xs },
   compactCard: { paddingVertical: spacing.sm },
+  compactRequiredBody: { lineHeight: 20, marginTop: spacing.xs },
+  compactRequiredCard: { paddingVertical: spacing.sm },
+  compactAuthorizedCopy: { gap: 2 },
+  compactHelper: { marginTop: 0 },
   copy: { flex: 1 },
   error: { color: colors.danger, fontSize: 14, lineHeight: 20, marginTop: spacing.sm },
   headingRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  helper: { color: colors.subtleText, fontSize: 13, lineHeight: 18, marginTop: spacing.xs },
   icon: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,

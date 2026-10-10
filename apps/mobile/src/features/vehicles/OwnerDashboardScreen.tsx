@@ -51,6 +51,7 @@ export function OwnerDashboardScreen({
   const route = useRoute<RouteProp<OwnerTabParamList, 'Dashboard'>>();
   const [selectedTab, setSelectedTab] = useState<OwnerHomeTab>(route.params?.initialTab ?? 'Today');
   const [selectedAmendment, setSelectedAmendment] = useState<OwnerAmendmentTarget | null>(null);
+  const [selectedBookingReference, setSelectedBookingReference] = useState<string | null>(null);
   const requestPollingInterval = useFocusedPollingInterval(
     OWNER_REQUEST_POLL_INTERVAL_MS,
     ownerStatus === 'VERIFIED',
@@ -135,6 +136,13 @@ export function OwnerDashboardScreen({
         initialAmendmentReference={selectedAmendment.amendmentReference}
         initialBookingReference={selectedAmendment.bookingReference}
         onClose={() => setSelectedAmendment(null)}
+      />
+    );
+  if (selectedBookingReference)
+    return (
+      <OwnerBookingRequestsScreen
+        initialBookingReference={selectedBookingReference}
+        onClose={() => setSelectedBookingReference(null)}
       />
     );
   return (
@@ -275,6 +283,7 @@ export function OwnerDashboardScreen({
               embedded
               onHistory={() => navigation.navigate('OwnerRequestHistory')}
               onOpenAmendment={setSelectedAmendment}
+              onOpenBookingRequest={setSelectedBookingReference}
             />
           </View>
         )}

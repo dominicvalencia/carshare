@@ -3,7 +3,12 @@ import { StyleSheet, Text, View } from 'react-native';
 import { colors, spacing } from '../../theme/tokens';
 import { CalendarMonth } from '../../ui/CalendarMonth';
 import { Button } from '../../ui/primitives';
-import { discoveryDateForCalendarDay, tripDateSummary } from './trip-date-policy';
+import {
+  bookingCalendarMinimumDate,
+  discoveryDateForCalendarDay,
+  isBookingCalendarDateSelectable,
+  tripDateSummary,
+} from './trip-date-policy';
 
 const MAX_RANGE_DAYS = 365;
 const DAY_MS = 86_400_000;
@@ -21,14 +26,20 @@ function calendarDaysBetween(start: Date, end: Date) {
 export function TripDateCalendar({
   appliedStart,
   appliedEnd,
+  disabledDate,
+  minimumDate,
   preselect,
+  applyLabel = 'Apply dates',
   showClear = true,
   onApply,
   onClear,
 }: {
   readonly appliedStart: Date;
   readonly appliedEnd: Date;
+  readonly disabledDate?: (date: Date) => boolean;
+  readonly minimumDate?: Date;
   readonly preselect: boolean;
+  readonly applyLabel?: string;
   readonly showClear?: boolean;
   readonly onApply: (start: Date, end: Date) => void;
   readonly onClear: () => void;
@@ -43,9 +54,7 @@ export function TripDateCalendar({
     preselect ? discoveryDateForCalendarDay(appliedEnd) : null,
   );
   const [rangeError, setRangeError] = useState('');
-  const now = new Date();
-  const earliest = localDiscoveryDate(now.getFullYear(), now.getMonth(), now.getDate());
-  if (earliest.getTime() < now.getTime() - 5 * 60_000) earliest.setDate(earliest.getDate() + 1);
+  const earliest = bookingCalendarMinimumDate(minimumDate);
 
   function selectDate(day: Date) {
     setRangeError('');
@@ -65,7 +74,12 @@ export function TripDateCalendar({
   return (
     <View style={styles.calendar}>
       <CalendarMonth
-        disabledDate={(day) => day.getTime() < earliest.getTime()}
+        disabledDate={(day) =>
+          !isBookingCalendarDateSelectable(day, {
+            ...(disabledDate ? { disabledDate } : {}),
+            minimumDate: earliest,
+          })
+        }
         minimumDate={earliest}
         month={month}
         onMonthChange={(nextMonth) => {
@@ -90,7 +104,7 @@ export function TripDateCalendar({
       ) : null}
       <Button
         disabled={!complete}
-        label="Apply dates"
+        label={applyLabel}
         onPress={() => {
           if (draftStart && draftEnd) onApply(draftStart, draftEnd);
         }}

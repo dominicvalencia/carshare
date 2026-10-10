@@ -240,11 +240,48 @@ describe('renter change-booking UX integration', () => {
   it('opens a combined PRE_TRIP range editor and retains focused ACTIVE return editing', () => {
     expect(renter).toContain("picker === 'dates'");
     expect(renter).toContain('<TripDateCalendar');
-    expect(renter).toContain('<DateTimeField');
+    expect(renter).toContain('<BookingDateTimeEditorSummary');
     expect(renter).toContain('title="Change dates"');
     expect(renter).toContain("active ? 'Extend return' : 'Change return'");
     expect(renter).toContain("picker === 'return'");
     expect(renter).not.toContain("openPicker('pickup')");
+  });
+
+  it('reuses the shared compact date and time editor without a redundant inner heading', () => {
+    const editor = renter.slice(
+      renter.indexOf('function DateRangeEditor'),
+      renter.indexOf("type StartMethod = 'RENTER_PICKUP'"),
+    );
+
+    expect(editor).toContain('<BookingDateTimeEditorSummary');
+    expect(editor).toContain('onChangeDates={onOpenCalendar}');
+    expect(editor).toContain('applySharedBookingTime(');
+    expect(editor).toContain('label="Done"');
+    expect(editor).toContain('onValidityChange={setTimeValid}');
+    expect(editor).toContain('disabled={!valid || !timeValid}');
+    expect(editor).not.toContain('When?');
+    expect(editor).not.toContain('Select your trip dates and shared handover time');
+  });
+
+  it('presents one shared handover time and compact start/end rental sections', () => {
+    const dateRangeControl = renter.slice(
+      renter.indexOf('function DateRangeControl'),
+      renter.indexOf('function Review('),
+    );
+
+    expect(dateRangeControl).toContain('Dates &amp; time');
+    expect(dateRangeControl).toContain('· {timeLabel(pickup)}');
+    expect(dateRangeControl).toContain('Change dates &amp; time');
+    expect(dateRangeControl).not.toContain('Pickup {timeLabel(pickup)} · Return');
+    expect(renter).toContain('label="Start of rental"');
+    expect(renter).toContain('label="End of rental"');
+    expect(renter).toContain('const showSelector = props.changeable && props.allowed.length > 1;');
+    expect(renter).toContain('<Card style={styles.handoverCard}>');
+    expect(renter).toContain('<View style={styles.handoverDivider} />');
+    expect(renter).toContain('compactNestedHeader');
+    expect(renter).toContain(
+      "? 'Checking availability and price…'\n                        : 'Review change'",
+    );
   });
 
   it('keeps one accessible Done action and only the top-left Cancel in the date editor', () => {
@@ -370,7 +407,9 @@ describe('renter change-booking UX integration', () => {
       renter.indexOf('type StartMethod'),
     );
     expect(rangeEditor).toContain('leading={<BackControl label="Cancel"');
-    expect(rangeEditor).toContain('<Button disabled={!valid} label="Done" onPress={onSave} />');
+    expect(rangeEditor).toContain(
+      '<Button disabled={!valid || !timeValid} label="Done" onPress={onSave} />',
+    );
     expect(rangeEditor).not.toContain('action={');
     expect(rangeEditor).not.toContain('variant="ghost"');
   });
@@ -426,7 +465,7 @@ describe('renter change-booking UX integration', () => {
   it('prevents saving an invalid combined range and announces the complete Dates action', () => {
     expect(renter).toContain('const valid = returnAt > pickup');
     expect(renter).toContain('Return must be after pickup.');
-    expect(renter).toContain('disabled={!valid}');
+    expect(renter).toContain('disabled={!valid || !timeValid}');
     expect(renter).toContain('accessibilityHint="Opens the pickup and return date editor"');
   });
 
@@ -458,8 +497,8 @@ describe('renter change-booking UX integration', () => {
     expect(renter).toContain('const startChanged = current.startMethod !== proposed.startMethod');
     expect(renter).toContain('const endChanged = current.endMethod !== proposed.endMethod');
     expect(renter).toContain("{active ? 'Return change' : 'Trip dates'}");
-    expect(renter).toContain('label="Receive the car"');
-    expect(renter).toContain('label="Return the car"');
+    expect(renter).toContain('label="Start of rental"');
+    expect(renter).toContain('label="End of rental"');
   });
 
   it('restores, polls, refreshes, withdraws, and pays through accepted endpoints', () => {

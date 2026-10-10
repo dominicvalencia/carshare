@@ -90,6 +90,7 @@ export function Screen({
   contentTopPadding,
   measureBottomAccessory = false,
   constrainOverscroll = false,
+  compactNestedHeader = false,
   safeTop = true,
 }: ScreenProperties) {
   const measuredContentSize = useRef({ height: 0, width: 0 });
@@ -109,7 +110,7 @@ export function Screen({
     <>
       {leading && <View style={styles.leading}>{leading}</View>}
       {(title || eyebrow || action) && (
-        <View style={styles.headerRow}>
+        <View style={[styles.headerRow, compactNestedHeader && styles.headerRowCompact]}>
           <View style={styles.headerCopy}>
             {eyebrow && <Text style={styles.eyebrow}>{eyebrow}</Text>}
             {title && (
@@ -139,7 +140,13 @@ export function Screen({
         {stickyHeader && <View style={styles.stickyScreenHeader}>{stickyHeader}</View>}
         {leading ? (
           <>
-            <View onLayout={onHeaderLayout} style={styles.stickyNestedHeader}>
+            <View
+              onLayout={onHeaderLayout}
+              style={[
+                styles.stickyNestedHeader,
+                compactNestedHeader && styles.stickyNestedHeaderCompact,
+              ]}
+            >
               {header}
             </View>
             {scroll ? (
@@ -251,6 +258,7 @@ interface ScreenProperties {
   readonly contentTopPadding?: number | undefined;
   readonly measureBottomAccessory?: boolean | undefined;
   readonly constrainOverscroll?: boolean | undefined;
+  readonly compactNestedHeader?: boolean | undefined;
   readonly safeTop?: boolean | undefined;
 }
 
@@ -712,6 +720,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     marginBottom: spacing.lg,
   },
+  headerRowCompact: { marginBottom: spacing.sm },
   iconButton: {
     alignItems: 'center',
     backgroundColor: colors.surface,
@@ -809,6 +818,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.xxs,
   },
+  stickyNestedHeaderCompact: { borderBottomWidth: 0 },
   stickyScreenHeader: {
     backgroundColor: colors.background,
     paddingHorizontal: spacing.lg,

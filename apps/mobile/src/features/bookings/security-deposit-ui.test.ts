@@ -21,9 +21,9 @@ describe('Security Deposit Phase 2 mobile disclosure', () => {
       "apiClient.request<SecurityDepositPolicyCatalog>('/security-deposit/policy')",
     );
     expect(vehiclesSource).toContain('allowedTiersByCurrency[selectedDepositCurrency]');
-    expect(vehiclesSource).toContain('securityDepositRequired,');
-    expect(vehiclesSource).toContain('securityDepositAmountMinor: selectedDepositAmountMinor');
-    expect(vehiclesSource).toContain('securityDepositCurrency: selectedDepositCurrency');
+    expect(vehiclesSource).toContain('securityDepositRequired: depositRequiredForPayload');
+    expect(vehiclesSource).toContain('securityDepositAmountMinor: depositAmountForPayload');
+    expect(vehiclesSource).toContain('securityDepositCurrency: depositCurrencyForPayload');
     expect(vehiclesSource).toContain('label="No deposit"');
     expect(vehiclesSource).toContain('label="Require deposit"');
     expect(vehiclesSource).toContain('Deposit options unavailable');
@@ -40,40 +40,51 @@ describe('Security Deposit Phase 2 mobile disclosure', () => {
     expect(tierSelectorSource).not.toContain('TextInput');
     expect(tierSelectorSource).not.toContain('Search');
     expect(vehiclesSource).toContain('Changes apply to new booking requests only.');
-    expect(vehiclesSource).toContain(
-      'Deposit processing isn’t active yet. No hold will be placed and pickup won’t be',
-    );
+    expect(vehiclesSource).toContain('Deposit processing isn’t active yet. No hold will be placed');
     expect(vehiclesSource).not.toContain(
       'CarShare may require this temporary deposit before pickup',
     );
   });
 
-  it('shows required and no-deposit terms on vehicle detail and keeps deposit outside Total', () => {
-    expect(discoverySource).toContain('No security deposit required');
-    expect(discoverySource).toContain('refundable deposit · Separate from the rental price');
-    const deposit = discoverySource.indexOf(
-      '<Text style={styles.cardTitle}>Security deposit</Text>',
+  it('omits no-deposit Price Summary content and keeps a required deposit outside Total', () => {
+    const priceSummary = discoverySource.slice(
+      discoverySource.indexOf('function QuoteCard('),
+      discoverySource.indexOf('function ConfirmedLocationCard('),
     );
-    const total = discoverySource.indexOf('<Text style={styles.totalLabel}>Total</Text>', deposit);
+
+    expect(priceSummary).toContain('{quote.securityDeposit.required && (');
+    expect(priceSummary).not.toContain('No security deposit required');
+    expect(priceSummary).not.toContain('No refundable deposit is added to this booking.');
+    expect(discoverySource).toContain('refundable deposit · Separate from the rental price');
+    const deposit = priceSummary.indexOf('<Text style={styles.cardTitle}>Security deposit</Text>');
+    const total = priceSummary.indexOf('<Text style={styles.totalLabel}>Total</Text>', deposit);
     expect(deposit).toBeGreaterThan(-1);
     expect(total).toBeGreaterThan(deposit);
-    expect(discoverySource.slice(deposit, total)).toContain(
+    expect(priceSummary.slice(deposit, total)).toContain(
       'No deposit hold is placed at this stage.',
     );
+    expect(priceSummary).toContain('{money(quote.totalMinor, quote.currency)}');
+    expect(discoverySource).toContain('body: JSON.stringify({ quoteId })');
+    expect(discoverySource).toContain('start: pickup.toISOString()');
+    expect(discoverySource).toContain('end: returnAt.toISOString()');
+    expect(discoverySource).toContain('...fulfillment');
   });
 
   it('shows immutable booking projection terms for renter and owner details', () => {
     expect(renterBookingsSource.match(/<SecurityDepositSummary/g)?.length).toBe(2);
+    expect(renterBookingsSource.match(/\{booking\.securityDeposit\.required && \(/g)?.length).toBe(
+      2,
+    );
     expect(ownerBookingsSource).toContain(
-      '<SecurityDepositSummary securityDeposit={booking.securityDeposit} />',
+      '<SecurityDepositSummary compact securityDeposit={booking.securityDeposit} />',
     );
     expect(summarySource).toContain('Required · Not yet held');
     expect(summarySource).toContain('No security deposit required');
     expect(summarySource).toContain('pickup is not blocked');
   });
 
-  it('places renter security-deposit summaries below contractual handover cards', () => {
-    const handoverIndices = [...renterBookingsSource.matchAll(/Contractual handover/g)].map(
+  it('prioritizes the accepted-booking deposit while preserving the booking-details sheet order', () => {
+    const handoverIndices = [...renterBookingsSource.matchAll(/Handover details/g)].map(
       (match) => match.index,
     );
     const depositIndices = [...renterBookingsSource.matchAll(/<SecurityDepositSummary/g)].map(
@@ -83,7 +94,28 @@ describe('Security Deposit Phase 2 mobile disclosure', () => {
     expect(handoverIndices).toHaveLength(2);
     expect(depositIndices).toHaveLength(2);
     expect(depositIndices[0]!).toBeGreaterThan(handoverIndices[0]!);
-    expect(depositIndices[1]!).toBeGreaterThan(handoverIndices[1]!);
+    expect(depositIndices[1]!).toBeLessThan(handoverIndices[1]!);
+  });
+
+  it('omits the no-deposit card from the renter booking-details sheet only', () => {
+    const bookingDetailsSheet = renterBookingsSource.slice(
+      renterBookingsSource.indexOf('visible={bookingDetailsOpen}'),
+      renterBookingsSource.indexOf('{!pickupHasBegun && ('),
+    );
+
+    expect(bookingDetailsSheet).toContain('{booking.securityDeposit.required && (');
+    expect(bookingDetailsSheet).toContain('<SecurityDepositSummary');
+    expect(bookingDetailsSheet).toContain('securityDeposit={booking.securityDeposit}');
+    expect(bookingDetailsSheet).toContain('label="Pickup"');
+    expect(bookingDetailsSheet).toContain('label="Return"');
+    expect(bookingDetailsSheet).toContain('label="Payment"');
+    expect(bookingDetailsSheet).toContain('label="Pickup area"');
+    expect(bookingDetailsSheet).toContain('label="Pickup method"');
+    expect(bookingDetailsSheet).toContain('label="Return method"');
+    expect(bookingDetailsSheet).not.toContain('label="Message owner"');
+    expect(renterBookingsSource).toContain('<BookingAction label="Message"');
+    expect(renterBookingsSource).toContain('label="Message"');
+    expect(renterBookingsSource).toContain('onMessage(booking.conversationId!)');
   });
 
   it('uses the readable shared body-text authority for supporting deposit copy', () => {
@@ -94,7 +126,11 @@ describe('Security Deposit Phase 2 mobile disclosure', () => {
     expect(summarySource).not.toContain('body: { color: colors.muted');
     expect(renterBookingsSource.match(/<SecurityDepositSummary/g)?.length).toBe(2);
     expect(ownerBookingsSource).toContain(
-      '<SecurityDepositSummary securityDeposit={booking.securityDeposit} />',
+      '<SecurityDepositSummary compact securityDeposit={booking.securityDeposit} />',
+    );
+    expect(summarySource).toContain('compactRequiredCard: { paddingVertical: spacing.sm }');
+    expect(summarySource).toContain(
+      'compactRequiredBody: { lineHeight: 20, marginTop: spacing.xs }',
     );
   });
 
@@ -103,10 +139,13 @@ describe('Security Deposit Phase 2 mobile disclosure', () => {
     expect(summarySource).not.toContain(
       'This booking does not require a refundable security deposit.',
     );
-    expect(summarySource).toContain('<Card style={!required && styles.compactCard}>');
+    expect(summarySource).toContain('!required && styles.compactCard');
+    expect(summarySource).toContain('compact && required && styles.compactRequiredCard');
     expect(summarySource).toContain('<Text style={[styles.body, styles.compactBody]}>');
     expect(summarySource).toContain('{required && (');
-    expect(summarySource).toContain('<Text style={styles.body}>');
+    expect(summarySource).toContain(
+      '<Text style={[styles.body, compact && styles.compactRequiredBody]}>',
+    );
     expect(summarySource).toContain('compactCard: { paddingVertical: spacing.sm }');
     expect(summarySource).toContain('compactBody: { marginTop: spacing.xs }');
     expect(summarySource).toContain('style={styles.noDepositTitle}');
@@ -114,7 +153,9 @@ describe('Security Deposit Phase 2 mobile disclosure', () => {
       "noDepositTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' }",
     );
     expect(summarySource).toContain("? 'Required · Not yet held'");
-    expect(summarySource).toContain('<StatusBadge label={status} tone="warning" />');
+    expect(summarySource).toContain(
+      "tone={securityDeposit.status === 'AUTHORIZED' ? 'success' : 'warning'}",
+    );
     expect(summarySource).toContain('Deposit processing is not yet available');
   });
 
