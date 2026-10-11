@@ -1,4 +1,10 @@
-import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  QueryClient,
+  QueryClientProvider,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -11,11 +17,11 @@ import type { OwnerStatus, OwnerWorkspace } from './src/auth/auth.types';
 import { AuthFlow } from './src/features/auth/AuthFlow';
 import { AppNavigation } from './src/navigation/AppNavigation';
 import type { MobileMode } from './src/navigation/routes';
-import { colors } from './src/theme/tokens';
+import { colors, spacing } from './src/theme/tokens';
 import { PushRegistration } from './src/notifications/PushRegistration';
 import { AppLockProvider, useAppLock } from './src/app-lock/AppLockProvider';
 import { AppLockScreen } from './src/app-lock/AppLockScreen';
-import { Button, Icon } from './src/ui/primitives';
+import { Button, Icon, StateView } from './src/ui/primitives';
 import {
   RenterOnboardingContactPage,
   RenterOnboardingKycPage,
@@ -42,6 +48,9 @@ import { resolvePersonaMode, shouldPresentOwnerFirstEntry } from './src/navigati
 import { isSafeRecoveryDeepLink } from './src/navigation/deep-links';
 import { pendingRecoveryDeepLinkStorage } from './src/navigation/pending-deep-link-storage';
 import Constants from 'expo-constants';
+import type { AcceptOwnerStaffInvitationResponse } from '@carrental/api-contracts';
+import { ApiError } from './src/auth/api-client';
+import { staffInvitationLink } from './src/features/staff/staff-invitation-link';
 
 const OnboardingStack = createNativeStackNavigator();
 
@@ -68,10 +77,33 @@ function StartupSplashGate() {
 
 function SessionApplication() {
   const auth = useAuth();
-  return <PrincipalApplication key={auth.user?.id ?? 'anonymous'} />;
+  const appScheme = Constants.expoConfig?.extra?.appScheme ?? 'carrental';
+  const [invitationToken, setInvitationToken] = useState<string | null>(null);
+  useEffect(() => {
+    const retain = (url: string | null) => {
+      const link = staffInvitationLink(url, appScheme);
+      if (link.matched) setInvitationToken(link.token ?? '');
+    };
+    void Linking.getInitialURL().then(retain);
+    const subscription = Linking.addEventListener('url', ({ url }) => retain(url));
+    return () => subscription.remove();
+  }, [appScheme]);
+  return (
+    <PrincipalApplication
+      key={auth.user?.id ?? 'anonymous'}
+      invitationToken={invitationToken}
+      onInvitationComplete={() => setInvitationToken(null)}
+    />
+  );
 }
 
-function PrincipalApplication() {
+function PrincipalApplication({
+  invitationToken,
+  onInvitationComplete,
+}: {
+  readonly invitationToken: string | null;
+  readonly onInvitationComplete: () => void;
+}) {
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -80,12 +112,18 @@ function PrincipalApplication() {
   );
   return (
     <QueryClientProvider client={queryClient}>
-      <AppContent />
+      <AppContent invitationToken={invitationToken} onInvitationComplete={onInvitationComplete} />
     </QueryClientProvider>
   );
 }
 
-function AppContent() {
+function AppContent({
+  invitationToken,
+  onInvitationComplete,
+}: {
+  readonly invitationToken: string | null;
+  readonly onInvitationComplete: () => void;
+}) {
   const auth = useAuth();
   const queryClient = useQueryClient();
   const userId = auth.user?.id;
@@ -241,6 +279,8 @@ function AppContent() {
         <Text>Loading secure session…</Text>
       </View>
     );
+  if (invitationToken !== null)
+    return <StaffInvitationAcceptance token={invitationToken} onComplete={onInvitationComplete} />;
   if (!auth.user) return <AuthFlow />;
   if (!renterCapable && !ownerEnabled) return <PersonaSelection />;
   if (
@@ -325,6 +365,156 @@ function AppContent() {
       />
     </AppLockProvider>
   );
+}
+
+function StaffInvitationAcceptance({
+  token,
+  onComplete,
+}: {
+  readonly token: string;
+  readonly onComplete: () => void;
+}) {
+  const auth = useAuth();
+  const [authScreen, setAuthScreen] = useState<'login' | 'register' | null>(null);
+  const [result, setResult] = useState<AcceptOwnerStaffInvitationResponse | null>(null);
+  const acceptInvitation = useMutation({
+    mutationFn: () =>
+      apiClient.request<AcceptOwnerStaffInvitationResponse>('/owner/staff-invitations/accept', {
+        body: JSON.stringify({ token }),
+        method: 'POST',
+      }),
+    onSuccess: async (accepted) => {
+      setResult(accepted);
+      await auth.refreshIdentity();
+    },
+  });
+  if (!token)
+    return (
+      <SafeAreaView edges={['top', 'bottom']} style={styles.invitationShell}>
+        <StateView
+          icon="alert-circle-outline"
+          title="Invitation link unavailable"
+          message="This Staff invitation link is incomplete. Ask the Owner to send it again."
+          actionLabel="Back"
+          onAction={onComplete}
+        />
+      </SafeAreaView>
+    );
+  if (!auth.user) {
+    if (authScreen) return <AuthFlow initialScreen={authScreen} />;
+    return (
+      <SafeAreaView edges={['top', 'bottom']} style={styles.invitationShell}>
+        <StateView
+          icon="people-outline"
+          title="Staff invitation"
+          message="Sign in with your existing CarShare account, or create an account, to continue."
+        />
+        <View style={styles.invitationActions}>
+          <Button label="Log in" onPress={() => setAuthScreen('login')} />
+          <Button
+            label="Create account"
+            variant="secondary"
+            onPress={() => setAuthScreen('register')}
+          />
+          <Button label="Back" variant="ghost" onPress={onComplete} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+  if (result)
+    return (
+      <SafeAreaView edges={['top', 'bottom']} style={styles.invitationShell}>
+        <StateView
+          icon="checkmark-circle-outline"
+          title="Invitation accepted"
+          message={`You now have ${result.role === 'MANAGER' ? 'Manager' : 'Staff'} access to this Owner workspace.`}
+          actionLabel="Continue"
+          onAction={onComplete}
+        />
+      </SafeAreaView>
+    );
+  const error = acceptInvitation.error;
+  const errorCode = error instanceof ApiError ? error.code : null;
+  const state = invitationErrorState(errorCode);
+  return (
+    <SafeAreaView edges={['top', 'bottom']} style={styles.invitationShell}>
+      <StateView
+        icon={state.icon}
+        loading={acceptInvitation.isPending}
+        title={acceptInvitation.isPending ? 'Accepting invitation' : state.title}
+        message={acceptInvitation.isPending ? 'Checking your account securely…' : state.message}
+      />
+      {!acceptInvitation.isPending ? (
+        <View style={styles.invitationActions}>
+          {errorCode === 'MOBILE_VERIFICATION_REQUIRED' ? (
+            <Button
+              label="Verify mobile number"
+              onPress={() => {
+                onComplete();
+                setTimeout(
+                  () =>
+                    void Linking.openURL(
+                      `${Constants.expoConfig?.extra?.appScheme ?? 'carrental'}://verification`,
+                    ),
+                  0,
+                );
+              }}
+            />
+          ) : errorCode === 'INVITATION_DESTINATION_MISMATCH' ? (
+            <Button label="Switch account" onPress={() => void auth.logout()} />
+          ) : !errorCode ? (
+            <Button label="Accept invitation" onPress={() => acceptInvitation.mutate()} />
+          ) : null}
+          <Button label="Back" variant="ghost" onPress={onComplete} />
+        </View>
+      ) : null}
+    </SafeAreaView>
+  );
+}
+
+function invitationErrorState(code: string | null) {
+  if (code === 'MOBILE_VERIFICATION_REQUIRED')
+    return {
+      icon: 'phone-portrait-outline' as const,
+      title: 'Verify your mobile number',
+      message:
+        'This invitation was sent to your mobile number. Verify that number on your CarShare account before continuing.',
+    };
+  if (code === 'INVITATION_DESTINATION_MISMATCH')
+    return {
+      icon: 'person-circle-outline' as const,
+      title: 'This invitation belongs to a different account',
+      message: 'Sign in with the CarShare account that uses the invited mobile number.',
+    };
+  if (code === 'OWNER_STAFF_INVITATION_EXPIRED')
+    return {
+      icon: 'time-outline' as const,
+      title: 'Invitation expired',
+      message: 'Ask the Owner to send a new invitation.',
+    };
+  if (code === 'OWNER_STAFF_INVITATION_REVOKED')
+    return {
+      icon: 'close-circle-outline' as const,
+      title: 'Invitation revoked',
+      message: 'This invitation is no longer active.',
+    };
+  if (code === 'OWNER_STAFF_INVITATION_CONSUMED')
+    return {
+      icon: 'checkmark-circle-outline' as const,
+      title: 'Invitation already used',
+      message: 'This invitation has already been accepted.',
+    };
+  if (code)
+    return {
+      icon: 'alert-circle-outline' as const,
+      title: 'Invitation unavailable',
+      message: 'This invitation could not be accepted. Ask the Owner to send it again.',
+    };
+  return {
+    icon: 'people-outline' as const,
+    title: 'Join Owner workspace',
+    message: 'Accept this invitation to help manage this Owner workspace.',
+  };
 }
 
 function PersonaSelection() {
@@ -525,4 +715,12 @@ const styles = StyleSheet.create({
   personaOptionTitle: { color: colors.ink, fontSize: 20, fontWeight: '800' },
   personaShell: { backgroundColor: colors.surface, flex: 1 },
   personaSupporting: { color: colors.subtleText, fontSize: 16, lineHeight: 23 },
+  invitationActions: { gap: spacing.sm, width: '100%' },
+  invitationShell: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    flex: 1,
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
 });

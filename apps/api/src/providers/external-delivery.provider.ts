@@ -7,11 +7,13 @@ import type {
   EmailMessage,
   LocalEmailCertificationProvider,
   LocalSmsCertificationProvider,
+  OtpSmsMessage,
   OtpSmsProvider,
   SmsMessage,
   TransactionalEmailProvider,
 } from './delivery.provider';
 import { EmailProvider, SmsProvider } from './delivery.provider';
+import { renderSmsMessage } from './delivery.provider';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -40,7 +42,7 @@ export class DisabledEmailProvider extends EmailProvider {
 
 export class DisabledSmsProvider extends SmsProvider {
   async send(): Promise<void> {
-    throw new Error('SMS OTP delivery is disabled.');
+    throw new Error('SMS delivery is disabled.');
   }
 }
 
@@ -162,11 +164,16 @@ export class SemaphoreSmsProvider
   }
 
   async send(message: SmsMessage): Promise<void> {
-    await this.sendOtp(message, deliveryKey('sms', message.to, message.template, message.code));
+    const secret = message.template === 'STAFF_INVITATION' ? message.invitationUrl : message.code;
+    await this.post(
+      renderSmsMessage(message),
+      message.to,
+      deliveryKey('sms', message.to, message.template, secret),
+    );
   }
 
-  async sendOtp(message: SmsMessage, idempotencyKey: string): Promise<DeliveryReceipt> {
-    return this.post(renderSms(message), message.to, idempotencyKey);
+  async sendOtp(message: OtpSmsMessage, idempotencyKey: string): Promise<DeliveryReceipt> {
+    return this.post(renderSmsMessage(message), message.to, idempotencyKey);
   }
 
   async sendCertification(to: string, idempotencyKey: string): Promise<DeliveryReceipt> {
@@ -351,12 +358,6 @@ export function verifyOtp(otp: string, encoded: string): boolean {
   const actual = scryptSync(otp, salt, 32);
   const expectedBuffer = Buffer.from(expected, 'hex');
   return actual.length === expectedBuffer.length && timingSafeEqual(actual, expectedBuffer);
-}
-
-function renderSms(message: SmsMessage): string {
-  return message.template === 'LOGIN_OTP'
-    ? `Your CarShare login code is ${message.code}. It expires soon.`
-    : `Your CarShare verification code is ${message.code}. It expires soon.`;
 }
 
 function deliveryKey(

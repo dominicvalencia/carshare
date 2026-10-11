@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import {
   OwnerStaffRole,
+  OwnerStaffInvitationChannel,
   OwnerStaffStatus,
   OwnerStaffVehicleScopeMode,
   type Prisma,
@@ -144,7 +145,7 @@ export class OwnerAccessService {
     readonly actor: OwnerAccessContext;
     readonly actorUserId: string;
     readonly displayName: string;
-    readonly normalizedEmail: string;
+    readonly normalizedEmail?: string | null;
     readonly permissions: readonly string[];
     readonly role: OwnerStaffRole;
     readonly vehicleScopeMode: OwnerStaffVehicleScopeMode;
@@ -157,7 +158,7 @@ export class OwnerAccessService {
       data: {
         createdByUserId: input.actorUserId,
         displayName: input.displayName.trim(),
-        normalizedEmail: input.normalizedEmail.trim().toLowerCase(),
+        normalizedEmail: input.normalizedEmail?.trim().toLowerCase() ?? null,
         ownerProfileId: input.actor.ownerProfileId,
         permissions: {
           create: permissionRows.map(({ id: permissionId }) => ({
@@ -170,6 +171,127 @@ export class OwnerAccessService {
       },
       include: { permissions: { include: { permission: true } } },
     });
+  }
+
+  async createInvitedMembership(input: {
+    readonly actor: OwnerAccessContext;
+    readonly actorUserId: string;
+    readonly destinationNormalized: string;
+    readonly displayName: string;
+    readonly permissions: readonly string[];
+    readonly role: OwnerStaffRole;
+    readonly vehicleIds: readonly string[];
+    readonly vehicleScopeMode: OwnerStaffVehicleScopeMode;
+  }) {
+    this.assertCanCreateMembership(input.actor, input.role);
+    const permissions = withDefaultOwnerStaffPermissions(input.permissions);
+    assertAssignableOwnerPermissions(input.role, permissions);
+    const permissionRows = await this.permissionRows(permissions);
+    const id = randomUUID();
+    const token = this.tokens.opaqueToken(id);
+    const now = new Date();
+
+    try {
+      const membership = await this.database.client.$transaction(async (transaction) => {
+        const existing = await transaction.ownerStaffInvitation.findFirst({
+          select: {
+            expiresAt: true,
+            id: true,
+            membership: { select: { id: true, status: true } },
+          },
+          where: {
+            channel: OwnerStaffInvitationChannel.SMS,
+            consumedAt: null,
+            destinationNormalized: input.destinationNormalized,
+            ownerProfileId: input.actor.ownerProfileId,
+            revokedAt: null,
+          },
+        });
+        if (existing && existing.expiresAt > now) throw this.duplicateInvitation();
+        if (existing)
+          await transaction.ownerStaffInvitation.update({
+            data: { revokedAt: now },
+            where: { id: existing.id },
+          });
+
+        const reusable =
+          existing?.membership.status === OwnerStaffStatus.INVITED
+            ? existing.membership
+            : await transaction.ownerStaffInvitation
+                .findFirst({
+                  orderBy: { createdAt: 'desc' },
+                  select: { membership: { select: { id: true, status: true } } },
+                  where: {
+                    channel: OwnerStaffInvitationChannel.SMS,
+                    destinationNormalized: input.destinationNormalized,
+                    ownerProfileId: input.actor.ownerProfileId,
+                  },
+                })
+                .then((row) =>
+                  row?.membership.status === OwnerStaffStatus.INVITED ? row.membership : null,
+                );
+        const membershipData = {
+          displayName: input.displayName.trim(),
+          normalizedEmail: null,
+          role: input.role,
+          vehicleScopeMode: input.vehicleScopeMode,
+        };
+        const created = reusable
+          ? await transaction.ownerStaffMembership.update({
+              data: membershipData,
+              include: { permissions: { include: { permission: true } } },
+              where: { id: reusable.id },
+            })
+          : await transaction.ownerStaffMembership.create({
+              data: {
+                ...membershipData,
+                createdByUserId: input.actorUserId,
+                ownerProfileId: input.actor.ownerProfileId,
+              },
+              include: { permissions: { include: { permission: true } } },
+            });
+        if (reusable)
+          await transaction.ownerStaffPermission.deleteMany({
+            where: { membershipId: created.id },
+          });
+        if (permissionRows.length)
+          await transaction.ownerStaffPermission.createMany({
+            data: permissionRows.map(({ id: permissionId }) => ({
+              assignedByUserId: input.actorUserId,
+              membershipId: created.id,
+              permissionId,
+            })),
+          });
+        await transaction.ownerStaffVehicleAssignment.deleteMany({
+          where: { membershipId: created.id },
+        });
+        if (input.vehicleIds.length)
+          await transaction.ownerStaffVehicleAssignment.createMany({
+            data: input.vehicleIds.map((vehicleId) => ({
+              assignedByUserId: input.actorUserId,
+              membershipId: created.id,
+              vehicleId,
+            })),
+          });
+        await transaction.ownerStaffInvitation.create({
+          data: {
+            channel: OwnerStaffInvitationChannel.SMS,
+            createdByUserId: input.actorUserId,
+            destinationNormalized: input.destinationNormalized,
+            expiresAt: new Date(now.getTime() + OWNER_STAFF_INVITATION_TTL_MS),
+            id,
+            membershipId: created.id,
+            ownerProfileId: input.actor.ownerProfileId,
+            tokenHash: token.hash,
+          },
+        });
+        return created;
+      });
+      return { membership, token: token.raw };
+    } catch (error) {
+      if (this.isUniqueConstraintError(error)) throw this.duplicateInvitation();
+      throw error;
+    }
   }
 
   assertCanManageTarget(actor: OwnerAccessContext, target: { role: OwnerStaffRole }): void {
@@ -212,7 +334,17 @@ export class OwnerAccessService {
   ) {
     this.requirePermission(actor, permission);
     const membership = await this.database.client.ownerStaffMembership.findUnique({
-      select: { id: true, ownerProfileId: true, role: true, status: true },
+      select: {
+        id: true,
+        invitations: {
+          orderBy: { createdAt: 'desc' },
+          select: { channel: true, destinationNormalized: true },
+          take: 1,
+        },
+        ownerProfileId: true,
+        role: true,
+        status: true,
+      },
       where: { id: membershipId },
     });
     if (
@@ -222,6 +354,8 @@ export class OwnerAccessService {
     )
       throw this.invalidInvitation();
     this.assertCanManageTarget(actor, membership);
+    const destination = membership.invitations[0];
+    if (!destination) throw this.invalidInvitation();
     const id = randomUUID();
     const token = this.tokens.opaqueToken(id);
     const now = new Date();
@@ -236,11 +370,14 @@ export class OwnerAccessService {
           expiresAt: new Date(now.getTime() + OWNER_STAFF_INVITATION_TTL_MS),
           id,
           membershipId,
+          ownerProfileId: membership.ownerProfileId,
+          channel: destination.channel,
+          destinationNormalized: destination.destinationNormalized,
           tokenHash: token.hash,
         },
       }),
     ]);
-    return token.raw;
+    return { ...destination, token: token.raw };
   }
 
   async revokeInvitation(actor: OwnerAccessContext, membershipId: string): Promise<void> {
@@ -265,14 +402,16 @@ export class OwnerAccessService {
       where: { id: invitationId },
     });
     const acceptingUser = await this.database.client.user.findUnique({
-      select: { emailVerifiedAt: true, normalizedEmail: true },
+      select: {
+        emailVerifiedAt: true,
+        mobileVerifiedAt: true,
+        normalizedEmail: true,
+        normalizedMobileNumber: true,
+      },
       where: { id: acceptingUserId },
     });
     if (
       !invitation ||
-      !acceptingUser?.normalizedEmail ||
-      !acceptingUser.emailVerifiedAt ||
-      acceptingUser.normalizedEmail !== invitation.membership.normalizedEmail ||
       !this.crypto.secureEqual(invitation.tokenHash, this.tokens.hashOpaque(rawToken))
     )
       throw this.invalidInvitation();
@@ -283,6 +422,7 @@ export class OwnerAccessService {
     if (invitation.expiresAt <= new Date())
       throw this.invitationStateError('EXPIRED', 'This Staff invitation has expired.');
     if (invitation.membership.status !== OwnerStaffStatus.INVITED) throw this.invalidInvitation();
+    this.assertInvitationDestination(invitation, acceptingUser);
 
     await this.database.client.$transaction(async (transaction) => {
       const consumed = await transaction.ownerStaffInvitation.updateMany({
@@ -309,6 +449,7 @@ export class OwnerAccessService {
       });
     });
     return {
+      channel: invitation.channel,
       membershipId: invitation.membershipId,
       ownerProfileId: invitation.membership.ownerProfileId,
       role: invitation.membership.role,
@@ -386,6 +527,60 @@ export class OwnerAccessService {
       message,
       state === 'CONSUMED' ? HttpStatus.CONFLICT : HttpStatus.UNPROCESSABLE_ENTITY,
     );
+  }
+
+  private assertInvitationDestination(
+    invitation: {
+      readonly channel: OwnerStaffInvitationChannel;
+      readonly destinationNormalized: string;
+    },
+    user: {
+      readonly emailVerifiedAt: Date | null;
+      readonly mobileVerifiedAt: Date | null;
+      readonly normalizedEmail: string | null;
+      readonly normalizedMobileNumber: string | null;
+    } | null,
+  ): void {
+    if (!user) throw this.invalidInvitation();
+    if (invitation.channel === OwnerStaffInvitationChannel.SMS) {
+      if (
+        user.normalizedMobileNumber === invitation.destinationNormalized &&
+        !user.mobileVerifiedAt
+      )
+        throw new ApplicationException(
+          'MOBILE_VERIFICATION_REQUIRED',
+          'Verify this mobile number before accepting the Staff invitation.',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      if (
+        !user.mobileVerifiedAt ||
+        user.normalizedMobileNumber !== invitation.destinationNormalized
+      )
+        throw new ApplicationException(
+          'INVITATION_DESTINATION_MISMATCH',
+          'This Staff invitation is intended for a different account.',
+          HttpStatus.FORBIDDEN,
+        );
+      return;
+    }
+    if (!user.emailVerifiedAt || user.normalizedEmail !== invitation.destinationNormalized)
+      throw new ApplicationException(
+        'INVITATION_DESTINATION_MISMATCH',
+        'This Staff invitation is intended for a different account.',
+        HttpStatus.FORBIDDEN,
+      );
+  }
+
+  private duplicateInvitation() {
+    return new ApplicationException(
+      'OWNER_STAFF_INVITATION_DUPLICATE',
+      'A live Staff invitation already exists for this destination.',
+      HttpStatus.CONFLICT,
+    );
+  }
+
+  private isUniqueConstraintError(error: unknown): boolean {
+    return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'P2002');
   }
 }
 

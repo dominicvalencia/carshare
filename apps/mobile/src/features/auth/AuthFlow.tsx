@@ -42,8 +42,8 @@ const credentialsSchema = z.object({
 });
 type Credentials = z.infer<typeof credentialsSchema>;
 
-export function AuthFlow() {
-  const [screen, setScreen] = useState<Screen>('welcome');
+export function AuthFlow({ initialScreen = 'welcome' }: { readonly initialScreen?: Screen } = {}) {
+  const [screen, setScreen] = useState<Screen>(initialScreen);
   const [resetEmail, setResetEmail] = useState('');
   const [resetToken, setResetToken] = useState('');
   const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding();

@@ -28,6 +28,7 @@ export function internalDestination(
   if (resource === 'payouts' && identifier)
     return { name: 'Payout', params: { payoutId: identifier } };
   if (resource === 'notifications') return { name: 'Notifications' };
+  if (resource === 'verification') return { name: 'Verification' };
   return null;
 }
 

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OwnerStaffRole, OwnerStaffStatus, OwnerStaffVehicleScopeMode } from '@carrental/database';
+import {
+  OwnerStaffInvitationChannel,
+  OwnerStaffRole,
+  OwnerStaffStatus,
+  OwnerStaffVehicleScopeMode,
+} from '@carrental/database';
 import type { OwnerAccessContext } from '../security/security-context';
 import { OwnerAccessService } from './owner-access.service';
 
@@ -202,6 +207,192 @@ describe('OwnerAccessService', () => {
     ).rejects.toThrow('ordinary Staff only');
   });
 
+  it('creates an SMS invitation and nullable-email membership in one transaction', async () => {
+    const membershipCreate = vi.fn().mockResolvedValue({ id: 'membership-sms' });
+    const invitationCreate = vi.fn().mockResolvedValue({ id: 'invitation-id' });
+    const transactionClient = {
+      ownerStaffInvitation: {
+        create: invitationCreate,
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn(),
+      },
+      ownerStaffMembership: { create: membershipCreate },
+      ownerStaffPermission: { createMany: vi.fn(), deleteMany: vi.fn() },
+      ownerStaffVehicleAssignment: { createMany: vi.fn(), deleteMany: vi.fn() },
+    };
+    const service = serviceWithClient({
+      $transaction: vi.fn(async (callback) => callback(transactionClient)),
+      permission: {
+        findMany: vi.fn(
+          ({
+            where: {
+              code: { in: codes },
+            },
+          }) => Promise.resolve(codes.map((code: string) => ({ id: `permission-${code}` }))),
+        ),
+      },
+    });
+
+    await expect(
+      service.createInvitedMembership({
+        actor: ownerContext,
+        actorUserId: 'owner-user',
+        destinationNormalized: '+639171234567',
+        displayName: 'SMS Staff',
+        permissions: ['vehicles.view'],
+        role: OwnerStaffRole.STAFF,
+        vehicleIds: [],
+        vehicleScopeMode: OwnerStaffVehicleScopeMode.ALL_VEHICLES,
+      }),
+    ).resolves.toMatchObject({ membership: { id: 'membership-sms' }, token: 'raw-token' });
+    expect(membershipCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ normalizedEmail: null }) }),
+    );
+    expect(invitationCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        channel: OwnerStaffInvitationChannel.SMS,
+        destinationNormalized: '+639171234567',
+        membershipId: 'membership-sms',
+        ownerProfileId: 'owner-a',
+        tokenHash: 'hash',
+      }),
+    });
+  });
+
+  it('revokes an expired live invitation before creating its SMS replacement', async () => {
+    const update = vi.fn();
+    const transactionClient = {
+      ownerStaffInvitation: {
+        create: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue({
+          expiresAt: new Date(Date.now() - 60_000),
+          id: 'expired-invitation',
+          membership: { id: 'membership-old', status: OwnerStaffStatus.INVITED },
+        }),
+        update,
+      },
+      ownerStaffMembership: {
+        create: vi.fn(),
+        update: vi.fn().mockResolvedValue({ id: 'membership-old' }),
+      },
+      ownerStaffPermission: { createMany: vi.fn(), deleteMany: vi.fn() },
+      ownerStaffVehicleAssignment: { createMany: vi.fn(), deleteMany: vi.fn() },
+    };
+    const service = serviceWithClient({
+      $transaction: vi.fn(async (callback) => callback(transactionClient)),
+      permission: {
+        findMany: vi.fn(
+          ({
+            where: {
+              code: { in: codes },
+            },
+          }) => Promise.resolve(codes.map((code: string) => ({ id: `permission-${code}` }))),
+        ),
+      },
+    });
+
+    await service.createInvitedMembership({
+      actor: ownerContext,
+      actorUserId: 'owner-user',
+      destinationNormalized: '+639171234567',
+      displayName: 'Replacement',
+      permissions: ['vehicles.view'],
+      role: OwnerStaffRole.STAFF,
+      vehicleIds: [],
+      vehicleScopeMode: OwnerStaffVehicleScopeMode.ALL_VEHICLES,
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      data: { revokedAt: expect.any(Date) },
+      where: { id: 'expired-invitation' },
+    });
+  });
+
+  it('rejects a duplicate live SMS invitation before creating a membership', async () => {
+    const membershipCreate = vi.fn();
+    const transactionClient = {
+      ownerStaffInvitation: {
+        findFirst: vi.fn().mockResolvedValue({
+          expiresAt: new Date(Date.now() + 60_000),
+          id: 'live-invitation',
+        }),
+      },
+      ownerStaffMembership: { create: membershipCreate },
+      ownerStaffPermission: { createMany: vi.fn(), deleteMany: vi.fn() },
+      ownerStaffVehicleAssignment: { createMany: vi.fn(), deleteMany: vi.fn() },
+    };
+    const service = serviceWithClient({
+      $transaction: vi.fn(async (callback) => callback(transactionClient)),
+      permission: {
+        findMany: vi.fn(
+          ({
+            where: {
+              code: { in: codes },
+            },
+          }) => Promise.resolve(codes.map((code: string) => ({ id: `permission-${code}` }))),
+        ),
+      },
+    });
+
+    await expect(
+      service.createInvitedMembership({
+        actor: ownerContext,
+        actorUserId: 'owner-user',
+        destinationNormalized: '+639171234567',
+        displayName: 'Duplicate',
+        permissions: ['vehicles.view'],
+        role: OwnerStaffRole.STAFF,
+        vehicleIds: [],
+        vehicleScopeMode: OwnerStaffVehicleScopeMode.ALL_VEHICLES,
+      }),
+    ).rejects.toMatchObject({ code: 'OWNER_STAFF_INVITATION_DUPLICATE' });
+    expect(membershipCreate).not.toHaveBeenCalled();
+  });
+
+  it.each([OwnerStaffInvitationChannel.SMS, OwnerStaffInvitationChannel.EMAIL])(
+    'preserves the %s channel and destination when reissuing',
+    async (channel) => {
+      const create = vi.fn();
+      const service = serviceWithClient({
+        $transaction: vi.fn(async (operations) => Promise.all(operations)),
+        ownerStaffInvitation: {
+          create,
+          updateMany: vi.fn(),
+        },
+        ownerStaffMembership: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: 'membership-a',
+            invitations: [
+              {
+                channel,
+                destinationNormalized:
+                  channel === OwnerStaffInvitationChannel.SMS
+                    ? '+639171234567'
+                    : 'staff@example.com',
+              },
+            ],
+            ownerProfileId: 'owner-a',
+            role: OwnerStaffRole.STAFF,
+            status: OwnerStaffStatus.INVITED,
+          }),
+        },
+      });
+
+      await expect(
+        service.issueInvitation(ownerContext, 'membership-a', 'owner-user'),
+      ).resolves.toMatchObject({ channel, token: 'raw-token' });
+      expect(create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          channel,
+          destinationNormalized:
+            channel === OwnerStaffInvitationChannel.SMS ? '+639171234567' : 'staff@example.com',
+          ownerProfileId: 'owner-a',
+          tokenHash: 'hash',
+        }),
+      });
+    },
+  );
+
   it('attributes delegated audit records to the real actor and membership', async () => {
     const create = vi.fn().mockResolvedValue({ id: 'audit' });
     const service = serviceWithClient({ auditLog: { create } });
@@ -234,7 +425,9 @@ describe('OwnerAccessService', () => {
       $transaction: transaction,
       ownerStaffInvitation: {
         findUnique: vi.fn().mockResolvedValue({
+          channel: OwnerStaffInvitationChannel.EMAIL,
           consumedAt: null,
+          destinationNormalized: 'invited@example.com',
           expiresAt: new Date(Date.now() + 60_000),
           id: 'invitation-id',
           membership: {
@@ -255,7 +448,7 @@ describe('OwnerAccessService', () => {
       },
     });
     await expect(service.acceptInvitation('raw-token', 'attacker-user')).rejects.toMatchObject({
-      code: 'OWNER_STAFF_INVITATION_INVALID',
+      code: 'INVITATION_DESTINATION_MISMATCH',
     });
     expect(transaction).not.toHaveBeenCalled();
   });
@@ -274,7 +467,9 @@ describe('OwnerAccessService', () => {
       $transaction: vi.fn(async (callback) => callback(transactionClient)),
       ownerStaffInvitation: {
         findUnique: vi.fn().mockResolvedValue({
+          channel: OwnerStaffInvitationChannel.EMAIL,
           consumedAt: null,
+          destinationNormalized: 'invited@example.com',
           expiresAt: new Date(Date.now() + 60_000),
           id: 'invitation-id',
           membership: {
@@ -300,5 +495,75 @@ describe('OwnerAccessService', () => {
     ]);
     expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
     expect(results.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+  });
+
+  it('accepts an SMS invitation only for the matching verified mobile number', async () => {
+    const transactionClient = {
+      ownerStaffInvitation: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      ownerStaffMembership: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    };
+    const service = serviceWithClient({
+      $transaction: vi.fn(async (callback) => callback(transactionClient)),
+      ownerStaffInvitation: {
+        findUnique: vi.fn().mockResolvedValue({
+          channel: OwnerStaffInvitationChannel.SMS,
+          consumedAt: null,
+          destinationNormalized: '+639171234567',
+          expiresAt: new Date(Date.now() + 60_000),
+          id: 'invitation-id',
+          membership: {
+            id: 'membership-a',
+            ownerProfileId: 'owner-a',
+            status: OwnerStaffStatus.INVITED,
+          },
+          membershipId: 'membership-a',
+          revokedAt: null,
+          tokenHash: 'hash',
+        }),
+      },
+      user: {
+        findUnique: vi.fn().mockResolvedValue({
+          emailVerifiedAt: null,
+          mobileVerifiedAt: new Date(),
+          normalizedEmail: null,
+          normalizedMobileNumber: '+639171234567',
+        }),
+      },
+    });
+
+    await expect(service.acceptInvitation('raw-token', 'staff-user')).resolves.toMatchObject({
+      channel: OwnerStaffInvitationChannel.SMS,
+      membershipId: 'membership-a',
+    });
+  });
+
+  it('requires mobile verification even when an SMS destination matches', async () => {
+    const service = serviceWithClient({
+      $transaction: vi.fn(),
+      ownerStaffInvitation: {
+        findUnique: vi.fn().mockResolvedValue({
+          channel: OwnerStaffInvitationChannel.SMS,
+          consumedAt: null,
+          destinationNormalized: '+639171234567',
+          expiresAt: new Date(Date.now() + 60_000),
+          id: 'invitation-id',
+          membership: { status: OwnerStaffStatus.INVITED },
+          revokedAt: null,
+          tokenHash: 'hash',
+        }),
+      },
+      user: {
+        findUnique: vi.fn().mockResolvedValue({
+          emailVerifiedAt: new Date(),
+          mobileVerifiedAt: null,
+          normalizedEmail: 'same-person@example.com',
+          normalizedMobileNumber: '+639171234567',
+        }),
+      },
+    });
+
+    await expect(service.acceptInvitation('raw-token', 'staff-user')).rejects.toMatchObject({
+      code: 'MOBILE_VERIFICATION_REQUIRED',
+    });
   });
 });

@@ -141,11 +141,39 @@ const presetOptions: readonly {
 ];
 
 function friendlyError(error: unknown): string {
+  if (error instanceof ApiError && error.code === 'OWNER_STAFF_MOBILE_INVALID')
+    return 'Enter a valid Philippine mobile number.';
+  if (error instanceof ApiError && error.code === 'OWNER_STAFF_INVITATION_DELIVERY_FAILED')
+    return 'Invitation created, but the SMS could not be sent. You can try sending it again from the Staff member details.';
+  if (error instanceof ApiError && error.code === 'RATE_LIMITED')
+    return 'Too many invitation attempts. Please wait before sending another invitation to this number.';
   if (error instanceof ApiError && error.status === 403)
     return 'You do not have permission to manage this Staff member.';
   if (error instanceof ApiError && error.status === 404)
     return 'This Staff membership is no longer available.';
   return 'We could not save that change. Check your connection and try again.';
+}
+
+export function isPlausiblePhilippineMobile(value: string): boolean {
+  const compact = value.replace(/[\s()-]/gu, '');
+  return /^(?:\+639|639|09)\d{9}$/u.test(compact);
+}
+
+export function friendlyPhilippineMobile(value: string): string {
+  const digits = value.replace(/\D/gu, '');
+  const local = digits.startsWith('63') ? `0${digits.slice(2)}` : digits;
+  return local.length === 11
+    ? `${local.slice(0, 4)} ${local.slice(4, 7)} ${local.slice(7)}`
+    : value.trim();
+}
+
+function invitationIdentity(member: OwnerStaffListItem): { label: string; value: string } | null {
+  if (member.status === 'INVITED' && member.invitation)
+    return {
+      label: member.invitation.channel === 'SMS' ? 'Mobile number' : 'Email',
+      value: member.invitation.destination,
+    };
+  return member.email ? { label: 'Email', value: member.email } : null;
 }
 
 function statusTone(status: OwnerStaffStatus): 'success' | 'warning' | 'neutral' | 'danger' {
@@ -282,9 +310,11 @@ function StaffDirectory({
                   <Text numberOfLines={1} style={styles.memberName}>
                     {member.displayName}
                   </Text>
-                  <Text numberOfLines={1} style={styles.meta}>
-                    {member.email}
-                  </Text>
+                  {invitationIdentity(member) ? (
+                    <Text numberOfLines={1} style={styles.meta}>
+                      {invitationIdentity(member)!.value}
+                    </Text>
+                  ) : null}
                   <Text style={styles.meta}>
                     {presetLabel(member.preset)} · {scopeLabel(member)}
                   </Text>
@@ -322,7 +352,7 @@ function InviteStaffScreen({
   const client = useQueryClient();
   const safeArea = useSafeAreaInsets();
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [mobileNumber, setMobileNumber] = useState('');
   const [preset, setPreset] = useState<OwnerStaffPreset>('OPERATIONS_STAFF');
   const [scope, setScope] = useState<OwnerStaffVehicleScopeMode>('ALL_VEHICLES');
   const [vehicleIds, setVehicleIds] = useState<string[]>([]);
@@ -337,7 +367,7 @@ function InviteStaffScreen({
         method: 'POST',
         body: JSON.stringify({
           displayName: name.trim(),
-          email: email.trim(),
+          mobileNumber: mobileNumber.trim(),
           preset,
           role: selectedOption.role,
           vehicleScopeMode: scope,
@@ -347,14 +377,28 @@ function InviteStaffScreen({
       }),
     onSuccess: async (member) => {
       await client.invalidateQueries({ queryKey: ['owner-staff', ownerProfileId] });
-      Alert.alert('Invitation sent', `We sent an invitation to ${member.email}.`);
+      Alert.alert(
+        'Invitation sent',
+        `We sent an invitation to ${friendlyPhilippineMobile(mobileNumber)}.`,
+      );
       onCreated(member.id);
     },
-    onError: (value) => setError(friendlyError(value)),
+    onError: async (value) => {
+      if (value instanceof ApiError && value.code === 'OWNER_STAFF_INVITATION_DELIVERY_FAILED') {
+        await client.invalidateQueries({ queryKey: ['owner-staff', ownerProfileId] });
+        Alert.alert(
+          'Invitation created',
+          'The SMS could not be sent. You can try sending the invitation again from the Staff member details.',
+        );
+        onBack();
+        return;
+      }
+      setError(friendlyError(value));
+    },
   });
   const valid =
     name.trim().length > 1 &&
-    /\S+@\S+\.\S+/.test(email) &&
+    isPlausiblePhilippineMobile(mobileNumber) &&
     (scope === 'ALL_VEHICLES' || vehicleIds.length > 0);
   return (
     <NestedScreen
@@ -383,11 +427,11 @@ function InviteStaffScreen({
         <Field label="Name" placeholder="Enter their name" value={name} onChangeText={setName} />
         <Field
           autoCapitalize="none"
-          keyboardType="email-address"
-          label="Email"
-          placeholder="name@example.com"
-          value={email}
-          onChangeText={setEmail}
+          keyboardType="phone-pad"
+          label="Mobile number"
+          placeholder="0917 123 4567"
+          value={mobileNumber}
+          onChangeText={setMobileNumber}
         />
       </Card>
       <SectionHeader title="Access level" />
@@ -928,6 +972,7 @@ function StaffDetailScreen({
         },
       ),
     onSuccess: async () => {
+      if (confirm === 'reissue') Alert.alert('Invitation sent again');
       setConfirm(null);
       await refresh();
     },
@@ -945,6 +990,7 @@ function StaffDetailScreen({
       />
     );
   const value = member.data;
+  const identity = invitationIdentity(value);
   const manageable = canManageMember(capacity, value);
   return (
     <NestedScreen
@@ -952,7 +998,7 @@ function StaffDetailScreen({
       onBack={onBack}
       eyebrow="Staff member"
       title={value.displayName}
-      subtitle={value.email}
+      subtitle={identity?.value}
     >
       <Card style={styles.detailCard}>
         <View style={styles.headingRow}>
@@ -976,7 +1022,10 @@ function StaffDetailScreen({
       {value.status === 'INVITED' && value.invitation ? (
         <Card style={styles.detailCard}>
           <Text style={styles.cardTitle}>Invitation</Text>
-          <DetailRow label="Invitation sent to" value={value.email} />
+          <DetailRow
+            label={identity?.label ?? 'Destination'}
+            value={value.invitation.destination}
+          />
           <DetailRow label="Expires" value={dateTimeLabel(value.invitation.expiresAt)} />
           {manageable ? (
             <View style={styles.actionRow}>

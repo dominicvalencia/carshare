@@ -199,4 +199,25 @@ describe('Owner Staff management UI', () => {
     expect(source).toContain('action.isPending');
     expect(source).toContain("invalidateQueries({ queryKey: ['owner-staff'");
   });
+
+  it('uses the shared Field for an SMS-first Philippine mobile invitation', () => {
+    expect(source).toContain('label="Mobile number"');
+    expect(source).toContain('keyboardType="phone-pad"');
+    expect(source).toContain('mobileNumber: mobileNumber.trim()');
+    expect(source).not.toContain('label="Email"\n          placeholder="name@example.com"');
+    expect(source).toContain('isPlausiblePhilippineMobile(mobileNumber)');
+  });
+
+  it('presents pending invitation identity by authoritative channel', () => {
+    expect(source).toContain("member.invitation.channel === 'SMS' ? 'Mobile number' : 'Email'");
+    expect(source).toContain('value: member.invitation.destination');
+    expect(source).toContain("Alert.alert('Invitation sent again')");
+  });
+
+  it('renders safe delivery and rate-limit failures', () => {
+    expect(source).toContain("error.code === 'OWNER_STAFF_INVITATION_DELIVERY_FAILED'");
+    expect(source).toContain('Invitation created, but the SMS could not be sent.');
+    expect(source).toContain("error.code === 'RATE_LIMITED'");
+    expect(source).toContain('Too many invitation attempts.');
+  });
 });

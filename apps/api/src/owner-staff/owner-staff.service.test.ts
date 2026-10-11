@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OwnerStaffRole, OwnerStaffStatus, OwnerStaffVehicleScopeMode } from '@carrental/database';
+import {
+  OwnerStaffInvitationChannel,
+  OwnerStaffRole,
+  OwnerStaffStatus,
+  OwnerStaffVehicleScopeMode,
+} from '@carrental/database';
 import type { OwnerAccessContext } from '../security/security-context';
 import { OwnerStaffPreset } from './owner-staff.dto';
 import { OwnerStaffService } from './owner-staff.service';
@@ -31,19 +36,28 @@ const manager: OwnerAccessContext = {
   vehicleScopeMode: OwnerStaffVehicleScopeMode.ALL_VEHICLES,
 };
 
-function createService(client: Record<string, unknown>, accessOverrides = {}) {
+function createService(
+  client: Record<string, unknown>,
+  accessOverrides = {},
+  deliveryOverrides: { email?: ReturnType<typeof vi.fn>; sms?: ReturnType<typeof vi.fn> } = {},
+) {
   return new OwnerStaffService(
     { client } as never,
     {
       assertCanManageTarget: vi.fn(),
+      createInvitedMembership: vi.fn(),
       createMembership: vi.fn(),
       issueInvitation: vi.fn(),
       requirePermission: vi.fn(),
       revokeInvitation: vi.fn(),
       ...accessOverrides,
     } as never,
-    { send: vi.fn() } as never,
-    { getOrThrow: vi.fn(() => 'http://localhost:3000') } as never,
+    { send: deliveryOverrides.email ?? vi.fn() } as never,
+    { send: deliveryOverrides.sms ?? vi.fn() } as never,
+    { assertAllowed: vi.fn() } as never,
+    {
+      getOrThrow: vi.fn((key: string) => (key === 'APP_ENV' ? 'local' : 'http://localhost:3000')),
+    } as never,
   );
 }
 
@@ -73,6 +87,255 @@ function member(overrides: Record<string, unknown> = {}) {
 }
 
 describe('OwnerStaffService management boundaries', () => {
+  it.each(['09171234567', '+639171234567'])(
+    'normalizes %s into an SMS invite without sending email',
+    async (mobileNumber) => {
+      const createInvitedMembership = vi.fn().mockResolvedValue({
+        membership: { id: 'staff-a' },
+        token: 'raw-token',
+      });
+      const emailSend = vi.fn();
+      const smsSend = vi.fn();
+      const invited = member({
+        invitations: [
+          {
+            channel: OwnerStaffInvitationChannel.SMS,
+            consumedAt: null,
+            createdAt: new Date(),
+            destinationNormalized: '+639171234567',
+            expiresAt: new Date(Date.now() + 86_400_000),
+            revokedAt: null,
+          },
+        ],
+        normalizedEmail: null,
+        status: OwnerStaffStatus.INVITED,
+        userId: null,
+      });
+      const service = new OwnerStaffService(
+        {
+          client: {
+            auditLog: { create: vi.fn() },
+            ownerProfile: {
+              findUnique: vi.fn().mockResolvedValue({
+                legalName: 'Dominic Rentals',
+                user: { profile: { displayName: 'Dominic' } },
+              }),
+            },
+            ownerStaffMembership: { findFirst: vi.fn().mockResolvedValue(invited) },
+            ownerStaffVehicleAssignment: { createMany: vi.fn() },
+            vehicle: { findMany: vi.fn() },
+          },
+        } as never,
+        {
+          assertCanManageTarget: vi.fn(),
+          createInvitedMembership,
+          requirePermission: vi.fn(),
+        } as never,
+        { send: emailSend } as never,
+        { send: smsSend } as never,
+        { assertAllowed: vi.fn() } as never,
+        {
+          getOrThrow: vi.fn((key: string) =>
+            key === 'APP_ENV' ? 'local' : 'http://localhost:3000',
+          ),
+        } as never,
+      );
+
+      await service.invite(
+        owner,
+        'owner-user',
+        {
+          displayName: 'SMS Staff',
+          mobileNumber,
+          preset: OwnerStaffPreset.OPERATIONS_STAFF,
+          role: OwnerStaffRole.STAFF,
+          vehicleScopeMode: OwnerStaffVehicleScopeMode.ALL_VEHICLES,
+        },
+        {},
+      );
+
+      expect(createInvitedMembership).toHaveBeenCalledWith(
+        expect.objectContaining({ destinationNormalized: '+639171234567' }),
+      );
+      expect(emailSend).not.toHaveBeenCalled();
+      expect(smsSend).toHaveBeenCalledWith({
+        invitationUrl: 'carrental://owner/staff-invitation?token=raw-token',
+        roleLabel: 'Staff',
+        template: 'STAFF_INVITATION',
+        to: '+639171234567',
+        workspaceLabel: 'Dominic Rentals',
+      });
+    },
+  );
+
+  it('rejects an invalid Philippine mobile before creating an invitation', async () => {
+    const createInvitedMembership = vi.fn();
+    const service = createService({}, { createInvitedMembership });
+
+    await expect(
+      service.invite(
+        owner,
+        'owner-user',
+        {
+          displayName: 'Invalid Mobile',
+          mobileNumber: '12345',
+          preset: OwnerStaffPreset.OPERATIONS_STAFF,
+          role: OwnerStaffRole.STAFF,
+          vehicleScopeMode: OwnerStaffVehicleScopeMode.ALL_VEHICLES,
+        },
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'OWNER_STAFF_MOBILE_INVALID' });
+    expect(createInvitedMembership).not.toHaveBeenCalled();
+  });
+
+  it('keeps the created invitation live and returns a safe error when SMS delivery fails', async () => {
+    const createInvitedMembership = vi.fn().mockResolvedValue({
+      membership: { id: 'staff-a' },
+      token: 'raw-token',
+    });
+    const invited = member({
+      invitations: [
+        {
+          channel: OwnerStaffInvitationChannel.SMS,
+          consumedAt: null,
+          createdAt: new Date(),
+          destinationNormalized: '+639171234567',
+          expiresAt: new Date(Date.now() + 86_400_000),
+          revokedAt: null,
+        },
+      ],
+      normalizedEmail: null,
+      status: OwnerStaffStatus.INVITED,
+      userId: null,
+    });
+    const smsSend = vi.fn().mockRejectedValue(new Error('secret provider response'));
+    const auditCreate = vi.fn();
+    const rateLimit = vi.fn();
+    const service = new OwnerStaffService(
+      {
+        client: {
+          auditLog: { create: auditCreate },
+          ownerProfile: {
+            findUnique: vi.fn().mockResolvedValue({ legalName: 'Owner', user: { profile: null } }),
+          },
+          ownerStaffMembership: { findFirst: vi.fn().mockResolvedValue(invited) },
+          vehicle: { findMany: vi.fn() },
+        },
+      } as never,
+      {
+        assertCanManageTarget: vi.fn(),
+        createInvitedMembership,
+        requirePermission: vi.fn(),
+      } as never,
+      { send: vi.fn() } as never,
+      { send: smsSend } as never,
+      { assertAllowed: rateLimit } as never,
+      {
+        getOrThrow: vi.fn((key: string) => (key === 'APP_ENV' ? 'local' : 'http://localhost:3000')),
+      } as never,
+    );
+
+    await expect(
+      service.invite(
+        owner,
+        'owner-user',
+        {
+          displayName: 'SMS Staff',
+          mobileNumber: '09171234567',
+          preset: OwnerStaffPreset.OPERATIONS_STAFF,
+          role: OwnerStaffRole.STAFF,
+          vehicleScopeMode: OwnerStaffVehicleScopeMode.ALL_VEHICLES,
+        },
+        { ipAddress: '127.0.0.1' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'OWNER_STAFF_INVITATION_DELIVERY_FAILED',
+      message: expect.not.stringContaining('secret provider response'),
+    });
+    expect(createInvitedMembership).toHaveBeenCalledTimes(1);
+    expect(rateLimit).toHaveBeenCalledWith(
+      'owner-staff-invite-sms',
+      expect.arrayContaining([
+        'actor:owner-user',
+        'workspace:owner-a',
+        'destination:+639171234567',
+      ]),
+      5,
+      3600,
+    );
+    expect(auditCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'OWNER_STAFF_INVITATION_DELIVERY_FAILED' }),
+      }),
+    );
+  });
+
+  it('rate-limits and delivers an SMS reissue with the fresh token', async () => {
+    const target = member({
+      id: 'staff-a',
+      invitations: [
+        {
+          channel: OwnerStaffInvitationChannel.SMS,
+          consumedAt: null,
+          createdAt: new Date(),
+          destinationNormalized: '+639171234567',
+          expiresAt: new Date(Date.now() + 86_400_000),
+          revokedAt: null,
+        },
+      ],
+      status: OwnerStaffStatus.INVITED,
+      userId: null,
+    });
+    const smsSend = vi.fn();
+    const emailSend = vi.fn();
+    const rateLimit = vi.fn();
+    const service = new OwnerStaffService(
+      {
+        client: {
+          auditLog: { create: vi.fn() },
+          ownerProfile: {
+            findUnique: vi.fn().mockResolvedValue({ legalName: 'Owner', user: { profile: null } }),
+          },
+          ownerStaffMembership: { findFirst: vi.fn().mockResolvedValue(target) },
+        },
+      } as never,
+      {
+        assertCanManageTarget: vi.fn(),
+        issueInvitation: vi.fn().mockResolvedValue({
+          channel: OwnerStaffInvitationChannel.SMS,
+          destinationNormalized: '+639171234567',
+          token: 'fresh-token',
+        }),
+        requirePermission: vi.fn(),
+      } as never,
+      { send: emailSend } as never,
+      { send: smsSend } as never,
+      { assertAllowed: rateLimit } as never,
+      {
+        getOrThrow: vi.fn((key: string) => (key === 'APP_ENV' ? 'local' : 'http://localhost:3000')),
+      } as never,
+    );
+
+    await service.reissueInvitation(owner, 'owner-user', 'staff-a', {
+      ipAddress: '127.0.0.1',
+    });
+
+    expect(rateLimit).toHaveBeenCalledWith(
+      'owner-staff-reissue-sms',
+      expect.arrayContaining(['destination:+639171234567']),
+      3,
+      3600,
+    );
+    expect(smsSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invitationUrl: expect.stringContaining('fresh-token'),
+        template: 'STAFF_INVITATION',
+      }),
+    );
+    expect(emailSend).not.toHaveBeenCalled();
+  });
+
   it('adds own-activity access to a Custom Staff invite with no configurable permissions', () => {
     const service = createService({});
     const resolver = service as unknown as {
@@ -103,7 +366,7 @@ describe('OwnerStaffService management boundaries', () => {
     );
     const input = {
       displayName: 'Manager',
-      email: 'manager@example.com',
+      mobileNumber: '09171234567',
       preset: OwnerStaffPreset.MANAGER,
       role: OwnerStaffRole.MANAGER,
       vehicleScopeMode: OwnerStaffVehicleScopeMode.ALL_VEHICLES,

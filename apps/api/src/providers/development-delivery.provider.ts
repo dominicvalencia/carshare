@@ -7,6 +7,7 @@ import {
   type EmailMessage,
   SmsProvider,
   type SmsMessage,
+  renderSmsMessage,
 } from './delivery.provider';
 
 export interface DevelopmentDelivery {
@@ -15,6 +16,7 @@ export interface DevelopmentDelivery {
   readonly destination: string;
   readonly template: EmailMessage['template'] | SmsMessage['template'];
   readonly secret: string;
+  readonly content?: string;
   readonly createdAt: string;
 }
 
@@ -101,13 +103,14 @@ export class DevelopmentSmsProvider extends SmsProvider {
     }
     this.inbox.add({
       channel: 'SMS',
+      content: renderSmsMessage(message),
       destination: message.to,
-      secret: message.code,
+      secret: message.template === 'STAFF_INVITATION' ? message.invitationUrl : message.code,
       template: message.template,
     });
     this.logger.info(
       { destination: `***${message.to.slice(-4)}`, template: message.template },
-      'Development SMS delivery accepted; OTP intentionally omitted',
+      'Development SMS delivery accepted; authentication secret intentionally omitted',
     );
   }
 }

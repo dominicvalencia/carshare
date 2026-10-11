@@ -56,12 +56,31 @@ the marketplace account, renter access, and other Owner memberships remain usabl
 supported only from `SUSPENDED` and restores configured permissions and scope. `DISABLED` is
 terminal through the normal management API.
 
-Invitations store only a one-way token hash plus expiry, consumption, and revocation state. Raw
-tokens are returned only to the delivery boundary and are not persisted or logged. Invitations
-expire after 24 hours. Reissue revokes prior live invitations; revoke, expiry, consumption, and
-replay fail closed. Acceptance requires an authenticated marketplace user with a verified,
-normalized email matching the invitation. Transactional conditional consumption permits exactly
-one concurrent winner and transitions the membership from `INVITED` to `ACTIVE`.
+New invitations are SMS-first and remain limited to Owner-workspace Manager and Staff delegation;
+ordinary Owner and Renter registration, login, password reset, and account identity remain
+email-based. Legacy EMAIL invitations remain valid through the same channel-flexible lifecycle.
+Destinations are normalized server-side, while invitations store only a one-way token hash plus
+channel, normalized destination, expiry, consumption, and revocation state. Raw tokens are returned
+only to the delivery boundary and are not persisted or logged. Invitations expire after 24 hours.
+Rate limits apply to the actor, workspace, destination, and source address. Reissue revokes prior
+live invitations; revoke, expiry, consumption, and replay fail closed.
+
+SMS acceptance requires an authenticated marketplace user whose normalized mobile matches the
+invitation and is already verified. A matching but unverified mobile is directed through the
+existing secondary mobile-verification flow; a different account fails without disclosing the raw
+destination. EMAIL acceptance retains the existing verified-email match. Existing users sign in
+normally, while new users create an ordinary marketplace account and then add and verify the
+invited mobile. Acceptance refreshes the authenticated `ownerWorkspaces` projection so delegated
+Owner mode becomes available without synthesizing `RoleCode.OWNER`. Transactional conditional
+consumption permits exactly one concurrent winner and transitions the membership from `INVITED` to
+`ACTIVE`.
+
+The `STAFF_INVITATION` SMS provider template contains the workspace label, delegated role, expiry
+expectation, and environment-specific app deep link. Development uses the captured-message provider
+for end-to-end testing; disabled and external providers preserve the same contract. A provider
+failure does not erase the already-created live invitation: the Owner sees a safe partial-success
+message and can reissue it. Tokens, normalized destinations, and provider errors are redacted from
+product UI and audit metadata.
 
 ## Vehicle and workspace scope
 

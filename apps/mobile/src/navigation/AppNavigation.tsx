@@ -364,6 +364,7 @@ export function AppNavigation(properties: AppNavigationProperties) {
             Payout: 'payouts/:payoutId',
             Favorites: 'favorites',
             Reviews: 'reviews',
+            Verification: 'verification',
             HostProfile: 'hosts/:hostReference',
             VehicleDetails: 'vehicles/:vehicleId',
             PublicReviews: 'reviews/public',

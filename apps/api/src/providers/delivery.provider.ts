@@ -14,10 +14,33 @@ export interface EmailMessage {
   readonly variables?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
-export interface SmsMessage {
+export interface OtpSmsMessage {
   readonly to: string;
   readonly template: 'LOGIN_OTP' | 'MOBILE_VERIFICATION_OTP';
   readonly code: string;
+}
+
+export interface StaffInvitationSmsMessage {
+  readonly invitationUrl: string;
+  readonly roleLabel: 'Manager' | 'Staff';
+  readonly template: 'STAFF_INVITATION';
+  readonly to: string;
+  readonly workspaceLabel: string;
+}
+
+export type SmsMessage = OtpSmsMessage | StaffInvitationSmsMessage;
+
+export function renderSmsMessage(message: SmsMessage): string {
+  if (message.template === 'STAFF_INVITATION') {
+    const workspace =
+      message.workspaceLabel.trim().length <= 40
+        ? message.workspaceLabel.trim()
+        : 'a CarShare owner';
+    return `CarShare: ${workspace} invited you to join as ${message.roleLabel}. Accept within 24 hours: ${message.invitationUrl}`;
+  }
+  return message.template === 'LOGIN_OTP'
+    ? `Your CarShare login code is ${message.code}. It expires soon.`
+    : `Your CarShare verification code is ${message.code}. It expires soon.`;
 }
 
 export type DeliveryStatus =
@@ -49,7 +72,7 @@ export interface LocalSmsCertificationProvider {
 }
 
 export interface OtpSmsProvider {
-  sendOtp(message: SmsMessage, idempotencyKey: string): Promise<DeliveryReceipt>;
+  sendOtp(message: OtpSmsMessage, idempotencyKey: string): Promise<DeliveryReceipt>;
 }
 
 export abstract class EmailProvider {

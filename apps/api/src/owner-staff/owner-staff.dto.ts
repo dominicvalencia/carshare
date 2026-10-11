@@ -2,7 +2,6 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayUnique,
   IsArray,
-  IsEmail,
   IsEnum,
   IsOptional,
   IsString,
@@ -34,7 +33,10 @@ export class OwnerStaffQueryDto {
 
 export class InviteOwnerStaffDto {
   @ApiProperty() @IsString() @MinLength(2) @MaxLength(150) displayName!: string;
-  @ApiProperty() @IsEmail() @MaxLength(320) email!: string;
+  @ApiProperty({ example: '09171234567' })
+  @IsString()
+  @MaxLength(32)
+  mobileNumber!: string;
   @ApiProperty({ enum: OwnerStaffRole }) @IsEnum(OwnerStaffRole) role!: OwnerStaffRole;
   @ApiProperty({ enum: OwnerStaffPreset }) @IsEnum(OwnerStaffPreset) preset!: OwnerStaffPreset;
   @ApiPropertyOptional({ type: [String] })

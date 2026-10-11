@@ -31,6 +31,7 @@ export type OwnerStaffStatus = 'INVITED' | 'ACTIVE' | 'SUSPENDED' | 'DISABLED';
 export type OwnerStaffVehicleScopeMode = 'ALL_VEHICLES' | 'SELECTED_VEHICLES';
 export type OwnerStaffPreset = 'MANAGER' | 'OPERATIONS_STAFF' | 'SUPPORT_STAFF' | 'CUSTOM';
 export type OwnerStaffInvitationState = 'PENDING' | 'EXPIRED' | 'REVOKED' | 'CONSUMED';
+export type OwnerStaffInvitationChannel = 'SMS' | 'EMAIL';
 
 export interface OwnerStaffVehicleSummary {
   readonly id: string;
@@ -44,8 +45,16 @@ export interface OwnerStaffListItem {
   readonly assignedVehicleCount: number;
   readonly disabledAt: string | null;
   readonly displayName: string;
-  readonly email: string;
+  readonly email: string | null;
   readonly id: string;
+  readonly invitation: {
+    readonly channel: OwnerStaffInvitationChannel;
+    readonly consumedAt: string | null;
+    readonly destination: string;
+    readonly expiresAt: string;
+    readonly revokedAt: string | null;
+    readonly state: OwnerStaffInvitationState;
+  } | null;
   readonly invitedAt: string;
   readonly permissions: readonly string[];
   readonly preset: OwnerStaffPreset;
@@ -57,18 +66,14 @@ export interface OwnerStaffListItem {
 
 export interface OwnerStaffDetail extends OwnerStaffListItem {
   readonly assignedVehicles: readonly OwnerStaffVehicleSummary[];
-  readonly invitation: {
-    readonly consumedAt: string | null;
-    readonly expiresAt: string;
-    readonly revokedAt: string | null;
-    readonly state: OwnerStaffInvitationState;
-  } | null;
   readonly suspensionReason: string | null;
 }
 
 export interface InviteOwnerStaffRequest {
   readonly displayName: string;
-  readonly email: string;
+  /** @deprecated Existing clients only. New invitations use mobileNumber. */
+  readonly email?: string;
+  readonly mobileNumber?: string;
   readonly permissions?: readonly string[];
   readonly preset: OwnerStaffPreset;
   readonly role: OwnerStaffRole;
@@ -104,6 +109,8 @@ export interface AcceptOwnerStaffInvitationRequest {
 
 export interface AcceptOwnerStaffInvitationResponse {
   readonly accepted: true;
+  readonly ownerProfileId: string;
+  readonly role: OwnerStaffRole;
 }
 
 export const SystemErrorCode = {

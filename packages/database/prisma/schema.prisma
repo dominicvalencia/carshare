@@ -84,6 +84,11 @@ enum OwnerStaffVehicleScopeMode {
   SELECTED_VEHICLES
 }
 
+enum OwnerStaffInvitationChannel {
+  SMS
+  EMAIL
+}
+
 enum VerificationType {
   ACCOUNT_EMAIL
   ACCOUNT_MOBILE
@@ -1499,7 +1504,7 @@ model OwnerStaffMembership {
   id                String                     @id @default(uuid()) @db.Uuid
   ownerProfileId    String                     @map("owner_profile_id") @db.Uuid
   userId            String?                    @map("user_id") @db.Uuid
-  normalizedEmail   String                     @map("normalized_email") @db.VarChar(320)
+  normalizedEmail   String?                    @map("normalized_email") @db.VarChar(320)
   displayName       String                     @map("display_name") @db.VarChar(150)
   role              OwnerStaffRole
   status            OwnerStaffStatus           @default(INVITED)
@@ -1526,6 +1531,7 @@ model OwnerStaffMembership {
 
   @@unique([ownerProfileId, normalizedEmail])
   @@unique([ownerProfileId, userId])
+  @@unique([id, ownerProfileId])
   @@index([userId, status])
   @@index([ownerProfileId, role, status])
   @@map("owner_staff_memberships")
@@ -1564,16 +1570,19 @@ model OwnerStaffVehicleAssignment {
 }
 
 model OwnerStaffInvitation {
-  id              String    @id @default(uuid()) @db.Uuid
-  membershipId    String    @map("membership_id") @db.Uuid
-  tokenHash       String    @unique @map("token_hash") @db.Char(64)
-  expiresAt       DateTime  @map("expires_at") @db.Timestamptz(3)
-  consumedAt      DateTime? @map("consumed_at") @db.Timestamptz(3)
-  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz(3)
-  createdByUserId String    @map("created_by_user_id") @db.Uuid
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  id                    String                      @id @default(uuid()) @db.Uuid
+  membershipId          String                      @map("membership_id") @db.Uuid
+  ownerProfileId        String                      @map("owner_profile_id") @db.Uuid
+  channel               OwnerStaffInvitationChannel @default(SMS)
+  destinationNormalized String                      @map("destination_normalized") @db.VarChar(320)
+  tokenHash             String                      @unique @map("token_hash") @db.Char(64)
+  expiresAt             DateTime                    @map("expires_at") @db.Timestamptz(3)
+  consumedAt            DateTime?                   @map("consumed_at") @db.Timestamptz(3)
+  revokedAt             DateTime?                   @map("revoked_at") @db.Timestamptz(3)
+  createdByUserId       String                      @map("created_by_user_id") @db.Uuid
+  createdAt             DateTime                    @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  membership OwnerStaffMembership @relation(fields: [membershipId], references: [id], onDelete: Restrict)
+  membership OwnerStaffMembership @relation(fields: [membershipId, ownerProfileId], references: [id, ownerProfileId], onDelete: Restrict)
   createdBy  User                 @relation("OwnerStaffInvitationCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
 
   @@index([membershipId, createdAt])

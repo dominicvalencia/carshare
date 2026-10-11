@@ -178,6 +178,51 @@ describe('external delivery providers', () => {
     fetchMock.mockRestore();
   });
 
+  it('renders and sends a Staff invitation through Semaphore', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ message_id: 43, status: 'Queued' }]), { status: 200 }),
+      );
+    const provider = new SemaphoreSmsProvider(
+      config({
+        SEMAPHORE_API_KEY: 'api-key',
+        SEMAPHORE_API_URL: 'https://api.semaphore.co/api/v4/messages',
+      }) as never,
+    );
+
+    await provider.send({
+      invitationUrl: 'https://carshare.test/owner/staff-invitation?token=opaque-token',
+      roleLabel: 'Manager',
+      template: 'STAFF_INVITATION',
+      to: '+639171234567',
+      workspaceLabel: 'Dominic Rentals',
+    });
+
+    const form = new URLSearchParams(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(form.get('number')).toBe('639171234567');
+    expect(form.get('message')).toBe(
+      'CarShare: Dominic Rentals invited you to join as Manager. Accept within 24 hours: https://carshare.test/owner/staff-invitation?token=opaque-token',
+    );
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).not.toEqual(
+      expect.objectContaining({ Authorization: expect.anything() }),
+    );
+    fetchMock.mockRestore();
+  });
+
+  it('fails Staff invitation delivery when SMS is disabled', async () => {
+    const { DisabledSmsProvider } = await import('./external-delivery.provider');
+    await expect(
+      new DisabledSmsProvider().send({
+        invitationUrl: 'https://carshare.test/invite?token=opaque',
+        roleLabel: 'Staff',
+        template: 'STAFF_INVITATION',
+        to: '+639171234567',
+        workspaceLabel: 'CarShare owner',
+      }),
+    ).rejects.toThrow('SMS delivery is disabled');
+  });
+
   it('sends fixed certification content and includes only an explicitly configured sender', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')

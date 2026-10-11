@@ -1,13 +1,16 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  OwnerStaffInvitationChannel,
   OwnerStaffRole,
   OwnerStaffStatus,
   OwnerStaffVehicleScopeMode,
   type Prisma,
 } from '@carrental/database';
 import type { ApiEnvironment } from '@carrental/config';
+import { passwordResetAppScheme } from '../auth/password-reset-link';
 import { ApplicationException } from '../common/errors/application.exception';
+import { normalizePhilippineMobile } from '../common/phone/philippine-mobile';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { OwnerAccessService } from '../owner-access/owner-access.service';
 import {
@@ -19,7 +22,8 @@ import {
   type OwnerPermissionCode,
   withDefaultOwnerStaffPermissions,
 } from '../owner-access/owner-permissions';
-import { EmailProvider } from '../providers/delivery.provider';
+import { EmailProvider, SmsProvider } from '../providers/delivery.provider';
+import { RateLimitService } from '../security/rate-limit.service';
 import type { OwnerAccessContext, RequestMetadata } from '../security/security-context';
 import {
   OwnerStaffPreset,
@@ -37,7 +41,14 @@ const safeMemberSelect = {
   id: true,
   invitations: {
     orderBy: { createdAt: 'desc' as const },
-    select: { consumedAt: true, createdAt: true, expiresAt: true, revokedAt: true },
+    select: {
+      channel: true,
+      consumedAt: true,
+      createdAt: true,
+      destinationNormalized: true,
+      expiresAt: true,
+      revokedAt: true,
+    },
     take: 1,
   },
   invitedAt: true,
@@ -70,6 +81,8 @@ export class OwnerStaffService {
     private readonly database: DatabaseService,
     private readonly access: OwnerAccessService,
     private readonly email: EmailProvider,
+    private readonly sms: SmsProvider,
+    private readonly rateLimits: RateLimitService,
     private readonly configuration: ConfigService<ApiEnvironment, true>,
   ) {}
 
@@ -108,41 +121,52 @@ export class OwnerStaffService {
       input.vehicleScopeMode,
       input.vehicleIds ?? [],
     );
-    const normalizedEmail = input.email.trim().toLowerCase();
-    const existing = await this.database.client.ownerStaffMembership.findUnique({
-      where: {
-        ownerProfileId_normalizedEmail: { ownerProfileId: context.ownerProfileId, normalizedEmail },
-      },
-    });
-    if (existing) throw this.conflict('A Staff membership already exists for this email.');
-    const member = await this.access.createMembership({
+    let destinationNormalized: string;
+    try {
+      destinationNormalized = normalizePhilippineMobile(input.mobileNumber);
+    } catch {
+      throw new ApplicationException(
+        'OWNER_STAFF_MOBILE_INVALID',
+        'Enter a valid Philippine mobile number.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    await this.rateLimits.assertAllowed(
+      'owner-staff-invite-sms',
+      [
+        `actor:${actorUserId}`,
+        `workspace:${context.ownerProfileId}`,
+        `destination:${destinationNormalized}`,
+        `ip:${request.ipAddress ?? 'unknown'}`,
+      ],
+      5,
+      3600,
+    );
+    const { membership: member, token } = await this.access.createInvitedMembership({
       actor: context,
       actorUserId,
+      destinationNormalized,
       displayName: input.displayName,
-      normalizedEmail,
       permissions,
       role: input.role,
+      vehicleIds,
       vehicleScopeMode: input.vehicleScopeMode,
     });
-    if (vehicleIds.length)
-      await this.database.client.ownerStaffVehicleAssignment.createMany({
-        data: vehicleIds.map((vehicleId) => ({
-          assignedByUserId: actorUserId,
-          membershipId: member.id,
-          vehicleId,
-        })),
-      });
-    const token = await this.access.issueInvitation(
-      context,
-      member.id,
-      actorUserId,
-      'staff.invite',
-    );
-    await this.sendInvitation(normalizedEmail, input.displayName.trim(), token);
     const result = await this.requireTarget(context, member.id, false);
     await this.audit('OWNER_STAFF_INVITED', actorUserId, context, result, request, {
+      channel: OwnerStaffInvitationChannel.SMS,
+      destination: this.maskMobile(destinationNormalized),
       permissions,
       vehicleIds,
+    });
+    await this.deliverSmsInvitation({
+      actorUserId,
+      context,
+      destination: destinationNormalized,
+      request,
+      role: result.role,
+      target: result,
+      token,
     });
     return this.publicMember(result, true);
   }
@@ -300,9 +324,41 @@ export class OwnerStaffService {
     const target = await this.requireMutableTarget(context, actorUserId, membershipId);
     if (target.status !== OwnerStaffStatus.INVITED)
       throw this.conflict('Only pending invitations can be reissued.');
-    const token = await this.access.issueInvitation(context, membershipId, actorUserId);
-    await this.sendInvitation(target.normalizedEmail, target.displayName, token);
-    await this.audit('OWNER_STAFF_INVITATION_REISSUED', actorUserId, context, target, request);
+    const previousInvitation = target.invitations[0];
+    if (!previousInvitation) throw this.conflict('No invitation is available to reissue.');
+    if (previousInvitation.channel === OwnerStaffInvitationChannel.SMS)
+      await this.rateLimits.assertAllowed(
+        'owner-staff-reissue-sms',
+        [
+          `actor:${actorUserId}`,
+          `workspace:${context.ownerProfileId}`,
+          `destination:${previousInvitation.destinationNormalized}`,
+          `ip:${request.ipAddress ?? 'unknown'}`,
+        ],
+        3,
+        3600,
+      );
+    const invitation = await this.access.issueInvitation(context, membershipId, actorUserId);
+    if (invitation.channel === OwnerStaffInvitationChannel.EMAIL)
+      await this.sendInvitation(
+        invitation.destinationNormalized,
+        target.displayName,
+        invitation.token,
+      );
+    await this.audit('OWNER_STAFF_INVITATION_REISSUED', actorUserId, context, target, request, {
+      channel: invitation.channel,
+      destination: this.maskDestination(invitation.channel, invitation.destinationNormalized),
+    });
+    if (invitation.channel === OwnerStaffInvitationChannel.SMS)
+      await this.deliverSmsInvitation({
+        actorUserId,
+        context,
+        destination: invitation.destinationNormalized,
+        request,
+        role: target.role,
+        target,
+        token: invitation.token,
+      });
     return { id: membershipId, status: target.status };
   }
 
@@ -317,7 +373,15 @@ export class OwnerStaffService {
     if (target.status !== OwnerStaffStatus.INVITED)
       throw this.conflict('Only pending invitations can be revoked.');
     await this.access.revokeInvitation(context, membershipId);
-    await this.audit('OWNER_STAFF_INVITATION_REVOKED', actorUserId, context, target, request);
+    const invitation = target.invitations[0];
+    await this.audit('OWNER_STAFF_INVITATION_REVOKED', actorUserId, context, target, request, {
+      ...(invitation
+        ? {
+            channel: invitation.channel,
+            destination: this.maskDestination(invitation.channel, invitation.destinationNormalized),
+          }
+        : {}),
+    });
     return { id: membershipId, status: target.status };
   }
 
@@ -330,7 +394,7 @@ export class OwnerStaffService {
         ...(request.correlationId ? { correlationId: request.correlationId } : {}),
         ...(request.ipAddress ? { ipAddress: request.ipAddress } : {}),
         metadata: {
-          acceptance: 'AUTHENTICATED_VERIFIED_EMAIL_MATCH',
+          acceptance: `AUTHENTICATED_VERIFIED_${accepted.channel}_MATCH`,
           ownerProfileId: accepted.ownerProfileId,
           targetRole: accepted.role,
         },
@@ -338,7 +402,11 @@ export class OwnerStaffService {
         targetType: 'OWNER_STAFF_MEMBERSHIP',
       },
     });
-    return { accepted: true };
+    return {
+      accepted: true,
+      ownerProfileId: accepted.ownerProfileId,
+      role: accepted.role,
+    };
   }
 
   private async changeStatus(
@@ -488,6 +556,8 @@ export class OwnerStaffService {
       invitation: invitation
         ? {
             consumedAt: invitation.consumedAt,
+            channel: invitation.channel,
+            destination: this.maskDestination(invitation.channel, invitation.destinationNormalized),
             expiresAt: invitation.expiresAt,
             revokedAt: invitation.revokedAt,
             state: invitation.consumedAt
@@ -528,7 +598,7 @@ export class OwnerStaffService {
   }
 
   private sendInvitation(to: string, displayName: string, token: string) {
-    const actionUrl = `${this.configuration.getOrThrow('API_PUBLIC_URL', { infer: true })}/owner/staff-invitation?token=${encodeURIComponent(token)}`;
+    const actionUrl = this.invitationUrl(token);
     return this.email.send({
       actionUrl,
       template: 'STAFF_INVITATION',
@@ -536,6 +606,93 @@ export class OwnerStaffService {
       token,
       variables: { display_name: displayName, expires_hours: 24 },
     });
+  }
+
+  private async deliverSmsInvitation(input: {
+    readonly actorUserId: string;
+    readonly context: OwnerAccessContext;
+    readonly destination: string;
+    readonly request: RequestMetadata;
+    readonly role: OwnerStaffRole;
+    readonly target: SafeMember;
+    readonly token: string;
+  }): Promise<void> {
+    const workspaceLabel = await this.workspaceLabel(input.context.ownerProfileId);
+    try {
+      await this.sms.send({
+        invitationUrl: this.invitationUrl(input.token),
+        roleLabel: input.role === OwnerStaffRole.MANAGER ? 'Manager' : 'Staff',
+        template: 'STAFF_INVITATION',
+        to: input.destination,
+        workspaceLabel,
+      });
+    } catch (error) {
+      await this.audit(
+        'OWNER_STAFF_INVITATION_DELIVERY_FAILED',
+        input.actorUserId,
+        input.context,
+        input.target,
+        input.request,
+        {
+          channel: OwnerStaffInvitationChannel.SMS,
+          destination: this.maskMobile(input.destination),
+          errorCategory: this.smsErrorCategory(error),
+        },
+      );
+      throw new ApplicationException(
+        'OWNER_STAFF_INVITATION_DELIVERY_FAILED',
+        'The invitation was created, but the SMS could not be sent. You can reissue it later.',
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+    await this.audit(
+      'OWNER_STAFF_INVITATION_DELIVERY_SENT',
+      input.actorUserId,
+      input.context,
+      input.target,
+      input.request,
+      {
+        channel: OwnerStaffInvitationChannel.SMS,
+        destination: this.maskMobile(input.destination),
+      },
+    );
+  }
+
+  private invitationUrl(token: string): string {
+    const scheme = passwordResetAppScheme(
+      this.configuration.getOrThrow('APP_ENV', { infer: true }),
+    );
+    return `${scheme}://owner/staff-invitation?token=${encodeURIComponent(token)}`;
+  }
+
+  private async workspaceLabel(ownerProfileId: string): Promise<string> {
+    const owner = await this.database.client.ownerProfile.findUnique({
+      select: {
+        legalName: true,
+        user: { select: { profile: { select: { displayName: true } } } },
+      },
+      where: { id: ownerProfileId },
+    });
+    return owner?.legalName?.trim() || owner?.user.profile?.displayName?.trim() || 'CarShare owner';
+  }
+
+  private maskMobile(value: string): string {
+    return `${value.slice(0, 4)}*****${value.slice(-3)}`;
+  }
+
+  private smsErrorCategory(error: unknown): string {
+    if (
+      error instanceof Error &&
+      ['SMS_PROVIDER_REJECTED', 'SMS_PROVIDER_RETRYABLE'].includes(error.message)
+    )
+      return error.message;
+    return 'SMS_DELIVERY_UNAVAILABLE';
+  }
+
+  private maskDestination(channel: OwnerStaffInvitationChannel, value: string): string {
+    if (channel === OwnerStaffInvitationChannel.SMS) return this.maskMobile(value);
+    const [local = '', domain = ''] = value.split('@');
+    return `${local.slice(0, 1)}***@${domain}`;
   }
 
   private audit(

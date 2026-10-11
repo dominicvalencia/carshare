@@ -33,14 +33,30 @@ describe('development authentication delivery inbox', () => {
       token: 'opaque.secret',
     });
     await sms.send({ template: 'MOBILE_VERIFICATION_OTP', to: '+639171234567', code: '123456' });
-    expect(inbox.list(['renter@example.test', '+639171234567'])).toEqual(
+    await sms.send({
+      invitationUrl: 'http://localhost/invite?token=opaque.invitation',
+      roleLabel: 'Manager',
+      template: 'STAFF_INVITATION',
+      to: '+639181234567',
+      workspaceLabel: 'Dominic Rentals',
+    });
+    expect(inbox.list(['renter@example.test', '+639171234567', '+639181234567'])).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ channel: 'EMAIL', secret: 'opaque.secret' }),
         expect.objectContaining({ channel: 'SMS', secret: '123456' }),
+        expect.objectContaining({
+          channel: 'SMS',
+          content:
+            'CarShare: Dominic Rentals invited you to join as Manager. Accept within 24 hours: http://localhost/invite?token=opaque.invitation',
+          destination: '+639181234567',
+          secret: 'http://localhost/invite?token=opaque.invitation',
+          template: 'STAFF_INVITATION',
+        }),
       ]),
     );
     expect(JSON.stringify(log.info.mock.calls)).not.toContain('opaque.secret');
     expect(JSON.stringify(log.info.mock.calls)).not.toContain('123456');
+    expect(JSON.stringify(log.info.mock.calls)).not.toContain('opaque.invitation');
   });
 
   it('cannot deliver or retain fake secrets in production', async () => {
