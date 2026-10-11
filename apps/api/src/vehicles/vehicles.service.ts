@@ -28,6 +28,8 @@ import { GeographyService } from '../geography/geography.service';
 import { OwnersService } from '../owners/owners.service';
 import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata } from '../security/security-context';
+import type { OwnerAccessContext } from '../security/security-context';
+import { OwnerAccessService } from '../owner-access/owner-access.service';
 import type {
   AddVehicleDocumentDto,
   AddVehiclePhotoDto,
@@ -129,6 +131,7 @@ export class VehiclesService {
     private readonly occupancy: OccupancyService,
     private readonly files: FilesService,
     private readonly geography: GeographyService,
+    private readonly ownerAccess: OwnerAccessService,
   ) {}
 
   categories() {
@@ -195,6 +198,14 @@ export class VehiclesService {
   }
 
   async listOwned(userId: string) {
+    return this.listAccessible({ ownerUserId: userId });
+  }
+
+  async listForOwnerAccess(context: OwnerAccessContext) {
+    return this.listAccessible(this.ownerAccess.vehicleReadWhere(context));
+  }
+
+  private async listAccessible(accessWhere: Prisma.VehicleWhereInput) {
     const vehicles = await this.database.client.vehicle.findMany({
       include: {
         category: true,
@@ -208,7 +219,7 @@ export class VehiclesService {
         policyVersions: { orderBy: { version: 'desc' }, take: 1 },
       },
       orderBy: { updatedAt: 'desc' },
-      where: { ownerUserId: userId, status: { not: VehicleLifecycleStatus.ARCHIVED } },
+      where: { ...accessWhere, status: { not: VehicleLifecycleStatus.ARCHIVED } },
     });
     const { endExclusive, startInclusive } = manilaTodayWindow();
     const vehicleIds = vehicles.map(({ id }) => id);
@@ -266,11 +277,21 @@ export class VehiclesService {
   }
 
   async getOwned(userId: string, id: string) {
+    return this.getAccessible({ id, ownerUserId: userId });
+  }
+
+  async getForOwnerAccess(context: OwnerAccessContext, id: string) {
+    await this.ownerAccess.assertVehicleAccess(context, id, 'vehicles.view');
+    return this.getAccessible({ id, ownerProfileId: context.ownerProfileId });
+  }
+
+  private async getAccessible(accessWhere: Prisma.VehicleWhereInput) {
     const vehicle = await this.database.client.vehicle.findFirst({
       include: ownerVehicleInclude,
-      where: { id, ownerUserId: userId },
+      where: accessWhere,
     });
     if (!vehicle) this.notFound();
+    const id = vehicle.id;
     const { endExclusive, startInclusive } = manilaTodayWindow();
     const [occupancies, blocks] = await Promise.all([
       this.database.client.vehicleOccupancy.findMany({
@@ -977,6 +998,10 @@ export class VehiclesService {
       POLICY_EDITABLE,
       'Availability cannot be changed in this state.',
     );
+    return this.createBlockedPeriod(userId, id, input);
+  }
+
+  private async createBlockedPeriod(actorUserId: string, id: string, input: CreateVehicleBlockDto) {
     const startsAt = new Date(input.startsAt);
     const endsAt = new Date(input.endsAt);
     if (startsAt >= endsAt) {
@@ -995,7 +1020,7 @@ export class VehiclesService {
         });
         return transaction.vehicleBlockedPeriod.create({
           data: {
-            createdByUserId: userId,
+            createdByUserId: actorUserId,
             endsAt,
             occupancyId: occupancy.id,
             privateNote: this.clean(input.privateNote) ?? null,
@@ -1015,8 +1040,33 @@ export class VehiclesService {
     }
   }
 
+  async addBlockedPeriodForOwnerAccess(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    id: string,
+    input: CreateVehicleBlockDto,
+  ) {
+    await this.ownerAccess.assertVehicleAccess(context, id, 'availability.update');
+    const vehicle = await this.database.client.vehicle.findUniqueOrThrow({ where: { id } });
+    await this.owners.assertDraftCapable(vehicle.ownerUserId);
+    this.assertState(
+      vehicle.status,
+      POLICY_EDITABLE,
+      'Availability cannot be changed in this state.',
+    );
+    return this.createBlockedPeriod(actorUserId, id, input);
+  }
+
   async blockedPeriods(userId: string, id: string) {
     await this.ownedRecord(userId, id);
+    return this.database.client.vehicleBlockedPeriod.findMany({
+      orderBy: { startsAt: 'asc' },
+      where: { removedAt: null, vehicleId: id },
+    });
+  }
+
+  async blockedPeriodsForOwnerAccess(context: OwnerAccessContext, id: string) {
+    await this.ownerAccess.assertVehicleAccess(context, id, 'availability.view');
     return this.database.client.vehicleBlockedPeriod.findMany({
       orderBy: { startsAt: 'asc' },
       where: { removedAt: null, vehicleId: id },
@@ -1026,6 +1076,10 @@ export class VehiclesService {
   async removeBlockedPeriod(userId: string, id: string, blockId: string) {
     await this.owners.assertDraftCapable(userId);
     await this.ownedRecord(userId, id);
+    return this.removeBlockedPeriodRecord(id, blockId);
+  }
+
+  private async removeBlockedPeriodRecord(id: string, blockId: string) {
     const result = await this.database.client.$transaction(async (transaction) => {
       const block = await transaction.vehicleBlockedPeriod.findFirst({
         where: { id: blockId, vehicleId: id },
@@ -1047,6 +1101,15 @@ export class VehiclesService {
       return 1;
     });
     return { removed: result === 1 };
+  }
+
+  async removeBlockedPeriodForOwnerAccess(
+    context: OwnerAccessContext,
+    id: string,
+    blockId: string,
+  ) {
+    await this.ownerAccess.assertVehicleAccess(context, id, 'availability.update');
+    return this.removeBlockedPeriodRecord(id, blockId);
   }
 
   async submit(userId: string, id: string, request: RequestMetadata) {

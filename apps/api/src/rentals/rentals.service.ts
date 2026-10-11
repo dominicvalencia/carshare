@@ -88,7 +88,12 @@ const inspectionCorrectionAdminInclude = {
   },
 } satisfies Prisma.InspectionAmendmentInclude;
 import { CryptoService } from '../security/crypto.service';
-import type { RequestMetadata, RequestPrincipal } from '../security/security-context';
+import type {
+  OwnerAccessContext,
+  RequestMetadata,
+  RequestPrincipal,
+} from '../security/security-context';
+import { OwnerAccessService } from '../owner-access/owner-access.service';
 import { hasBlockingAcceptedBookingAmendment } from '../bookings/booking-amendment-lifecycle-guard';
 import type {
   CreateClaimDto,
@@ -236,6 +241,11 @@ const rentalInclude = {
 
 type RentalRecord = Prisma.BookingGetPayload<{ include: typeof rentalInclude }>;
 
+type OwnerOperationAuthority = {
+  readonly actorUserId: string;
+  readonly ownerUserId: string;
+};
+
 export function securityDepositBlocksHandover(input: {
   readonly authorizedAmountMinor: bigint;
   readonly executionEnabled: boolean;
@@ -263,6 +273,7 @@ export class RentalsService {
     private readonly database: DatabaseService,
     private readonly crypto: CryptoService,
     private readonly audit: AuditService,
+    private readonly ownerAccess: OwnerAccessService,
     @Inject(ConfigService) configuration: ConfigService<ApiEnvironment, true>,
   ) {
     this.pickupEarlyMinutes = configuration.getOrThrow('PICKUP_WINDOW_EARLY_MINUTES', {
@@ -301,7 +312,41 @@ export class RentalsService {
     return this.serialize(booking);
   }
 
-  async ownerPickupInspectionDraft(ownerUserId: string, reference: string) {
+  async ownerDetailForAccess(context: OwnerAccessContext, reference: string) {
+    await this.ownerAccess.assertBookingAccess(context, reference, 'rentals.view');
+    await this.evaluateReadiness(reference);
+    return this.ownerAccessProjection(context, this.serialize(await this.load(reference)));
+  }
+
+  async listForOwnerAccess(context: OwnerAccessContext) {
+    const vehicle = this.ownerAccess.vehicleWhere(context, 'rentals.view');
+    const bookings = await this.database.client.booking.findMany({
+      include: rentalInclude,
+      orderBy: { rentalStart: 'desc' },
+      where: { vehicle },
+    });
+    return bookings.map((booking) => this.ownerAccessProjection(context, this.serialize(booking)));
+  }
+
+  private ownerAccessProjection<T>(context: OwnerAccessContext, value: T): T {
+    if (context.capacity === 'OWNER') return value;
+    const projected = structuredClone(value) as Record<string, unknown>;
+    if (!context.permissions.includes('claims.view')) delete projected.postReturnClaims;
+    if (!context.permissions.includes('disputes.view')) {
+      delete projected.disputes;
+      if (Array.isArray(projected.rentalIncidents))
+        for (const incident of projected.rentalIncidents)
+          if (incident && typeof incident === 'object')
+            delete (incident as Record<string, unknown>).disputes;
+    }
+    return projected as T;
+  }
+
+  async ownerPickupInspectionDraft(
+    ownerUserId: string,
+    reference: string,
+    actorUserId = ownerUserId,
+  ) {
     const booking = await this.database.client.booking.findUniqueOrThrow({
       select: { id: true, ownerUserId: true, vehicleId: true },
       where: { publicReference: reference },
@@ -317,7 +362,7 @@ export class RentalsService {
       where: {
         bookingId: booking.id,
         status: InspectionStatus.DRAFT,
-        submittedByUserId: ownerUserId,
+        submittedByUserId: actorUserId,
         type: InspectionType.PICKUP,
       },
     });
@@ -343,6 +388,7 @@ export class RentalsService {
     ownerUserId: string,
     reference: string,
     input: UpsertInspectionDraftMediaDto,
+    actorUserId = ownerUserId,
   ) {
     await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
@@ -363,13 +409,13 @@ export class RentalsService {
       if (booking.status !== BookingStatus.READY_FOR_PICKUP) {
         this.invalidState('Pickup evidence requires a booking ready for pickup.');
       }
-      await this.validateEvidenceFiles(transaction, ownerUserId, [input.fileAssetId]);
+      await this.validateEvidenceFiles(transaction, actorUserId, [input.fileAssetId]);
       await this.assertEvidenceNotWaived(transaction, booking.id, HandoverPhase.START);
       let draft = await transaction.inspection.findFirst({
         where: {
           bookingId: booking.id,
           status: InspectionStatus.DRAFT,
-          submittedByUserId: ownerUserId,
+          submittedByUserId: actorUserId,
           type: InspectionType.PICKUP,
         },
       });
@@ -382,7 +428,7 @@ export class RentalsService {
           data: {
             bookingId: booking.id,
             id: randomUUID(),
-            submittedByUserId: ownerUserId,
+            submittedByUserId: actorUserId,
             type: InspectionType.PICKUP,
             version: (latest?.version ?? 0) + 1,
           },
@@ -405,11 +451,11 @@ export class RentalsService {
           id: randomUUID(),
           inspectionId: draft.id,
           perspective: input.perspective,
-          submittedById: ownerUserId,
+          submittedById: actorUserId,
         },
       });
     });
-    return this.ownerPickupInspectionDraft(ownerUserId, reference);
+    return this.ownerPickupInspectionDraft(ownerUserId, reference, actorUserId);
   }
 
   async submitInspection(
@@ -418,7 +464,10 @@ export class RentalsService {
     type: InspectionType,
     input: SubmitInspectionDto,
     metadata: RequestMetadata,
+    ownerAuthority?: OwnerOperationAuthority,
   ) {
+    const authorizationUserId = ownerAuthority?.ownerUserId ?? userId;
+    const actorUserId = ownerAuthority?.actorUserId ?? userId;
     const inspectionId = await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
       let booking = await transaction.booking.findUniqueOrThrow({
@@ -426,9 +475,9 @@ export class RentalsService {
         where: { publicReference: reference },
       });
       const participantRole =
-        booking.ownerUserId === userId
+        booking.ownerUserId === authorizationUserId
           ? InspectionParticipantRole.OWNER
-          : booking.renterUserId === userId
+          : booking.renterUserId === authorizationUserId
             ? InspectionParticipantRole.RENTER
             : null;
       if (!participantRole) this.denied();
@@ -494,7 +543,7 @@ export class RentalsService {
         booking.id,
         type === InspectionType.PICKUP ? HandoverPhase.START : HandoverPhase.RETURN,
       );
-      await this.validateInspectionFiles(transaction, userId, input);
+      await this.validateInspectionFiles(transaction, actorUserId, input);
       this.validatePerspectives(input);
       if (type === InspectionType.PICKUP) this.validateConditionDisclosure(input);
       const activeKnownIssues =
@@ -542,7 +591,7 @@ export class RentalsService {
         where: {
           bookingId: booking.id,
           status: InspectionStatus.FINALIZED,
-          submittedByUserId: userId,
+          ...(ownerAuthority ? {} : { submittedByUserId: actorUserId }),
           type,
         },
       });
@@ -551,7 +600,7 @@ export class RentalsService {
         where: {
           bookingId: booking.id,
           status: InspectionStatus.DRAFT,
-          submittedByUserId: userId,
+          submittedByUserId: actorUserId,
           type,
         },
       });
@@ -581,7 +630,7 @@ export class RentalsService {
               odometerMeters: BigInt(input.odometerMeters),
               conditionDisclosureState:
                 type === InspectionType.PICKUP ? (input.conditionDisclosureState ?? null) : null,
-              submittedByUserId: userId,
+              submittedByUserId: actorUserId,
               type,
               version: (latest?.version ?? 0) + 1,
             },
@@ -603,7 +652,7 @@ export class RentalsService {
           id: randomUUID(),
           inspectionId: inspection.id,
           perspective: media.perspective,
-          submittedById: userId,
+          submittedById: actorUserId,
         })),
       });
       if (type === InspectionType.PICKUP && input.conditionIssues?.length) {
@@ -635,7 +684,7 @@ export class RentalsService {
               id: randomUUID(),
               inspectionId: inspection.id,
               perspective: InspectionPerspective.ADDITIONAL,
-              submittedById: userId,
+              submittedById: actorUserId,
             })),
           });
         }
@@ -668,7 +717,7 @@ export class RentalsService {
             data: {
               category: snapshot.category,
               classification: snapshot.classification,
-              createdByUserId: userId,
+              createdByUserId: actorUserId,
               description: snapshot.description.trim(),
               id: randomUUID(),
               inspectionId: inspection.id,
@@ -695,7 +744,7 @@ export class RentalsService {
               data: {
                 category: snapshot.category,
                 classification: snapshot.classification,
-                createdByUserId: userId,
+                createdByUserId: actorUserId,
                 description: snapshot.description.trim(),
                 status: VehicleKnownIssueStatus.ACTIVE,
                 vehicleArea: snapshot.vehicleArea,
@@ -707,7 +756,7 @@ export class RentalsService {
                 data: [...new Set(issue.evidenceFileAssetIds)].map((fileAssetId) => ({
                   fileAssetId,
                   issueId: persistent.id,
-                  uploadedByUserId: userId,
+                  uploadedByUserId: actorUserId,
                 })),
               });
             }
@@ -731,7 +780,7 @@ export class RentalsService {
               category: RentalIncidentCategory.VEHICLE_ISSUE,
               description: 'Safety-critical condition disclosed during the Start inspection.',
               id: randomUUID(),
-              reportedByUserId: userId,
+              reportedByUserId: actorUserId,
               severity: RentalIncidentSeverity.CRITICAL,
             },
           });
@@ -752,7 +801,7 @@ export class RentalsService {
               category: RentalIncidentCategory.VEHICLE_ISSUE,
               description: 'Operational condition requires Operations review before handover.',
               id: randomUUID(),
-              reportedByUserId: userId,
+              reportedByUserId: actorUserId,
               severity: RentalIncidentSeverity.MEDIUM,
             },
           });
@@ -772,7 +821,7 @@ export class RentalsService {
           id: randomUUID(),
           inspectionId: inspection.id,
           role: participantRole,
-          userId,
+          userId: actorUserId,
         },
       });
       await this.outbox(transaction, booking.id, `${type}_INSPECTION_SUBMITTED`, {
@@ -782,7 +831,12 @@ export class RentalsService {
       await this.analytics(transaction, booking, `${type}_INSPECTION_SUBMITTED`, metadata);
       return inspection.id;
     });
-    return { inspectionId, rental: await this.participantDetailById(userId, reference) };
+    return {
+      inspectionId,
+      rental: ownerAuthority
+        ? await this.ownerDetailById(ownerAuthority.ownerUserId, reference)
+        : await this.participantDetailById(userId, reference),
+    };
   }
 
   async reviewPickupInspection(
@@ -1206,6 +1260,7 @@ export class RentalsService {
     reference: string,
     input: HandoverTravelTransitionDto,
     metadata: RequestMetadata,
+    actorUserId = ownerUserId,
   ) {
     try {
       await this.database.client.$transaction(async (transaction) => {
@@ -1285,7 +1340,7 @@ export class RentalsService {
         }
         await transaction.bookingHandoverTravelEvent.create({
           data: {
-            actorUserId: ownerUserId,
+            actorUserId,
             bookingId: booking.id,
             id: randomUUID(),
             phase: input.phase,
@@ -1317,6 +1372,7 @@ export class RentalsService {
     reference: string,
     input: OverdueHandoverRecoveryDto,
     metadata: RequestMetadata,
+    actorUserId = ownerUserId,
   ) {
     await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
@@ -1399,7 +1455,7 @@ export class RentalsService {
           acknowledgementVersion: input.acknowledgementVersion,
           bookingId: booking.id,
           correlationId: metadata.correlationId ?? null,
-          reportedByUserId: ownerUserId,
+          reportedByUserId: actorUserId,
           reportedPickupAt: pickupAt,
           reportedReturnAt: returnAt,
           responseDeadlineAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
@@ -1412,7 +1468,7 @@ export class RentalsService {
         booking.status,
         booking.status,
         BookingActorType.USER,
-        ownerUserId,
+        actorUserId,
         `OVERDUE_HANDOVER_RECOVERY_${input.scope}_REPORTED`,
         metadata,
       );
@@ -1525,7 +1581,10 @@ export class RentalsService {
     phase: HandoverPhase,
     input: HandoverEvidenceWaiverDto,
     metadata: RequestMetadata,
+    ownerAuthority?: OwnerOperationAuthority,
   ) {
+    const authorizationUserId = ownerAuthority?.ownerUserId ?? userId;
+    const actorUserId = ownerAuthority?.actorUserId ?? userId;
     await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
       let booking = await transaction.booking.findUniqueOrThrow({
@@ -1541,7 +1600,7 @@ export class RentalsService {
       const ownerOverdueCollectionRecovery =
         overdueReturnRecovery &&
         fulfillment?.endMethod === EndFulfillmentMethod.OWNER_COLLECTION &&
-        userId === booking.ownerUserId;
+        authorizationUserId === booking.ownerUserId;
       const authorizedUserId =
         phase === HandoverPhase.START
           ? booking.ownerUserId
@@ -1549,7 +1608,7 @@ export class RentalsService {
               fulfillment?.endMethod === EndFulfillmentMethod.OWNER_COLLECTION
             ? booking.ownerUserId
             : booking.renterUserId;
-      if (userId !== authorizedUserId) this.denied();
+      if (authorizationUserId !== authorizedUserId) this.denied();
       if (booking.handoverWorkflowVersion !== HANDOVER_WORKFLOW_VERSION_B4)
         this.invalidState('Evidence waiver is available only for supported B4 bookings.');
       if (
@@ -1562,7 +1621,7 @@ export class RentalsService {
       });
       if (existing) {
         if (
-          existing.waivedByUserId !== userId ||
+          existing.waivedByUserId !== actorUserId ||
           existing.acknowledgementVersion !== input.acknowledgementVersion
         )
           this.invalidState('The evidence decision cannot be changed.');
@@ -1644,7 +1703,7 @@ export class RentalsService {
           data: {
             bookingId: booking.id,
             phase,
-            waivedByUserId: userId,
+            waivedByUserId: actorUserId,
             acknowledgementVersion: input.acknowledgementVersion,
             correlationId: metadata.correlationId ?? null,
             ...(phase === HandoverPhase.RETURN ? { reportedPhysicalHandoverAt } : {}),
@@ -1665,7 +1724,7 @@ export class RentalsService {
             data: {
               bookingId: booking.id,
               correlationId: metadata.correlationId ?? null,
-              reportedByUserId: userId,
+              reportedByUserId: actorUserId,
               reportedPhysicalHandoverAt,
             },
           });
@@ -1683,13 +1742,15 @@ export class RentalsService {
         booking.status,
         booking.status,
         BookingActorType.USER,
-        userId,
+        actorUserId,
         eventType,
         metadata,
       );
       await this.outbox(transaction, booking.id, eventType, { bookingId: booking.id });
     });
-    return this.participantDetailById(userId, reference);
+    return ownerAuthority
+      ? this.ownerDetailById(ownerAuthority.ownerUserId, reference)
+      : this.participantDetailById(userId, reference);
   }
 
   async respondToPickupHandoverReport(
@@ -1838,10 +1899,11 @@ export class RentalsService {
   }
 
   async confirmVehicleReceipt(
-    userId: string,
+    ownerUserId: string,
     reference: string,
     input: ConfirmVehicleReceiptDto,
     metadata: RequestMetadata,
+    actorUserId = ownerUserId,
   ) {
     await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
@@ -1856,7 +1918,7 @@ export class RentalsService {
         },
       });
       if (
-        booking.ownerUserId !== userId ||
+        booking.ownerUserId !== ownerUserId ||
         booking.ownerProfile.status !== OwnerProfileStatus.VERIFIED
       )
         this.denied();
@@ -1891,7 +1953,7 @@ export class RentalsService {
       if (!overdueReturnRecovery)
         await this.assertTravelArrived(transaction, booking.id, HandoverPhase.RETURN);
       const recorded = await transaction.bookingHandoverReturnReceipt.create({
-        data: { bookingId: booking.id, confirmedByUserId: userId },
+        data: { bookingId: booking.id, confirmedByUserId: actorUserId },
       });
       const now = recorded.confirmedAt;
       if (!booking.policySnapshot) this.invalidState('The booking policy is unavailable.');
@@ -1909,7 +1971,7 @@ export class RentalsService {
         BookingStatus.RETURN_PENDING,
         BookingStatus.RETURNED,
         BookingActorType.USER,
-        userId,
+        actorUserId,
         'RETURN_CONFIRMED_WITHOUT_INSPECTION_EVIDENCE',
         metadata,
       );
@@ -1923,7 +1985,7 @@ export class RentalsService {
       });
       await this.analytics(transaction, booking, 'RETURN_COMPLETED', metadata);
     });
-    return this.ownerDetailById(userId, reference);
+    return this.ownerDetailById(ownerUserId, reference);
   }
 
   async issuePickupCode(renterUserId: string, reference: string, metadata: RequestMetadata) {
@@ -2040,6 +2102,7 @@ export class RentalsService {
     reference: string,
     code: string,
     metadata: RequestMetadata,
+    actorUserId = ownerUserId,
   ) {
     const result = await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
@@ -2161,7 +2224,7 @@ export class RentalsService {
       }
       const now = new Date();
       await transaction.inspectionVerificationChallenge.update({
-        data: { consumedAt: now, consumedByUserId: ownerUserId },
+        data: { consumedAt: now, consumedByUserId: actorUserId },
         where: { id: challenge.id },
       });
       await transaction.booking.update({
@@ -2174,7 +2237,7 @@ export class RentalsService {
         BookingStatus.READY_FOR_PICKUP,
         BookingStatus.ACTIVE,
         BookingActorType.USER,
-        ownerUserId,
+        actorUserId,
         waiver ? 'PICKUP_CONFIRMED_WITHOUT_INSPECTION_EVIDENCE' : 'PICKUP_CONFIRMED',
         metadata,
       );
@@ -2203,13 +2266,20 @@ export class RentalsService {
     return this.ownerDetailById(ownerUserId, reference);
   }
 
-  async initiateReturn(userId: string, reference: string, metadata: RequestMetadata) {
+  async initiateReturn(
+    userId: string,
+    reference: string,
+    metadata: RequestMetadata,
+    ownerAuthority?: OwnerOperationAuthority,
+  ) {
+    const authorizationUserId = ownerAuthority?.ownerUserId ?? userId;
+    const actorUserId = ownerAuthority?.actorUserId ?? userId;
     await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
       const booking = await transaction.booking.findUniqueOrThrow({
         where: { publicReference: reference },
       });
-      this.assertParticipant(booking, userId);
+      this.assertParticipant(booking, authorizationUserId);
       if (booking.status === BookingStatus.RETURN_PENDING) return;
       if (booking.status !== BookingStatus.ACTIVE) {
         this.invalidState('Only an active rental can begin return.');
@@ -2225,14 +2295,16 @@ export class RentalsService {
         BookingStatus.ACTIVE,
         BookingStatus.RETURN_PENDING,
         BookingActorType.USER,
-        userId,
+        actorUserId,
         'RETURN_STARTED',
         metadata,
       );
       await this.outbox(transaction, booking.id, 'RETURN_STARTED', { bookingId: booking.id });
       await this.analytics(transaction, booking, 'RETURN_STARTED', metadata);
     });
-    return this.participantDetailById(userId, reference);
+    return ownerAuthority
+      ? this.ownerDetailById(ownerAuthority.ownerUserId, reference)
+      : this.participantDetailById(userId, reference);
   }
 
   async confirmReturn(
@@ -2240,7 +2312,10 @@ export class RentalsService {
     reference: string,
     input: ReturnConfirmationDto,
     metadata: RequestMetadata,
+    ownerAuthority?: OwnerOperationAuthority,
   ) {
+    const authorizationUserId = ownerAuthority?.ownerUserId ?? userId;
+    const actorUserId = ownerAuthority?.actorUserId ?? userId;
     await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
       const booking = await transaction.booking.findUniqueOrThrow({
@@ -2254,9 +2329,9 @@ export class RentalsService {
         where: { publicReference: reference },
       });
       const participantRole =
-        booking.ownerUserId === userId
+        booking.ownerUserId === authorizationUserId
           ? InspectionParticipantRole.OWNER
-          : booking.renterUserId === userId
+          : booking.renterUserId === authorizationUserId
             ? InspectionParticipantRole.RENTER
             : null;
       if (!participantRole) this.denied();
@@ -2335,7 +2410,7 @@ export class RentalsService {
             inspectionId: returned.id,
             reason: input.reason ?? null,
             role: participantRole,
-            userId,
+            userId: actorUserId,
           },
         });
       }
@@ -2410,7 +2485,7 @@ export class RentalsService {
           data: {
             blocksCompletion: true,
             bookingId: booking.id,
-            openedByUserId: userId,
+            openedByUserId: actorUserId,
             originType: DisputeOriginType.OTHER,
             reason: input.reason ?? 'A participant disputed the recorded return measurements.',
             status: DisputeStatus.EVIDENCE_COLLECTION,
@@ -2459,7 +2534,7 @@ export class RentalsService {
         BookingStatus.RETURN_PENDING,
         BookingStatus.RETURNED,
         BookingActorType.USER,
-        userId,
+        actorUserId,
         'RETURN_CONFIRMED',
         metadata,
       );
@@ -2473,7 +2548,9 @@ export class RentalsService {
       });
       await this.analytics(transaction, booking, 'RETURN_COMPLETED', metadata);
     });
-    return this.participantDetailById(userId, reference);
+    return ownerAuthority
+      ? this.ownerDetailById(ownerAuthority.ownerUserId, reference)
+      : this.participantDetailById(userId, reference);
   }
 
   async requestInspectionCorrection(
@@ -2707,13 +2784,16 @@ export class RentalsService {
     reference: string,
     input: CreateIncidentDto,
     metadata: RequestMetadata,
+    authority?: OwnerOperationAuthority,
   ) {
+    const actorUserId = authority?.actorUserId ?? userId;
+    const participantUserId = authority?.ownerUserId ?? userId;
     const incident = await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
       const booking = await transaction.booking.findUniqueOrThrow({
         where: { publicReference: reference },
       });
-      this.assertParticipant(booking, userId);
+      this.assertParticipant(booking, participantUserId);
       if (
         !new Set<BookingStatus>([
           BookingStatus.READY_FOR_PICKUP,
@@ -2723,7 +2803,7 @@ export class RentalsService {
       ) {
         this.invalidState('Incidents can be reported during pickup, active rental, or return.');
       }
-      await this.validateEvidenceFiles(transaction, userId, input.evidenceFileIds ?? []);
+      await this.validateEvidenceFiles(transaction, actorUserId, input.evidenceFileIds ?? []);
       const created = await transaction.rentalIncident.create({
         data: {
           blocksCompletion: input.severity === RentalIncidentSeverity.CRITICAL,
@@ -2737,7 +2817,7 @@ export class RentalsService {
             })),
           },
           id: randomUUID(),
-          reportedByUserId: userId,
+          reportedByUserId: actorUserId,
           severity: input.severity,
         },
       });

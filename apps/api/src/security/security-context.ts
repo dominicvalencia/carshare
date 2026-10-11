@@ -1,4 +1,20 @@
-import type { AdminRole, AdminStatus, RoleCode, UserStatus } from '@carrental/database';
+import type {
+  AdminRole,
+  AdminStatus,
+  OwnerStaffStatus,
+  OwnerStaffVehicleScopeMode,
+  RoleCode,
+  UserStatus,
+} from '@carrental/database';
+
+export interface OwnerAccessContext {
+  readonly capacity: 'OWNER' | 'MANAGER' | 'STAFF';
+  readonly membershipId?: string;
+  readonly membershipStatus: 'OWNER' | OwnerStaffStatus;
+  readonly ownerProfileId: string;
+  readonly permissions: readonly string[];
+  readonly vehicleScopeMode: OwnerStaffVehicleScopeMode;
+}
 
 export interface RequestPrincipal {
   readonly userId: string;
@@ -9,6 +25,7 @@ export interface RequestPrincipal {
   readonly adminUserId?: string;
   readonly adminRole?: AdminRole;
   readonly adminStatus?: AdminStatus;
+  readonly ownerAccess?: OwnerAccessContext;
 }
 
 declare global {

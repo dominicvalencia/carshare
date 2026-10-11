@@ -67,6 +67,23 @@ enum OwnerProfileStatus {
   SUSPENDED
 }
 
+enum OwnerStaffRole {
+  MANAGER
+  STAFF
+}
+
+enum OwnerStaffStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+enum OwnerStaffVehicleScopeMode {
+  ALL_VEHICLES
+  SELECTED_VEHICLES
+}
+
 enum VerificationType {
   ACCOUNT_EMAIL
   ACCOUNT_MOBILE
@@ -1143,6 +1160,13 @@ model User {
   moderationReportsAgainst              ModerationReport[]                         @relation("ModerationReportedUser")
   moderationReportsResolved             ModerationReport[]                         @relation("ModerationResolver")
   adminIdentity                         AdminUser?                                 @relation("AdminCredential")
+  ownerStaffMemberships                 OwnerStaffMembership[]                     @relation("OwnerStaffMemberUser")
+  ownerStaffMembershipsCreated          OwnerStaffMembership[]                     @relation("OwnerStaffMembershipCreator")
+  ownerStaffMembershipsSuspended        OwnerStaffMembership[]                     @relation("OwnerStaffMembershipSuspender")
+  ownerStaffMembershipsDisabled         OwnerStaffMembership[]                     @relation("OwnerStaffMembershipDisabler")
+  ownerStaffPermissionsAssigned         OwnerStaffPermission[]                     @relation("OwnerStaffPermissionAssigner")
+  ownerStaffVehiclesAssigned            OwnerStaffVehicleAssignment[]              @relation("OwnerStaffVehicleAssigner")
+  ownerStaffInvitationsCreated          OwnerStaffInvitation[]                     @relation("OwnerStaffInvitationCreator")
 
   @@index([status])
   @@map("users")
@@ -1224,7 +1248,8 @@ model Permission {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  roles RolePermission[]
+  roles                 RolePermission[]
+  ownerStaffAssignments OwnerStaffPermission[]
 
   @@map("permissions")
 }
@@ -1464,9 +1489,96 @@ model OwnerProfile {
   payouts              Payout[]
   financialObligations OwnerFinancialObligation[]
   reviews              Review[]
+  staffMemberships     OwnerStaffMembership[]
 
   @@index([status, submittedAt])
   @@map("owner_profiles")
+}
+
+model OwnerStaffMembership {
+  id                String                     @id @default(uuid()) @db.Uuid
+  ownerProfileId    String                     @map("owner_profile_id") @db.Uuid
+  userId            String?                    @map("user_id") @db.Uuid
+  normalizedEmail   String                     @map("normalized_email") @db.VarChar(320)
+  displayName       String                     @map("display_name") @db.VarChar(150)
+  role              OwnerStaffRole
+  status            OwnerStaffStatus           @default(INVITED)
+  vehicleScopeMode  OwnerStaffVehicleScopeMode @default(SELECTED_VEHICLES) @map("vehicle_scope_mode")
+  invitedAt         DateTime                   @default(now()) @map("invited_at") @db.Timestamptz(3)
+  activatedAt       DateTime?                  @map("activated_at") @db.Timestamptz(3)
+  suspendedAt       DateTime?                  @map("suspended_at") @db.Timestamptz(3)
+  suspendedByUserId String?                    @map("suspended_by_user_id") @db.Uuid
+  suspensionReason  String?                    @map("suspension_reason") @db.VarChar(1000)
+  disabledAt        DateTime?                  @map("disabled_at") @db.Timestamptz(3)
+  disabledByUserId  String?                    @map("disabled_by_user_id") @db.Uuid
+  createdByUserId   String                     @map("created_by_user_id") @db.Uuid
+  createdAt         DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  ownerProfile OwnerProfile                  @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  user         User?                         @relation("OwnerStaffMemberUser", fields: [userId], references: [id], onDelete: Restrict)
+  createdBy    User                          @relation("OwnerStaffMembershipCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  suspendedBy  User?                         @relation("OwnerStaffMembershipSuspender", fields: [suspendedByUserId], references: [id], onDelete: Restrict)
+  disabledBy   User?                         @relation("OwnerStaffMembershipDisabler", fields: [disabledByUserId], references: [id], onDelete: Restrict)
+  permissions  OwnerStaffPermission[]
+  vehicles     OwnerStaffVehicleAssignment[]
+  invitations  OwnerStaffInvitation[]
+
+  @@unique([ownerProfileId, normalizedEmail])
+  @@unique([ownerProfileId, userId])
+  @@index([userId, status])
+  @@index([ownerProfileId, role, status])
+  @@map("owner_staff_memberships")
+}
+
+model OwnerStaffPermission {
+  membershipId     String   @map("membership_id") @db.Uuid
+  permissionId     String   @map("permission_id") @db.Uuid
+  assignedByUserId String   @map("assigned_by_user_id") @db.Uuid
+  assignedAt       DateTime @default(now()) @map("assigned_at") @db.Timestamptz(3)
+
+  membership OwnerStaffMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  permission Permission           @relation(fields: [permissionId], references: [id], onDelete: Restrict)
+  assignedBy User                 @relation("OwnerStaffPermissionAssigner", fields: [assignedByUserId], references: [id], onDelete: Restrict)
+
+  @@id([membershipId, permissionId])
+  @@index([permissionId])
+  @@index([assignedByUserId])
+  @@map("owner_staff_permissions")
+}
+
+model OwnerStaffVehicleAssignment {
+  membershipId     String   @map("membership_id") @db.Uuid
+  vehicleId        String   @map("vehicle_id") @db.Uuid
+  assignedByUserId String   @map("assigned_by_user_id") @db.Uuid
+  assignedAt       DateTime @default(now()) @map("assigned_at") @db.Timestamptz(3)
+
+  membership OwnerStaffMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  vehicle    Vehicle              @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  assignedBy User                 @relation("OwnerStaffVehicleAssigner", fields: [assignedByUserId], references: [id], onDelete: Restrict)
+
+  @@id([membershipId, vehicleId])
+  @@index([vehicleId])
+  @@index([assignedByUserId])
+  @@map("owner_staff_vehicle_assignments")
+}
+
+model OwnerStaffInvitation {
+  id              String    @id @default(uuid()) @db.Uuid
+  membershipId    String    @map("membership_id") @db.Uuid
+  tokenHash       String    @unique @map("token_hash") @db.Char(64)
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz(3)
+  consumedAt      DateTime? @map("consumed_at") @db.Timestamptz(3)
+  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  membership OwnerStaffMembership @relation(fields: [membershipId], references: [id], onDelete: Restrict)
+  createdBy  User                 @relation("OwnerStaffInvitationCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([membershipId, createdAt])
+  @@index([expiresAt])
+  @@map("owner_staff_invitations")
 }
 
 model Verification {
@@ -1764,26 +1876,27 @@ model Vehicle {
   createdAt            DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt            DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  ownerProfile    OwnerProfile               @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
-  ownerUser       User                       @relation("VehicleOwnerUser", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  archivedByUser  User?                      @relation("VehicleArchivedByUser", fields: [archivedByUserId], references: [id], onDelete: SetNull)
-  category        VehicleCategory?           @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  features        VehicleFeatureAssignment[]
-  photos          VehiclePhoto[]
-  documents       VehicleDocument[]
-  location        VehicleLocation?
-  policyVersions  VehiclePolicyVersion[]
-  blockedPeriods  VehicleBlockedPeriod[]
-  statusHistory   VehicleStatusHistory[]
-  favorites       UserFavorite[]
-  recentViews     RenterRecentVehicleView[]
-  pricingQuotes   PricingQuote[]
-  analyticsEvents AnalyticsEvent[]
-  bookings        Booking[]
-  occupancies     VehicleOccupancy[]
-  amendmentHolds  BookingAmendmentHold[]
-  reviews         Review[]
-  knownIssues     VehicleKnownIssue[]
+  ownerProfile     OwnerProfile                  @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  ownerUser        User                          @relation("VehicleOwnerUser", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  archivedByUser   User?                         @relation("VehicleArchivedByUser", fields: [archivedByUserId], references: [id], onDelete: SetNull)
+  category         VehicleCategory?              @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  features         VehicleFeatureAssignment[]
+  photos           VehiclePhoto[]
+  documents        VehicleDocument[]
+  location         VehicleLocation?
+  policyVersions   VehiclePolicyVersion[]
+  blockedPeriods   VehicleBlockedPeriod[]
+  statusHistory    VehicleStatusHistory[]
+  favorites        UserFavorite[]
+  recentViews      RenterRecentVehicleView[]
+  pricingQuotes    PricingQuote[]
+  analyticsEvents  AnalyticsEvent[]
+  bookings         Booking[]
+  occupancies      VehicleOccupancy[]
+  amendmentHolds   BookingAmendmentHold[]
+  reviews          Review[]
+  knownIssues      VehicleKnownIssue[]
+  staffAssignments OwnerStaffVehicleAssignment[]
 
   @@index([ownerUserId, status, updatedAt])
   @@index([ownerProfileId])

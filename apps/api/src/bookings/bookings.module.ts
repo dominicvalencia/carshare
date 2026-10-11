@@ -22,12 +22,16 @@ import { AmendmentWithdrawalService } from './amendment-withdrawal.service';
 import { AmendmentOwnerDecisionService } from './amendment-owner-decision.service';
 import { AdminBookingAmendmentsService } from './admin-booking-amendments.service';
 import { OwnerHomeService } from './owner-home.service';
+import { OwnerWorkspaceBookingsController } from './owner-workspace-bookings.controller';
+import { OwnerWorkspaceHomeController } from './owner-workspace-home.controller';
 
 @Module({
   controllers: [
     RenterBookingsController,
     OwnerBookingsController,
     OwnerHomeController,
+    OwnerWorkspaceBookingsController,
+    OwnerWorkspaceHomeController,
     AdminBookingsController,
   ],
   exports: [BookingsService, OccupancyService],

@@ -85,6 +85,19 @@ describe('renter profile persona presentation', () => {
 });
 
 describe('hosting profile persona and verification presentation', () => {
+  it('places Staff in the existing Owner Operations menu', () => {
+    expect(ownerMore).toContain('label="Staff"');
+    expect(ownerMore).toContain("navigation.navigate('OwnerStaff')");
+  });
+
+  it('keeps Active rentals in actual Owner More without duplicating delegated Today navigation', () => {
+    expect(ownerMore).toContain("ownerWorkspace.capacity === 'OWNER'");
+    expect(ownerMore).toContain("hasOwnerPermission(ownerWorkspace, 'rentals.view')");
+    expect(ownerMore).toContain('label="Active rentals"');
+    expect(ownerMore).not.toContain('label="Booking requests"');
+    expect(navigationSource).toContain('name="OwnerRentals"');
+  });
+
   it('uses customer-safe Owner verification labels', () => {
     expect(source).toContain("DRAFT: 'Verification required'");
     expect(source).toContain("PENDING_VERIFICATION: 'Verification pending'");

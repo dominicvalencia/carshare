@@ -27,15 +27,21 @@ describe('conversationHeading', () => {
 describe('messages and notifications entry separation', () => {
   it('puts the notification bell and its own unread summary in Messages', () => {
     expect(source).toContain('Open notifications');
-    expect(source).toContain("['notification-summary', mode]");
+    expect(source).toContain("['notification-summary', queryScope]");
     expect(source).toContain('audience=${mode.toUpperCase()}');
     expect(source).toContain("navigation.navigate('Notifications')");
   });
 
   it('scopes conversation data and unread activity to the active role', () => {
-    expect(source).toContain("['conversations', mode]");
-    expect(source).toContain("['conversation', selected, mode]");
-    expect(source).toContain("['messages', selected, mode]");
+    expect(source).toContain("['conversations', queryScope]");
+    expect(source).toContain("['conversation', selected, queryScope]");
+    expect(source).toContain("['messages', selected, queryScope]");
     expect(source.match(/audience=\$\{mode\.toUpperCase\(\)\}/g)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('uses workspace-scoped routes and hides the composer without messages.reply', () => {
+    expect(source).toContain('/owner/workspaces/${ownerWorkspace!.ownerProfileId}/conversations');
+    expect(source).toContain("hasOwnerPermission(ownerWorkspace, 'messages.reply')");
+    expect(source).toContain('You have read-only access to this conversation.');
   });
 });

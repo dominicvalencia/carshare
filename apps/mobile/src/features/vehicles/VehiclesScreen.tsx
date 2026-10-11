@@ -25,6 +25,8 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { apiClient } from '../../auth/api-client';
+import type { OwnerWorkspace } from '../../auth/auth.types';
+import { hasOwnerPermission } from '../../navigation/owner-workspace';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateTimeField } from '../../ui/DateTimeField';
 import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
@@ -304,7 +306,15 @@ const documentGuidance: Record<string, string> = {
   OWNERSHIP_AUTHORIZATION: 'Add this if ownership or permission needs supporting evidence.',
 };
 
-export function VehiclesScreen() {
+export function VehiclesScreen({ ownerWorkspace }: { readonly ownerWorkspace?: OwnerWorkspace }) {
+  return ownerWorkspace && ownerWorkspace.capacity !== 'OWNER' ? (
+    <DelegatedVehiclesScreen ownerWorkspace={ownerWorkspace} />
+  ) : (
+    <ActualOwnerVehiclesScreen />
+  );
+}
+
+function ActualOwnerVehiclesScreen() {
   const client = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -398,6 +408,131 @@ export function VehiclesScreen() {
         )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function DelegatedVehiclesScreen({ ownerWorkspace }: { readonly ownerWorkspace: OwnerWorkspace }) {
+  const [selected, setSelected] = useState<Vehicle | null>(null);
+  const [managingAvailability, setManagingAvailability] = useState(false);
+  const vehicles = useQuery({
+    queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicles'],
+    queryFn: () =>
+      apiClient.request<Vehicle[]>(`/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles`),
+    retry: false,
+  });
+  if (selected)
+    return (
+      <SafeAreaView edges={['top']} style={styles.flex}>
+        <ScrollView contentContainerStyle={styles.page}>
+          <BackControl
+            label={managingAvailability ? 'Vehicle detail' : 'Vehicles'}
+            onPress={() =>
+              managingAvailability ? setManagingAvailability(false) : setSelected(null)
+            }
+          />
+          {managingAvailability ? (
+            <AvailabilityStep
+              canUpdate={hasOwnerPermission(ownerWorkspace, 'availability.update')}
+              endpointBase={`/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles/${selected.id}`}
+              id={selected.id}
+              ownerProfileId={ownerWorkspace.ownerProfileId}
+              vehicle={selected}
+              onSaved={() => void vehicles.refetch()}
+            />
+          ) : (
+            <>
+              <Text style={styles.title}>
+                {[selected.make, selected.model].filter(Boolean).join(' ')}
+              </Text>
+              <VehicleDetailSection
+                action={
+                  hasOwnerPermission(ownerWorkspace, 'availability.view') ? (
+                    <DetailAction
+                      label="Manage availability"
+                      onPress={() => setManagingAvailability(true)}
+                    />
+                  ) : null
+                }
+                emphasized
+                title="Marketplace & availability"
+              >
+                <VehicleDetailRow label="Review status" value={ownerMarketplaceStatus(selected)} />
+                <VehicleDetailRow
+                  label="Availability"
+                  value={availabilityTodayLabel(selected.availabilityToday)}
+                />
+              </VehicleDetailSection>
+            </>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  return (
+    <SafeAreaView edges={['top']} style={styles.flex}>
+      <ScrollView contentContainerStyle={styles.page}>
+        <View style={styles.fleetHeader}>
+          <Text style={styles.eyebrow}>OWNER FLEET</Text>
+          <Text style={styles.fleetTitle}>Vehicles</Text>
+          <Text style={styles.fleetHelper}>Read-only access for this Owner workspace.</Text>
+        </View>
+        {vehicles.isPending ? <StateView loading title="Loading assigned vehicles…" /> : null}
+        {vehicles.isError ? (
+          <StateView
+            actionLabel="Retry"
+            icon="cloud-offline-outline"
+            message="You may no longer have access to these vehicles."
+            onAction={() => void vehicles.refetch()}
+            title="Vehicles unavailable"
+          />
+        ) : null}
+        {vehicles.data?.map((vehicle) => (
+          <DelegatedVehicleCard
+            key={vehicle.id}
+            vehicle={vehicle}
+            onPress={() => setSelected(vehicle)}
+          />
+        ))}
+        {!vehicles.isPending && !vehicles.isError && vehicles.data?.length === 0 ? (
+          <StateView
+            icon="car-sport-outline"
+            message="You do not currently have any vehicles assigned in this workspace."
+            title="No assigned vehicles"
+          />
+        ) : null}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function DelegatedVehicleCard({
+  vehicle,
+  onPress,
+}: {
+  readonly vehicle: Vehicle;
+  readonly onPress: () => void;
+}) {
+  const cover = vehicle.photos.find(({ isCover }) => isCover) ?? vehicle.photos[0];
+  const title = [vehicle.modelYear, vehicle.make, vehicle.model].filter(Boolean).join(' ');
+  const metadata = [vehicle.category?.name, vehicle.location?.city].filter(Boolean).join(' · ');
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} style={styles.fleetCard}>
+      <VehicleImage
+        accessibilityLabel={`${title || 'Vehicle'} cover photo`}
+        contentPath={cover?.fileAsset.contentGrant?.contentPath}
+        style={styles.fleetImage}
+      />
+      <View style={styles.fleetContent}>
+        <Text numberOfLines={2} style={styles.fleetVehicleTitle}>
+          {title || 'Vehicle'}
+        </Text>
+        <StatusBadge
+          label={vehicleStatusLabel(vehicle.status)}
+          tone={vehicleTone(vehicle.status)}
+        />
+        {metadata ? <Text style={styles.fleetMetadata}>{metadata}</Text> : null}
+        <Text style={styles.fleetMarketplaceState}>Read only</Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -3108,19 +3243,31 @@ function PolicyStep({
 }
 
 function AvailabilityStep({
+  canUpdate = true,
+  endpointBase,
   id,
+  ownerProfileId,
   vehicle,
   onSaved,
 }: {
   readonly id: string;
+  readonly canUpdate?: boolean;
+  readonly endpointBase?: string;
+  readonly ownerProfileId?: string;
   readonly vehicle: Vehicle;
   readonly onSaved: () => void;
 }) {
   const current = vehicle.policyVersions[0];
   const client = useQueryClient();
+  const blockQueryKey = ownerProfileId
+    ? ['owner-workspace', ownerProfileId, 'vehicle-blocks', id]
+    : ['vehicle-blocks', id];
   const blocks = useQuery({
-    queryKey: ['vehicle-blocks', id],
-    queryFn: () => apiClient.request<VehicleBlock[]>(`/owner/vehicles/${id}/blocked-periods`),
+    queryKey: blockQueryKey,
+    queryFn: () =>
+      apiClient.request<VehicleBlock[]>(
+        `${endpointBase ?? `/owner/vehicles/${id}`}/blocked-periods`,
+      ),
   });
   const [reason, setReason] = useState('PERSONAL_USE');
   const [startsAt, setStartsAt] = useState(() => {
@@ -3137,7 +3284,7 @@ function AvailabilityStep({
   });
   const add = useMutation({
     mutationFn: () =>
-      apiClient.request(`/owner/vehicles/${id}/blocked-periods`, {
+      apiClient.request(`${endpointBase ?? `/owner/vehicles/${id}`}/blocked-periods`, {
         body: JSON.stringify({
           startsAt: startsAt.toISOString(),
           endsAt: endsAt.toISOString(),
@@ -3148,7 +3295,7 @@ function AvailabilityStep({
     onSuccess: () => {
       onSaved();
       void Promise.all([
-        client.invalidateQueries({ queryKey: ['vehicle-blocks', id] }),
+        client.invalidateQueries({ queryKey: blockQueryKey }),
         client.invalidateQueries({ queryKey: ['vehicle', id] }),
         client.invalidateQueries({ queryKey: ['vehicles'] }),
         client.invalidateQueries({ queryKey: ['owner-vehicle-dashboard-summary'] }),
@@ -3157,11 +3304,13 @@ function AvailabilityStep({
   });
   const remove = useMutation({
     mutationFn: (blockId: string) =>
-      apiClient.request(`/owner/vehicles/${id}/blocked-periods/${blockId}`, { method: 'DELETE' }),
+      apiClient.request(`${endpointBase ?? `/owner/vehicles/${id}`}/blocked-periods/${blockId}`, {
+        method: 'DELETE',
+      }),
     onSuccess: () => {
       Alert.alert('Unavailable period removed.');
       void Promise.all([
-        client.invalidateQueries({ queryKey: ['vehicle-blocks', id] }),
+        client.invalidateQueries({ queryKey: blockQueryKey }),
         client.invalidateQueries({ queryKey: ['vehicle', id] }),
         client.invalidateQueries({ queryKey: ['vehicles'] }),
         client.invalidateQueries({ queryKey: ['owner-vehicle-dashboard-summary'] }),
@@ -3179,27 +3328,32 @@ function AvailabilityStep({
         Current preparation buffer: {(current?.turnaroundMinutes ?? 120) / 60} hours between
         rentals.
       </Text>
-      <Text style={styles.label}>Add an unavailable period</Text>
-      <SearchableReferenceSelector
-        label="Reason"
-        options={[
-          { id: 'PERSONAL_USE', code: 'PERSONAL_USE', name: 'Personal use' },
-          { id: 'MAINTENANCE', code: 'MAINTENANCE', name: 'Maintenance' },
-          { id: 'UNAVAILABLE', code: 'UNAVAILABLE', name: 'Unavailable' },
-          { id: 'OTHER', code: 'OTHER', name: 'Other' },
-        ]}
-        value={reason}
-        onChange={setReason}
-      />
-      <DateTimeField
-        label="Starts"
-        value={startsAt}
-        minimumDate={new Date()}
-        onChange={setStartsAt}
-      />
-      <DateTimeField label="Ends" value={endsAt} minimumDate={startsAt} onChange={setEndsAt} />
-      {endsAt <= startsAt && <Text style={styles.error}>End must be after start.</Text>}
-      <Save mutation={add} label="Add blocked period" />
+      {!canUpdate ? <Text style={styles.body}>You have view-only availability access.</Text> : null}
+      {canUpdate ? (
+        <>
+          <Text style={styles.label}>Add an unavailable period</Text>
+          <SearchableReferenceSelector
+            label="Reason"
+            options={[
+              { id: 'PERSONAL_USE', code: 'PERSONAL_USE', name: 'Personal use' },
+              { id: 'MAINTENANCE', code: 'MAINTENANCE', name: 'Maintenance' },
+              { id: 'UNAVAILABLE', code: 'UNAVAILABLE', name: 'Unavailable' },
+              { id: 'OTHER', code: 'OTHER', name: 'Other' },
+            ]}
+            value={reason}
+            onChange={setReason}
+          />
+          <DateTimeField
+            label="Starts"
+            value={startsAt}
+            minimumDate={new Date()}
+            onChange={setStartsAt}
+          />
+          <DateTimeField label="Ends" value={endsAt} minimumDate={startsAt} onChange={setEndsAt} />
+          {endsAt <= startsAt && <Text style={styles.error}>End must be after start.</Text>}
+          <Save mutation={add} label="Add blocked period" />
+        </>
+      ) : null}
       {blocks.data?.map((block) => (
         <View key={block.id} style={styles.card}>
           <Text style={styles.cardTitle}>
@@ -3208,7 +3362,7 @@ function AvailabilityStep({
           <Text style={styles.body}>
             {formatManilaDateTime(block.startsAt)} → {formatManilaDateTime(block.endsAt)}
           </Text>
-          {new Date(block.endsAt) > new Date() ? (
+          {canUpdate && new Date(block.endsAt) > new Date() ? (
             <Pressable
               accessibilityRole="button"
               disabled={remove.isPending}

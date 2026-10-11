@@ -75,6 +75,7 @@ describe('Owner Home read model', () => {
   const amendmentFindMany = vi.fn();
   const transaction = vi.fn();
   const assertOperational = vi.fn();
+  const vehicleWhere = vi.fn();
   const trustedPublicGrant = vi.fn((id: string) => ({ contentPath: `/file/${id}` }));
   const database = {
     client: {
@@ -90,6 +91,7 @@ describe('Owner Home read model', () => {
     database as never,
     { assertOperational } as never,
     { trustedPublicGrant } as never,
+    { vehicleWhere } as never,
     configuration as never,
   );
 
@@ -211,11 +213,37 @@ describe('Owner Home read model', () => {
       lt: new Date('2026-10-02T16:00:00.000Z'),
     });
     expect(bookingCount).toHaveBeenCalledWith({
-      where: { ownerUserId: 'owner-boundary', status: BookingStatus.AWAITING_OWNER },
+      where: {
+        AND: [{ ownerUserId: 'owner-boundary' }, { status: BookingStatus.AWAITING_OWNER }],
+      },
     });
     expect(amendmentCount.mock.calls[0]?.[0].where).toMatchObject({
       booking: { ownerUserId: 'owner-boundary' },
       status: 'PENDING_OWNER',
+    });
+  });
+
+  it('uses permission-specific server vehicle scope for delegated Today sections', async () => {
+    findMany.mockResolvedValue([]);
+    amendmentFindMany.mockResolvedValue([]);
+    bookingCount.mockResolvedValue(0);
+    amendmentCount.mockResolvedValue(0);
+    findFirst.mockResolvedValue(null);
+    vehicleWhere
+      .mockReturnValueOnce({ id: { in: ['vehicle-rental'] } })
+      .mockReturnValueOnce({ id: { in: ['vehicle-request'] } });
+    const context = {
+      permissions: ['rentals.view', 'bookings.view'],
+    } as never;
+
+    await service.todayForAccess(context, NOW);
+
+    expect(vehicleWhere).toHaveBeenNthCalledWith(1, context, 'rentals.view');
+    expect(vehicleWhere).toHaveBeenNthCalledWith(2, context, 'bookings.view');
+    for (const [query] of findMany.mock.calls)
+      expect(query.where.vehicle).toEqual({ id: { in: ['vehicle-rental'] } });
+    expect(bookingCount.mock.calls[0]?.[0].where.AND[0]).toEqual({
+      vehicle: { id: { in: ['vehicle-request'] } },
     });
   });
 

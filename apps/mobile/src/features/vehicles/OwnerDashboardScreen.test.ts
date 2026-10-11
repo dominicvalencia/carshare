@@ -260,7 +260,9 @@ describe('Owner Today mobile UI', () => {
   });
 
   it('offers contextual vehicle setup actions from the empty Today card', () => {
-    expect(source).toContain("apiClient.request<OwnerVehicleSummary[]>('/owner/vehicles')");
+    expect(source).toContain('apiClient.request<OwnerVehicleSummary[]>');
+    expect(source).toContain("'/owner/vehicles'");
+    expect(source).toMatch(/const vehicleAction =\s+!delegated/);
     expect(source).toContain("? 'Add your vehicle'");
     expect(source).toContain("? 'Complete your vehicle info'");
     expect(source).toContain("navigation.navigate('Vehicles')");

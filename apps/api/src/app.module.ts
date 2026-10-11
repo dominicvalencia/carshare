@@ -36,6 +36,8 @@ import { OwnerAnalyticsModule } from './owner-analytics/owner-analytics.module';
 import { FulfillmentModule } from './fulfillment/fulfillment.module';
 import { LocationsModule } from './locations/locations.module';
 import { SecurityDepositSettlementsModule } from './security-deposit-settlements/security-deposit-settlements.module';
+import { OwnerAccessModule } from './owner-access/owner-access.module';
+import { OwnerStaffModule } from './owner-staff/owner-staff.module';
 
 @Module({
   imports: [
@@ -73,6 +75,8 @@ import { SecurityDepositSettlementsModule } from './security-deposit-settlements
     FulfillmentModule,
     LocationsModule,
     SecurityDepositSettlementsModule,
+    OwnerAccessModule,
+    OwnerStaffModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: ApiExceptionFilter },

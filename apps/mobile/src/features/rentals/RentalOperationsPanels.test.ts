@@ -512,7 +512,7 @@ describe('inspection correction mobile synchronization', () => {
     expect(preSubmit).toContain('apiClient.request<RentalDetail>');
     expect(preSubmit).toContain("client.setQueryData(['owner-rental', reference], result)");
     expect(source).toContain(
-      "detail.status === 'READY_FOR_PICKUP' && showCompactRentalActions && !pickup",
+      "detail.status === 'READY_FOR_PICKUP' &&\n        showCompactRentalActions &&\n        !pickup",
     );
   });
 
@@ -562,7 +562,7 @@ describe('inspection correction mobile synchronization', () => {
     expect(source).toContain('accessibilityLabel="6-digit pickup code"');
     expect(source).toContain('disabled={code.length !== 6 || action.isPending}');
     expect(source).toContain("action.mutate('verify')");
-    expect(source).toContain('showCompactRentalActions && !pickup');
+    expect(source).toContain('showCompactRentalActions &&\n        !pickup');
   });
 
   it('keeps the renter pickup handover on authoritative persisted state', () => {
@@ -788,22 +788,23 @@ describe('inspection correction mobile synchronization', () => {
     expect(source).toContain("const overdueRecoveryScope: 'START' | 'RETURN' | 'BOTH' | null =");
     expect(source).toContain('pickupOverdue && !pickup && !startWaived && returnRecoveryOverdue');
     expect(source).toContain("? 'BOTH'");
-    expect(source).toContain('{overdueRecoveryScope && !detail.overdueHandoverRecovery && (');
+    expect(source).toContain('{overdueRecoveryScope &&');
+    expect(source).toContain('!detail.overdueHandoverRecovery &&');
     expect(source).toContain(
-      '{pickupOverdue && !pickup && !startWaived && !overdueRecoveryScope && (',
+      'pickupOverdue && !pickup && !startWaived && !overdueRecoveryScope && (',
     );
     expect(source).toContain('<OwnerOverdueRecoveryAction');
     expect(source).toContain('scope={overdueRecoveryScope}');
     expect(source).toContain(
-      "detail.fulfillment.startMethod === 'OWNER_DELIVERY' &&\n        !pickupOverdue &&",
+      "detail.fulfillment.startMethod === 'OWNER_DELIVERY' &&\n        canHandover &&\n        !pickupOverdue &&",
     );
     expect(
       source.match(
-        /detail\.fulfillment\.startMethod === 'OWNER_DELIVERY' &&\n\s*!pickupOverdue &&/g,
+        /detail\.fulfillment\.startMethod === 'OWNER_DELIVERY' &&\n\s*(?:canHandover &&\n\s*)?!pickupOverdue &&/g,
       ),
     ).toHaveLength(2);
     expect(source).toContain(
-      'needsInspection && !handoverStarted && !pickupHandoverReady && !pickupOverdue',
+      'needsInspection &&\n        !handoverStarted &&\n        !pickupHandoverReady &&\n        !pickupOverdue',
     );
     expect(source).toContain('Handover recorded');
     expect(source).toContain("disputed ? 'Operations review' : 'Awaiting renter'");
@@ -821,7 +822,7 @@ describe('inspection correction mobile synchronization', () => {
       "detail.workflowCompliance?.return.evidenceOutcome !== 'WAIVED' &&\n        !overdueRecoveryScope",
     );
     expect(source).toContain(
-      'detail.workflowCompliance?.return.overdue && !returnWaived && !overdueRecoveryScope',
+      'detail.workflowCompliance?.return.overdue &&\n        !returnWaived &&\n        !overdueRecoveryScope',
     );
     expect(source).toContain('<Text style={styles.overdueStatus}>Payout remains pending</Text>');
     expect(source).toContain('Date of handover');

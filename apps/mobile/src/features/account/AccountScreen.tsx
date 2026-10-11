@@ -7,7 +7,7 @@ import Constants from 'expo-constants';
 import { Alert, Image, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
 import { useAuth } from '../../auth/AuthProvider';
-import type { OwnerStatus } from '../../auth/auth.types';
+import type { OwnerStatus, OwnerWorkspace } from '../../auth/auth.types';
 import type { MobileMode, RootStackParamList } from '../../navigation/routes';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { dateTimeLabel, titleCase } from '../../ui/format';
@@ -34,6 +34,7 @@ import { invalidateRenterVerification } from '../../query/verification-invalidat
 import { useRefreshOnFocusAndForeground } from '../../query/use-query-refresh';
 import { GuidedOnboarding, OnboardingWelcome } from '../../onboarding/GuidedOnboarding';
 import { ownerOnboardingStorage } from '../../onboarding/owner-onboarding-storage';
+import { hasOwnerPermission, ownerWorkspaceLabel } from '../../navigation/owner-workspace';
 
 interface Session {
   readonly id: string;
@@ -1825,10 +1826,16 @@ export function SettingsScreen() {
 
 export function OwnerMoreScreen({
   onModeChange,
+  onOwnerWorkspaceChange,
   ownerStatus,
+  ownerWorkspace,
+  ownerWorkspaces,
 }: {
   readonly onModeChange: (mode: MobileMode) => void;
+  readonly onOwnerWorkspaceChange: (ownerProfileId: string) => void;
   readonly ownerStatus: OwnerStatus | null;
+  readonly ownerWorkspace: OwnerWorkspace;
+  readonly ownerWorkspaces: readonly OwnerWorkspace[];
 }) {
   const auth = useAuth();
   const navigation = useNavigation<Navigator>();
@@ -1844,8 +1851,46 @@ export function OwnerMoreScreen({
     <Screen
       eyebrow="Owner mode"
       title="Manage your business"
-      subtitle="Fleet operations, earnings, payouts and owner settings."
+      subtitle={`${ownerWorkspaceLabel(ownerWorkspace)} · ${ownerWorkspace.capacity === 'OWNER' ? 'Owner' : ownerWorkspace.capacity === 'MANAGER' ? 'Manager' : 'Staff'}`}
     >
+      {ownerWorkspaces.length > 1 ? (
+        <View style={styles.section}>
+          <SectionHeader title="Workspace" />
+          <Card style={styles.workspaceChoices}>
+            {ownerWorkspaces.map((workspace) => (
+              <Pressable
+                key={workspace.ownerProfileId}
+                accessibilityRole="radio"
+                accessibilityState={{
+                  selected: workspace.ownerProfileId === ownerWorkspace.ownerProfileId,
+                }}
+                onPress={() => onOwnerWorkspaceChange(workspace.ownerProfileId)}
+                style={styles.workspaceChoice}
+              >
+                <View style={styles.flex}>
+                  <Text style={styles.menuLabel}>{ownerWorkspaceLabel(workspace)}</Text>
+                  <Text style={styles.menuDetail}>
+                    {workspace.capacity === 'OWNER'
+                      ? 'Owner'
+                      : workspace.capacity === 'MANAGER'
+                        ? 'Manager'
+                        : 'Staff'}
+                  </Text>
+                </View>
+                <Icon
+                  color={colors.primary}
+                  name={
+                    workspace.ownerProfileId === ownerWorkspace.ownerProfileId
+                      ? 'checkmark-circle'
+                      : 'ellipse-outline'
+                  }
+                  size={23}
+                />
+              </Pressable>
+            ))}
+          </Card>
+        </View>
+      ) : null}
       <Card style={styles.modeCard}>
         <Icon color={colors.primary} name="person-circle-outline" size={32} />
         <View style={styles.flex}>
@@ -1884,33 +1929,51 @@ export function OwnerMoreScreen({
         </Text>
       )}
       <MenuSection title="Operations">
-        <MenuRow
-          icon="key-outline"
-          label="Active rentals"
-          onPress={() => navigation.navigate('OwnerRentals')}
-        />
-        <MenuRow
-          icon="wallet-outline"
-          label="Earnings & payouts"
-          detail={ownerStatus === 'VERIFIED' ? undefined : 'Available after verification'}
-          onPress={() =>
-            navigation.navigate(ownerStatus === 'VERIFIED' ? 'OwnerEarnings' : 'OwnerProfile')
-          }
-        />
-        <MenuRow
-          icon="card-outline"
-          label="Payout methods"
-          detail="Manage where your earnings are sent"
-          accessibilityLabel="Payout methods. Manage where your earnings are sent. Opens payout methods"
-          onPress={() => navigation.navigate('OwnerPayoutMethods')}
-        />
-        <MenuRow
-          icon="id-card-outline"
-          label="Owner Profile"
-          detail={ownerStatusLabel(ownerStatus ?? 'DRAFT')}
-          accessibilityLabel={`Owner Profile. ${ownerStatusLabel(ownerStatus ?? 'DRAFT')}`}
-          onPress={() => navigation.navigate('OwnerProfile')}
-        />
+        {ownerWorkspace.capacity === 'OWNER' &&
+        hasOwnerPermission(ownerWorkspace, 'rentals.view') ? (
+          <MenuRow
+            icon="key-outline"
+            label="Active rentals"
+            detail="Manage assigned pickup and return work"
+            onPress={() => navigation.navigate('OwnerRentals')}
+          />
+        ) : null}
+        {hasOwnerPermission(ownerWorkspace, 'staff.view') ? (
+          <MenuRow
+            icon="people-outline"
+            label="Staff"
+            detail="Manage workspace access"
+            onPress={() => navigation.navigate('OwnerStaff')}
+          />
+        ) : null}
+        {ownerWorkspace.capacity === 'OWNER' ? (
+          <MenuRow
+            icon="wallet-outline"
+            label="Earnings & payouts"
+            detail={ownerStatus === 'VERIFIED' ? undefined : 'Available after verification'}
+            onPress={() =>
+              navigation.navigate(ownerStatus === 'VERIFIED' ? 'OwnerEarnings' : 'OwnerProfile')
+            }
+          />
+        ) : null}
+        {ownerWorkspace.capacity === 'OWNER' ? (
+          <MenuRow
+            icon="card-outline"
+            label="Payout methods"
+            detail="Manage where your earnings are sent"
+            accessibilityLabel="Payout methods. Manage where your earnings are sent. Opens payout methods"
+            onPress={() => navigation.navigate('OwnerPayoutMethods')}
+          />
+        ) : null}
+        {ownerWorkspace.capacity === 'OWNER' ? (
+          <MenuRow
+            icon="id-card-outline"
+            label="Owner Profile"
+            detail={ownerStatusLabel(ownerStatus ?? 'DRAFT')}
+            accessibilityLabel={`Owner Profile. ${ownerStatusLabel(ownerStatus ?? 'DRAFT')}`}
+            onPress={() => navigation.navigate('OwnerProfile')}
+          />
+        ) : null}
       </MenuSection>
       <MenuSection title="Help & settings">
         <MenuRow
@@ -1923,11 +1986,13 @@ export function OwnerMoreScreen({
           label="Help & support"
           onPress={() => navigation.navigate('Support')}
         />
-        <MenuRow
-          icon="settings-outline"
-          label="Owner settings"
-          onPress={() => navigation.navigate('Settings')}
-        />
+        {ownerWorkspace.capacity === 'OWNER' ? (
+          <MenuRow
+            icon="settings-outline"
+            label="Owner settings"
+            onPress={() => navigation.navigate('Settings')}
+          />
+        ) : null}
       </MenuSection>
       <LogoutButton />
     </Screen>
@@ -2026,6 +2091,13 @@ const styles = StyleSheet.create({
   profilePhoto: { borderRadius: radius.pill, height: 52, width: 52 },
   localInbox: { backgroundColor: colors.primarySoft, gap: spacing.sm },
   verificationActions: { gap: spacing.md, marginTop: spacing.sm },
+  workspaceChoice: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    minHeight: 52,
+    paddingHorizontal: spacing.md,
+  },
+  workspaceChoices: { padding: 0 },
   menuDetail: { color: colors.subtleText, fontSize: 12, marginTop: 2 },
   ownerProgressCard: { gap: spacing.sm },
   ownerProgressDot: {

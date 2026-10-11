@@ -5,9 +5,15 @@ import {
   AdminMessageModerationController,
 } from './communications.controller';
 import { CommunicationsService } from './communications.service';
+import { OwnerWorkspaceCommunicationsController } from './owner-workspace-communications.controller';
 
 @Module({
-  controllers: [CommunicationsController, ReportsController, AdminMessageModerationController],
+  controllers: [
+    CommunicationsController,
+    ReportsController,
+    AdminMessageModerationController,
+    OwnerWorkspaceCommunicationsController,
+  ],
   providers: [CommunicationsService],
   exports: [CommunicationsService],
 })

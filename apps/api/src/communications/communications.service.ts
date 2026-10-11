@@ -13,6 +13,9 @@ import { DatabaseService } from '../infrastructure/database/database.service';
 import { ApplicationException } from '../common/errors/application.exception';
 import type { RequestMetadata } from '../security/security-context';
 import { AuditService } from '../audit/audit.service';
+import { OwnerAccessService } from '../owner-access/owner-access.service';
+import type { OwnerPermissionCode } from '../owner-access/owner-permissions';
+import type { OwnerAccessContext } from '../security/security-context';
 
 const WRITABLE = new Set<BookingStatus>([
   BookingStatus.AWAITING_OWNER,
@@ -34,6 +37,7 @@ export class CommunicationsService {
   constructor(
     private readonly database: DatabaseService,
     private readonly audit: AuditService,
+    private readonly ownerAccess: OwnerAccessService,
     @Inject(ConfigService) configuration: ConfigService<ApiEnvironment, true>,
   ) {
     this.completedWindowDays = configuration.getOrThrow('POST_RENTAL_MESSAGING_DAYS', {
@@ -47,11 +51,32 @@ export class CommunicationsService {
     userId: string,
     query: { cursor?: string; limit: number; audience?: 'RENTER' | 'OWNER' },
   ) {
+    return this.listForParticipant(userId, query);
+  }
+
+  async listForOwnerAccess(
+    context: OwnerAccessContext,
+    query: { cursor?: string; limit: number; audience?: 'RENTER' | 'OWNER' },
+  ) {
+    const vehicle = this.ownerAccess.vehicleWhere(context, 'messages.view');
+    const owner = await this.database.client.ownerProfile.findUniqueOrThrow({
+      select: { userId: true },
+      where: { id: context.ownerProfileId },
+    });
+    return this.listForParticipant(owner.userId, { ...query, audience: 'OWNER' }, { vehicle });
+  }
+
+  private async listForParticipant(
+    userId: string,
+    query: { cursor?: string; limit: number; audience?: 'RENTER' | 'OWNER' },
+    booking?: Prisma.BookingWhereInput,
+  ) {
     const contexts = query.audience
       ? [ConversationParticipantContext[query.audience], ConversationParticipantContext.SUPPORT]
       : undefined;
     const rows = await this.database.client.conversation.findMany({
       where: {
+        ...(booking ? { booking } : {}),
         participants: {
           some: { userId, leftAt: null, ...(contexts ? { context: { in: contexts } } : {}) },
         },
@@ -115,12 +140,22 @@ export class CommunicationsService {
     return { context: participant.context };
   }
 
+  async contextForOwnerAccess(context: OwnerAccessContext, conversationId: string) {
+    const authority = await this.workspaceConversation(context, conversationId, 'messages.view');
+    return { context: ConversationParticipantContext.OWNER, ownerUserId: authority.ownerUserId };
+  }
+
   async detail(userId: string, conversationId: string, audience?: 'RENTER' | 'OWNER') {
     const conversation = await this.requireParticipant(userId, conversationId, audience);
     return {
       ...conversation,
       canSend: await this.canWrite(conversation.bookingId, conversation.status),
     };
+  }
+
+  async detailForOwnerAccess(context: OwnerAccessContext, conversationId: string) {
+    const authority = await this.workspaceConversation(context, conversationId, 'messages.view');
+    return this.detail(authority.ownerUserId, conversationId, 'OWNER');
   }
 
   async messages(
@@ -142,6 +177,15 @@ export class CommunicationsService {
       items: page.map(this.publicMessage).reverse(),
       nextCursor: rows.length > query.limit ? (page.at(-1)?.id ?? null) : null,
     };
+  }
+
+  async messagesForOwnerAccess(
+    context: OwnerAccessContext,
+    conversationId: string,
+    query: { cursor?: string; limit: number },
+  ) {
+    const authority = await this.workspaceConversation(context, conversationId, 'messages.view');
+    return this.messages(authority.ownerUserId, conversationId, query, 'OWNER');
   }
 
   async send(
@@ -253,6 +297,42 @@ export class CommunicationsService {
     }
   }
 
+  async sendForOwnerAccess(input: {
+    readonly actorUserId: string;
+    readonly body: string;
+    readonly context: OwnerAccessContext;
+    readonly conversationId: string;
+    readonly idempotencyKey: string;
+    readonly replyToMessageId?: string;
+    readonly request: RequestMetadata;
+  }) {
+    const authority = await this.workspaceConversation(
+      input.context,
+      input.conversationId,
+      'messages.reply',
+    );
+    const message = await this.send(
+      authority.ownerUserId,
+      input.conversationId,
+      input.body,
+      input.replyToMessageId,
+      input.idempotencyKey,
+      input.request,
+      'OWNER',
+    );
+    await this.ownerAccess.auditDelegatedAction({
+      action: 'BOOKING_MESSAGE_SENT',
+      actorUserId: input.actorUserId,
+      context: input.context,
+      permission: 'messages.reply',
+      request: input.request,
+      targetId: message.id,
+      targetType: 'MESSAGE',
+      vehicleId: authority.vehicleId,
+    });
+    return message;
+  }
+
   async markRead(
     userId: string,
     conversationId: string,
@@ -275,6 +355,15 @@ export class CommunicationsService {
       data: { lastReadAt: message.createdAt, lastReadMessageId: messageId },
     });
     return { conversationId, messageId, readAt: message.createdAt };
+  }
+
+  async markReadForOwnerAccess(
+    context: OwnerAccessContext,
+    conversationId: string,
+    messageId: string,
+  ) {
+    const authority = await this.workspaceConversation(context, conversationId, 'messages.view');
+    return this.markRead(authority.ownerUserId, conversationId, messageId, 'OWNER');
   }
 
   async report(
@@ -403,6 +492,32 @@ export class CommunicationsService {
         HttpStatus.NOT_FOUND,
       );
     return conversation;
+  }
+
+  private async workspaceConversation(
+    context: OwnerAccessContext,
+    conversationId: string,
+    permission: OwnerPermissionCode,
+  ) {
+    const vehicle = this.ownerAccess.vehicleWhere(context, permission);
+    const conversation = await this.database.client.conversation.findFirst({
+      select: {
+        booking: { select: { ownerUserId: true, publicReference: true, vehicleId: true } },
+        id: true,
+      },
+      where: { booking: { vehicle }, id: conversationId },
+    });
+    if (!conversation)
+      throw new ApplicationException(
+        'CONVERSATION_NOT_FOUND',
+        'Conversation not found.',
+        HttpStatus.NOT_FOUND,
+      );
+    return {
+      bookingReference: conversation.booking.publicReference,
+      ownerUserId: conversation.booking.ownerUserId,
+      vehicleId: conversation.booking.vehicleId,
+    };
   }
 
   private async canWrite(

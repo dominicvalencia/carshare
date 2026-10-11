@@ -9,9 +9,15 @@ import {
   VehicleReferenceDataController,
 } from './owner-vehicles.controller';
 import { VehiclesService } from './vehicles.service';
+import { OwnerWorkspaceVehiclesController } from './owner-workspace-vehicles.controller';
 
 @Module({
-  controllers: [OwnerVehiclesController, VehicleReferenceDataController, AdminVehiclesController],
+  controllers: [
+    OwnerVehiclesController,
+    OwnerWorkspaceVehiclesController,
+    VehicleReferenceDataController,
+    AdminVehiclesController,
+  ],
   exports: [VehiclesService],
   imports: [BookingsModule, FilesModule, GeographyModule, OwnersModule],
   providers: [VehiclesService],

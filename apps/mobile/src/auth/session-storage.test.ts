@@ -13,6 +13,7 @@ vi.mock('expo-secure-store', () => ({
 
 import { tokenStorage } from './token-storage';
 import { activeRoleStorage } from '../navigation/active-role-storage';
+import { ownerWorkspaceStorage } from '../navigation/owner-workspace-storage';
 import {
   ownerFirstEntryIntentStorage,
   ownerOnboardingStorage,
@@ -44,6 +45,18 @@ describe('local authenticated-session storage', () => {
     await expect(activeRoleStorage.get('user-123')).resolves.toBe('owner');
     secureStore.getItemAsync.mockResolvedValueOnce('renter');
     await expect(activeRoleStorage.get('user-123')).resolves.toBe('renter');
+  });
+
+  it('persists and clears Owner workspace selection per authenticated user', async () => {
+    await ownerWorkspaceStorage.set('user-123', 'owner-profile-456');
+    expect(secureStore.setItemAsync).toHaveBeenCalledWith(
+      'active-owner-workspace_user-123',
+      'owner-profile-456',
+    );
+    secureStore.getItemAsync.mockResolvedValueOnce('owner-profile-456');
+    await expect(ownerWorkspaceStorage.get('user-123')).resolves.toBe('owner-profile-456');
+    await ownerWorkspaceStorage.clear('user-123');
+    expect(secureStore.deleteItemAsync).toHaveBeenCalledWith('active-owner-workspace_user-123');
   });
 
   it('continues to store refresh tokens with device-only unlock accessibility', async () => {

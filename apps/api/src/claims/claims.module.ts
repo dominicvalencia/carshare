@@ -6,9 +6,15 @@ import {
   RenterClaimsController,
 } from './claims.controller';
 import { ClaimsService } from './claims.service';
+import { OwnerWorkspaceClaimsController } from './owner-workspace-claims.controller';
 
 @Module({
-  controllers: [OwnerClaimsController, RenterClaimsController, AdminClaimsController],
+  controllers: [
+    OwnerClaimsController,
+    RenterClaimsController,
+    AdminClaimsController,
+    OwnerWorkspaceClaimsController,
+  ],
   exports: [ClaimsService],
   imports: [PaymentsModule],
   providers: [ClaimsService],

@@ -3,6 +3,8 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { Image } from 'expo-image';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
+import type { OwnerWorkspace } from '../../auth/auth.types';
+import { hasOwnerPermission } from '../../navigation/owner-workspace';
 import {
   useFocusedPollingInterval,
   useRefreshOnFocusAndForeground,
@@ -71,6 +73,7 @@ export function OwnerBookingRequestsScreen({
   onOpenBookingRequest,
   onHistory,
   onClose,
+  ownerWorkspace,
 }: {
   readonly embedded?: boolean;
   readonly history?: boolean;
@@ -83,8 +86,13 @@ export function OwnerBookingRequestsScreen({
   readonly onOpenBookingRequest?: (bookingReference: string) => void;
   readonly onHistory?: () => void;
   readonly onClose?: () => void;
+  readonly ownerWorkspace?: OwnerWorkspace;
 } = {}) {
   const client = useQueryClient();
+  const endpointBase = ownerWorkspace
+    ? `/owner/workspaces/${ownerWorkspace.ownerProfileId}/bookings`
+    : '/owner/bookings';
+  const workspaceKey = ownerWorkspace?.ownerProfileId ?? 'owner';
   const [selected, setSelected] = useState<string | null>(
     initialAmendmentReference ? null : (initialBookingReference ?? null),
   );
@@ -106,12 +114,13 @@ export function OwnerBookingRequestsScreen({
     embedded,
   );
   const requests = useQuery({
-    queryKey: ['owner-booking-requests'],
-    queryFn: () => apiClient.request<OwnerBookingView[]>('/owner/bookings/requests'),
+    queryKey: ['owner-workspace', workspaceKey, 'booking-requests'],
+    queryFn: () => apiClient.request<OwnerBookingView[]>(`${endpointBase}/requests`),
     refetchInterval: requestPollingInterval,
   });
   const amendmentScope = ownerAmendmentScope(effectiveFilter);
   const amendments = useInfiniteQuery({
+    enabled: !ownerWorkspace,
     queryKey: ['owner-amendments', amendmentScope],
     initialPageParam: 1,
     queryFn: ({ pageParam }) =>
@@ -124,8 +133,8 @@ export function OwnerBookingRequestsScreen({
   });
   const detail = useQuery({
     enabled: Boolean(selected),
-    queryKey: ['owner-booking', selected],
-    queryFn: () => apiClient.request<OwnerBookingView>(`/owner/bookings/${selected}`),
+    queryKey: ['owner-workspace', workspaceKey, 'booking', selected],
+    queryFn: () => apiClient.request<OwnerBookingView>(`${endpointBase}/${selected}`),
     refetchInterval: (query) =>
       query.state.data &&
       ['AWAITING_OWNER', 'CAPTURE_PENDING', 'READY_FOR_PICKUP', 'RETURN_PENDING'].includes(
@@ -142,7 +151,7 @@ export function OwnerBookingRequestsScreen({
 
   const decision = useMutation({
     mutationFn: ({ reference, action }: { reference: string; action: 'accept' | 'reject' }) =>
-      apiClient.request(`/owner/bookings/${reference}/${action}`, {
+      apiClient.request(`${endpointBase}/${reference}/${action}`, {
         ...(action === 'reject'
           ? { body: JSON.stringify({ reason: 'Owner cannot accommodate the requested dates' }) }
           : {}),
@@ -192,6 +201,9 @@ export function OwnerBookingRequestsScreen({
           void client.invalidateQueries({ queryKey: ['public-search'] });
         }}
         decision={decision}
+        canAccept={!ownerWorkspace || hasOwnerPermission(ownerWorkspace, 'bookings.accept')}
+        canReject={!ownerWorkspace || hasOwnerPermission(ownerWorkspace, 'bookings.reject')}
+        allowCancellation={!ownerWorkspace}
       />
     );
   }
@@ -202,10 +214,12 @@ export function OwnerBookingRequestsScreen({
       return ['CAPTURE_PENDING', 'CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status);
     return true;
   });
-  const filteredAmendments = amendments.data?.pages.flatMap((page) => page.items) ?? [];
+  const filteredAmendments = ownerWorkspace
+    ? []
+    : (amendments.data?.pages.flatMap((page) => page.items) ?? []);
   const empty = items.length === 0 && filteredAmendments.length === 0;
-  const feedPending = requests.isPending || amendments.isPending;
-  const feedError = requests.error ?? amendments.error;
+  const feedPending = requests.isPending || (!ownerWorkspace && amendments.isPending);
+  const feedError = requests.error ?? (ownerWorkspace ? null : amendments.error);
   const feed = (
     <>
       {!embedded && !history && (
@@ -704,6 +718,9 @@ function OwnerRequestDetail({
   onBack,
   onCancellationCompleted,
   decision,
+  canAccept,
+  canReject,
+  allowCancellation,
 }: {
   readonly booking?: OwnerBookingView | undefined;
   readonly error: Error | null;
@@ -713,6 +730,9 @@ function OwnerRequestDetail({
   readonly decision: ReturnType<
     typeof useMutation<unknown, Error, { reference: string; action: 'accept' | 'reject' }>
   >;
+  readonly canAccept: boolean;
+  readonly canReject: boolean;
+  readonly allowCancellation: boolean;
 }) {
   const [trustProfileOpen, setTrustProfileOpen] = useState(false);
   const [cancellationOpen, setCancellationOpen] = useState(false);
@@ -917,50 +937,54 @@ function OwnerRequestDetail({
             Owner decision
           </Text>
           <Text style={styles.body}>Review the renter and trip details before responding.</Text>
-          <Button
-            disabled={decision.isPending}
-            label={decision.isPending ? 'Processing decision…' : 'Accept request'}
-            onPress={() =>
-              Alert.alert(
-                'Accept this booking?',
-                'Payment capture will begin. Confirmation appears only after the provider confirms it.',
-                [
-                  { style: 'cancel', text: 'Not yet' },
-                  {
-                    text: 'Accept booking',
-                    onPress: () =>
-                      decision.mutate({ action: 'accept', reference: booking.publicReference }),
-                  },
-                ],
-              )
-            }
-          />
-          <Button
-            disabled={decision.isPending}
-            label="Reject request"
-            onPress={() =>
-              Alert.alert(
-                'Reject this request?',
-                'The renter’s payment authorization and vehicle reservation will be released.',
-                [
-                  { style: 'cancel', text: 'Keep request' },
-                  {
-                    style: 'destructive',
-                    text: 'Reject request',
-                    onPress: () =>
-                      decision.mutate({ action: 'reject', reference: booking.publicReference }),
-                  },
-                ],
-              )
-            }
-            variant="danger"
-          />
+          {canAccept ? (
+            <Button
+              disabled={decision.isPending}
+              label={decision.isPending ? 'Processing decision…' : 'Accept request'}
+              onPress={() =>
+                Alert.alert(
+                  'Accept this booking?',
+                  'Payment capture will begin. Confirmation appears only after the provider confirms it.',
+                  [
+                    { style: 'cancel', text: 'Not yet' },
+                    {
+                      text: 'Accept booking',
+                      onPress: () =>
+                        decision.mutate({ action: 'accept', reference: booking.publicReference }),
+                    },
+                  ],
+                )
+              }
+            />
+          ) : null}
+          {canReject ? (
+            <Button
+              disabled={decision.isPending}
+              label="Reject request"
+              onPress={() =>
+                Alert.alert(
+                  'Reject this request?',
+                  'The renter’s payment authorization and vehicle reservation will be released.',
+                  [
+                    { style: 'cancel', text: 'Keep request' },
+                    {
+                      style: 'destructive',
+                      text: 'Reject request',
+                      onPress: () =>
+                        decision.mutate({ action: 'reject', reference: booking.publicReference }),
+                    },
+                  ],
+                )
+              }
+              variant="danger"
+            />
+          ) : null}
         </Card>
       ) : (
         <OwnerNextStep booking={booking} />
       )}
       {decision.isError && <Text style={styles.error}>{decision.error.message}</Text>}
-      {['CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status) && (
+      {allowCancellation && ['CONFIRMED', 'READY_FOR_PICKUP'].includes(booking.status) && (
         <Card style={styles.dangerZone}>
           <Text style={styles.dangerEyebrow}>Danger zone</Text>
           <Text style={styles.dangerTitle}>Cancel booking</Text>
@@ -974,13 +998,15 @@ function OwnerRequestDetail({
           />
         </Card>
       )}
-      <BookingCancellationSheet
-        bookingReference={booking.publicReference}
-        onClose={() => setCancellationOpen(false)}
-        onCompleted={onCancellationCompleted}
-        role="OWNER"
-        visible={cancellationOpen}
-      />
+      {allowCancellation ? (
+        <BookingCancellationSheet
+          bookingReference={booking.publicReference}
+          onClose={() => setCancellationOpen(false)}
+          onCompleted={onCancellationCompleted}
+          role="OWNER"
+          visible={cancellationOpen}
+        />
+      ) : null}
     </Screen>
   );
 }

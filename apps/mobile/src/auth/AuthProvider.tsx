@@ -14,6 +14,7 @@ import { tokenStorage } from './token-storage';
 import { appLockStorage } from '../app-lock/storage';
 import { activeRoleStorage } from '../navigation/active-role-storage';
 import { ownerFirstEntryIntentStorage } from '../onboarding/owner-onboarding-storage';
+import { ownerWorkspaceStorage } from '../navigation/owner-workspace-storage';
 
 export type MarketplacePersona = 'RENTER' | 'OWNER';
 
@@ -116,7 +117,11 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
         const cleanup = await Promise.allSettled([
           tokenStorage.clear(),
           ...(currentUserId
-            ? [appLockStorage.clearAccount(currentUserId), activeRoleStorage.clear(currentUserId)]
+            ? [
+                appLockStorage.clearAccount(currentUserId),
+                activeRoleStorage.clear(currentUserId),
+                ownerWorkspaceStorage.clear(currentUserId),
+              ]
             : []),
         ]);
         if (cleanup.some((result) => result.status === 'rejected')) {

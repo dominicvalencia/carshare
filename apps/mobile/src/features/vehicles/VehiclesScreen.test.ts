@@ -15,7 +15,7 @@ const securePhotoSlotSource = readFileSync(
 describe('Phase 12 owner vehicle acceptance UX', () => {
   it('renders the compact Fleet hierarchy without changing list navigation or Add vehicle', () => {
     const fleet = source.slice(
-      source.indexOf('export function VehiclesScreen()'),
+      source.indexOf('function ActualOwnerVehiclesScreen()'),
       source.indexOf('function FleetVehicleCard('),
     );
 

@@ -4,8 +4,10 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { apiClient } from '../../auth/api-client';
-import type { OwnerStatus } from '../../auth/auth.types';
+import type { OwnerStatus, OwnerWorkspace } from '../../auth/auth.types';
 import { OwnerBookingRequestsScreen } from '../bookings/OwnerBookingRequestsScreen';
+import { OwnerRentalsScreen } from '../rentals/OwnerRentalsScreen';
+import { hasOwnerPermission } from '../../navigation/owner-workspace';
 import type { OwnerTabParamList, RootStackParamList } from '../../navigation/routes';
 import {
   useFocusedPollingInterval,
@@ -44,49 +46,79 @@ type OwnerAmendmentTarget = {
 
 export function OwnerDashboardScreen({
   ownerStatus,
+  ownerWorkspace,
 }: {
   readonly ownerStatus: OwnerStatus | null;
+  readonly ownerWorkspace?: OwnerWorkspace;
 }) {
   const navigation = useNavigation<NavigationProp<OwnerTabParamList & RootStackParamList>>();
   const route = useRoute<RouteProp<OwnerTabParamList, 'Dashboard'>>();
   const [selectedTab, setSelectedTab] = useState<OwnerHomeTab>(route.params?.initialTab ?? 'Today');
   const [selectedAmendment, setSelectedAmendment] = useState<OwnerAmendmentTarget | null>(null);
   const [selectedBookingReference, setSelectedBookingReference] = useState<string | null>(null);
+  const [selectedRentalReference, setSelectedRentalReference] = useState<string | null>(null);
+  const delegated = Boolean(ownerWorkspace && ownerWorkspace.capacity !== 'OWNER');
+  const workspaceKey = delegated ? ownerWorkspace!.ownerProfileId : 'owner';
+  const canViewBookings = !delegated || hasOwnerPermission(ownerWorkspace!, 'bookings.view');
+  const canViewRentals = !delegated || hasOwnerPermission(ownerWorkspace!, 'rentals.view');
+  const canViewVehicles = !delegated || hasOwnerPermission(ownerWorkspace!, 'vehicles.view');
+  const canViewMessages = !delegated || hasOwnerPermission(ownerWorkspace!, 'messages.view');
   const requestPollingInterval = useFocusedPollingInterval(
     OWNER_REQUEST_POLL_INTERVAL_MS,
     ownerStatus === 'VERIFIED',
   );
   const home = useQuery({
-    enabled: ownerStatus === 'VERIFIED',
-    queryFn: () => apiClient.request<OwnerHomeReadModel>('/owner/home'),
-    queryKey: ownerHomeQueryKey,
+    enabled: delegated || ownerStatus === 'VERIFIED',
+    queryFn: () =>
+      apiClient.request<OwnerHomeReadModel>(
+        delegated ? `/owner/workspaces/${ownerWorkspace!.ownerProfileId}/home` : '/owner/home',
+      ),
+    queryKey: [...ownerHomeQueryKey, workspaceKey],
     refetchInterval: requestPollingInterval,
     retry: false,
   });
   const vehicles = useQuery({
-    enabled: ownerStatus === 'VERIFIED',
-    queryFn: () => apiClient.request<OwnerVehicleSummary[]>('/owner/vehicles'),
-    queryKey: ['vehicles'],
+    enabled: (delegated || ownerStatus === 'VERIFIED') && canViewVehicles,
+    queryFn: () =>
+      apiClient.request<OwnerVehicleSummary[]>(
+        delegated
+          ? `/owner/workspaces/${ownerWorkspace!.ownerProfileId}/vehicles`
+          : '/owner/vehicles',
+      ),
+    queryKey: ['owner-workspace', workspaceKey, 'vehicles'],
     retry: false,
   });
   const upcoming = useInfiniteQuery<OwnerHomeUpcomingPage>({
-    enabled: ownerStatus === 'VERIFIED' && selectedTab === 'Upcoming',
+    enabled:
+      (delegated || ownerStatus === 'VERIFIED') && canViewRentals && selectedTab === 'Upcoming',
     getNextPageParam: (lastPage) =>
       lastPage.page < lastPage.totalPages ? lastPage.page + 1 : undefined,
     initialPageParam: 1,
     queryFn: ({ pageParam }) =>
       apiClient.request<OwnerHomeUpcomingPage>(
-        `/owner/home/upcoming?page=${pageParam}&pageSize=20`,
+        delegated
+          ? `/owner/workspaces/${ownerWorkspace!.ownerProfileId}/home/upcoming?page=${pageParam}&pageSize=20`
+          : `/owner/home/upcoming?page=${pageParam}&pageSize=20`,
       ),
-    queryKey: ['owner-home-upcoming'],
+    queryKey: ['owner-home-upcoming', workspaceKey],
+  });
+  const conversations = useQuery({
+    enabled: delegated && canViewMessages,
+    queryFn: () =>
+      apiClient.request<{ items: readonly { unreadCount: number }[] }>(
+        `/owner/workspaces/${ownerWorkspace!.ownerProfileId}/conversations?limit=50`,
+      ),
+    queryKey: ['conversations', workspaceKey],
   });
   useRefreshOnFocusAndForeground(() => {
-    if (ownerStatus === 'VERIFIED') void home.refetch();
-    if (ownerStatus === 'VERIFIED') void vehicles.refetch();
-    if (ownerStatus === 'VERIFIED' && selectedTab === 'Upcoming') void upcoming.refetch();
+    if (delegated || ownerStatus === 'VERIFIED') void home.refetch();
+    if ((delegated || ownerStatus === 'VERIFIED') && canViewVehicles) void vehicles.refetch();
+    if ((delegated || ownerStatus === 'VERIFIED') && canViewRentals && selectedTab === 'Upcoming')
+      void upcoming.refetch();
+    if (delegated && canViewMessages) void conversations.refetch();
   });
 
-  if (ownerStatus !== 'VERIFIED')
+  if (!delegated && ownerStatus !== 'VERIFIED')
     return (
       <Screen scroll={false}>
         <FullScreenState
@@ -119,20 +151,24 @@ export function OwnerDashboardScreen({
 
   const model = home.data;
   const openBooking = (reference: string) =>
-    navigation.navigate('Booking', { bookingId: reference });
+    delegated
+      ? setSelectedRentalReference(reference)
+      : navigation.navigate('Booking', { bookingId: reference });
   const openUpcoming = () => setSelectedTab('Upcoming');
   const openRequests = () => setSelectedTab('Requests');
   const requestCount = model.requests.totalRequestsCount;
-  const vehicleAction = vehicles.data
-    ? vehicles.data.length === 0
-      ? 'Add your vehicle'
-      : vehicles.data.some(({ status }) => status === 'DRAFT')
-        ? 'Complete your vehicle info'
-        : null
-    : null;
+  const vehicleAction =
+    !delegated && vehicles.data
+      ? vehicles.data.length === 0
+        ? 'Add your vehicle'
+        : vehicles.data.some(({ status }) => status === 'DRAFT')
+          ? 'Complete your vehicle info'
+          : null
+      : null;
   if (selectedAmendment)
     return (
       <OwnerBookingRequestsScreen
+        {...(delegated ? { ownerWorkspace } : {})}
         initialAmendmentReference={selectedAmendment.amendmentReference}
         initialBookingReference={selectedAmendment.bookingReference}
         onClose={() => setSelectedAmendment(null)}
@@ -141,8 +177,17 @@ export function OwnerDashboardScreen({
   if (selectedBookingReference)
     return (
       <OwnerBookingRequestsScreen
+        {...(delegated ? { ownerWorkspace } : {})}
         initialBookingReference={selectedBookingReference}
         onClose={() => setSelectedBookingReference(null)}
+      />
+    );
+  if (selectedRentalReference)
+    return (
+      <OwnerRentalsScreen
+        initialBookingReference={selectedRentalReference}
+        onClose={() => setSelectedRentalReference(null)}
+        {...(delegated ? { ownerWorkspace } : {})}
       />
     );
   return (
@@ -154,13 +199,17 @@ export function OwnerDashboardScreen({
             onPress={() => setSelectedTab('Today')}
             selected={selectedTab === 'Today'}
           />
-          <TopTab label="Upcoming" onPress={openUpcoming} selected={selectedTab === 'Upcoming'} />
-          <TopTab
-            count={requestCount}
-            label="Requests"
-            onPress={openRequests}
-            selected={selectedTab === 'Requests'}
-          />
+          {canViewRentals ? (
+            <TopTab label="Upcoming" onPress={openUpcoming} selected={selectedTab === 'Upcoming'} />
+          ) : null}
+          {canViewBookings ? (
+            <TopTab
+              count={requestCount}
+              label="Requests"
+              onPress={openRequests}
+              selected={selectedTab === 'Requests'}
+            />
+          ) : null}
         </View>
       }
     >
@@ -270,6 +319,44 @@ export function OwnerDashboardScreen({
                 </Card>
               </Pressable>
             )}
+            {delegated && canViewMessages ? (
+              <Pressable accessibilityRole="button" onPress={() => navigation.navigate('Messages')}>
+                <Card style={styles.requestSummary}>
+                  <View style={styles.summaryIcon}>
+                    <Icon color={colors.primary} name="chatbubble-outline" />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text style={styles.cardTitle}>Messages</Text>
+                    <Text style={styles.link}>
+                      {(conversations.data?.items ?? []).reduce(
+                        (total, item) => total + item.unreadCount,
+                        0,
+                      )}{' '}
+                      unread
+                    </Text>
+                  </View>
+                  <Icon color={colors.primary} name="chevron-forward" />
+                </Card>
+              </Pressable>
+            ) : null}
+            {delegated && canViewVehicles ? (
+              <Pressable accessibilityRole="button" onPress={() => navigation.navigate('Vehicles')}>
+                <Card style={styles.requestSummary}>
+                  <View style={styles.summaryIcon}>
+                    <Icon color={colors.primary} name="car-sport-outline" />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text style={styles.cardTitle}>Vehicles</Text>
+                    <Text style={styles.link}>
+                      {vehicles.data?.length
+                        ? `${vehicles.data.length} assigned`
+                        : 'No assigned vehicles'}
+                    </Text>
+                  </View>
+                  <Icon color={colors.primary} name="chevron-forward" />
+                </Card>
+              </Pressable>
+            ) : null}
           </View>
         )}
         {selectedTab === 'Upcoming' && (
@@ -280,6 +367,7 @@ export function OwnerDashboardScreen({
         {selectedTab === 'Requests' && (
           <View style={styles.tabPanel}>
             <OwnerBookingRequestsScreen
+              {...(delegated ? { ownerWorkspace } : {})}
               embedded
               onHistory={() => navigation.navigate('OwnerRequestHistory')}
               onOpenAmendment={setSelectedAmendment}

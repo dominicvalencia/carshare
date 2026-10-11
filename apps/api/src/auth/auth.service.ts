@@ -5,6 +5,7 @@ import {
   AuthTokenType,
   OtpPurpose,
   PushTokenStatus,
+  OwnerStaffVehicleScopeMode,
   UserStatus,
   type Prisma,
   type SessionPlatform,
@@ -29,6 +30,7 @@ import type {
   OtpVerifyDto,
   RegisterDto,
 } from './auth.dto';
+import { OWNER_PERMISSIONS } from '../owner-access/owner-permissions';
 
 export interface AuthenticationResult {
   readonly accessToken: string;
@@ -39,6 +41,14 @@ export interface AuthenticationResult {
 }
 
 const sessionUserInclude = {
+  ownerProfile: { select: { id: true, legalName: true, status: true } },
+  ownerStaffMemberships: {
+    include: {
+      ownerProfile: { select: { legalName: true, status: true } },
+      permissions: { include: { permission: true } },
+    },
+    orderBy: { createdAt: 'asc' as const },
+  },
   profile: true,
   roles: { include: { role: true } },
 } as const;
@@ -515,12 +525,38 @@ export class AuthService {
   }
 
   publicUser(user: Prisma.UserGetPayload<{ include: typeof sessionUserInclude }>) {
+    const ownerWorkspaces = [
+      ...(user.ownerProfile
+        ? [
+            {
+              capacity: 'OWNER' as const,
+              membershipStatus: 'OWNER' as const,
+              ownerProfileId: user.ownerProfile.id,
+              workspaceLabel: user.ownerProfile.legalName,
+              ownerProfileStatus: user.ownerProfile.status,
+              permissions: Object.keys(OWNER_PERMISSIONS),
+              vehicleScopeMode: OwnerStaffVehicleScopeMode.ALL_VEHICLES,
+            },
+          ]
+        : []),
+      ...user.ownerStaffMemberships.map((membership) => ({
+        capacity: membership.role,
+        membershipId: membership.id,
+        membershipStatus: membership.status,
+        ownerProfileId: membership.ownerProfileId,
+        workspaceLabel: membership.ownerProfile.legalName,
+        ownerProfileStatus: membership.ownerProfile.status,
+        permissions: membership.permissions.map(({ permission }) => permission.code),
+        vehicleScopeMode: membership.vehicleScopeMode,
+      })),
+    ];
     return {
       email: user.email,
       emailVerified: Boolean(user.emailVerifiedAt),
       id: user.id,
       mobileNumber: user.mobileNumber,
       mobileVerified: Boolean(user.mobileVerifiedAt),
+      ownerWorkspaces,
       profile: user.profile,
       roles: user.roles.map(({ role }) => role.code),
       status: user.status,

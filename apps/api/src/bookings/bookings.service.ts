@@ -20,6 +20,8 @@ import { PublicVehicleEligibilityService } from '../discovery/public-eligibility
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { CryptoService } from '../security/crypto.service';
 import type { RequestMetadata } from '../security/security-context';
+import type { OwnerAccessContext } from '../security/security-context';
+import { OwnerAccessService } from '../owner-access/owner-access.service';
 import { OwnersService } from '../owners/owners.service';
 import { RenterEligibilityService } from '../renter-verification/renter-eligibility.service';
 import { FulfillmentServiceabilityService } from '../fulfillment/fulfillment-serviceability';
@@ -44,6 +46,7 @@ export class BookingsService {
     private readonly crypto: CryptoService,
     private readonly analytics: DiscoveryAnalyticsService,
     private readonly owners: OwnersService,
+    private readonly ownerAccess: OwnerAccessService,
     private readonly renterEligibility: RenterEligibilityService,
     private readonly fulfillmentServiceability: FulfillmentServiceabilityService,
     @Inject(ConfigService) private readonly configuration: ConfigService<ApiEnvironment, true>,
@@ -505,10 +508,35 @@ export class BookingsService {
     return records.map((record) => this.projection.owner(record));
   }
 
+  async listForOwnerAccess(context: OwnerAccessContext) {
+    await this.owners.assertOperational(await this.ownerUserIdForAccess(context));
+    const vehicle = this.ownerAccess.vehicleWhere(context, 'bookings.view');
+    await this.occupancy.expireStale();
+    const records = await this.database.client.booking.findMany({
+      include: bookingInclude,
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      where: { vehicle },
+    });
+    return records.map((record) => this.projection.owner(record));
+  }
+
   async ownerDetail(ownerUserId: string, reference: string) {
     await this.owners.assertOperational(ownerUserId);
     await this.occupancy.expireStale();
     return this.projection.owner(await this.findBooking(reference, { ownerUserId }));
+  }
+
+  async ownerDetailForAccess(context: OwnerAccessContext, reference: string) {
+    await this.owners.assertOperational(await this.ownerUserIdForAccess(context));
+    const vehicle = this.ownerAccess.vehicleWhere(context, 'bookings.view');
+    await this.occupancy.expireStale();
+    const record = await this.database.client.booking.findFirst({
+      include: bookingInclude,
+      where: { publicReference: reference, vehicle },
+    });
+    if (!record) this.notOwned();
+    return this.projection.owner(record);
   }
 
   async ownerAccept(ownerUserId: string, reference: string, request: RequestMetadata) {
@@ -519,6 +547,7 @@ export class BookingsService {
       BookingOwnerDecisionType.ACCEPTED,
       undefined,
       request,
+      ownerUserId,
     );
     this.analytics.record({
       bookingId: booking.id,
@@ -541,6 +570,7 @@ export class BookingsService {
       BookingOwnerDecisionType.REJECTED,
       reason,
       request,
+      ownerUserId,
     );
     this.analytics.record({
       bookingId: booking.id,
@@ -548,6 +578,85 @@ export class BookingsService {
       userId: ownerUserId,
     });
     return this.projection.owner(booking);
+  }
+
+  async ownerAcceptForAccess(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    reference: string,
+    request: RequestMetadata,
+  ) {
+    return this.ownerDecisionForAccess(
+      context,
+      actorUserId,
+      reference,
+      BookingOwnerDecisionType.ACCEPTED,
+      undefined,
+      request,
+      'bookings.accept',
+    );
+  }
+
+  async ownerRejectForAccess(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    reference: string,
+    reason: string | undefined,
+    request: RequestMetadata,
+  ) {
+    return this.ownerDecisionForAccess(
+      context,
+      actorUserId,
+      reference,
+      BookingOwnerDecisionType.REJECTED,
+      reason,
+      request,
+      'bookings.reject',
+    );
+  }
+
+  private async ownerDecisionForAccess(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    reference: string,
+    decision: BookingOwnerDecisionType,
+    reason: string | undefined,
+    request: RequestMetadata,
+    permission: 'bookings.accept' | 'bookings.reject',
+  ) {
+    const vehicle = this.ownerAccess.vehicleWhere(context, permission);
+    const accessible = await this.database.client.booking.findFirst({
+      select: { ownerUserId: true },
+      where: { publicReference: reference, vehicle },
+    });
+    if (!accessible) this.notOwned();
+    await this.owners.assertOperational(accessible.ownerUserId);
+    const booking = await this.ownerDecision(
+      accessible.ownerUserId,
+      reference,
+      decision,
+      reason,
+      request,
+      actorUserId,
+    );
+    this.analytics.record({
+      bookingId: booking.id,
+      eventType:
+        decision === BookingOwnerDecisionType.ACCEPTED
+          ? AnalyticsEventType.BOOKING_OWNER_ACCEPTED
+          : AnalyticsEventType.BOOKING_OWNER_REJECTED,
+      userId: actorUserId,
+    });
+    return this.projection.owner(booking);
+  }
+
+  private async ownerUserIdForAccess(context: OwnerAccessContext) {
+    const owner = await this.database.client.ownerProfile.findUnique({
+      select: { userId: true },
+      where: { id: context.ownerProfileId },
+    });
+    if (!owner) this.notOwned();
+    return owner.userId;
   }
 
   async listAdmin() {
@@ -575,6 +684,7 @@ export class BookingsService {
     decision: BookingOwnerDecisionType,
     reason: string | undefined,
     request: RequestMetadata,
+    actorUserId: string,
   ): Promise<BookingRecord> {
     const id = await this.resolveId(reference, { ownerUserId });
     return this.database.client.$transaction(async (transaction) => {
@@ -598,7 +708,7 @@ export class BookingsService {
       });
       await transaction.bookingOwnerDecision.create({
         data: {
-          actorUserId: ownerUserId,
+          actorUserId,
           bookingId: id,
           correlationId: request.correlationId ?? null,
           decision,
@@ -625,7 +735,7 @@ export class BookingsService {
           ? 'BOOKING_OWNER_ACCEPTED'
           : 'BOOKING_OWNER_REJECTED',
         BookingActorType.USER,
-        ownerUserId,
+        actorUserId,
         request,
         reason,
       );

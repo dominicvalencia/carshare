@@ -37,7 +37,8 @@ import type { PaymentProvider, ProviderOperationResult } from '@carrental/paymen
 import { ApplicationException } from '../common/errors/application.exception';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { PAYMENT_PROVIDER } from '../payments/payment-provider.factory';
-import type { RequestMetadata } from '../security/security-context';
+import { OwnerAccessService } from '../owner-access/owner-access.service';
+import type { OwnerAccessContext, RequestMetadata } from '../security/security-context';
 import type {
   AddClaimEvidenceDto,
   AdminAdjudicateClaimDto,
@@ -101,6 +102,7 @@ const claimInclude = {
 export class ClaimsService {
   constructor(
     private readonly database: DatabaseService,
+    private readonly ownerAccess: OwnerAccessService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     @Inject(ConfigService) private readonly configuration: ConfigService<ApiEnvironment, true>,
   ) {}
@@ -110,7 +112,10 @@ export class ClaimsService {
     reference: string,
     input: CreatePostReturnClaimDto,
     request: RequestMetadata,
+    authority?: { readonly actorUserId: string; readonly ownerUserId: string },
   ) {
+    const actorUserId = authority?.actorUserId ?? ownerUserId;
+    const authorityOwnerUserId = authority?.ownerUserId ?? ownerUserId;
     const claimId = await this.database.client.$transaction(async (transaction) => {
       const booking = await transaction.booking.findFirst({
         include: {
@@ -121,7 +126,7 @@ export class ClaimsService {
           pricingSnapshot: true,
           usageSummary: true,
         },
-        where: { ownerUserId, ...this.bookingIdentity(reference) },
+        where: { ownerUserId: authorityOwnerUserId, ...this.bookingIdentity(reference) },
       });
       if (!booking) this.notFound();
       await this.lockBooking(transaction, booking.id);
@@ -159,7 +164,7 @@ export class ClaimsService {
           HttpStatus.UNPROCESSABLE_ENTITY,
         );
       }
-      await this.validateEvidence(transaction, ownerUserId, evidence);
+      await this.validateEvidence(transaction, actorUserId, evidence);
       const policy = await transaction.claimPolicy.findFirst({
         orderBy: { version: 'desc' },
         where: {
@@ -199,7 +204,7 @@ export class ClaimsService {
           id: randomUUID(),
           responseDeadlineAt,
           status: PostReturnClaimStatus.RENTER_REVIEW,
-          submittedByUserId: ownerUserId,
+          submittedByUserId: actorUserId,
         },
       });
       if (evidence.length) {
@@ -210,7 +215,7 @@ export class ClaimsService {
             fileAssetId: item.fileAssetId,
             note: item.note ?? null,
             participantRole: EvidenceParticipantRole.OWNER,
-            submittedByUserId: ownerUserId,
+            submittedByUserId: actorUserId,
           })),
         });
       }
@@ -250,7 +255,7 @@ export class ClaimsService {
       await this.analytics(transaction, booking.id, 'CLAIM_CREATED', request);
       return created.id;
     });
-    return this.ownerClaim(ownerUserId, claimId);
+    return this.ownerClaim(authorityOwnerUserId, claimId);
   }
 
   async ownerClaims(ownerUserId: string, query: ClaimListQueryDto) {
@@ -259,6 +264,16 @@ export class ClaimsService {
       ...(query.status ? { status: query.status } : {}),
       booking: { ownerUserId },
     });
+  }
+
+  async ownerClaimsForAccess(context: OwnerAccessContext, query: ClaimListQueryDto) {
+    const vehicle = this.ownerAccess.vehicleWhere(context, 'claims.view');
+    const result = await this.list({
+      ...(query.category ? { category: query.category } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      booking: { vehicle },
+    });
+    return this.disputeProjection(context, result);
   }
 
   async renterClaims(renterUserId: string, query: ClaimListQueryDto) {
@@ -273,6 +288,12 @@ export class ClaimsService {
     return this.findParticipant(claimId, { ownerUserId });
   }
 
+  async ownerClaimForAccess(context: OwnerAccessContext, claimId: string) {
+    const authority = await this.ownerAccess.assertClaimAccess(context, claimId, 'claims.view');
+    const result = await this.ownerClaim(authority.ownerUserId, claimId);
+    return this.disputeProjection(context, result);
+  }
+
   async renterClaim(renterUserId: string, claimId: string) {
     return this.findParticipant(claimId, { renterUserId });
   }
@@ -282,6 +303,19 @@ export class ClaimsService {
       ownerUserId,
     });
     return this.ownerClaim(ownerUserId, claimId);
+  }
+
+  async addOwnerEvidenceForAccess(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    claimId: string,
+    input: AddClaimEvidenceDto,
+  ) {
+    const authority = await this.ownerAccess.assertClaimAccess(context, claimId, 'claims.respond');
+    await this.addEvidence(actorUserId, claimId, input, EvidenceParticipantRole.OWNER, {
+      ownerUserId: authority.ownerUserId,
+    });
+    return this.ownerClaimForAccess(context, claimId);
   }
 
   async addRenterEvidence(renterUserId: string, claimId: string, input: AddClaimEvidenceDto) {
@@ -1825,6 +1859,20 @@ export class ClaimsService {
       status === DisputeStatus.EVIDENCE_COLLECTION ||
       status === DisputeStatus.UNDER_REVIEW
     );
+  }
+
+  private disputeProjection<T>(context: OwnerAccessContext, value: T): T {
+    if (context.capacity === 'OWNER' || context.permissions.includes('disputes.view')) return value;
+    if (value && typeof value === 'object') {
+      const projected = structuredClone(value) as Record<string, unknown>;
+      const redact = (claim: unknown) => {
+        if (claim && typeof claim === 'object') delete (claim as Record<string, unknown>).disputes;
+      };
+      if (Array.isArray(projected.items)) projected.items.forEach(redact);
+      else redact(projected);
+      return projected as T;
+    }
+    return value;
   }
 
   private bookingIdentity(reference: string): Prisma.BookingWhereInput {

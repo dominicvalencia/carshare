@@ -32,6 +32,8 @@ import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
 import { BackControl, Icon, StatusBadge } from '../../ui/primitives';
 import { HANDOVER_EVIDENCE_WAIVER_ACKNOWLEDGEMENT_VERSION } from '@carrental/api-contracts';
 import { tripDateSummary } from '../discovery/trip-date-policy';
+import type { OwnerWorkspace } from '../../auth/auth.types';
+import { hasOwnerPermission } from '../../navigation/owner-workspace';
 
 const perspectives = [
   'FRONT',
@@ -1425,16 +1427,33 @@ export function RenterRentalPanel({
 
 export function OwnerRentalPanel({
   onOpenConversation,
+  ownerWorkspace,
   reference,
   scrollConditionFormBy,
   scrollToConditionForm,
 }: {
   readonly onOpenConversation?: () => void;
+  readonly ownerWorkspace?: OwnerWorkspace;
   readonly reference: string;
   readonly scrollConditionFormBy?: (delta: number) => void;
   readonly scrollToConditionForm?: (y: number) => void;
 }) {
   const client = useQueryClient();
+  const workspaceKey = ownerWorkspace?.ownerProfileId ?? 'owner';
+  const rentalEndpoint = ownerWorkspace
+    ? `/owner/workspaces/${ownerWorkspace.ownerProfileId}/rentals/${reference}`
+    : `/owner/bookings/${reference}/rental`;
+  const canHandover = !ownerWorkspace || hasOwnerPermission(ownerWorkspace, 'handover.perform');
+  const canReturn = !ownerWorkspace || hasOwnerPermission(ownerWorkspace, 'return.perform');
+  const canInspect =
+    !ownerWorkspace ||
+    (hasOwnerPermission(ownerWorkspace, 'inspections.create') &&
+      hasOwnerPermission(ownerWorkspace, 'inspections.update'));
+  const canReportIncident =
+    !ownerWorkspace || hasOwnerPermission(ownerWorkspace, 'incidents.create');
+  const canCreateClaim = !ownerWorkspace || hasOwnerPermission(ownerWorkspace, 'claims.create');
+  const canViewClaims = !ownerWorkspace || hasOwnerPermission(ownerWorkspace, 'claims.view');
+  const allowDeferredActions = !ownerWorkspace;
   const { height: viewportHeight, width: viewportWidth } = useWindowDimensions();
   const safeArea = useSafeAreaInsets();
   const panelOffsetY = useRef(0);
@@ -1516,8 +1535,8 @@ export function OwnerRentalPanel({
   const [correctionReason, setCorrectionReason] = useState('');
   const [files, setFiles] = useState<Record<string, CapturedFile[]>>({});
   const rental = useQuery({
-    queryKey: ['owner-rental', reference],
-    queryFn: () => apiClient.request<RentalDetail>(`/owner/bookings/${reference}/rental`),
+    queryKey: ['owner-workspace', workspaceKey, 'rental', reference],
+    queryFn: () => apiClient.request<RentalDetail>(rentalEndpoint),
     refetchInterval: (query) =>
       query.state.data &&
       ['READY_FOR_PICKUP', 'ACTIVE', 'RETURN_PENDING'].includes(query.state.data.status)
@@ -1525,11 +1544,9 @@ export function OwnerRentalPanel({
         : false,
   });
   const pickupDraft = useQuery({
-    queryKey: ['owner-pickup-inspection-draft', reference],
-    queryFn: () =>
-      apiClient.request<InspectionDraft>(
-        `/owner/bookings/${reference}/rental/pickup/inspection/draft`,
-      ),
+    enabled: canHandover && canInspect,
+    queryKey: ['owner-workspace', workspaceKey, 'pickup-inspection-draft', reference],
+    queryFn: () => apiClient.request<InspectionDraft>(`${rentalEndpoint}/pickup/inspection/draft`),
   });
   const draftFiles = useMemo(
     () => capturedFilesFromDraft(pickupDraft.data?.media ?? []),
@@ -1567,17 +1584,14 @@ export function OwnerRentalPanel({
     }) => {
       if (retry && pendingAttachment.current) {
         const pending = pendingAttachment.current;
-        await apiClient.request(
-          `/owner/bookings/${reference}/rental/pickup/inspection/draft/media`,
-          {
-            body: JSON.stringify({
-              fileAssetId: pending.id,
-              perspective: pending.perspective,
-              replace: pending.mode === 'replace',
-            }),
-            method: 'PUT',
-          },
-        );
+        await apiClient.request(`${rentalEndpoint}/pickup/inspection/draft/media`, {
+          body: JSON.stringify({
+            fileAssetId: pending.id,
+            perspective: pending.perspective,
+            replace: pending.mode === 'replace',
+          }),
+          method: 'PUT',
+        });
         return pending;
       }
       pendingAttachment.current = null;
@@ -1597,7 +1611,7 @@ export function OwnerRentalPanel({
       });
       pendingAttachment.current = { id: uploaded.id, mode, perspective, uri: asset.uri };
       setAttachmentUploaded(true);
-      await apiClient.request(`/owner/bookings/${reference}/rental/pickup/inspection/draft/media`, {
+      await apiClient.request(`${rentalEndpoint}/pickup/inspection/draft/media`, {
         body: JSON.stringify({
           fileAssetId: uploaded.id,
           perspective,
@@ -1653,6 +1667,25 @@ export function OwnerRentalPanel({
     ) => {
       const detail = rental.data;
       if (!detail) throw new Error('Rental is unavailable.');
+      if (ownerWorkspace) {
+        if (['inspection'].includes(operation) && (!canHandover || !canInspect))
+          throw new Error('Pickup inspection access is no longer available.');
+        if (
+          ['verify', 'start-preparing', 'start-on-way', 'start-arrived'].includes(operation) &&
+          !canHandover
+        )
+          throw new Error('Pickup handover access is no longer available.');
+        if (
+          ['return', 'agree', 'disagree', 'return-on-way', 'return-arrived'].includes(operation) &&
+          !canReturn
+        )
+          throw new Error('Return access is no longer available.');
+        if (
+          ['claim', 'incident', 'correction', 'renter-no-show'].includes(operation) ||
+          operation.startsWith('discrepancy-')
+        )
+          throw new Error('This action is not available to delegated staff yet.');
+      }
       if (operation.startsWith('discrepancy-')) {
         const responseType =
           operation === 'discrepancy-acknowledge'
@@ -1687,14 +1720,14 @@ export function OwnerRentalPanel({
         });
       }
       if (operation === 'verify') {
-        return apiClient.request(`/owner/bookings/${reference}/rental/pickup/verify`, {
+        return apiClient.request(`${rentalEndpoint}/pickup/verify`, {
           body: JSON.stringify({ code }),
           method: 'POST',
         });
       }
       if (operation.startsWith('start-') || operation.startsWith('return-')) {
         const [phase, status] = operation.split('-');
-        return apiClient.request(`/owner/bookings/${reference}/rental/handover/travel`, {
+        return apiClient.request(`${rentalEndpoint}/handover/travel`, {
           body: JSON.stringify({
             phase: phase === 'start' ? 'START' : 'RETURN',
             status:
@@ -1718,30 +1751,35 @@ export function OwnerRentalPanel({
         );
       }
       if (operation === 'return') {
-        return apiClient.request(`/owner/bookings/${reference}/rental/return/start`, {
+        return apiClient.request(`${rentalEndpoint}/return/start`, {
           method: 'POST',
         });
       }
       if (operation === 'claim') {
         const returned = detail.inspections.find(({ type }) => type === 'RETURN');
-        return apiClient.request(`/owner/bookings/${reference}/claims`, {
-          body: JSON.stringify({
-            category: claimCategory,
-            description: claimDescription,
-            ...(['CLEANING', 'DAMAGE'].includes(claimCategory)
-              ? {
-                  evidence: (returned?.media ?? []).map(({ fileAsset }) => ({
-                    evidenceType: 'PHOTO',
-                    fileAssetId: fileAsset.id,
-                  })),
-                }
-              : {}),
-          }),
-          method: 'POST',
-        });
+        return apiClient.request(
+          ownerWorkspace
+            ? `/owner/workspaces/${ownerWorkspace.ownerProfileId}/bookings/${reference}/claims`
+            : `/owner/bookings/${reference}/claims`,
+          {
+            body: JSON.stringify({
+              category: claimCategory,
+              description: claimDescription,
+              ...(['CLEANING', 'DAMAGE'].includes(claimCategory)
+                ? {
+                    evidence: (returned?.media ?? []).map(({ fileAsset }) => ({
+                      evidenceType: 'PHOTO',
+                      fileAssetId: fileAsset.id,
+                    })),
+                  }
+                : {}),
+            }),
+            method: 'POST',
+          },
+        );
       }
       if (operation === 'incident') {
-        return apiClient.request(`/owner/bookings/${reference}/rental/incidents`, {
+        return apiClient.request(`${rentalEndpoint}/incidents`, {
           body: JSON.stringify({
             category: 'VEHICLE_ISSUE',
             description: 'Owner requested operational support.',
@@ -1761,7 +1799,7 @@ export function OwnerRentalPanel({
         });
       }
       if (operation === 'agree' || operation === 'disagree') {
-        return apiClient.request(`/owner/bookings/${reference}/rental/return/confirm`, {
+        return apiClient.request(`${rentalEndpoint}/return/confirm`, {
           body: JSON.stringify({
             decision: operation === 'agree' ? 'AGREED' : 'DISAGREED',
             ...(operation === 'disagree'
@@ -1771,7 +1809,7 @@ export function OwnerRentalPanel({
           method: 'POST',
         });
       }
-      return apiClient.request(`/owner/bookings/${reference}/rental/pickup/inspection`, {
+      return apiClient.request(`${rentalEndpoint}/pickup/inspection`, {
         body: JSON.stringify({
           odometerMeters: String(Math.round(Number(odometer) * 1000)),
           ...(fuel ? { fuelBasisPoints: Math.round(Number(fuel) * 100) } : {}),
@@ -2039,17 +2077,22 @@ export function OwnerRentalPanel({
           <Text style={styles.nextStepText}>Waiting for the renter to begin return.</Text>
         </View>
       ) : null}
-      {overdueRecoveryScope && !detail.overdueHandoverRecovery && (
-        <OwnerOverdueRecoveryAction
-          detail={detail}
-          reference={reference}
-          scope={overdueRecoveryScope}
-        />
-      )}
+      {overdueRecoveryScope &&
+        !detail.overdueHandoverRecovery &&
+        ((overdueRecoveryScope === 'START' && canHandover) ||
+          (overdueRecoveryScope === 'RETURN' && canReturn) ||
+          (overdueRecoveryScope === 'BOTH' && canHandover && canReturn)) && (
+          <OwnerOverdueRecoveryAction
+            detail={detail}
+            endpointBase={rentalEndpoint}
+            reference={reference}
+            scope={overdueRecoveryScope}
+          />
+        )}
       {detail.overdueHandoverRecovery && !detail.overdueHandoverRecovery.acceptance && (
         <OwnerOverdueRecoverySubmittedStatus recovery={detail.overdueHandoverRecovery} />
       )}
-      {pickupOverdue && !pickup && !startWaived && !overdueRecoveryScope && (
+      {canHandover && pickupOverdue && !pickup && !startWaived && !overdueRecoveryScope && (
         <View accessibilityRole="alert" style={[styles.overdueCard, styles.compactOverdueCard]}>
           <Text style={styles.cardTitle}>Handover overdue</Text>
           {detail.workflowCompliance?.workflow === 'B4' && (
@@ -2083,65 +2126,75 @@ export function OwnerRentalPanel({
             pickupHandoverReady &&
             detail.workflowCompliance?.workflow === 'B4' &&
             detail.workflowCompliance.start.outstandingStep === 'OWNER_INSPECTION_REQUIRED' && (
-              <EvidenceWaiverAction detail={detail} reference={reference} phase="START" />
+              <EvidenceWaiverAction
+                detail={detail}
+                endpointBase={rentalEndpoint}
+                reference={reference}
+                phase="START"
+              />
             )}
-          {renterNoShowIncident || renterNoShowSubmitted ? (
-            <Text style={styles.success}>
-              ✓ Renter no-show reported
-              {renterNoShowIncident ? ` · ${domainLabel(renterNoShowIncident.status)}` : ''}
-            </Text>
-          ) : (
-            <SecondaryAction
-              disabled={action.isPending && action.variables === 'renter-no-show'}
-              label={
-                action.isPending && action.variables === 'renter-no-show'
-                  ? 'Reporting…'
-                  : 'Renter did not arrive'
-              }
-              onPress={() => action.mutate('renter-no-show')}
-            />
-          )}
+          {allowDeferredActions &&
+            (renterNoShowIncident || renterNoShowSubmitted ? (
+              <Text style={styles.success}>
+                ✓ Renter no-show reported
+                {renterNoShowIncident ? ` · ${domainLabel(renterNoShowIncident.status)}` : ''}
+              </Text>
+            ) : (
+              <SecondaryAction
+                disabled={action.isPending && action.variables === 'renter-no-show'}
+                label={
+                  action.isPending && action.variables === 'renter-no-show'
+                    ? 'Reporting…'
+                    : 'Renter did not arrive'
+                }
+                onPress={() => action.mutate('renter-no-show')}
+              />
+            ))}
         </View>
       )}
       {detail.status === 'CANCELLED' && detail.cancellationSettlement ? (
         <CancellationSummary detail={detail} audience="owner" />
       ) : null}
-      {detail.workflowCompliance?.return.overdue && !returnWaived && !overdueRecoveryScope && (
-        <View style={styles.overdueCard}>
-          <Text style={styles.cardTitle}>Return process overdue</Text>
-          {detail.workflowCompliance.workflow === 'B4' && (
-            <Text style={styles.cardTitle}>Your payout remains pending</Text>
-          )}
-          <Text style={styles.body}>
-            {domainLabel(
-              detail.workflowCompliance.return.outstandingStep ?? 'RETURN_COMPLETION_REQUIRED',
+      {canReturn &&
+        detail.workflowCompliance?.return.overdue &&
+        !returnWaived &&
+        !overdueRecoveryScope && (
+          <View style={styles.overdueCard}>
+            <Text style={styles.cardTitle}>Return process overdue</Text>
+            {detail.workflowCompliance.workflow === 'B4' && (
+              <Text style={styles.cardTitle}>Your payout remains pending</Text>
             )}
-          </Text>
-          <Text style={styles.body}>
-            Complete the required return process so CarShare can verify the end of the rental and
-            continue payout processing.
-          </Text>
-          {[
-            'OWNER_COLLECTION_ARRIVAL_REQUIRED',
-            'OWNER_RETURN_REVIEW_REQUIRED',
-            'OWNER_RETURN_RECEIPT_REQUIRED',
-          ].includes(detail.workflowCompliance.return.outstandingStep ?? '') ? (
-            <Action
-              label="Complete return"
-              onPress={() =>
-                scrollToConditionForm?.(
-                  panelOffsetY.current + (ownerWorkflowOffsets.current.return ?? 0) - spacing.md,
-                )
-              }
-            />
-          ) : (
             <Text style={styles.body}>
-              Waiting for the renter or Operations to complete the outstanding step.
+              {domainLabel(
+                detail.workflowCompliance.return.outstandingStep ?? 'RETURN_COMPLETION_REQUIRED',
+              )}
             </Text>
-          )}
-        </View>
-      )}
+            <Text style={styles.body}>
+              Complete the required return process so CarShare can verify the end of the rental and
+              continue payout processing.
+            </Text>
+            {[
+              'OWNER_COLLECTION_ARRIVAL_REQUIRED',
+              'OWNER_RETURN_REVIEW_REQUIRED',
+              'OWNER_RETURN_RECEIPT_REQUIRED',
+            ].includes(detail.workflowCompliance.return.outstandingStep ?? '') ? (
+              <Action
+                label="Complete return"
+                onPress={() =>
+                  scrollToConditionForm?.(
+                    panelOffsetY.current + (ownerWorkflowOffsets.current.return ?? 0) - spacing.md,
+                  )
+                }
+              />
+            ) : (
+              <Text style={styles.body}>
+                Waiting for the renter or Operations to complete the outstanding step.
+              </Text>
+            )}
+          </View>
+        )}
       {detail.fulfillment.startMethod === 'OWNER_DELIVERY' &&
+        canHandover &&
         !pickupOverdue &&
         ['CONFIRMED', 'READY_FOR_PICKUP'].includes(detail.status) && (
           <View
@@ -2158,6 +2211,7 @@ export function OwnerRentalPanel({
           </View>
         )}
       {detail.fulfillment.endMethod === 'OWNER_COLLECTION' &&
+        canReturn &&
         !detail.workflowCompliance?.return.overdue &&
         ['ACTIVE', 'RETURN_PENDING'].includes(detail.status) && (
           <View
@@ -2175,16 +2229,21 @@ export function OwnerRentalPanel({
             />
           </View>
         )}
-      {needsInspection && !handoverStarted && !pickupHandoverReady && !pickupOverdue && (
-        <View style={styles.actionCard}>
-          <Text style={styles.actionEyebrow}>Delivery</Text>
-          <Text style={styles.cardTitle}>Complete delivery travel first</Text>
-          <Text style={styles.body}>
-            The pickup handover becomes available after you mark arrival at the delivery location.
-          </Text>
-        </View>
-      )}
-      {needsInspection && !handoverStarted && pickupHandoverReady && (
+      {canHandover &&
+        canInspect &&
+        needsInspection &&
+        !handoverStarted &&
+        !pickupHandoverReady &&
+        !pickupOverdue && (
+          <View style={styles.actionCard}>
+            <Text style={styles.actionEyebrow}>Delivery</Text>
+            <Text style={styles.cardTitle}>Complete delivery travel first</Text>
+            <Text style={styles.body}>
+              The pickup handover becomes available after you mark arrival at the delivery location.
+            </Text>
+          </View>
+        )}
+      {canHandover && canInspect && needsInspection && !handoverStarted && pickupHandoverReady && (
         <View
           style={styles.actionCard}
           onLayout={({ nativeEvent }) => {
@@ -2221,22 +2280,25 @@ export function OwnerRentalPanel({
           />
         </View>
       )}
-      {detail.status === 'READY_FOR_PICKUP' && showCompactRentalActions && !pickup && (
-        <View style={styles.rentalActionsSection}>
-          <Text style={styles.sectionTitle}>Rental actions</Text>
-          <View style={styles.rentalActionRow}>
-            <SecondaryAction
-              compact
-              label="Report incident"
-              onPress={() => action.mutate('incident')}
-            />
-            {onOpenConversation ? (
-              <SecondaryAction compact label="Message" onPress={onOpenConversation} />
-            ) : null}
+      {canReportIncident &&
+        detail.status === 'READY_FOR_PICKUP' &&
+        showCompactRentalActions &&
+        !pickup && (
+          <View style={styles.rentalActionsSection}>
+            <Text style={styles.sectionTitle}>Rental actions</Text>
+            <View style={styles.rentalActionRow}>
+              <SecondaryAction
+                compact
+                label="Report incident"
+                onPress={() => action.mutate('incident')}
+              />
+              {onOpenConversation ? (
+                <SecondaryAction compact label="Message" onPress={onOpenConversation} />
+              ) : null}
+            </View>
           </View>
-        </View>
-      )}
-      {needsInspection && handoverStarted && (
+        )}
+      {canHandover && canInspect && needsInspection && handoverStarted && (
         <>
           <View
             style={styles.inspectionIntro}
@@ -2961,7 +3023,7 @@ export function OwnerRentalPanel({
         </View>
       )}
       {detail.status === 'ACTIVE' && pickup ? <RentalVehicleReadings inspection={pickup} /> : null}
-      {detail.status === 'ACTIVE' ? (
+      {canReportIncident && detail.status === 'ACTIVE' ? (
         <View style={styles.rentalActionsSection}>
           <Text style={styles.sectionTitle}>Rental actions</Text>
           <View style={styles.rentalActionRow}>
@@ -2978,6 +3040,7 @@ export function OwnerRentalPanel({
       ) : null}
       <EvidenceWaiverWarnings detail={detail} />
       {detail.status === 'RETURN_PENDING' &&
+        canReturn &&
         detail.fulfillment.endMethod === 'OWNER_COLLECTION' &&
         detail.workflowCompliance?.return.overdue &&
         !overdueRecoveryScope &&
@@ -2996,6 +3059,7 @@ export function OwnerRentalPanel({
             </Text>
             <EvidenceWaiverAction
               detail={detail}
+              endpointBase={rentalEndpoint}
               ownerInitiatedReturn
               reference={reference}
               phase="RETURN"
@@ -3003,6 +3067,7 @@ export function OwnerRentalPanel({
           </View>
         )}
       {detail.status === 'RETURN_PENDING' &&
+        canReturn &&
         detail.workflowCompliance?.return.evidenceOutcome === 'WAIVED' && (
           <View
             onLayout={({ nativeEvent }) => {
@@ -3010,7 +3075,7 @@ export function OwnerRentalPanel({
             }}
           >
             <Text style={styles.cardTitle}>Confirm vehicle receipt</Text>
-            <WaivedReturnReceiptAction reference={reference} />
+            <WaivedReturnReceiptAction endpointBase={rentalEndpoint} reference={reference} />
           </View>
         )}
       {detail.status === 'RETURN_PENDING' &&
@@ -3027,7 +3092,7 @@ export function OwnerRentalPanel({
             </Text>
           </View>
         )}
-      {detail.status === 'RETURN_PENDING' && returned && (
+      {canReturn && detail.status === 'RETURN_PENDING' && returned && (
         <View
           onLayout={({ nativeEvent }) => {
             ownerWorkflowOffsets.current.return = nativeEvent.layout.y;
@@ -3059,7 +3124,7 @@ export function OwnerRentalPanel({
           )}
         </View>
       )}
-      {detail.status === 'RETURNED' && (
+      {detail.status === 'RETURNED' && canViewClaims && (
         <>
           <UsageSummary audience="owner" detail={detail} />
           <View style={styles.postInspectionCard}>
@@ -3087,17 +3152,17 @@ export function OwnerRentalPanel({
                 </Text>
               </>
             )}
-            {claimWindowOpen ? (
+            {claimWindowOpen && canCreateClaim ? (
               <SecondaryAction
                 inline
                 label={detail.postReturnClaims.length ? 'Add another claim' : 'Start a claim'}
                 onPress={openClaimSheet}
               />
-            ) : (
+            ) : !claimWindowOpen ? (
               <Text accessibilityLiveRegion="polite" style={styles.status}>
                 Claim window closed
               </Text>
-            )}
+            ) : null}
           </View>
           <Modal
             animationType="slide"
@@ -3187,7 +3252,7 @@ export function OwnerRentalPanel({
           </Modal>
         </>
       )}
-      {['RETURN_PENDING', 'RETURNED'].includes(detail.status) ? (
+      {canReportIncident && ['RETURN_PENDING', 'RETURNED'].includes(detail.status) ? (
         <View style={styles.rentalActionsSection}>
           <Text style={styles.sectionTitle}>Rental actions</Text>
           <View style={styles.rentalActionRow}>
@@ -3202,7 +3267,8 @@ export function OwnerRentalPanel({
           </View>
         </View>
       ) : null}
-      {['READY_FOR_PICKUP', 'RETURN_PENDING'].includes(detail.status) &&
+      {canReportIncident &&
+        ['READY_FOR_PICKUP', 'RETURN_PENDING'].includes(detail.status) &&
         !showCompactRentalActions && (
           <SecondaryAction label="Report incident" onPress={() => action.mutate('incident')} />
         )}
@@ -4188,10 +4254,12 @@ function OwnerOverdueRecoverySubmittedStatus({
 
 function OwnerOverdueRecoveryAction({
   detail,
+  endpointBase,
   reference,
   scope,
 }: {
   readonly detail: RentalDetail;
+  readonly endpointBase: string;
   readonly reference: string;
   readonly scope: OverdueRecoveryScope;
 }) {
@@ -4243,19 +4311,16 @@ function OwnerOverdueRecoveryAction({
   });
   const action = useMutation({
     mutationFn: () =>
-      apiClient.request<RentalDetail>(
-        `/owner/bookings/${reference}/rental/overdue-handover-recovery`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            acknowledged: true,
-            acknowledgementVersion: 'OVERDUE_HANDOVER_RECOVERY_V1',
-            scope,
-            ...(scope !== 'RETURN' ? { reportedPickupAt: pickupAt.toISOString() } : {}),
-            ...(scope !== 'START' ? { reportedReturnAt: returnAt.toISOString() } : {}),
-          }),
-        },
-      ),
+      apiClient.request<RentalDetail>(`${endpointBase}/overdue-handover-recovery`, {
+        method: 'POST',
+        body: JSON.stringify({
+          acknowledged: true,
+          acknowledgementVersion: 'OVERDUE_HANDOVER_RECOVERY_V1',
+          scope,
+          ...(scope !== 'RETURN' ? { reportedPickupAt: pickupAt.toISOString() } : {}),
+          ...(scope !== 'START' ? { reportedReturnAt: returnAt.toISOString() } : {}),
+        }),
+      }),
     onSuccess: (result) => {
       client.setQueryData(['owner-rental', reference], result);
       setOpen(false);
@@ -4591,11 +4656,13 @@ function OverdueRecoveryResponse({
 
 function EvidenceWaiverAction({
   detail,
+  endpointBase,
   ownerInitiatedReturn = false,
   reference,
   phase,
 }: {
   readonly detail?: RentalDetail;
+  readonly endpointBase?: string;
   readonly ownerInitiatedReturn?: boolean;
   readonly reference: string;
   readonly phase: 'START' | 'RETURN';
@@ -4641,7 +4708,9 @@ function EvidenceWaiverAction({
   const action = useMutation({
     mutationFn: () =>
       apiClient.request(
-        `/${phase === 'START' || ownerInitiatedReturn ? 'owner/' : ''}bookings/${reference}/rental/${phase === 'START' ? 'pickup' : 'return'}/evidence-waiver`,
+        endpointBase
+          ? `${endpointBase}/${phase === 'START' ? 'pickup' : 'return'}/evidence-waiver`
+          : `/${phase === 'START' || ownerInitiatedReturn ? 'owner/' : ''}bookings/${reference}/rental/${phase === 'START' ? 'pickup' : 'return'}/evidence-waiver`,
         {
           method: 'POST',
           body: JSON.stringify({
@@ -4763,11 +4832,17 @@ function EvidenceWaiverAction({
   );
 }
 
-function WaivedReturnReceiptAction({ reference }: { readonly reference: string }) {
+function WaivedReturnReceiptAction({
+  endpointBase,
+  reference,
+}: {
+  readonly endpointBase?: string;
+  readonly reference: string;
+}) {
   const client = useQueryClient();
   const action = useMutation({
     mutationFn: () =>
-      apiClient.request(`/owner/bookings/${reference}/rental/return/receipt`, {
+      apiClient.request(`${endpointBase ?? `/owner/bookings/${reference}/rental`}/return/receipt`, {
         method: 'POST',
         body: JSON.stringify({ vehicleReceived: true }),
       }),
@@ -5067,6 +5142,7 @@ function invalidateRentalQueries(
   reference: string,
 ): void {
   invalidateBookingLifecycle(client, reference);
+  void client.invalidateQueries({ queryKey: ['owner-workspace'] });
 }
 
 const styles = StyleSheet.create({

@@ -8,7 +8,7 @@ import { useEffect, useState, type ComponentProps } from 'react';
 import { Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiClient } from '../auth/api-client';
-import type { OwnerStatus } from '../auth/auth.types';
+import type { OwnerStatus, OwnerWorkspace } from '../auth/auth.types';
 import {
   AccountScreen,
   ActiveDevicesScreen,
@@ -37,6 +37,7 @@ import {
 } from '../features/reviews/MarketplaceReviewsScreens';
 import { ClaimDetailScreen } from '../features/claims/ClaimsPanels';
 import { SupportCenter } from '../features/support/SupportCenter';
+import { OwnerStaffScreen } from '../features/staff/OwnerStaffScreen';
 import { OwnerDashboardScreen } from '../features/vehicles/OwnerDashboardScreen';
 import { VehiclesScreen } from '../features/vehicles/VehiclesScreen';
 import { colors } from '../theme/tokens';
@@ -49,6 +50,7 @@ import type {
 } from './routes';
 import { combinedActivityUnread, ownerBookingSurface } from './activity-routing';
 import { withDeepLinkParent } from './deep-link-state';
+import { delegatedOwnerTabs, hasOwnerPermission } from './owner-workspace';
 
 const RenterTabs = createBottomTabNavigator<RenterTabParamList>();
 const OwnerTabs = createBottomTabNavigator<OwnerTabParamList>();
@@ -64,10 +66,25 @@ function closeToMarketplace(navigation: {
   else navigation.navigate('Marketplace');
 }
 
+function AccessUnavailable() {
+  return (
+    <Screen scroll={false}>
+      <StateView
+        icon="lock-closed-outline"
+        message="You no longer have access to this area."
+        title="Access unavailable"
+      />
+    </Screen>
+  );
+}
+
 interface AppNavigationProperties {
   readonly mode: MobileMode;
   readonly ownerCapable: boolean;
   readonly ownerStatus: OwnerStatus | null;
+  readonly ownerWorkspace: OwnerWorkspace | null;
+  readonly ownerWorkspaces: readonly OwnerWorkspace[];
+  readonly onOwnerWorkspaceChange: (ownerProfileId: string) => void;
   readonly onModeChange: (mode: MobileMode) => void;
 }
 
@@ -89,18 +106,24 @@ const ownerIcons: Readonly<Record<keyof OwnerTabParamList, { active: IconName; i
     More: { active: 'menu', idle: 'menu-outline' },
   };
 
-function useBadges(mode: MobileMode) {
+function useBadges(mode: MobileMode, enabled = true, ownerWorkspace?: OwnerWorkspace | null) {
   const audience = mode.toUpperCase();
+  const delegated = mode === 'owner' && ownerWorkspace?.capacity !== 'OWNER';
+  const workspaceKey = delegated ? ownerWorkspace?.ownerProfileId : mode;
   const conversations = useQuery({
-    queryKey: ['conversations', mode],
+    enabled,
+    queryKey: ['conversations', workspaceKey],
     queryFn: () =>
       apiClient.request<{ items: { unreadCount: number }[] }>(
-        `/conversations?limit=50&audience=${audience}`,
+        delegated
+          ? `/owner/workspaces/${ownerWorkspace!.ownerProfileId}/conversations?limit=50`
+          : `/conversations?limit=50&audience=${audience}`,
       ),
     refetchInterval: 15_000,
   });
   const notifications = useQuery({
-    queryKey: ['notification-summary', mode],
+    enabled: enabled && !delegated,
+    queryKey: ['notification-summary', workspaceKey],
     queryFn: () =>
       apiClient.request<{ unreadCount: number }>(`/notifications/summary?audience=${audience}`),
     refetchInterval: 15_000,
@@ -217,56 +240,105 @@ function RenterNavigation({
 function OwnerNavigation({
   onModeChange,
   ownerStatus,
-}: Pick<AppNavigationProperties, 'onModeChange' | 'ownerStatus'>) {
-  const badges = useBadges('owner');
+  ownerWorkspace,
+  ownerWorkspaces,
+  onOwnerWorkspaceChange,
+}: Pick<
+  AppNavigationProperties,
+  'onModeChange' | 'ownerStatus' | 'ownerWorkspace' | 'ownerWorkspaces' | 'onOwnerWorkspaceChange'
+>) {
+  const tabs = ownerWorkspace
+    ? delegatedOwnerTabs(ownerWorkspace)
+    : { messages: false, more: true, today: false, vehicles: false };
+  const badges = useBadges('owner', tabs.messages, ownerWorkspace);
   const insets = useSafeAreaInsets();
+  if (!ownerWorkspace)
+    return (
+      <Screen scroll={false}>
+        <StateView
+          actionLabel="Return to renter mode"
+          icon="lock-closed-outline"
+          message="You no longer have access to this Owner workspace."
+          onAction={() => onModeChange('renter')}
+          title="Access unavailable"
+        />
+      </Screen>
+    );
+  const initialRouteName = tabs.today ? 'Dashboard' : tabs.vehicles ? 'Vehicles' : 'More';
   return (
     <OwnerTabs.Navigator
+      initialRouteName={initialRouteName}
       screenOptions={({ route }) => tabOptions(ownerIcons[route.name], insets.bottom)}
     >
-      <OwnerTabs.Screen
-        name="Dashboard"
-        options={{ tabBarAccessibilityLabel: 'Today tab', tabBarLabel: 'Today' }}
-      >
-        {() => <OwnerDashboardScreen ownerStatus={ownerStatus} />}
-      </OwnerTabs.Screen>
-      <OwnerTabs.Screen name="Vehicles" component={VehiclesScreen} />
-      <OwnerTabs.Screen
-        name="Messages"
-        options={badges.messages ? { tabBarBadge: badges.messages } : {}}
-      >
-        {({ route }) => (
-          <MessagesScreen
-            mode="owner"
-            key={route.params?.conversationId ?? 'conversation-list'}
-            initialConversationId={route.params?.conversationId}
+      {tabs.today ? (
+        <OwnerTabs.Screen
+          name="Dashboard"
+          options={{ tabBarAccessibilityLabel: 'Today tab', tabBarLabel: 'Today' }}
+        >
+          {() => (
+            <OwnerDashboardScreen
+              ownerStatus={ownerStatus}
+              {...(ownerWorkspace.capacity === 'OWNER' ? {} : { ownerWorkspace })}
+            />
+          )}
+        </OwnerTabs.Screen>
+      ) : null}
+      {tabs.vehicles ? (
+        <OwnerTabs.Screen name="Vehicles">
+          {() => <VehiclesScreen ownerWorkspace={ownerWorkspace} />}
+        </OwnerTabs.Screen>
+      ) : null}
+      {tabs.messages ? (
+        <OwnerTabs.Screen
+          name="Messages"
+          options={badges.messages ? { tabBarBadge: badges.messages } : {}}
+        >
+          {({ route }) => (
+            <MessagesScreen
+              mode="owner"
+              ownerWorkspace={ownerWorkspace}
+              key={route.params?.conversationId ?? 'conversation-list'}
+              initialConversationId={route.params?.conversationId}
+            />
+          )}
+        </OwnerTabs.Screen>
+      ) : null}
+      <OwnerTabs.Screen name="More">
+        {() => (
+          <OwnerMoreScreen
+            onModeChange={onModeChange}
+            onOwnerWorkspaceChange={onOwnerWorkspaceChange}
+            ownerStatus={ownerStatus}
+            ownerWorkspace={ownerWorkspace}
+            ownerWorkspaces={ownerWorkspaces}
           />
         )}
       </OwnerTabs.Screen>
-      <OwnerTabs.Screen name="More">
-        {() => <OwnerMoreScreen onModeChange={onModeChange} ownerStatus={ownerStatus} />}
-      </OwnerTabs.Screen>
-      <OwnerTabs.Screen
-        name="Requests"
-        options={{
-          tabBarButton: () => null,
-          tabBarItemStyle: { display: 'none' },
-        }}
-      >
-        {() =>
-          ownerStatus === 'VERIFIED' ? (
-            <OwnerBookingRequestsScreen />
-          ) : (
-            <Screen eyebrow="Owner mode" title="Booking requests">
-              <StateView
-                icon="shield-checkmark-outline"
-                title="Verification required"
-                message="Complete owner verification before publishing listings or accepting booking requests."
+      {hasOwnerPermission(ownerWorkspace, 'bookings.view') ? (
+        <OwnerTabs.Screen
+          name="Requests"
+          options={{
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
+          }}
+        >
+          {() =>
+            ownerStatus === 'VERIFIED' ? (
+              <OwnerBookingRequestsScreen
+                {...(ownerWorkspace.capacity === 'OWNER' ? {} : { ownerWorkspace })}
               />
-            </Screen>
-          )
-        }
-      </OwnerTabs.Screen>
+            ) : (
+              <Screen eyebrow="Owner mode" title="Booking requests">
+                <StateView
+                  icon="shield-checkmark-outline"
+                  title="Verification required"
+                  message="Complete owner verification before publishing listings or accepting booking requests."
+                />
+              </Screen>
+            )
+          }
+        </OwnerTabs.Screen>
+      ) : null}
     </OwnerTabs.Navigator>
   );
 }
@@ -319,7 +391,10 @@ export function AppNavigation(properties: AppNavigationProperties) {
             ) : (
               <OwnerNavigation
                 onModeChange={properties.onModeChange}
+                onOwnerWorkspaceChange={properties.onOwnerWorkspaceChange}
                 ownerStatus={properties.ownerStatus}
+                ownerWorkspace={properties.ownerWorkspace}
+                ownerWorkspaces={properties.ownerWorkspaces}
               />
             )
           }
@@ -349,11 +424,15 @@ export function AppNavigation(properties: AppNavigationProperties) {
           name="OwnerOnboarding"
           options={{ gestureEnabled: false, headerShown: false }}
         />
-        <Stack.Screen
-          component={OwnerProfileScreen}
-          name="OwnerProfile"
-          options={{ headerShown: false }}
-        />
+        <Stack.Screen name="OwnerProfile" options={{ headerShown: false }}>
+          {() =>
+            properties.ownerWorkspace?.capacity === 'OWNER' ? (
+              <OwnerProfileScreen />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
         <Stack.Screen name="Notifications" options={{ headerShown: false }}>
           {() => <NotificationCenter mode={properties.mode} />}
         </Stack.Screen>
@@ -385,18 +464,47 @@ export function AppNavigation(properties: AppNavigationProperties) {
           )}
         </Stack.Screen>
         <Stack.Screen name="Conversation" options={{ headerShown: false }}>
-          {({ navigation, route }) => (
-            <ConversationDestination
-              conversationId={route.params.conversationId}
-              mode={properties.mode}
-              onClose={() => closeToMarketplace(navigation)}
-              onModeChange={properties.onModeChange}
-            />
-          )}
+          {({ navigation, route }) =>
+            properties.mode === 'owner' && properties.ownerWorkspace?.capacity !== 'OWNER' ? (
+              hasOwnerPermission(properties.ownerWorkspace!, 'messages.view') ? (
+                <MessagesScreen
+                  initialConversationId={route.params.conversationId}
+                  mode="owner"
+                  onClose={() => closeToMarketplace(navigation)}
+                  ownerWorkspace={properties.ownerWorkspace!}
+                />
+              ) : (
+                <AccessUnavailable />
+              )
+            ) : (
+              <ConversationDestination
+                conversationId={route.params.conversationId}
+                mode={properties.mode}
+                onClose={() => closeToMarketplace(navigation)}
+                onModeChange={properties.onModeChange}
+              />
+            )
+          }
         </Stack.Screen>
         <Stack.Screen name="Booking" options={{ headerShown: false }}>
           {({ navigation, route }) =>
-            properties.mode === 'owner' ? (
+            properties.mode === 'owner' && properties.ownerWorkspace?.capacity !== 'OWNER' ? (
+              hasOwnerPermission(properties.ownerWorkspace!, 'bookings.view') ? (
+                <OwnerBookingDestination
+                  reference={route.params.bookingId}
+                  onClose={() => closeToMarketplace(navigation)}
+                  ownerWorkspace={properties.ownerWorkspace!}
+                />
+              ) : hasOwnerPermission(properties.ownerWorkspace!, 'rentals.view') ? (
+                <OwnerRentalsScreen
+                  initialBookingReference={route.params.bookingId}
+                  onClose={() => closeToMarketplace(navigation)}
+                  ownerWorkspace={properties.ownerWorkspace!}
+                />
+              ) : (
+                <AccessUnavailable />
+              )
+            ) : properties.mode === 'owner' ? (
               <OwnerBookingDestination
                 reference={route.params.bookingId}
                 onClose={() => closeToMarketplace(navigation)}
@@ -410,57 +518,146 @@ export function AppNavigation(properties: AppNavigationProperties) {
           }
         </Stack.Screen>
         <Stack.Screen name="BookingRecovery" options={{ headerShown: false }}>
-          {({ navigation, route }) => (
-            <MyBookingsScreen
-              focusRecovery
-              initialBookingReference={route.params.bookingId}
-              onClose={() => closeToMarketplace(navigation)}
-            />
-          )}
+          {({ navigation, route }) =>
+            properties.mode === 'owner' && properties.ownerWorkspace?.capacity !== 'OWNER' ? (
+              <AccessUnavailable />
+            ) : (
+              <MyBookingsScreen
+                focusRecovery
+                initialBookingReference={route.params.bookingId}
+                onClose={() => closeToMarketplace(navigation)}
+              />
+            )
+          }
         </Stack.Screen>
         <Stack.Screen name="Claim" options={{ headerShown: false }}>
-          {({ navigation, route }) => (
-            <ClaimDetailScreen
-              claimId={route.params.claimId}
-              ownerMode={properties.mode === 'owner'}
-              onBack={() => closeToMarketplace(navigation)}
-            />
-          )}
+          {({ navigation, route }) =>
+            properties.mode === 'owner' && properties.ownerWorkspace?.capacity !== 'OWNER' ? (
+              hasOwnerPermission(properties.ownerWorkspace!, 'claims.view') ? (
+                <ClaimDetailScreen
+                  claimId={route.params.claimId}
+                  onBack={() => closeToMarketplace(navigation)}
+                  ownerMode
+                  ownerWorkspace={properties.ownerWorkspace!}
+                />
+              ) : (
+                <AccessUnavailable />
+              )
+            ) : (
+              <ClaimDetailScreen
+                claimId={route.params.claimId}
+                ownerMode={properties.mode === 'owner'}
+                onBack={() => closeToMarketplace(navigation)}
+              />
+            )
+          }
         </Stack.Screen>
         <Stack.Screen name="Support" options={{ headerShown: false }}>
           {({ route }) => <SupportCenter initialTicketId={route.params?.ticketId} />}
         </Stack.Screen>
-        <Stack.Screen component={SettingsScreen} name="Settings" options={{ headerShown: false }} />
-        <Stack.Screen
-          component={OwnerRentalsScreen}
-          name="OwnerRentals"
-          options={{ headerShown: false }}
-        />
-        <Stack.Screen name="OwnerRequestHistory" options={{ title: 'Request history' }}>
-          {() => <OwnerBookingRequestsScreen history />}
+        <Stack.Screen name="Settings" options={{ headerShown: false }}>
+          {() =>
+            properties.mode === 'owner' && properties.ownerWorkspace?.capacity !== 'OWNER' ? (
+              <AccessUnavailable />
+            ) : (
+              <SettingsScreen />
+            )
+          }
         </Stack.Screen>
-        <Stack.Screen
-          component={OwnerEarningsScreen}
-          name="OwnerEarnings"
-          options={{ headerShown: false }}
-        />
-        <Stack.Screen
-          component={OwnerPayoutMethodsScreen}
-          name="OwnerPayoutMethods"
-          options={{ headerShown: false }}
-        />
-        <Stack.Screen
-          component={OwnerAddPayoutMethodScreen}
-          name="OwnerAddPayoutMethod"
-          options={{ headerShown: false }}
-        />
-        <Stack.Screen
-          component={OwnerPayoutMethodDetailScreen}
-          name="OwnerPayoutMethodDetail"
-          options={{ headerShown: false }}
-        />
+        <Stack.Screen name="OwnerRentals" options={{ headerShown: false }}>
+          {() =>
+            properties.ownerWorkspace &&
+            hasOwnerPermission(properties.ownerWorkspace, 'rentals.view') ? (
+              <OwnerRentalsScreen
+                {...(properties.ownerWorkspace.capacity === 'OWNER'
+                  ? {}
+                  : { ownerWorkspace: properties.ownerWorkspace })}
+              />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
+        <Stack.Screen name="OwnerRequestHistory" options={{ title: 'Request history' }}>
+          {() =>
+            properties.ownerWorkspace?.capacity === 'OWNER' ? (
+              <OwnerBookingRequestsScreen history />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
+        <Stack.Screen name="OwnerBookingRequests" options={{ headerShown: false }}>
+          {() =>
+            properties.ownerWorkspace &&
+            hasOwnerPermission(properties.ownerWorkspace, 'bookings.view') ? (
+              <OwnerBookingRequestsScreen
+                {...(properties.ownerWorkspace.capacity === 'OWNER'
+                  ? {}
+                  : { ownerWorkspace: properties.ownerWorkspace })}
+              />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
+        <Stack.Screen name="OwnerEarnings" options={{ headerShown: false }}>
+          {() =>
+            properties.ownerWorkspace?.capacity === 'OWNER' ? (
+              <OwnerEarningsScreen />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
+        <Stack.Screen name="OwnerPayoutMethods" options={{ headerShown: false }}>
+          {() =>
+            properties.ownerWorkspace?.capacity === 'OWNER' ? (
+              <OwnerPayoutMethodsScreen />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
+        <Stack.Screen name="OwnerAddPayoutMethod" options={{ headerShown: false }}>
+          {() =>
+            properties.ownerWorkspace?.capacity === 'OWNER' ? (
+              <OwnerAddPayoutMethodScreen />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
+        <Stack.Screen name="OwnerPayoutMethodDetail" options={{ headerShown: false }}>
+          {() =>
+            properties.ownerWorkspace?.capacity === 'OWNER' ? (
+              <OwnerPayoutMethodDetailScreen />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
+        <Stack.Screen name="OwnerStaff" options={{ headerShown: false }}>
+          {() =>
+            properties.ownerWorkspace &&
+            hasOwnerPermission(properties.ownerWorkspace, 'staff.view') ? (
+              <OwnerStaffScreen
+                capacity={properties.ownerWorkspace.capacity === 'OWNER' ? 'OWNER' : 'MANAGER'}
+                ownerProfileId={properties.ownerWorkspace.ownerProfileId}
+              />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
         <Stack.Screen name="Payout" options={{ headerShown: false }}>
-          {() => <OwnerEarningsScreen />}
+          {() =>
+            properties.ownerWorkspace?.capacity === 'OWNER' ? (
+              <OwnerEarningsScreen />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
         </Stack.Screen>
       </Stack.Navigator>
     </NavigationContainer>
@@ -513,17 +710,24 @@ function ConversationDestination({
 function OwnerBookingDestination({
   reference,
   onClose,
+  ownerWorkspace,
 }: {
   readonly reference: string;
   readonly onClose: () => void;
+  readonly ownerWorkspace?: OwnerWorkspace;
 }) {
+  const delegated = Boolean(ownerWorkspace && ownerWorkspace.capacity !== 'OWNER');
   const booking = useQuery({
-    queryKey: ['owner-booking-destination', reference],
+    queryKey: ['owner-booking-destination', ownerWorkspace?.ownerProfileId ?? 'owner', reference],
     queryFn: () =>
       apiClient.request<{
         latestAmendment?: { amendmentId: string; status: string } | null;
         status: string;
-      }>(`/owner/bookings/${reference}`),
+      }>(
+        delegated
+          ? `/owner/workspaces/${ownerWorkspace!.ownerProfileId}/bookings/${reference}`
+          : `/owner/bookings/${reference}`,
+      ),
   });
   if (booking.isPending)
     return (
@@ -543,9 +747,17 @@ function OwnerBookingDestination({
         />
       </Screen>
     );
-  return ownerBookingSurface(booking.data.status) === 'rental' &&
-    booking.data.latestAmendment?.status !== 'PENDING_OWNER' ? (
-    <OwnerRentalsScreen initialBookingReference={reference} onClose={onClose} />
+  const rentalSurface =
+    ownerBookingSurface(booking.data.status) === 'rental' &&
+    booking.data.latestAmendment?.status !== 'PENDING_OWNER';
+  if (rentalSurface && delegated && !hasOwnerPermission(ownerWorkspace!, 'rentals.view'))
+    return <AccessUnavailable />;
+  return rentalSurface ? (
+    <OwnerRentalsScreen
+      initialBookingReference={reference}
+      onClose={onClose}
+      {...(delegated ? { ownerWorkspace } : {})}
+    />
   ) : (
     <OwnerBookingRequestsScreen
       {...(booking.data.latestAmendment?.status === 'PENDING_OWNER'
@@ -553,6 +765,7 @@ function OwnerBookingDestination({
         : {})}
       initialBookingReference={reference}
       onClose={onClose}
+      {...(delegated ? { ownerWorkspace } : {})}
     />
   );
 }

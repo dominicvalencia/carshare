@@ -15,6 +15,8 @@ import type { RootStackParamList } from '../../navigation/routes';
 import { bookingStatusLabel, dateTimeLabel } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import { Button, Card, NestedScreen, StateView, StatusBadge } from '../../ui/primitives';
+import type { OwnerWorkspace } from '../../auth/auth.types';
+import { hasOwnerPermission } from '../../navigation/owner-workspace';
 
 const operational = new Set([
   'CONFIRMED',
@@ -28,9 +30,11 @@ const operational = new Set([
 export function OwnerRentalsScreen({
   initialBookingReference,
   onClose,
+  ownerWorkspace,
 }: {
   readonly initialBookingReference?: string;
   readonly onClose?: () => void;
+  readonly ownerWorkspace?: OwnerWorkspace;
 } = {}) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const client = useQueryClient();
@@ -39,9 +43,15 @@ export function OwnerRentalsScreen({
   const scrollViewportHeight = useRef(0);
   const [selected, setSelected] = useState<string | null>(initialBookingReference ?? null);
   const [cancellationOpen, setCancellationOpen] = useState(false);
+  const workspaceKey = ownerWorkspace?.ownerProfileId ?? 'owner';
   const rentals = useQuery({
-    queryKey: ['owner-rentals'],
-    queryFn: () => apiClient.request<BookingView[]>('/owner/bookings/requests'),
+    queryKey: ['owner-workspace', workspaceKey, 'rentals'],
+    queryFn: () =>
+      apiClient.request<BookingView[]>(
+        ownerWorkspace
+          ? `/owner/workspaces/${ownerWorkspace.ownerProfileId}/rentals`
+          : '/owner/bookings/requests',
+      ),
     refetchInterval: selected ? 5_000 : false,
   });
   useRefreshOnFocusAndForeground(() => void rentals.refetch());
@@ -83,6 +93,7 @@ export function OwnerRentalsScreen({
       {selected ? (
         <>
           <OwnerRentalPanel
+            {...(ownerWorkspace ? { ownerWorkspace } : {})}
             {...(selectedBooking?.conversationId
               ? {
                   onOpenConversation: () =>
@@ -97,8 +108,14 @@ export function OwnerRentalsScreen({
             }
             scrollToConditionForm={(y) => scrollRef.current?.scrollTo({ animated: true, y })}
           />
-          <OwnerClaimsPanel bookingReference={selected} />
-          {selectedBooking &&
+          {(!ownerWorkspace || hasOwnerPermission(ownerWorkspace, 'claims.view')) && (
+            <OwnerClaimsPanel
+              bookingReference={selected}
+              {...(ownerWorkspace ? { ownerWorkspace } : {})}
+            />
+          )}
+          {!ownerWorkspace &&
+            selectedBooking &&
             ['CONFIRMED', 'READY_FOR_PICKUP'].includes(selectedBooking.status) && (
               <Card style={styles.dangerZone}>
                 <Text style={styles.dangerEyebrow}>Danger zone</Text>
@@ -113,7 +130,7 @@ export function OwnerRentalsScreen({
                 />
               </Card>
             )}
-          {selectedBooking && (
+          {!ownerWorkspace && selectedBooking && (
             <BookingCancellationSheet
               bookingReference={selectedBooking.publicReference}
               onClose={() => setCancellationOpen(false)}
@@ -128,7 +145,9 @@ export function OwnerRentalsScreen({
               visible={cancellationOpen}
             />
           )}
-          {selectedBooking?.status === 'COMPLETED' && <ReviewPanel bookingReference={selected} />}
+          {!ownerWorkspace && selectedBooking?.status === 'COMPLETED' && (
+            <ReviewPanel bookingReference={selected} />
+          )}
         </>
       ) : (
         <>

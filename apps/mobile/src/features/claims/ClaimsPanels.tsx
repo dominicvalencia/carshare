@@ -4,6 +4,7 @@ import { apiClient } from '../../auth/api-client';
 import { colors, spacing } from '../../theme/tokens';
 import { dateTimeLabel, domainLabel, money } from '../../ui/format';
 import { BackControl, Screen, StateView } from '../../ui/primitives';
+import type { OwnerWorkspace } from '../../auth/auth.types';
 
 interface ClaimView {
   readonly id: string;
@@ -36,14 +37,22 @@ export function ClaimDetailScreen({
   claimId,
   ownerMode,
   onBack,
+  ownerWorkspace,
 }: {
   readonly claimId: string;
   readonly ownerMode: boolean;
   readonly onBack: () => void;
+  readonly ownerWorkspace?: OwnerWorkspace;
 }) {
+  const workspaceKey = ownerWorkspace?.ownerProfileId ?? (ownerMode ? 'owner' : 'renter');
   const claim = useQuery({
-    queryKey: ['claim', ownerMode ? 'owner' : 'renter', claimId],
-    queryFn: () => apiClient.request<ClaimView>(`${ownerMode ? '/owner' : ''}/claims/${claimId}`),
+    queryKey: ['claim', workspaceKey, claimId],
+    queryFn: () =>
+      apiClient.request<ClaimView>(
+        ownerWorkspace
+          ? `/owner/workspaces/${ownerWorkspace.ownerProfileId}/claims/${claimId}`
+          : `${ownerMode ? '/owner' : ''}/claims/${claimId}`,
+      ),
     retry: false,
   });
   return (
@@ -150,10 +159,22 @@ export function RenterClaimsPanel({ bookingReference }: { readonly bookingRefere
   );
 }
 
-export function OwnerClaimsPanel({ bookingReference }: { readonly bookingReference: string }) {
+export function OwnerClaimsPanel({
+  bookingReference,
+  ownerWorkspace,
+}: {
+  readonly bookingReference: string;
+  readonly ownerWorkspace?: OwnerWorkspace;
+}) {
+  const workspaceKey = ownerWorkspace?.ownerProfileId ?? 'owner';
   const claims = useQuery({
-    queryKey: ['owner-claims'],
-    queryFn: () => apiClient.request<ClaimsResponse>('/owner/claims'),
+    queryKey: ['owner-workspace', workspaceKey, 'claims'],
+    queryFn: () =>
+      apiClient.request<ClaimsResponse>(
+        ownerWorkspace
+          ? `/owner/workspaces/${ownerWorkspace.ownerProfileId}/claims`
+          : '/owner/claims',
+      ),
   });
   const items = claims.data?.items.filter(
     (claim) => claim.booking.publicReference === bookingReference,

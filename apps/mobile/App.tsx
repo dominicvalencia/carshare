@@ -1,13 +1,13 @@
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider, useAuth } from './src/auth/AuthProvider';
 import { apiClient } from './src/auth/api-client';
-import type { OwnerStatus } from './src/auth/auth.types';
+import type { OwnerStatus, OwnerWorkspace } from './src/auth/auth.types';
 import { AuthFlow } from './src/features/auth/AuthFlow';
 import { AppNavigation } from './src/navigation/AppNavigation';
 import type { MobileMode } from './src/navigation/routes';
@@ -25,6 +25,8 @@ import { RenterOnboardingDraftProvider } from './src/features/account/RenterVeri
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { activeRoleStorage } from './src/navigation/active-role-storage';
+import { ownerWorkspaceStorage } from './src/navigation/owner-workspace-storage';
+import { activeOwnerWorkspaces, resolveOwnerWorkspace } from './src/navigation/owner-workspace';
 import { OwnerOnboardingScreen } from './src/features/account/AccountScreen';
 import { GuidedOnboarding } from './src/onboarding/GuidedOnboarding';
 import {
@@ -85,9 +87,12 @@ function PrincipalApplication() {
 
 function AppContent() {
   const auth = useAuth();
+  const queryClient = useQueryClient();
   const userId = auth.user?.id;
   const [mode, setMode] = useState<MobileMode>('renter');
   const [restoredModeKey, setRestoredModeKey] = useState<string | null>(null);
+  const [restoredWorkspaceKey, setRestoredWorkspaceKey] = useState<string | null>(null);
+  const [activeOwnerProfileId, setActiveOwnerProfileId] = useState<string | null>(null);
   const [ownerGuideState, setOwnerGuideState] = useState<{
     readonly dismissed: boolean;
     readonly firstEntryIntent: boolean;
@@ -118,9 +123,40 @@ function AppContent() {
   const roles = auth.user?.roles ?? [];
   const renterCapable = roles.includes('RENTER');
   const ownerRole = roles.includes('OWNER');
-  const modeResolutionKey = userId
-    ? `${userId}:${auth.user?.profile?.initialMarketplacePersona ?? 'NONE'}:${renterCapable}:${ownerRole}`
+  const ownerWorkspaces = activeOwnerWorkspaces(auth.user?.ownerWorkspaces ?? []);
+  const ownerEnabled = ownerWorkspaces.length > 0;
+  const workspaceResolutionKey = userId
+    ? `${userId}:${ownerWorkspaces
+        .map(
+          ({ ownerProfileId, membershipStatus, permissions }) =>
+            `${ownerProfileId}:${membershipStatus}:${permissions.join(',')}`,
+        )
+        .join('|')}`
     : null;
+  const activeWorkspace =
+    ownerWorkspaces.find(({ ownerProfileId }) => ownerProfileId === activeOwnerProfileId) ?? null;
+  const modeResolutionKey = userId
+    ? `${userId}:${auth.user?.profile?.initialMarketplacePersona ?? 'NONE'}:${renterCapable}:${ownerEnabled}`
+    : null;
+  useEffect(() => {
+    if (!userId || !workspaceResolutionKey) return;
+    let active = true;
+    void ownerWorkspaceStorage
+      .get(userId)
+      .then((saved) => {
+        if (!active) return;
+        const resolved = resolveOwnerWorkspace(auth.user?.ownerWorkspaces ?? [], saved);
+        setActiveOwnerProfileId(resolved?.ownerProfileId ?? null);
+        if (resolved) void ownerWorkspaceStorage.set(userId, resolved.ownerProfileId);
+        else void ownerWorkspaceStorage.clear(userId);
+      })
+      .finally(() => {
+        if (active) setRestoredWorkspaceKey(workspaceResolutionKey);
+      });
+    return () => {
+      active = false;
+    };
+  }, [auth.user?.ownerWorkspaces, userId, workspaceResolutionKey]);
   useEffect(() => {
     if (!userId || !modeResolutionKey) return;
     let active = true;
@@ -131,7 +167,7 @@ function AppContent() {
         setMode(
           resolvePersonaMode({
             initialPersona: auth.user?.profile?.initialMarketplacePersona ?? null,
-            ownerEnabled: ownerRole,
+            ownerEnabled,
             renterEnabled: renterCapable,
             savedMode: stored,
           }) ?? 'renter',
@@ -146,10 +182,16 @@ function AppContent() {
   }, [
     auth.user?.profile?.initialMarketplacePersona,
     modeResolutionKey,
-    ownerRole,
+    ownerEnabled,
     renterCapable,
     userId,
   ]);
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && auth.user) void auth.refreshIdentity();
+    });
+    return () => subscription.remove();
+  }, [auth]);
   useEffect(() => {
     if (!userId || !ownerRole) return;
     let active = true;
@@ -200,8 +242,12 @@ function AppContent() {
       </View>
     );
   if (!auth.user) return <AuthFlow />;
-  if (!renterCapable && !ownerRole) return <PersonaSelection />;
-  if (restoredModeKey !== modeResolutionKey || !ownerGuideReady)
+  if (!renterCapable && !ownerEnabled) return <PersonaSelection />;
+  if (
+    restoredModeKey !== modeResolutionKey ||
+    restoredWorkspaceKey !== workspaceResolutionKey ||
+    !ownerGuideReady
+  )
     return (
       <View style={styles.loading}>
         <Text>Restoring your workspace…</Text>
@@ -249,14 +295,33 @@ function AppContent() {
         </OnboardingStack.Navigator>
       </NavigationContainer>
     );
-  const ownerCapable = Boolean(owner.data) || ownerRole;
+  const ownerCapable = ownerEnabled;
+  const changeWorkspace = (ownerProfileId: string) => {
+    if (!ownerWorkspaces.some((workspace) => workspace.ownerProfileId === ownerProfileId)) return;
+    setActiveOwnerProfileId(ownerProfileId);
+    void ownerWorkspaceStorage.set(auth.user!.id, ownerProfileId);
+    for (const queryKey of [
+      ['owner-workspace'],
+      ['owner-home'],
+      ['owner-home-upcoming'],
+      ['owner-staff'],
+      ['conversations'],
+      ['conversation'],
+      ['messages'],
+      ['claim'],
+    ])
+      void queryClient.invalidateQueries({ queryKey });
+  };
   return (
     <AppLockProvider userId={auth.user.id}>
       <ProtectedApplication
         mode={mode}
         onModeChange={changeMode}
         ownerCapable={ownerCapable}
-        ownerStatus={owner.data?.status ?? null}
+        ownerStatus={activeWorkspace?.ownerProfileStatus ?? owner.data?.status ?? null}
+        ownerWorkspace={activeWorkspace}
+        ownerWorkspaces={ownerWorkspaces}
+        onOwnerWorkspaceChange={changeWorkspace}
       />
     </AppLockProvider>
   );
@@ -402,11 +467,17 @@ function ProtectedApplication({
   onModeChange,
   ownerCapable,
   ownerStatus,
+  ownerWorkspace,
+  ownerWorkspaces,
+  onOwnerWorkspaceChange,
 }: {
   readonly mode: MobileMode;
   readonly onModeChange: (mode: MobileMode) => void;
   readonly ownerCapable: boolean;
   readonly ownerStatus: OwnerStatus | null;
+  readonly ownerWorkspace: OwnerWorkspace | null;
+  readonly ownerWorkspaces: readonly OwnerWorkspace[];
+  readonly onOwnerWorkspaceChange: (ownerProfileId: string) => void;
 }) {
   const lock = useAppLock();
   if (lock.loading)
@@ -423,6 +494,9 @@ function ProtectedApplication({
         onModeChange={onModeChange}
         ownerCapable={ownerCapable}
         ownerStatus={ownerStatus}
+        ownerWorkspace={ownerWorkspace}
+        ownerWorkspaces={ownerWorkspaces}
+        onOwnerWorkspaceChange={onOwnerWorkspaceChange}
       />
       <PushRegistration />
       <StatusBar style="auto" />

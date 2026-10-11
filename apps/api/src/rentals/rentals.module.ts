@@ -7,9 +7,15 @@ import {
   RenterRentalsController,
 } from './rentals.controller';
 import { RentalsService } from './rentals.service';
+import { OwnerWorkspaceRentalsController } from './owner-workspace-rentals.controller';
 
 @Module({
-  controllers: [RenterRentalsController, OwnerRentalsController, AdminRentalsController],
+  controllers: [
+    RenterRentalsController,
+    OwnerRentalsController,
+    OwnerWorkspaceRentalsController,
+    AdminRentalsController,
+  ],
   exports: [RentalsService],
   imports: [AuditModule, ClaimsModule],
   providers: [RentalsService],

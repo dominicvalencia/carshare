@@ -26,6 +26,86 @@ export interface ApiErrorResponse {
   readonly error: ApiError;
 }
 
+export type OwnerStaffRole = 'MANAGER' | 'STAFF';
+export type OwnerStaffStatus = 'INVITED' | 'ACTIVE' | 'SUSPENDED' | 'DISABLED';
+export type OwnerStaffVehicleScopeMode = 'ALL_VEHICLES' | 'SELECTED_VEHICLES';
+export type OwnerStaffPreset = 'MANAGER' | 'OPERATIONS_STAFF' | 'SUPPORT_STAFF' | 'CUSTOM';
+export type OwnerStaffInvitationState = 'PENDING' | 'EXPIRED' | 'REVOKED' | 'CONSUMED';
+
+export interface OwnerStaffVehicleSummary {
+  readonly id: string;
+  readonly make: string | null;
+  readonly model: string | null;
+  readonly modelYear: number | null;
+}
+
+export interface OwnerStaffListItem {
+  readonly activatedAt: string | null;
+  readonly assignedVehicleCount: number;
+  readonly disabledAt: string | null;
+  readonly displayName: string;
+  readonly email: string;
+  readonly id: string;
+  readonly invitedAt: string;
+  readonly permissions: readonly string[];
+  readonly preset: OwnerStaffPreset;
+  readonly role: OwnerStaffRole;
+  readonly status: OwnerStaffStatus;
+  readonly suspendedAt: string | null;
+  readonly vehicleScopeMode: OwnerStaffVehicleScopeMode;
+}
+
+export interface OwnerStaffDetail extends OwnerStaffListItem {
+  readonly assignedVehicles: readonly OwnerStaffVehicleSummary[];
+  readonly invitation: {
+    readonly consumedAt: string | null;
+    readonly expiresAt: string;
+    readonly revokedAt: string | null;
+    readonly state: OwnerStaffInvitationState;
+  } | null;
+  readonly suspensionReason: string | null;
+}
+
+export interface InviteOwnerStaffRequest {
+  readonly displayName: string;
+  readonly email: string;
+  readonly permissions?: readonly string[];
+  readonly preset: OwnerStaffPreset;
+  readonly role: OwnerStaffRole;
+  readonly vehicleIds?: readonly string[];
+  readonly vehicleScopeMode: OwnerStaffVehicleScopeMode;
+}
+
+export interface UpdateOwnerStaffPermissionsRequest {
+  readonly permissions: readonly string[];
+}
+
+export interface UpdateOwnerStaffRequest {
+  readonly displayName: string;
+}
+
+export interface UpdateOwnerStaffVehicleScopeRequest {
+  readonly vehicleIds?: readonly string[];
+  readonly vehicleScopeMode: OwnerStaffVehicleScopeMode;
+}
+
+export interface OwnerStaffReasonRequest {
+  readonly reason: string;
+}
+
+export interface OwnerStaffInvitationActionResponse {
+  readonly id: string;
+  readonly status: OwnerStaffStatus;
+}
+
+export interface AcceptOwnerStaffInvitationRequest {
+  readonly token: string;
+}
+
+export interface AcceptOwnerStaffInvitationResponse {
+  readonly accepted: true;
+}
+
 export const SystemErrorCode = {
   INTERNAL_ERROR: 'INTERNAL_ERROR',
   NOT_FOUND: 'NOT_FOUND',

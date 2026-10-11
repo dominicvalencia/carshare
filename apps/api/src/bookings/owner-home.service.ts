@@ -15,11 +15,13 @@ import { manilaTodayWindow, OWNER_AVAILABILITY_TIMEZONE } from '../vehicles/owne
 import { workflowCompliance } from '../rentals/workflow-compliance';
 import type { OwnerHomeUpcomingQueryDto } from './owner-home.dto';
 import {
-  ownerActionableAmendmentWhere,
-  ownerActionableBookingWhere,
+  ownerActionableAmendmentWhereFromBooking,
+  ownerActionableBookingWhereFromBooking,
 } from './owner-request-actionability';
 import { DatabaseService } from '../infrastructure/database/database.service';
 import { FilesService } from '../files/files.service';
+import { OwnerAccessService } from '../owner-access/owner-access.service';
+import type { OwnerAccessContext } from '../security/security-context';
 
 const TODAY_CARD_LIMIT = 20;
 const operationalStatuses = [
@@ -91,17 +93,36 @@ export class OwnerHomeService {
     private readonly database: DatabaseService,
     private readonly owners: OwnersService,
     private readonly files: FilesService,
+    private readonly ownerAccess: OwnerAccessService,
     @Inject(ConfigService) private readonly configuration: ConfigService<ApiEnvironment, true>,
   ) {}
 
   async today(ownerUserId: string, now = new Date()) {
     await this.owners.assertOperational(ownerUserId);
+    return this.todayForWhere({ ownerUserId }, { ownerUserId }, true, now);
+  }
+
+  async todayForAccess(context: OwnerAccessContext, now = new Date()) {
+    const rentals = context.permissions.includes('rentals.view')
+      ? { vehicle: this.ownerAccess.vehicleWhere(context, 'rentals.view') }
+      : { id: '__no_authorized_rentals__' };
+    const requests = context.permissions.includes('bookings.view')
+      ? { vehicle: this.ownerAccess.vehicleWhere(context, 'bookings.view') }
+      : { id: '__no_authorized_requests__' };
+    return this.todayForWhere(rentals, requests, false, now);
+  }
+
+  private async todayForWhere(
+    base: Prisma.BookingWhereInput,
+    requestBase: Prisma.BookingWhereInput,
+    includeAmendments: boolean,
+    now: Date,
+  ) {
     const { startInclusive, endExclusive } = manilaTodayWindow(now);
     const returnGraceMinutes = this.configuration.getOrThrow('RETURN_CONFIRMATION_GRACE_MINUTES', {
       infer: true,
     });
     const returnOverdueBefore = new Date(now.getTime() - returnGraceMinutes * 60_000);
-    const base = { ownerUserId } as const;
     const [pickupRows, activeRows, returnRows, attentionRows, recoveryRows, requestCounts, next] =
       await Promise.all([
         this.database.client.booking.findMany({
@@ -194,11 +215,11 @@ export class OwnerHomeService {
           },
           take: TODAY_CARD_LIMIT,
           where: {
-            booking: { ownerUserId },
+            booking: base,
             status: BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
           },
         }),
-        this.requestCounts(ownerUserId),
+        this.requestCounts(requestBase, includeAmendments),
         this.database.client.booking.findFirst({
           include: ownerHomeBookingInclude,
           orderBy: [{ rentalStart: 'asc' }, { id: 'asc' }],
@@ -277,9 +298,26 @@ export class OwnerHomeService {
 
   async upcoming(ownerUserId: string, query: OwnerHomeUpcomingQueryDto, now = new Date()) {
     await this.owners.assertOperational(ownerUserId);
+    return this.upcomingForWhere({ ownerUserId }, query, now);
+  }
+
+  async upcomingForAccess(
+    context: OwnerAccessContext,
+    query: OwnerHomeUpcomingQueryDto,
+    now = new Date(),
+  ) {
+    const vehicle = this.ownerAccess.vehicleWhere(context, 'rentals.view');
+    return this.upcomingForWhere({ vehicle }, query, now);
+  }
+
+  private async upcomingForWhere(
+    authority: Prisma.BookingWhereInput,
+    query: OwnerHomeUpcomingQueryDto,
+    now: Date,
+  ) {
     const { endExclusive } = manilaTodayWindow(now);
     const where: Prisma.BookingWhereInput = {
-      ownerUserId,
+      ...authority,
       rentalStart: { gte: endExclusive },
       status: { in: [...upcomingStatuses] },
     };
@@ -321,12 +359,16 @@ export class OwnerHomeService {
     };
   }
 
-  private async requestCounts(ownerUserId: string) {
+  private async requestCounts(booking: Prisma.BookingWhereInput, includeAmendments: boolean) {
     const [bookingRequestsCount, amendmentRequestsCount] = await Promise.all([
-      this.database.client.booking.count({ where: ownerActionableBookingWhere(ownerUserId) }),
-      this.database.client.bookingAmendment.count({
-        where: ownerActionableAmendmentWhere(ownerUserId),
+      this.database.client.booking.count({
+        where: { AND: [booking, ownerActionableBookingWhereFromBooking()] },
       }),
+      includeAmendments
+        ? this.database.client.bookingAmendment.count({
+            where: ownerActionableAmendmentWhereFromBooking(booking),
+          })
+        : Promise.resolve(0),
     ]);
     return {
       amendmentRequestsCount,

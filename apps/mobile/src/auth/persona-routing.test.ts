@@ -34,6 +34,7 @@ describe('server-authoritative marketplace persona routing', () => {
     expect(provider).toContain('tokenStorage.clear()');
     expect(provider).toContain('appLockStorage.clearAccount(currentUserId)');
     expect(provider).toContain('activeRoleStorage.clear(currentUserId)');
+    expect(provider).toContain('ownerWorkspaceStorage.clear(currentUserId)');
     expect(provider).toContain('Promise.allSettled');
     expect(provider).toMatch(/setUser\(null\)[\s\S]*Promise\.allSettled/);
     expect(account.match(/<LogoutButton/g)).toHaveLength(4);
@@ -64,7 +65,7 @@ describe('server-authoritative marketplace persona routing', () => {
   });
 
   it('routes Owner Profile separately from first-time Owner onboarding', () => {
-    expect(navigation).toContain('component={OwnerProfileScreen}');
+    expect(navigation).toContain('<OwnerProfileScreen />');
     expect(navigation).toContain('name="OwnerProfile"');
     expect(account).toContain("navigation.navigate('OwnerProfile')");
   });

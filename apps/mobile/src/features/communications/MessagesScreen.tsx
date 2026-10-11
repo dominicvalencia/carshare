@@ -27,6 +27,8 @@ import {
 import { conversationHeading } from './conversation-heading';
 import type { RootStackParamList } from '../../navigation/routes';
 import type { MobileMode } from '../../navigation/routes';
+import type { OwnerWorkspace } from '../../auth/auth.types';
+import { hasOwnerPermission } from '../../navigation/owner-workspace';
 
 interface Person {
   readonly userId: string;
@@ -67,10 +69,12 @@ export function MessagesScreen({
   initialConversationId,
   mode,
   onClose,
+  ownerWorkspace,
 }: {
   readonly initialConversationId?: string | undefined;
   readonly mode: MobileMode;
   readonly onClose?: (() => void) | undefined;
+  readonly ownerWorkspace?: OwnerWorkspace | undefined;
 }) {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const auth = useAuth();
@@ -78,16 +82,26 @@ export function MessagesScreen({
   const [selected, setSelected] = useState<string | null>(initialConversationId ?? null);
   const [body, setBody] = useState('');
   const list = useRef<FlatList<Message>>(null);
+  const delegated = Boolean(
+    mode === 'owner' && ownerWorkspace && ownerWorkspace.capacity !== 'OWNER',
+  );
+  const workspaceBase = delegated
+    ? `/owner/workspaces/${ownerWorkspace!.ownerProfileId}/conversations`
+    : '/conversations';
+  const queryScope = delegated ? ownerWorkspace!.ownerProfileId : mode;
+  const canReply =
+    !delegated || (ownerWorkspace ? hasOwnerPermission(ownerWorkspace, 'messages.reply') : false);
   const conversations = useQuery({
-    queryKey: ['conversations', mode],
+    queryKey: ['conversations', queryScope],
     queryFn: () =>
       apiClient.request<{ items: Conversation[] }>(
-        `/conversations?limit=50&audience=${mode.toUpperCase()}`,
+        `${workspaceBase}?limit=50${delegated ? '' : `&audience=${mode.toUpperCase()}`}`,
       ),
     refetchInterval: 10_000,
   });
   const notificationSummary = useQuery({
-    queryKey: ['notification-summary', mode],
+    enabled: !delegated,
+    queryKey: ['notification-summary', queryScope],
     queryFn: () =>
       apiClient.request<{ unreadCount: number }>(
         `/notifications/summary?audience=${mode.toUpperCase()}`,
@@ -96,26 +110,30 @@ export function MessagesScreen({
   });
   const conversation = useQuery({
     enabled: Boolean(selected),
-    queryKey: ['conversation', selected, mode],
+    queryKey: ['conversation', selected, queryScope],
     queryFn: () =>
       apiClient.request<ConversationDetail>(
-        `/conversations/${selected}?audience=${mode.toUpperCase()}`,
+        `${workspaceBase}/${selected}${delegated ? '' : `?audience=${mode.toUpperCase()}`}`,
       ),
     refetchInterval: 10_000,
   });
   const messages = useQuery({
     enabled: Boolean(selected),
-    queryKey: ['messages', selected, mode],
+    queryKey: ['messages', selected, queryScope],
     queryFn: () =>
       apiClient.request<{ items: Message[] }>(
-        `/conversations/${selected}/messages?limit=100&audience=${mode.toUpperCase()}`,
+        `${workspaceBase}/${selected}/messages?limit=100${
+          delegated ? '' : `&audience=${mode.toUpperCase()}`
+        }`,
       ),
     refetchInterval: 5_000,
   });
   const send = useMutation({
     mutationFn: () =>
       apiClient.request<Message>(
-        `/conversations/${selected}/messages?audience=${mode.toUpperCase()}`,
+        `${workspaceBase}/${selected}/messages${
+          delegated ? '' : `?audience=${mode.toUpperCase()}`
+        }`,
         {
           method: 'POST',
           headers: {
@@ -137,13 +155,16 @@ export function MessagesScreen({
   useEffect(() => {
     if (latestId && latestSenderId !== currentUserId && selected) {
       void apiClient
-        .request(`/conversations/${selected}/read?audience=${mode.toUpperCase()}`, {
-          method: 'POST',
-          body: JSON.stringify({ messageId: latestId }),
-        })
+        .request(
+          `${workspaceBase}/${selected}/read${delegated ? '' : `?audience=${mode.toUpperCase()}`}`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ messageId: latestId }),
+          },
+        )
         .then(() => client.invalidateQueries({ queryKey: ['conversations'] }));
     }
-  }, [client, currentUserId, latestId, latestSenderId, mode, selected]);
+  }, [client, currentUserId, delegated, latestId, latestSenderId, mode, selected, workspaceBase]);
   if (selected) {
     const context = conversation.data?.booking;
     return (
@@ -195,7 +216,12 @@ export function MessagesScreen({
           contentContainerStyle={styles.messageList}
           onContentSizeChange={() => list.current?.scrollToEnd({ animated: false })}
           renderItem={({ item }) => {
-            const mine = item.senderUserId === auth.user?.id;
+            const ownerParticipantId = conversation.data?.participants?.find(
+              ({ context }) => context === 'OWNER',
+            )?.userId;
+            const mine =
+              item.senderUserId === auth.user?.id ||
+              (delegated && item.senderUserId === ownerParticipantId);
             return (
               <View style={[styles.bubbleWrap, mine ? styles.mineWrap : styles.theirWrap]}>
                 <View style={[styles.bubble, mine ? styles.mine : styles.theirs]}>
@@ -214,11 +240,13 @@ export function MessagesScreen({
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={74}
         >
-          {conversation.data?.canSend === false ? (
+          {conversation.data?.canSend === false || !canReply ? (
             <View style={styles.readOnly}>
               <Icon color={colors.subtleText} name="lock-closed-outline" size={18} />
               <Text style={styles.readOnlyText}>
-                This conversation is read-only because the booking messaging period has closed.
+                {!canReply
+                  ? 'You have read-only access to this conversation.'
+                  : 'This conversation is read-only because the booking messaging period has closed.'}
               </Text>
             </View>
           ) : conversation.data ? (
@@ -297,7 +325,7 @@ export function MessagesScreen({
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.conversationList}
         renderItem={({ item }) => {
-          const other = participantName(item, auth.user?.id);
+          const other = participantName(item, auth.user?.id, delegated);
           const latestMessage = item.messages[0];
           return (
             <Pressable accessibilityRole="button" onPress={() => setSelected(item.id)}>
@@ -336,8 +364,14 @@ export function MessagesScreen({
   );
 }
 
-function participantName(conversation: Conversation, currentUserId?: string) {
-  const person = conversation.participants?.find((item) => item.userId !== currentUserId);
+function participantName(
+  conversation: Conversation,
+  currentUserId?: string,
+  delegatedOwner = false,
+) {
+  const person = conversation.participants?.find((item) =>
+    delegatedOwner ? item.context !== 'OWNER' : item.userId !== currentUserId,
+  );
   const profile = person?.user?.profile;
   const name = [profile?.firstName, profile?.lastName].filter(Boolean).join(' ');
   return name || (person?.context === 'OWNER' ? 'Vehicle owner' : 'Booking participant');
