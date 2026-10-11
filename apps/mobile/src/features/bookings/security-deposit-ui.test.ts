@@ -14,6 +14,7 @@ const tierSelectorSource = readFileSync(
   'utf8',
 );
 const infoSheetSource = readFileSync(resolve(here, './SecurityDepositInfoSheet.tsx'), 'utf8');
+const primitivesSource = readFileSync(resolve(here, '../../ui/primitives.tsx'), 'utf8');
 
 describe('Security Deposit Phase 2 mobile disclosure', () => {
   it('loads the server catalog and saves coherent required or no-deposit policy values', () => {
@@ -24,16 +25,17 @@ describe('Security Deposit Phase 2 mobile disclosure', () => {
     expect(vehiclesSource).toContain('securityDepositRequired: depositRequiredForPayload');
     expect(vehiclesSource).toContain('securityDepositAmountMinor: depositAmountForPayload');
     expect(vehiclesSource).toContain('securityDepositCurrency: depositCurrencyForPayload');
-    expect(vehiclesSource).toContain('label="No deposit"');
-    expect(vehiclesSource).toContain('label="Require deposit"');
+    expect(vehiclesSource).toContain("{ label: 'No deposit', value: 'NO_DEPOSIT' }");
+    expect(vehiclesSource).toContain("{ label: 'Require deposit', value: 'REQUIRE_DEPOSIT' }");
     expect(vehiclesSource).toContain('Deposit options unavailable');
   });
 
   it('uses a compact accessible selector and conditionally reveals server-owned deposit tiers', () => {
     expect(vehiclesSource).toContain('function DepositRequirementSelector');
-    expect(vehiclesSource).toContain('style={styles.depositSegmentedControl}');
-    expect(vehiclesSource).toContain('accessibilityRole="radio"');
-    expect(vehiclesSource).toContain('accessibilityState={{ checked: selected }}');
+    expect(vehiclesSource).toContain('<SegmentedControl');
+    expect(primitivesSource).toContain('accessibilityRole="radiogroup"');
+    expect(primitivesSource).toContain('accessibilityRole="radio"');
+    expect(primitivesSource).toContain('accessibilityState={{ checked: selected }}');
     expect(vehiclesSource).toContain('{securityDepositRequired && (');
     expect(vehiclesSource).toContain('<DepositTierSelector');
     expect(vehiclesSource).toContain('options={allowedDepositTiers.map((amountMinor) => ({');

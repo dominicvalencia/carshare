@@ -17,6 +17,7 @@ import {
   SUPPORT_STAFF_PERMISSIONS,
   assertActorCanGrantOwnerPermissions,
   type OwnerPermissionCode,
+  withDefaultOwnerStaffPermissions,
 } from '../owner-access/owner-permissions';
 import { EmailProvider } from '../providers/delivery.provider';
 import type { OwnerAccessContext, RequestMetadata } from '../security/security-context';
@@ -173,8 +174,9 @@ export class OwnerStaffService {
   ) {
     this.access.requirePermission(context, 'staff.assign_permissions');
     const target = await this.requireMutableTarget(context, actorUserId, membershipId);
-    this.assertGrant(context, target.role, permissions);
-    const rows = await this.permissionRows(permissions);
+    const effectivePermissions = withDefaultOwnerStaffPermissions(permissions);
+    this.assertGrant(context, target.role, effectivePermissions);
+    const rows = await this.permissionRows(effectivePermissions);
     const before = target.permissions.map(({ permission }) => permission.code);
     await this.database.client.$transaction(async (transaction) => {
       await transaction.ownerStaffPermission.deleteMany({ where: { membershipId } });
@@ -189,7 +191,7 @@ export class OwnerStaffService {
     });
     const updated = await this.requireTarget(context, membershipId, false);
     await this.audit('OWNER_STAFF_PERMISSIONS_CHANGED', actorUserId, context, updated, request, {
-      after: permissions,
+      after: effectivePermissions,
       before,
     });
     return this.publicMember(updated, true);
@@ -437,7 +439,7 @@ export class OwnerStaffService {
     if (input.preset === OwnerStaffPreset.MANAGER)
       throw this.denied('The Manager preset cannot be assigned to ordinary Staff.');
     if (input.preset === OwnerStaffPreset.CUSTOM)
-      return (input.permissions ?? []) as OwnerPermissionCode[];
+      return withDefaultOwnerStaffPermissions(input.permissions ?? []);
     return OWNER_PERMISSION_PRESETS[input.preset];
   }
 
@@ -467,7 +469,9 @@ export class OwnerStaffService {
   }
 
   private publicMember(member: SafeMember, includeVehicles: boolean) {
-    const permissions = member.permissions.map(({ permission }) => permission.code);
+    const permissions = withDefaultOwnerStaffPermissions(
+      member.permissions.map(({ permission }) => permission.code),
+    );
     const invitation = member.invitations[0];
     return {
       activatedAt: member.activatedAt,

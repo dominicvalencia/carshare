@@ -73,6 +73,24 @@ function member(overrides: Record<string, unknown> = {}) {
 }
 
 describe('OwnerStaffService management boundaries', () => {
+  it('adds own-activity access to a Custom Staff invite with no configurable permissions', () => {
+    const service = createService({});
+    const resolver = service as unknown as {
+      permissionsForInvite(input: {
+        preset: OwnerStaffPreset;
+        role: OwnerStaffRole;
+        permissions: readonly string[];
+      }): readonly string[];
+    };
+    expect(
+      resolver.permissionsForInvite({
+        permissions: [],
+        preset: OwnerStaffPreset.CUSTOM,
+        role: OwnerStaffRole.STAFF,
+      }),
+    ).toEqual(['audit.view_own_actions']);
+  });
+
   it('allows Owner Manager/Staff invites but prevents Manager from inviting Manager', async () => {
     const service = createService(
       { ownerStaffMembership: { findUnique: vi.fn().mockResolvedValue(null) } },
@@ -130,6 +148,37 @@ describe('OwnerStaffService management boundaries', () => {
     await expect(
       service.updatePermissions(manager, 'manager-user', 'manager-a', ['vehicles.view'], {}),
     ).rejects.toMatchObject({ code: 'OWNER_STAFF_FORBIDDEN' });
+  });
+
+  it('preserves the default own-activity permission when configurable permissions are cleared', async () => {
+    const deleteMany = vi.fn();
+    const createMany = vi.fn();
+    const findFirst = vi.fn().mockResolvedValue(member({ permissions: [] }));
+    const findMany = vi.fn().mockResolvedValue([{ id: 'audit-permission' }]);
+    const service = createService({
+      $transaction: vi.fn(async (work) =>
+        work({ ownerStaffPermission: { createMany, deleteMany } }),
+      ),
+      auditLog: { create: vi.fn() },
+      ownerStaffMembership: { findFirst },
+      permission: { findMany },
+    });
+
+    await service.updatePermissions(owner, 'owner-user', 'staff-a', [], {});
+
+    expect(findMany).toHaveBeenCalledWith({
+      select: { id: true },
+      where: { code: { in: ['audit.view_own_actions'] } },
+    });
+    expect(createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          assignedByUserId: 'owner-user',
+          membershipId: 'staff-a',
+          permissionId: 'audit-permission',
+        },
+      ],
+    });
   });
 
   it('keeps DISABLED terminal and allows only SUSPENDED to reactivate', async () => {

@@ -316,6 +316,7 @@ export function Card({
 
 export function Button({
   label,
+  accessibilityLabel,
   onPress,
   icon,
   variant = 'primary',
@@ -323,6 +324,7 @@ export function Button({
   compact = false,
 }: {
   readonly label: string;
+  readonly accessibilityLabel?: string | undefined;
   readonly onPress: () => void;
   readonly icon?: IconName | undefined;
   readonly variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | undefined;
@@ -331,6 +333,7 @@ export function Button({
 }) {
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       disabled={disabled}
       onPress={onPress}
@@ -532,6 +535,44 @@ export function Chip({
   );
 }
 
+export function SegmentedControl<T extends string>({
+  accessibilityLabel,
+  options,
+  value,
+  onChange,
+}: {
+  readonly accessibilityLabel: string;
+  readonly options: readonly { readonly label: string; readonly value: T }[];
+  readonly value: T;
+  readonly onChange: (value: T) => void;
+}) {
+  return (
+    <View
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="radiogroup"
+      style={styles.segmentedControl}
+    >
+      {options.map((option) => {
+        const selected = option.value === value;
+        return (
+          <Pressable
+            key={option.value}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: selected }}
+            onPress={() => onChange(option.value)}
+            style={[styles.segment, selected && styles.segmentSelected]}
+          >
+            {selected && <Icon color={colors.onPrimary} name="checkmark" size={16} />}
+            <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 export function StatusBadge({
   label,
   tone = 'success',
@@ -696,6 +737,35 @@ const styles = StyleSheet.create({
   chipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipText: { color: colors.ink, fontSize: 13, fontWeight: '600' },
   chipTextSelected: { color: colors.onPrimary },
+  segment: {
+    alignItems: 'center',
+    borderRadius: radius.sm,
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 0,
+    paddingHorizontal: spacing.xs,
+  },
+  segmentedControl: {
+    backgroundColor: colors.muted,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xxs,
+    padding: spacing.xxs,
+  },
+  segmentSelected: { backgroundColor: colors.primary },
+  segmentText: {
+    color: colors.ink,
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  segmentTextSelected: { color: colors.onPrimary },
   divider: { backgroundColor: colors.border, height: StyleSheet.hairlineWidth },
   errorText: { color: colors.danger, fontSize: 12, marginTop: spacing.xxs },
   eyebrow: {

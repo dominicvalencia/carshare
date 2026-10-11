@@ -83,8 +83,10 @@ describe('OwnerAccessService', () => {
       ownerStaffMembership: { findFirst },
     });
     const allowed = await service.resolve('staff-user', 'owner-a');
+    expect(allowed.permissions).toContain('audit.view_own_actions');
     expect(() => service.requirePermission(allowed, 'vehicles.view')).not.toThrow();
     const reduced = await service.resolve('staff-user', 'owner-a');
+    expect(reduced.permissions).toEqual(['audit.view_own_actions']);
     expect(() => service.requirePermission(reduced, 'vehicles.view')).toThrow(
       'required Owner permission',
     );
@@ -159,7 +161,15 @@ describe('OwnerAccessService', () => {
     const create = vi.fn().mockResolvedValue({ id: 'membership' });
     const service = serviceWithClient({
       ownerStaffMembership: { create },
-      permission: { findMany: vi.fn().mockResolvedValue([{ id: 'permission' }]) },
+      permission: {
+        findMany: vi.fn(
+          ({
+            where: {
+              code: { in: codes },
+            },
+          }) => Promise.resolve(codes.map((code: string) => ({ id: `permission-${code}` }))),
+        ),
+      },
     });
     for (const role of [OwnerStaffRole.MANAGER, OwnerStaffRole.STAFF]) {
       await expect(

@@ -18,6 +18,7 @@ import {
   assertAssignableOwnerPermissions,
   assertManagerTargetRole,
   assertOwnerPermissionCodes,
+  withDefaultOwnerStaffPermissions,
 } from './owner-permissions';
 
 const OWNER_STAFF_INVITATION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -55,7 +56,9 @@ export class OwnerAccessService {
       membershipId: membership.id,
       membershipStatus: membership.status,
       ownerProfileId,
-      permissions: membership.permissions.map(({ permission }) => permission.code),
+      permissions: withDefaultOwnerStaffPermissions(
+        membership.permissions.map(({ permission }) => permission.code),
+      ),
       vehicleScopeMode: membership.vehicleScopeMode,
     };
   }
@@ -147,8 +150,9 @@ export class OwnerAccessService {
     readonly vehicleScopeMode: OwnerStaffVehicleScopeMode;
   }) {
     this.assertCanCreateMembership(input.actor, input.role);
-    assertAssignableOwnerPermissions(input.role, input.permissions);
-    const permissionRows = await this.permissionRows(input.permissions);
+    const permissions = withDefaultOwnerStaffPermissions(input.permissions);
+    assertAssignableOwnerPermissions(input.role, permissions);
+    const permissionRows = await this.permissionRows(permissions);
     return this.database.client.ownerStaffMembership.create({
       data: {
         createdByUserId: input.actorUserId,

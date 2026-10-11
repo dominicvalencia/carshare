@@ -11,6 +11,10 @@ const securePhotoSlotSource = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '../../ui/SecureCameraPhotoSlot.tsx'),
   'utf8',
 );
+const primitivesSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../ui/primitives.tsx'),
+  'utf8',
+);
 
 describe('Phase 12 owner vehicle acceptance UX', () => {
   it('renders the compact Fleet hierarchy without changing list navigation or Add vehicle', () => {
@@ -915,10 +919,10 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
 
   it('keeps security deposit policy semantics while using compact conditional controls', () => {
     expect(source).toContain('function DepositRequirementSelector');
-    expect(source).toContain('label="No deposit"');
-    expect(source).toContain('label="Require deposit"');
-    expect(source).toContain('accessibilityState={{ checked: selected }}');
-    expect(source).toContain('minHeight: 44');
+    expect(source).toContain("{ label: 'No deposit', value: 'NO_DEPOSIT' }");
+    expect(source).toContain("{ label: 'Require deposit', value: 'REQUIRE_DEPOSIT' }");
+    expect(primitivesSource).toContain('accessibilityState={{ checked: selected }}');
+    expect(primitivesSource).toContain('minHeight: 44');
     expect(source).toContain('{securityDepositRequired && (');
     expect(source).toContain('<DepositTierSelector');
     expect(source).toContain('options={allowedDepositTiers.map((amountMinor) => ({');

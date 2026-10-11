@@ -46,6 +46,7 @@ import {
   Button,
   formKeyboardDismissMode,
   Icon,
+  SegmentedControl,
   StateView,
   StatusBadge,
   useKeyboardAwareBottomPadding,
@@ -3977,42 +3978,15 @@ function DepositRequirementSelector({
   readonly onChange: (required: boolean) => void;
 }) {
   return (
-    <View accessibilityLabel="Security deposit requirement" style={styles.depositSegmentedControl}>
-      <DepositRequirementOption
-        label="No deposit"
-        selected={!required}
-        onPress={() => onChange(false)}
-      />
-      <DepositRequirementOption
-        label="Require deposit"
-        selected={required}
-        onPress={() => onChange(true)}
-      />
-    </View>
-  );
-}
-
-function DepositRequirementOption({
-  label,
-  selected,
-  onPress,
-}: {
-  readonly label: string;
-  readonly selected: boolean;
-  readonly onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="radio"
-      accessibilityState={{ checked: selected }}
-      onPress={onPress}
-      style={[styles.depositSegment, selected && styles.depositSegmentSelected]}
-    >
-      {selected && <Icon color={colors.onPrimary} name="checkmark" size={16} />}
-      <Text style={[styles.depositSegmentText, selected && styles.depositSegmentTextSelected]}>
-        {label}
-      </Text>
-    </Pressable>
+    <SegmentedControl
+      accessibilityLabel="Security deposit requirement"
+      options={[
+        { label: 'No deposit', value: 'NO_DEPOSIT' },
+        { label: 'Require deposit', value: 'REQUIRE_DEPOSIT' },
+      ]}
+      value={required ? 'REQUIRE_DEPOSIT' : 'NO_DEPOSIT'}
+      onChange={(value) => onChange(value === 'REQUIRE_DEPOSIT')}
+    />
   );
 }
 function Save({
@@ -4264,35 +4238,6 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
   },
   depositSection: { gap: spacing.xs, marginTop: spacing.xs },
-  depositSegment: {
-    alignItems: 'center',
-    borderRadius: radius.sm,
-    flex: 1,
-    flexDirection: 'row',
-    gap: spacing.xxs,
-    justifyContent: 'center',
-    minHeight: 44,
-    minWidth: 0,
-    paddingHorizontal: spacing.xs,
-  },
-  depositSegmentedControl: {
-    backgroundColor: colors.muted,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: spacing.xxs,
-    padding: spacing.xxs,
-  },
-  depositSegmentSelected: { backgroundColor: colors.primary },
-  depositSegmentText: {
-    color: colors.ink,
-    flexShrink: 1,
-    fontSize: 13,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  depositSegmentTextSelected: { color: colors.onPrimary },
   detailsFields: { gap: spacing.md },
   detailsOptional: { color: colors.subtleText, fontSize: 12, fontWeight: '700' },
   detailsSection: { gap: spacing.sm },

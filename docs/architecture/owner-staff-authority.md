@@ -27,6 +27,12 @@ configuration conveniences, not authorization sources. Manager grants are limite
 Manager ceiling and the Manager's own current permissions. Staff grants exclude Staff
 administration and Owner-only authority.
 
+Every Manager and Staff membership includes `audit.view_own_actions` as a non-configurable
+baseline permission. It exposes only the actor's own Owner-workspace activity and does not grant
+workspace-wide or platform audit visibility. Presets and Custom Staff receive this baseline
+automatically, including existing memberships when effective permissions are resolved; the Custom
+permission editor therefore does not present it as a removable choice.
+
 Delegated operational permissions cover, only when explicitly granted:
 
 - vehicle and availability reads/updates;
@@ -135,9 +141,10 @@ requirements.
 ## UI and accessibility
 
 Staff management and delegated operations reuse shared CarShare `Screen`/`NestedScreen`, `Card`,
-`SectionHeader`, `StatusBadge`, `Field`, `Chip`, `Button`, `StateView`, selectable-option,
-adaptive-sheet, sticky-footer, confirmation-sheet, and Danger-zone patterns. No parallel Staff
-design system exists.
+`SectionHeader`, `StatusBadge`, `Field`, `Chip`, `SegmentedControl`, `Button`, `StateView`,
+selectable-option, adaptive-sheet, sticky-footer, confirmation-sheet, and Danger-zone patterns. No
+parallel Staff design system exists. Custom permissions are edited in the shared adaptive-sheet
+presentation with grouped human-readable choices and section-level bulk selection.
 
 Permission and vehicle selectors expose labels plus selected state; status badges have textual
 labels; destructive actions are explicit; hidden unauthorized controls are absent from the

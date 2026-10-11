@@ -45,6 +45,17 @@ export const OWNER_PERMISSIONS = {
 
 export type OwnerPermissionCode = keyof typeof OWNER_PERMISSIONS;
 
+export const DEFAULT_OWNER_STAFF_PERMISSIONS = [
+  'audit.view_own_actions',
+] as const satisfies readonly OwnerPermissionCode[];
+
+export function withDefaultOwnerStaffPermissions(
+  permissions: readonly string[],
+): OwnerPermissionCode[] {
+  assertOwnerPermissionCodes(permissions);
+  return [...new Set<OwnerPermissionCode>([...permissions, ...DEFAULT_OWNER_STAFF_PERMISSIONS])];
+}
+
 export const VEHICLE_SCOPED_OWNER_PERMISSIONS = new Set<OwnerPermissionCode>([
   'availability.update',
   'availability.view',

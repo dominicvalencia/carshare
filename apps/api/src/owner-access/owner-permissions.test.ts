@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { OwnerStaffRole, OwnerStaffStatus } from '@carrental/database';
 import {
   MANAGER_PERMISSIONS,
+  DEFAULT_OWNER_STAFF_PERMISSIONS,
+  OPERATIONS_STAFF_PERMISSIONS,
   OWNER_PERMISSIONS,
   OWNER_ONLY_PERMISSIONS,
+  SUPPORT_STAFF_PERMISSIONS,
   assertAssignableOwnerPermissions,
   assertActorCanGrantOwnerPermissions,
   assertManagerTargetRole,
   assertOwnerPermissionCodes,
+  withDefaultOwnerStaffPermissions,
 } from './owner-permissions';
 import { isUsableOwnerStaffInvitation } from './owner-access.service';
 
@@ -32,6 +36,26 @@ describe('Owner Staff authority policy', () => {
     );
     expect(() => assertManagerTargetRole(OwnerStaffRole.MANAGER)).toThrow('ordinary Staff only');
     expect(() => assertManagerTargetRole(OwnerStaffRole.STAFF)).not.toThrow();
+  });
+
+  it('makes own-activity visibility a default for every delegated preset and custom access', () => {
+    expect(DEFAULT_OWNER_STAFF_PERMISSIONS).toEqual(['audit.view_own_actions']);
+    expect(MANAGER_PERMISSIONS).toContain('audit.view_own_actions');
+    expect(OPERATIONS_STAFF_PERMISSIONS).toContain('audit.view_own_actions');
+    expect(SUPPORT_STAFF_PERMISSIONS).toContain('audit.view_own_actions');
+    expect(withDefaultOwnerStaffPermissions([])).toEqual(['audit.view_own_actions']);
+    expect(withDefaultOwnerStaffPermissions(['vehicles.view'])).toEqual([
+      'vehicles.view',
+      'audit.view_own_actions',
+    ]);
+  });
+
+  it('keeps the default audit permission strictly actor-owned', () => {
+    expect(OWNER_PERMISSIONS['audit.view_own_actions']).toContain('actor’s own');
+    expect(Object.keys(OWNER_PERMISSIONS).filter((code) => code.startsWith('audit.'))).toEqual([
+      'audit.view_own_actions',
+    ]);
+    expect(DEFAULT_OWNER_STAFF_PERMISSIONS).not.toContain('audit.read' as never);
   });
 
   it('does not introduce platform, verification, refund, payout-execution, or deposit-settlement authority', () => {

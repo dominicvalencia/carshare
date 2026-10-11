@@ -9,22 +9,37 @@ import type {
   OwnerStaffVehicleSummary,
 } from '@carrental/api-contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
-import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { apiClient, ApiError } from '../../auth/api-client';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { dateTimeLabel } from '../../ui/format';
 import {
   Button,
+  BackControl,
   Card,
-  Chip,
   Field,
   Icon,
   NestedScreen,
+  SegmentedControl,
   SectionHeader,
   StateView,
   StatusBadge,
 } from '../../ui/primitives';
+import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
 
 type StaffCapacity = 'OWNER' | 'MANAGER';
 type ViewState = { type: 'directory' } | { type: 'invite' } | { type: 'detail'; id: string };
@@ -63,8 +78,18 @@ const permissionGroups = [
     items: [
       ['incidents.create', 'Report incidents'],
       ['incidents.update', 'Update incidents'],
+    ],
+  },
+  {
+    title: 'Messages',
+    items: [
       ['messages.view', 'View conversations'],
       ['messages.reply', 'Reply to renters'],
+    ],
+  },
+  {
+    title: 'Claims',
+    items: [
       ['claims.view', 'View claims'],
       ['claims.create', 'Start eligible claims'],
       ['claims.respond', 'Respond to claims'],
@@ -78,7 +103,6 @@ const permissionGroups = [
       ['support_cases.create', 'Create support cases'],
       ['support_cases.update', 'Update support cases'],
       ['disputes.view', 'View disputes'],
-      ['audit.view_own_actions', 'View own activity'],
     ],
   },
 ] as const;
@@ -296,12 +320,14 @@ function InviteStaffScreen({
   readonly onCreated: (id: string) => void;
 }) {
   const client = useQueryClient();
+  const safeArea = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [preset, setPreset] = useState<OwnerStaffPreset>('OPERATIONS_STAFF');
   const [scope, setScope] = useState<OwnerStaffVehicleScopeMode>('ALL_VEHICLES');
   const [vehicleIds, setVehicleIds] = useState<string[]>([]);
   const [permissions, setPermissions] = useState<string[]>([]);
+  const [permissionEditor, setPermissionEditor] = useState(false);
   const [vehiclePicker, setVehiclePicker] = useState(false);
   const [error, setError] = useState('');
   const selectedOption = presetOptions.find((option) => option.preset === preset)!;
@@ -329,11 +355,25 @@ function InviteStaffScreen({
   const valid =
     name.trim().length > 1 &&
     /\S+@\S+\.\S+/.test(email) &&
-    (scope === 'ALL_VEHICLES' || vehicleIds.length > 0) &&
-    (preset !== 'CUSTOM' || permissions.length > 0);
+    (scope === 'ALL_VEHICLES' || vehicleIds.length > 0);
   return (
     <NestedScreen
       backLabel="Staff"
+      bottomAccessory={
+        <View
+          style={[styles.inviteFooter, { paddingBottom: Math.max(safeArea.bottom, spacing.sm) }]}
+        >
+          <Button
+            disabled={!valid || invite.isPending}
+            label={invite.isPending ? 'Sending invitation…' : 'Send invitation'}
+            onPress={() => {
+              setError('');
+              invite.mutate();
+            }}
+          />
+        </View>
+      }
+      contentBottomPadding={spacing.lg}
       onBack={onBack}
       eyebrow="Staff"
       title="Add staff"
@@ -366,29 +406,50 @@ function InviteStaffScreen({
         ))}
       </View>
       {preset === 'CUSTOM' ? (
-        <PermissionEditor selected={permissions} onChange={setPermissions} />
+        <View style={styles.compactSection}>
+          <SectionHeader title="Permissions" />
+          <Pressable
+            accessibilityLabel={`Configure permissions. ${permissions.length} selected`}
+            accessibilityRole="button"
+            onPress={() => setPermissionEditor(true)}
+          >
+            <Card style={styles.selectorRow}>
+              <View style={styles.flex}>
+                <Text style={styles.selectorTitle}>Custom · {permissions.length} selected</Text>
+              </View>
+              <Text style={styles.selectorAction}>Configure</Text>
+              <Icon color={colors.primary} name="chevron-forward" size={19} />
+            </Card>
+          </Pressable>
+        </View>
       ) : null}
       <SectionHeader title="Vehicle access" />
       <Card style={styles.formCard}>
-        <View style={styles.chipRow}>
-          <Chip
-            label="All vehicles"
-            selected={scope === 'ALL_VEHICLES'}
-            onPress={() => setScope('ALL_VEHICLES')}
-          />
-          <Chip
-            label="Selected vehicles"
-            selected={scope === 'SELECTED_VEHICLES'}
-            onPress={() => setScope('SELECTED_VEHICLES')}
-          />
-        </View>
+        <SegmentedControl
+          accessibilityLabel="Vehicle access"
+          options={[
+            { label: 'All vehicles', value: 'ALL_VEHICLES' },
+            { label: 'Selected vehicles', value: 'SELECTED_VEHICLES' },
+          ]}
+          value={scope}
+          onChange={setScope}
+        />
         {scope === 'SELECTED_VEHICLES' ? (
-          <Button
-            compact
-            label={vehicleIds.length ? `${vehicleIds.length} vehicles selected` : 'Select vehicles'}
-            variant="secondary"
-            onPress={() => setVehiclePicker(true)}
-          />
+          <View style={styles.compactSelectorSummary}>
+            <Text
+              accessibilityLabel={`${vehicleIds.length} vehicle${vehicleIds.length === 1 ? '' : 's'} selected`}
+              style={styles.selectorTitle}
+            >
+              {vehicleIds.length} vehicle{vehicleIds.length === 1 ? '' : 's'} selected
+            </Text>
+            <Button
+              compact
+              accessibilityLabel="Change selected vehicles"
+              label="Change"
+              variant="ghost"
+              onPress={() => setVehiclePicker(true)}
+            />
+          </View>
         ) : null}
       </Card>
       {error ? (
@@ -396,20 +457,18 @@ function InviteStaffScreen({
           {error}
         </Text>
       ) : null}
-      <Button
-        disabled={!valid || invite.isPending}
-        label={invite.isPending ? 'Sending invitation…' : 'Send invitation'}
-        onPress={() => {
-          setError('');
-          invite.mutate();
-        }}
-      />
       <VehiclePickerModal
         ownerProfileId={ownerProfileId}
         visible={vehiclePicker}
         selected={vehicleIds}
         onClose={() => setVehiclePicker(false)}
         onChange={setVehicleIds}
+      />
+      <PermissionEditorModal
+        visible={permissionEditor}
+        selected={permissions}
+        onClose={() => setPermissionEditor(false)}
+        onChange={setPermissions}
       />
     </NestedScreen>
   );
@@ -425,8 +484,13 @@ function PermissionEditor({
   return (
     <View style={styles.permissionGroups}>
       {permissionGroups.map((group) => (
-        <View key={group.title}>
-          <SectionHeader title={group.title} />
+        <View key={group.title} style={styles.permissionGroup}>
+          <PermissionGroupHeader
+            title={group.title}
+            permissions={group.items.map(([code]) => code)}
+            selected={selected}
+            onChange={onChange}
+          />
           <Card style={styles.permissionCard}>
             {group.items.map(([code, label]) => (
               <Pressable
@@ -454,6 +518,153 @@ function PermissionEditor({
         </View>
       ))}
     </View>
+  );
+}
+
+function PermissionGroupHeader({
+  title,
+  permissions,
+  selected,
+  onChange,
+}: {
+  readonly title: string;
+  readonly permissions: readonly string[];
+  readonly selected: readonly string[];
+  readonly onChange: (next: string[]) => void;
+}) {
+  const selectedCount = permissions.filter((permission) => selected.includes(permission)).length;
+  const checked: boolean | 'mixed' =
+    selectedCount === permissions.length ? true : selectedCount === 0 ? false : 'mixed';
+  const toggle = () =>
+    onChange(
+      checked === true
+        ? selected.filter((permission) => !permissions.includes(permission))
+        : [...new Set([...selected, ...permissions])],
+    );
+  return (
+    <SectionHeader
+      flush
+      title={title}
+      action={
+        <Pressable
+          accessibilityLabel={`Select all ${title} permissions`}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked }}
+          onPress={toggle}
+          style={styles.selectAllControl}
+        >
+          <Text style={styles.selectAllText}>Select all</Text>
+          <Icon
+            color={checked === false ? colors.subtleText : colors.primary}
+            name={
+              checked === true
+                ? 'checkbox'
+                : checked === 'mixed'
+                  ? 'remove-circle'
+                  : 'square-outline'
+            }
+            size={23}
+          />
+        </Pressable>
+      }
+    />
+  );
+}
+
+function PermissionEditorModal({
+  visible,
+  selected,
+  onClose,
+  onChange,
+}: {
+  readonly visible: boolean;
+  readonly selected: readonly string[];
+  readonly onClose: () => void;
+  readonly onChange: (next: string[]) => void;
+}) {
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
+  const [footerHeight, setFooterHeight] = useState(0);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight,
+        headerHeight: headerHeight + footerHeight,
+        maxSafeViewportHeight: maximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [contentHeight, footerHeight, headerHeight, maximumHeight],
+  );
+  const sheetHeight = useSharedValue(Math.min(520, maximumHeight));
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
+
+  useEffect(() => {
+    if (!visible || headerHeight <= 0 || contentHeight <= 0 || footerHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
+  }, [
+    contentHeight,
+    footerHeight,
+    headerHeight,
+    measuredLayout.height,
+    selected.length,
+    sheetHeight,
+    visible,
+  ]);
+
+  return (
+    <Modal
+      animationType="slide"
+      onRequestClose={onClose}
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      transparent
+      visible={visible}
+    >
+      <View style={styles.modalRoot}>
+        <Pressable
+          accessibilityLabel="Close permission editor"
+          onPress={onClose}
+          style={styles.backdrop}
+        />
+        <Reanimated.View
+          accessibilityLabel="Configure permissions"
+          accessibilityViewIsModal
+          style={[styles.sheet, animatedSheetStyle]}
+        >
+          <View
+            onLayout={({ nativeEvent }) => setHeaderHeight(nativeEvent.layout.height)}
+            style={styles.sheetHeader}
+          >
+            <BackControl label="Cancel" onPress={onClose} />
+            <Text accessibilityRole="header" style={styles.sheetTitle}>
+              Configure permissions
+            </Text>
+            <Text style={styles.sheetSubtitle}>
+              Choose what this Staff member can do in this workspace.
+            </Text>
+          </View>
+          <ScrollView
+            contentContainerStyle={styles.permissionSheetContent}
+            onContentSizeChange={(_width, height) => setContentHeight(Math.max(height, 120))}
+            scrollEnabled={measuredLayout.scrollEnabled}
+            showsVerticalScrollIndicator={measuredLayout.scrollEnabled}
+          >
+            <PermissionEditor selected={selected} onChange={onChange} />
+          </ScrollView>
+          <View
+            onLayout={({ nativeEvent }) => setFooterHeight(nativeEvent.layout.height)}
+            style={[styles.sheetFooter, { paddingBottom: Math.max(safeArea.bottom, spacing.lg) }]}
+          >
+            <Button label="Done" onPress={onClose} />
+          </View>
+        </Reanimated.View>
+      </View>
+    </Modal>
   );
 }
 
@@ -499,6 +710,11 @@ function VehiclePickerModal({
   readonly onClose: () => void;
 }) {
   const [search, setSearch] = useState('');
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
+  const [footerHeight, setFooterHeight] = useState(0);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
   const vehicles = useQuery({
     queryKey: ['owner-workspace-vehicles', ownerProfileId],
     queryFn: () =>
@@ -512,19 +728,71 @@ function VehiclePickerModal({
       .toLowerCase()
       .includes(search.trim().toLowerCase()),
   );
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight,
+        headerHeight: headerHeight + footerHeight,
+        maxSafeViewportHeight: maximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [contentHeight, footerHeight, headerHeight, maximumHeight],
+  );
+  const sheetHeight = useSharedValue(Math.min(360, maximumHeight));
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
+
+  useEffect(() => {
+    if (!visible || headerHeight <= 0 || contentHeight <= 0 || footerHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
+  }, [
+    contentHeight,
+    footerHeight,
+    headerHeight,
+    measuredLayout.height,
+    sheetHeight,
+    vehicles.dataUpdatedAt,
+    vehicles.isError,
+    vehicles.isPending,
+    visible,
+    visibleVehicles.length,
+  ]);
   return (
-    <Modal animationType="slide" transparent visible={visible} onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.sheet}>
-          <NestedScreen
-            scroll
-            contentGrows={false}
-            contentBottomPadding={spacing.lg}
-            backLabel="Cancel"
-            onBack={onClose}
-            title="Select vehicles"
-            subtitle="Choose the vehicles this Staff member can access."
+    <Modal
+      animationType="slide"
+      onRequestClose={onClose}
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      transparent
+      visible={visible}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.modalRoot}
+      >
+        <Pressable
+          accessibilityLabel="Close vehicle selector"
+          onPress={onClose}
+          style={styles.backdrop}
+        />
+        <Reanimated.View
+          accessibilityLabel="Select vehicles"
+          accessibilityViewIsModal
+          style={[styles.sheet, animatedSheetStyle]}
+        >
+          <View
+            onLayout={({ nativeEvent }) => setHeaderHeight(nativeEvent.layout.height)}
+            style={styles.sheetHeader}
           >
+            <BackControl label="Cancel" onPress={onClose} />
+            <Text accessibilityRole="header" style={styles.sheetTitle}>
+              Select vehicles
+            </Text>
+            <Text style={styles.sheetSubtitle}>
+              Choose the vehicles this Staff member can access.
+            </Text>
             <Field
               autoCapitalize="none"
               label="Search vehicles"
@@ -532,18 +800,40 @@ function VehiclePickerModal({
               value={search}
               onChangeText={setSearch}
             />
+          </View>
+          <ScrollView
+            contentContainerStyle={styles.sheetContent}
+            keyboardShouldPersistTaps="handled"
+            onContentSizeChange={(_width, height) => setContentHeight(Math.max(height, 120))}
+            scrollEnabled={measuredLayout.scrollEnabled}
+            showsVerticalScrollIndicator={measuredLayout.scrollEnabled}
+          >
             {vehicles.isPending ? (
               <StateView compact loading title="Loading vehicles" />
             ) : vehicles.isError ? (
               <StateView
                 compact
                 icon="alert-circle-outline"
-                title="Vehicles could not load"
+                title="Unable to load vehicles"
                 actionLabel="Try again"
                 onAction={() => void vehicles.refetch()}
               />
+            ) : vehicles.data.length === 0 ? (
+              <StateView
+                compact
+                icon="car-outline"
+                title="No vehicles available"
+                message="There are no vehicles available to assign in this workspace."
+              />
+            ) : visibleVehicles.length === 0 ? (
+              <StateView
+                compact
+                icon="search-outline"
+                title="No matching vehicles"
+                message="Try a different vehicle name."
+              />
             ) : (
-              <View style={styles.choiceList}>
+              <View accessibilityRole="list" style={styles.choiceList}>
                 {visibleVehicles.map((vehicle) => {
                   const checked = selected.includes(vehicle.id);
                   const label = [vehicle.modelYear, vehicle.make, vehicle.model]
@@ -552,6 +842,7 @@ function VehiclePickerModal({
                   return (
                     <Pressable
                       key={vehicle.id}
+                      accessibilityLabel={`${label || 'Vehicle'}, ${checked ? 'selected' : 'not selected'}`}
                       accessibilityRole="checkbox"
                       accessibilityState={{ checked }}
                       onPress={() =>
@@ -574,10 +865,15 @@ function VehiclePickerModal({
                 })}
               </View>
             )}
+          </ScrollView>
+          <View
+            onLayout={({ nativeEvent }) => setFooterHeight(nativeEvent.layout.height)}
+            style={[styles.sheetFooter, { paddingBottom: Math.max(safeArea.bottom, spacing.lg) }]}
+          >
             <Button label="Done" onPress={onClose} />
-          </NestedScreen>
-        </View>
-      </View>
+          </View>
+        </Reanimated.View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -857,18 +1153,15 @@ function MemberEditorModal({
               <PermissionEditor selected={permissions} onChange={setPermissions} />
             ) : (
               <Card style={styles.formCard}>
-                <View style={styles.chipRow}>
-                  <Chip
-                    label="All vehicles"
-                    selected={scope === 'ALL_VEHICLES'}
-                    onPress={() => setScope('ALL_VEHICLES')}
-                  />
-                  <Chip
-                    label="Selected vehicles"
-                    selected={scope === 'SELECTED_VEHICLES'}
-                    onPress={() => setScope('SELECTED_VEHICLES')}
-                  />
-                </View>
+                <SegmentedControl
+                  accessibilityLabel="Vehicle access"
+                  options={[
+                    { label: 'All vehicles', value: 'ALL_VEHICLES' },
+                    { label: 'Selected vehicles', value: 'SELECTED_VEHICLES' },
+                  ]}
+                  value={scope}
+                  onChange={setScope}
+                />
                 {scope === 'SELECTED_VEHICLES' ? (
                   <Button
                     compact
@@ -988,11 +1281,11 @@ const styles = StyleSheet.create({
   },
   avatarText: { color: colors.primaryDark, fontSize: 18, fontWeight: '800' },
   cardTitle: { color: colors.ink, fontSize: 17, fontWeight: '800' },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   choice: { alignItems: 'center', flexDirection: 'row', gap: spacing.md, padding: spacing.md },
   choiceList: { gap: spacing.sm },
   choiceSelected: { borderColor: colors.primary, borderWidth: 2 },
   choiceTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
+  compactSection: { gap: spacing.xs },
   confirmCopy: { color: colors.subtleText, fontSize: 15, lineHeight: 22 },
   confirmSheet: {
     backgroundColor: colors.surface,
@@ -1018,14 +1311,25 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   formCard: { gap: spacing.md },
   headingRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  inviteFooter: {
+    backgroundColor: colors.background,
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
   list: { gap: spacing.sm },
   memberName: { color: colors.ink, fontSize: 16, fontWeight: '800' },
   memberRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, padding: spacing.md },
   meta: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
   modalBackdrop: { backgroundColor: 'rgba(16, 35, 27, 0.36)', flex: 1, justifyContent: 'flex-end' },
+  modalRoot: { flex: 1, justifyContent: 'flex-end' },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(16, 35, 27, 0.36)' },
   note: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
   permissionCard: { padding: 0 },
-  permissionGroups: { gap: spacing.xs },
+  permissionGroup: { gap: spacing.xxs },
+  permissionGroups: { gap: spacing.sm },
+  permissionSheetContent: { paddingBottom: spacing.md, paddingHorizontal: spacing.xl },
   permissionLabel: { color: colors.ink, flex: 1, fontSize: 15, fontWeight: '700' },
   permissionRow: {
     alignItems: 'center',
@@ -1034,6 +1338,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   rowEnd: { alignItems: 'flex-end', gap: spacing.sm },
+  selectAllControl: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 44,
+    paddingLeft: spacing.sm,
+    paddingRight: spacing.md,
+  },
+  selectAllText: { color: colors.primary, fontSize: 13, fontWeight: '800' },
+  selectorAction: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  selectorRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 64,
+    paddingVertical: spacing.sm,
+  },
+  selectorTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
+  compactSelectorSummary: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 44,
+  },
   sheet: {
     backgroundColor: colors.background,
     borderTopLeftRadius: radius.lg,
@@ -1042,5 +1370,14 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     width: '100%',
   },
+  sheetContent: {
+    paddingBottom: spacing.sm,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.md,
+  },
+  sheetFooter: { paddingHorizontal: spacing.xl, paddingTop: spacing.sm },
+  sheetHeader: { gap: spacing.sm, paddingHorizontal: spacing.xl, paddingTop: spacing.lg },
+  sheetSubtitle: { color: colors.subtleText, fontSize: 14, lineHeight: 20 },
+  sheetTitle: { color: colors.ink, fontSize: 28, fontWeight: '900' },
   vehicleRow: { alignItems: 'center', flexDirection: 'row', minHeight: 54, padding: spacing.md },
 });
