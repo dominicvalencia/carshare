@@ -21,7 +21,15 @@ import { colors, spacing } from './src/theme/tokens';
 import { PushRegistration } from './src/notifications/PushRegistration';
 import { AppLockProvider, useAppLock } from './src/app-lock/AppLockProvider';
 import { AppLockScreen } from './src/app-lock/AppLockScreen';
-import { Button, Icon, StateView } from './src/ui/primitives';
+import {
+  BackControl,
+  Button,
+  Card,
+  Field,
+  Icon,
+  StateView,
+  StatusBadge,
+} from './src/ui/primitives';
 import {
   RenterOnboardingContactPage,
   RenterOnboardingKycPage,
@@ -48,9 +56,18 @@ import { resolvePersonaMode, shouldPresentOwnerFirstEntry } from './src/navigati
 import { isSafeRecoveryDeepLink } from './src/navigation/deep-links';
 import { pendingRecoveryDeepLinkStorage } from './src/navigation/pending-deep-link-storage';
 import Constants from 'expo-constants';
-import type { AcceptOwnerStaffInvitationResponse } from '@carrental/api-contracts';
+import type {
+  AcceptOwnerStaffInvitationResponse,
+  OwnerStaffInvitationPreview,
+} from '@carrental/api-contracts';
 import { ApiError } from './src/auth/api-client';
 import { staffInvitationLink } from './src/features/staff/staff-invitation-link';
+import { staffAccessLink } from './src/features/staff/staff-access-link';
+import {
+  StaffAccessExperience,
+  StaffInvitationSetup,
+} from './src/features/staff/StaffAccessExperience';
+import type { OwnerStaffAccessAuthorization } from '@carrental/api-contracts';
 
 const OnboardingStack = createNativeStackNavigator();
 
@@ -79,10 +96,20 @@ function SessionApplication() {
   const auth = useAuth();
   const appScheme = Constants.expoConfig?.extra?.appScheme ?? 'carrental';
   const [invitationToken, setInvitationToken] = useState<string | null>(null);
+  const [staffAccessHandle, setStaffAccessHandle] = useState<string | null>(null);
   useEffect(() => {
     const retain = (url: string | null) => {
       const link = staffInvitationLink(url, appScheme);
-      if (link.matched) setInvitationToken(link.token ?? '');
+      if (link.matched) {
+        setInvitationToken(link.token ?? '');
+        setStaffAccessHandle(null);
+        return;
+      }
+      const access = staffAccessLink(url, appScheme);
+      if (access.matched) {
+        setStaffAccessHandle(access.handle ?? '');
+        setInvitationToken(null);
+      }
     };
     void Linking.getInitialURL().then(retain);
     const subscription = Linking.addEventListener('url', ({ url }) => retain(url));
@@ -92,17 +119,23 @@ function SessionApplication() {
     <PrincipalApplication
       key={auth.user?.id ?? 'anonymous'}
       invitationToken={invitationToken}
+      staffAccessHandle={staffAccessHandle}
       onInvitationComplete={() => setInvitationToken(null)}
+      onStaffAccessComplete={() => setStaffAccessHandle(null)}
     />
   );
 }
 
 function PrincipalApplication({
   invitationToken,
+  staffAccessHandle,
   onInvitationComplete,
+  onStaffAccessComplete,
 }: {
   readonly invitationToken: string | null;
+  readonly staffAccessHandle: string | null;
   readonly onInvitationComplete: () => void;
+  readonly onStaffAccessComplete: () => void;
 }) {
   const [queryClient] = useState(
     () =>
@@ -112,17 +145,26 @@ function PrincipalApplication({
   );
   return (
     <QueryClientProvider client={queryClient}>
-      <AppContent invitationToken={invitationToken} onInvitationComplete={onInvitationComplete} />
+      <AppContent
+        invitationToken={invitationToken}
+        staffAccessHandle={staffAccessHandle}
+        onInvitationComplete={onInvitationComplete}
+        onStaffAccessComplete={onStaffAccessComplete}
+      />
     </QueryClientProvider>
   );
 }
 
 function AppContent({
   invitationToken,
+  staffAccessHandle,
   onInvitationComplete,
+  onStaffAccessComplete,
 }: {
   readonly invitationToken: string | null;
+  readonly staffAccessHandle: string | null;
   readonly onInvitationComplete: () => void;
+  readonly onStaffAccessComplete: () => void;
 }) {
   const auth = useAuth();
   const queryClient = useQueryClient();
@@ -279,8 +321,44 @@ function AppContent({
         <Text>Loading secure session…</Text>
       </View>
     );
+  const activateStaffWorkspace = (workspace: OwnerStaffAccessAuthorization) => {
+    setActiveOwnerProfileId(workspace.ownerProfileId);
+    setMode('owner');
+    if (auth.user) {
+      void ownerWorkspaceStorage.set(auth.user.id, workspace.ownerProfileId);
+      void activeRoleStorage.set(auth.user.id, 'owner');
+    }
+  };
+  if (staffAccessHandle !== null)
+    return (
+      <StaffAccessExperience
+        handle={staffAccessHandle}
+        onAuthenticated={(workspace) => {
+          activateStaffWorkspace(workspace);
+          onStaffAccessComplete();
+        }}
+        onComplete={onStaffAccessComplete}
+      />
+    );
   if (invitationToken !== null)
-    return <StaffInvitationAcceptance token={invitationToken} onComplete={onInvitationComplete} />;
+    return (
+      <StaffInvitationAcceptance
+        token={invitationToken}
+        onAccepted={(ownerProfileId) => {
+          setActiveOwnerProfileId(ownerProfileId);
+          setMode('owner');
+          if (auth.user) {
+            void ownerWorkspaceStorage.set(auth.user.id, ownerProfileId);
+            void activeRoleStorage.set(auth.user.id, 'owner');
+          }
+        }}
+        onAuthenticated={(workspace) => {
+          activateStaffWorkspace(workspace);
+          onInvitationComplete();
+        }}
+        onComplete={onInvitationComplete}
+      />
+    );
   if (!auth.user) return <AuthFlow />;
   if (!renterCapable && !ownerEnabled) return <PersonaSelection />;
   if (
@@ -369,14 +447,30 @@ function AppContent({
 
 function StaffInvitationAcceptance({
   token,
+  onAccepted,
+  onAuthenticated,
   onComplete,
 }: {
   readonly token: string;
+  readonly onAccepted: (ownerProfileId: string) => void;
+  readonly onAuthenticated: (workspace: OwnerStaffAccessAuthorization) => void;
   readonly onComplete: () => void;
 }) {
   const auth = useAuth();
   const [authScreen, setAuthScreen] = useState<'login' | 'register' | null>(null);
+  const [showSetup, setShowSetup] = useState(false);
   const [result, setResult] = useState<AcceptOwnerStaffInvitationResponse | null>(null);
+  const [challengeId, setChallengeId] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const preview = useQuery({
+    enabled: Boolean(token),
+    queryKey: ['owner-staff-invitation-preview', token],
+    queryFn: () =>
+      apiClient.request<OwnerStaffInvitationPreview>(
+        `/owner/staff-invitations/preview?token=${encodeURIComponent(token)}`,
+      ),
+    retry: false,
+  });
   const acceptInvitation = useMutation({
     mutationFn: () =>
       apiClient.request<AcceptOwnerStaffInvitationResponse>('/owner/staff-invitations/accept', {
@@ -386,6 +480,31 @@ function StaffInvitationAcceptance({
     onSuccess: async (accepted) => {
       setResult(accepted);
       await auth.refreshIdentity();
+      onAccepted(accepted.ownerProfileId);
+    },
+  });
+  const requestMobileVerification = useMutation({
+    mutationFn: () =>
+      apiClient.request<{ challengeId?: string }>(
+        '/owner/staff-invitations/mobile-verification/requests',
+        { body: JSON.stringify({ platform: 'UNKNOWN', token }), method: 'POST' },
+      ),
+    onSuccess: ({ challengeId: nextChallengeId }) => {
+      setChallengeId(nextChallengeId ?? '');
+      setOtpCode('');
+    },
+  });
+  const verifyMobile = useMutation({
+    mutationFn: () =>
+      apiClient.request('/auth/otp/verifications', {
+        body: JSON.stringify({ challengeId, code: otpCode, platform: 'UNKNOWN' }),
+        method: 'POST',
+      }),
+    onSuccess: async () => {
+      await auth.refreshIdentity();
+      acceptInvitation.reset();
+      setChallengeId('');
+      setOtpCode('');
     },
   });
   if (!token)
@@ -400,23 +519,84 @@ function StaffInvitationAcceptance({
         />
       </SafeAreaView>
     );
-  if (!auth.user) {
-    if (authScreen) return <AuthFlow initialScreen={authScreen} />;
+  if (preview.isPending)
     return (
       <SafeAreaView edges={['top', 'bottom']} style={styles.invitationShell}>
         <StateView
-          icon="people-outline"
-          title="Staff invitation"
-          message="Sign in with your existing CarShare account, or create an account, to continue."
+          loading
+          title="Loading invitation"
+          message="Checking this invitation securely…"
         />
+      </SafeAreaView>
+    );
+  if (preview.isError) {
+    const previewCode = preview.error instanceof ApiError ? preview.error.code : null;
+    const previewState = invitationErrorState(previewCode);
+    return (
+      <SafeAreaView edges={['top', 'bottom']} style={styles.invitationShell}>
+        <StateView
+          icon={previewState.icon}
+          title={previewState.title}
+          message={previewState.message}
+          actionLabel="Go to app"
+          onAction={onComplete}
+        />
+      </SafeAreaView>
+    );
+  }
+  const invitation = preview.data;
+  if (invitation.state !== 'PENDING') {
+    const terminal = invitationState(invitation.state);
+    return (
+      <SafeAreaView edges={['top', 'bottom']} style={styles.invitationShell}>
+        <StateView
+          icon={terminal.icon}
+          title={terminal.title}
+          message={terminal.message}
+          actionLabel="Go to app"
+          onAction={onComplete}
+        />
+      </SafeAreaView>
+    );
+  }
+  const invitationCard = <InvitationContext invitation={invitation} />;
+  if (!auth.user) {
+    if (showSetup)
+      return (
+        <StaffInvitationSetup
+          invitationToken={token}
+          onAuthenticated={onAuthenticated}
+          onBack={() => setShowSetup(false)}
+          roleLabel={invitation.roleLabel}
+          workspaceLabel={invitation.workspaceLabel}
+        />
+      );
+    if (authScreen)
+      return (
+        <AuthFlow
+          invitationContext={{
+            roleLabel: invitation.roleLabel,
+            workspaceLabel: invitation.workspaceLabel,
+          }}
+          initialScreen={authScreen}
+          onBackToContext={() => setAuthScreen(null)}
+        />
+      );
+    return (
+      <SafeAreaView edges={['top', 'bottom']} style={styles.invitationPage}>
+        <View style={styles.invitationHeader}>
+          <BackControl label="Back" onPress={onComplete} />
+          <Text accessibilityRole="header" style={styles.invitationTitle}>
+            Staff invitation
+          </Text>
+          <Text style={styles.invitationHelper}>
+            Review the invitation, then sign in or set up your CarShare account to continue.
+          </Text>
+        </View>
+        {invitationCard}
         <View style={styles.invitationActions}>
           <Button label="Log in" onPress={() => setAuthScreen('login')} />
-          <Button
-            label="Create account"
-            variant="secondary"
-            onPress={() => setAuthScreen('register')}
-          />
-          <Button label="Back" variant="ghost" onPress={onComplete} />
+          <Button label="Set up account" variant="secondary" onPress={() => setShowSetup(true)} />
         </View>
       </SafeAreaView>
     );
@@ -427,7 +607,7 @@ function StaffInvitationAcceptance({
         <StateView
           icon="checkmark-circle-outline"
           title="Invitation accepted"
-          message={`You now have ${result.role === 'MANAGER' ? 'Manager' : 'Staff'} access to this Owner workspace.`}
+          message={`You now have ${invitation.roleLabel} access to ${invitation.workspaceLabel}.`}
           actionLabel="Continue"
           onAction={onComplete}
         />
@@ -437,29 +617,52 @@ function StaffInvitationAcceptance({
   const errorCode = error instanceof ApiError ? error.code : null;
   const state = invitationErrorState(errorCode);
   return (
-    <SafeAreaView edges={['top', 'bottom']} style={styles.invitationShell}>
-      <StateView
-        icon={state.icon}
-        loading={acceptInvitation.isPending}
-        title={acceptInvitation.isPending ? 'Accepting invitation' : state.title}
-        message={acceptInvitation.isPending ? 'Checking your account securely…' : state.message}
-      />
+    <SafeAreaView edges={['top', 'bottom']} style={styles.invitationPage}>
+      <View style={styles.invitationHeader}>
+        <BackControl label="Back" onPress={onComplete} />
+        <Text accessibilityRole="header" style={styles.invitationTitle}>
+          Staff invitation
+        </Text>
+        <Text style={styles.invitationHelper}>
+          Confirm that you want to join this Owner workspace.
+        </Text>
+      </View>
+      {invitationCard}
+      {errorCode ? (
+        <StateView icon={state.icon} title={state.title} message={state.message} compact />
+      ) : null}
       {!acceptInvitation.isPending ? (
         <View style={styles.invitationActions}>
           {errorCode === 'MOBILE_VERIFICATION_REQUIRED' ? (
-            <Button
-              label="Verify mobile number"
-              onPress={() => {
-                onComplete();
-                setTimeout(
-                  () =>
-                    void Linking.openURL(
-                      `${Constants.expoConfig?.extra?.appScheme ?? 'carrental'}://verification`,
-                    ),
-                  0,
-                );
-              }}
-            />
+            challengeId ? (
+              <View style={styles.invitationVerification}>
+                <Field
+                  keyboardType="number-pad"
+                  label="6-digit mobile verification code"
+                  placeholder="123456"
+                  value={otpCode}
+                  onChangeText={(value) => setOtpCode(value.replaceAll(/\D/g, '').slice(0, 6))}
+                />
+                <Button
+                  disabled={otpCode.length !== 6 || verifyMobile.isPending}
+                  label={verifyMobile.isPending ? 'Verifying…' : 'Verify mobile'}
+                  onPress={() => verifyMobile.mutate()}
+                />
+                {verifyMobile.error ? (
+                  <Text accessibilityRole="alert" style={styles.invitationError}>
+                    We couldn’t verify that code. Check it and try again.
+                  </Text>
+                ) : null}
+              </View>
+            ) : (
+              <Button
+                disabled={requestMobileVerification.isPending}
+                label={
+                  requestMobileVerification.isPending ? 'Sending code…' : 'Verify mobile number'
+                }
+                onPress={() => requestMobileVerification.mutate()}
+              />
+            )
           ) : errorCode === 'INVITATION_DESTINATION_MISMATCH' ? (
             <Button label="Switch account" onPress={() => void auth.logout()} />
           ) : !errorCode ? (
@@ -468,8 +671,59 @@ function StaffInvitationAcceptance({
           <Button label="Back" variant="ghost" onPress={onComplete} />
         </View>
       ) : null}
+      {acceptInvitation.isPending ? (
+        <StateView
+          loading
+          title="Accepting invitation"
+          message="Checking your account securely…"
+          compact
+        />
+      ) : null}
     </SafeAreaView>
   );
+}
+
+function InvitationContext({ invitation }: { readonly invitation: OwnerStaffInvitationPreview }) {
+  return (
+    <Card style={styles.invitationCard}>
+      <Text style={styles.invitationCardLabel}>YOU’VE BEEN INVITED TO JOIN</Text>
+      <Text style={styles.invitationWorkspace}>{invitation.workspaceLabel}</Text>
+      <View style={styles.invitationRoleRow}>
+        <View style={styles.invitationRoleCopy}>
+          <Text style={styles.invitationCardLabel}>ROLE</Text>
+          <Text style={styles.invitationRole}>{invitation.roleLabel}</Text>
+        </View>
+        <StatusBadge
+          label={invitation.channel === 'SMS' ? 'SMS invitation' : 'Email invitation'}
+          tone="neutral"
+        />
+      </View>
+      <Text style={styles.invitationCardHelper}>
+        You’ll have access based on the permissions assigned by the Owner.
+      </Text>
+    </Card>
+  );
+}
+
+function invitationState(state: OwnerStaffInvitationPreview['state']) {
+  if (state === 'EXPIRED')
+    return {
+      icon: 'time-outline' as const,
+      title: 'Invitation expired',
+      message:
+        'This invitation is no longer valid. Ask the Owner or Manager to send a new invitation.',
+    };
+  if (state === 'REVOKED')
+    return {
+      icon: 'close-circle-outline' as const,
+      title: 'Invitation revoked',
+      message: 'This invitation is no longer available.',
+    };
+  return {
+    icon: 'checkmark-circle-outline' as const,
+    title: 'Invitation already accepted',
+    message: 'This invitation has already been used.',
+  };
 }
 
 function invitationErrorState(code: string | null) {
@@ -716,6 +970,26 @@ const styles = StyleSheet.create({
   personaShell: { backgroundColor: colors.surface, flex: 1 },
   personaSupporting: { color: colors.subtleText, fontSize: 16, lineHeight: 23 },
   invitationActions: { gap: spacing.sm, width: '100%' },
+  invitationCard: { gap: spacing.sm, width: '100%' },
+  invitationCardHelper: { color: colors.subtleText, fontSize: 14, lineHeight: 20 },
+  invitationCardLabel: {
+    color: colors.subtleText,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  invitationHeader: { gap: spacing.xs, width: '100%' },
+  invitationError: { color: colors.danger, fontSize: 14 },
+  invitationHelper: { color: colors.subtleText, fontSize: 16, lineHeight: 23 },
+  invitationPage: {
+    backgroundColor: colors.surface,
+    flex: 1,
+    gap: spacing.lg,
+    padding: spacing.lg,
+  },
+  invitationRole: { color: colors.ink, fontSize: 17, fontWeight: '800' },
+  invitationRoleCopy: { flex: 1, gap: spacing.xxs },
+  invitationRoleRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
   invitationShell: {
     alignItems: 'center',
     backgroundColor: colors.surface,
@@ -723,4 +997,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: spacing.lg,
   },
+  invitationTitle: { color: colors.ink, fontSize: 34, fontWeight: '900' },
+  invitationWorkspace: { color: colors.ink, fontSize: 24, fontWeight: '900' },
+  invitationVerification: { gap: spacing.sm, width: '100%' },
 });

@@ -26,6 +26,8 @@ describe('deep-link parent state', () => {
 
   it('preserves owner mode when selecting a booking parent', () => {
     expect(parentTabFor('Booking', 'owner')).toBe('Requests');
+    expect(parentTabFor('OwnerVehicleApproval', 'owner')).toBe('Vehicles');
+    expect(parentTabFor('OwnerWorkspaceVehicle', 'owner')).toBe('Vehicles');
   });
 
   it('does not duplicate an existing authenticated shell', () => {

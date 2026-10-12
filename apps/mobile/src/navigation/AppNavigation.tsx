@@ -264,7 +264,13 @@ function OwnerNavigation({
         />
       </Screen>
     );
-  const initialRouteName = tabs.today ? 'Dashboard' : tabs.vehicles ? 'Vehicles' : 'More';
+  const initialRouteName = tabs.today
+    ? 'Dashboard'
+    : tabs.vehicles
+      ? 'Vehicles'
+      : tabs.messages
+        ? 'Messages'
+        : 'More';
   return (
     <OwnerTabs.Navigator
       initialRouteName={initialRouteName}
@@ -285,7 +291,12 @@ function OwnerNavigation({
       ) : null}
       {tabs.vehicles ? (
         <OwnerTabs.Screen name="Vehicles">
-          {() => <VehiclesScreen ownerWorkspace={ownerWorkspace} />}
+          {({ route }) => (
+            <VehiclesScreen
+              {...(route.params?.vehicleId ? { initialVehicleId: route.params.vehicleId } : {})}
+              ownerWorkspace={ownerWorkspace}
+            />
+          )}
         </OwnerTabs.Screen>
       ) : null}
       {tabs.messages ? (
@@ -367,6 +378,8 @@ export function AppNavigation(properties: AppNavigationProperties) {
             Verification: 'verification',
             HostProfile: 'hosts/:hostReference',
             VehicleDetails: 'vehicles/:vehicleId',
+            OwnerVehicleApproval: 'owner/vehicle-approvals/:vehicleId',
+            OwnerWorkspaceVehicle: 'owner/vehicles/:vehicleId',
             PublicReviews: 'reviews/public',
           },
         },
@@ -436,6 +449,34 @@ export function AppNavigation(properties: AppNavigationProperties) {
         </Stack.Screen>
         <Stack.Screen name="Notifications" options={{ headerShown: false }}>
           {() => <NotificationCenter mode={properties.mode} />}
+        </Stack.Screen>
+        <Stack.Screen name="OwnerVehicleApproval" options={{ headerShown: false }}>
+          {({ route }) =>
+            properties.mode === 'owner' && properties.ownerWorkspace?.capacity === 'OWNER' ? (
+              <VehiclesScreen initialVehicleId={route.params.vehicleId} />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
+        <Stack.Screen name="OwnerWorkspaceVehicle" options={{ headerShown: false }}>
+          {({ route }) => {
+            const workspace = properties.ownerWorkspace;
+            if (
+              properties.mode !== 'owner' ||
+              !workspace ||
+              (workspace.capacity !== 'OWNER' && !hasOwnerPermission(workspace, 'vehicles.view'))
+            )
+              return <AccessUnavailable />;
+            return workspace.capacity === 'OWNER' ? (
+              <VehiclesScreen initialVehicleId={route.params.vehicleId} />
+            ) : (
+              <VehiclesScreen
+                initialVehicleId={route.params.vehicleId}
+                ownerWorkspace={workspace}
+              />
+            );
+          }}
         </Stack.Screen>
         <Stack.Screen name="Favorites" options={{ headerShown: false }}>
           {({ navigation }) => (
@@ -645,6 +686,7 @@ export function AppNavigation(properties: AppNavigationProperties) {
               <OwnerStaffScreen
                 capacity={properties.ownerWorkspace.capacity === 'OWNER' ? 'OWNER' : 'MANAGER'}
                 ownerProfileId={properties.ownerWorkspace.ownerProfileId}
+                workspaceLabel={properties.ownerWorkspace.workspaceLabel}
               />
             ) : (
               <AccessUnavailable />

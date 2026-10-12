@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import Constants from 'expo-constants';
 import { Controller, useForm } from 'react-hook-form';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   KeyboardAvoidingView,
   Linking,
@@ -21,8 +21,65 @@ import carShareLogo from '../../../assets/carshare-app-icon.png';
 import { ApiError, apiClient } from '../../auth/api-client';
 import { useAuth } from '../../auth/AuthProvider';
 import { colors, radius, spacing } from '../../theme/tokens';
-import { formKeyboardDismissMode, useKeyboardAwareBottomPadding } from '../../ui/primitives';
+import { Card, formKeyboardDismissMode, useKeyboardAwareBottomPadding } from '../../ui/primitives';
 import { passwordResetLink } from './password-reset-link';
+
+export function AuthScreenShell({
+  children,
+  helper,
+  onBack,
+  title,
+}: {
+  readonly children: ReactNode;
+  readonly helper: string;
+  readonly onBack: () => void;
+  readonly title: string;
+}) {
+  const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding();
+  return (
+    <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.safeArea}
+      >
+        <ScrollView
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: keyboardAwareBottomPadding },
+          ]}
+          keyboardDismissMode={formKeyboardDismissMode}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={[styles.page, styles.authPage]}>
+            <View style={styles.authHeader}>
+              <Image
+                accessibilityLabel="CarShare"
+                contentFit="contain"
+                source={carShareLogo}
+                style={styles.authLogo}
+              />
+              <Pressable
+                accessibilityLabel="Back"
+                accessibilityRole="button"
+                hitSlop={8}
+                onPress={onBack}
+                style={styles.backAction}
+              >
+                <Text style={styles.backActionText}>← Back</Text>
+              </Pressable>
+              <Text accessibilityRole="header" style={styles.authTitle}>
+                {title}
+              </Text>
+              <Text style={styles.authSubtitle}>{helper}</Text>
+            </View>
+            {children}
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
 
 type Screen =
   | 'welcome'
@@ -41,8 +98,20 @@ const credentialsSchema = z.object({
   password: z.string(),
 });
 type Credentials = z.infer<typeof credentialsSchema>;
+type InvitationAuthContext = {
+  readonly roleLabel: string;
+  readonly workspaceLabel: string;
+};
 
-export function AuthFlow({ initialScreen = 'welcome' }: { readonly initialScreen?: Screen } = {}) {
+export function AuthFlow({
+  invitationContext,
+  initialScreen = 'welcome',
+  onBackToContext,
+}: {
+  readonly invitationContext?: InvitationAuthContext | undefined;
+  readonly initialScreen?: Screen;
+  readonly onBackToContext?: () => void;
+} = {}) {
   const [screen, setScreen] = useState<Screen>(initialScreen);
   const [resetEmail, setResetEmail] = useState('');
   const [resetToken, setResetToken] = useState('');
@@ -80,10 +149,15 @@ export function AuthFlow({ initialScreen = 'welcome' }: { readonly initialScreen
           ) : (
             <CredentialScreen
               key={screen}
+              invitationContext={invitationContext}
               mode={screen}
-              onBack={() =>
-                setScreen(screen === 'forgot' || screen === 'reset' ? 'login' : 'welcome')
-              }
+              onBack={() => {
+                if (onBackToContext && (screen === 'login' || screen === 'register')) {
+                  onBackToContext();
+                  return;
+                }
+                setScreen(screen === 'forgot' || screen === 'reset' ? 'login' : 'welcome');
+              }}
               onResetRequested={(email) => {
                 setResetEmail(email);
                 setScreen('check-email');
@@ -126,6 +200,7 @@ function Welcome({ onSelect }: { readonly onSelect: (screen: Screen) => void }) 
 }
 
 function CredentialScreen({
+  invitationContext,
   mode,
   onBack,
   onResetRequested,
@@ -133,6 +208,7 @@ function CredentialScreen({
   resetEmail,
   resetToken,
 }: {
+  readonly invitationContext?: InvitationAuthContext | undefined;
   readonly mode: Screen;
   readonly onBack: () => void;
   readonly onResetRequested: (email: string) => void;
@@ -236,7 +312,7 @@ function CredentialScreen({
     if (standard) mutation.mutate(values);
     else utility.mutate(values);
   });
-  const title = {
+  const defaultTitle = {
     login: 'Welcome back',
     register: 'Create your account',
     forgot: 'Forgot password',
@@ -248,6 +324,7 @@ function CredentialScreen({
     otp: 'Mobile OTP',
     welcome: '',
   }[mode];
+  const title = mode === 'register' && invitationContext ? 'Set up your account' : defaultTitle;
   const registration = mode === 'register';
   const login = mode === 'login';
   const brandedCredentialScreen = ['forgot', 'login', 'register', 'reset'].includes(mode);
@@ -303,13 +380,15 @@ function CredentialScreen({
             {title}
           </Text>
           <Text style={styles.authSubtitle}>
-            {registration
-              ? 'Start renting cars now. You can become a host anytime.'
-              : login
-                ? 'Log in to continue with CarShare.'
-                : mode === 'forgot'
-                  ? "Enter the email linked to your account and we'll send you a password reset link."
-                  : 'Choose a new password for your CarShare account.'}
+            {registration && invitationContext
+              ? 'Create your CarShare account to continue.'
+              : registration
+                ? 'Start renting cars now. You can become a host anytime.'
+                : login
+                  ? 'Log in to continue with CarShare.'
+                  : mode === 'forgot'
+                    ? "Enter the email linked to your account and we'll send you a password reset link."
+                    : 'Choose a new password for your CarShare account.'}
           </Text>
         </View>
       ) : (
@@ -317,6 +396,7 @@ function CredentialScreen({
           {title}
         </Text>
       )}
+      {invitationContext && standard ? <InvitationContextCard context={invitationContext} /> : null}
       {mode !== 'reset' && (
         <Controller
           control={form.control}
@@ -533,6 +613,25 @@ function CredentialScreen({
   );
 }
 
+function InvitationContextCard({ context }: { readonly context: InvitationAuthContext }) {
+  return (
+    <Card style={styles.invitationContextCard}>
+      <View
+        accessible
+        accessibilityLabel={`Joining ${context.workspaceLabel} as ${context.roleLabel}`}
+        style={styles.invitationContextContent}
+      >
+        <Text style={styles.invitationContextEyebrow}>JOINING</Text>
+        <Text style={styles.invitationContextWorkspace}>{context.workspaceLabel}</Text>
+        <View style={styles.invitationContextRoleRow}>
+          <Text style={styles.invitationContextRoleLabel}>Role</Text>
+          <Text style={styles.invitationContextRole}>{context.roleLabel}</Text>
+        </View>
+      </View>
+    </Card>
+  );
+}
+
 function AuthStatusScreen({
   body,
   buttonLabel,
@@ -644,6 +743,22 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   inputError: { borderColor: colors.danger },
+  invitationContextCard: { marginBottom: spacing.xs },
+  invitationContextContent: { gap: spacing.xs },
+  invitationContextEyebrow: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+  },
+  invitationContextRole: { color: colors.ink, fontSize: 14, fontWeight: '700' },
+  invitationContextRoleLabel: { color: colors.subtleText, fontSize: 14 },
+  invitationContextRoleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  invitationContextWorkspace: { color: colors.ink, fontSize: 18, fontWeight: '800' },
   link: { color: colors.primary, marginTop: spacing.lg, textAlign: 'center' },
   logo: { borderRadius: radius.lg, height: 112, marginBottom: spacing.xl, width: 112 },
   requirement: { color: colors.subtleText, fontSize: 13, marginTop: spacing.xs },

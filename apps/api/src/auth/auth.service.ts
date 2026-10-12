@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   AuthTokenType,
   OtpPurpose,
+  OwnerStaffStatus,
   PushTokenStatus,
   OwnerStaffVehicleScopeMode,
   UserStatus,
@@ -29,6 +30,7 @@ import type {
   OtpRequestDto,
   OtpVerifyDto,
   RegisterDto,
+  StaffAccessLoginDto,
 } from './auth.dto';
 import { OWNER_PERMISSIONS } from '../owner-access/owner-permissions';
 
@@ -38,6 +40,10 @@ export interface AuthenticationResult {
   readonly accessTokenExpiresIn: number;
   readonly sessionId: string;
   readonly user: ReturnType<AuthService['publicUser']>;
+}
+
+export interface StaffAccessAuthenticationResult extends AuthenticationResult {
+  readonly authorizedWorkspace: ReturnType<AuthService['staffWorkspace']>;
 }
 
 const sessionUserInclude = {
@@ -181,6 +187,398 @@ export class AuthService {
     return result;
   }
 
+  async loginStaffAccess(
+    handle: string,
+    input: StaffAccessLoginDto,
+    metadata: RequestMetadata,
+  ): Promise<StaffAccessAuthenticationResult> {
+    let mobile: string;
+    try {
+      mobile = normalizePhilippineMobile(input.mobileNumber);
+    } catch {
+      await this.crypto.verifyPassword(null, input.password);
+      throw await this.failedStaffAccessLogin(metadata, handle);
+    }
+    const handleFingerprint = this.crypto.hashIdentifier(handle).slice(0, 12);
+    const mobileFingerprint = this.crypto.hashIdentifier(mobile).slice(0, 12);
+    await this.rateLimits.assertAllowed(
+      'owner-staff-access-login',
+      [
+        `ip:${metadata.ipAddress ?? 'unknown'}`,
+        `mobile:${mobileFingerprint}`,
+        `handle:${handleFingerprint}`,
+      ],
+      10,
+      900,
+    );
+    const link = await this.database.client.ownerStaffAccessLink.findUnique({
+      select: { ownerProfileId: true },
+      where: { publicHandle: handle },
+    });
+    if (!link) {
+      await this.crypto.verifyPassword(null, input.password);
+      throw await this.failedStaffAccessLogin(metadata, handle);
+    }
+    const user = await this.database.client.user.findUnique({
+      include: sessionUserInclude,
+      where: { normalizedMobileNumber: mobile },
+    });
+    const validPassword = await this.crypto.verifyPassword(
+      user?.passwordHash ?? null,
+      input.password,
+    );
+    if (!user || !validPassword) {
+      if (user) await this.recordFailedLogin(user.id);
+      throw await this.failedStaffAccessLogin(metadata, handle);
+    }
+    if (
+      !user.mobileVerifiedAt ||
+      user.status !== UserStatus.ACTIVE ||
+      (user.loginLockedUntil && user.loginLockedUntil > new Date())
+    )
+      throw await this.failedStaffAccessLogin(metadata, handle);
+    const initialMembership = user.ownerStaffMemberships.find(
+      (membership) =>
+        membership.ownerProfileId === link.ownerProfileId &&
+        membership.status === 'ACTIVE' &&
+        (membership.role === 'MANAGER' || membership.role === 'STAFF'),
+    );
+    if (!initialMembership || user.ownerProfile?.id === link.ownerProfileId)
+      throw await this.failedStaffAccessLogin(metadata, handle);
+
+    const result = await this.database.client.$transaction(
+      async (transaction) => {
+        const currentLink = await transaction.ownerStaffAccessLink.findUnique({
+          select: { ownerProfileId: true, version: true },
+          where: { publicHandle: handle },
+        });
+        const currentUser = currentLink
+          ? await transaction.user.findFirst({
+              include: sessionUserInclude,
+              where: {
+                OR: [{ loginLockedUntil: null }, { loginLockedUntil: { lte: new Date() } }],
+                id: user.id,
+                mobileVerifiedAt: { not: null },
+                status: UserStatus.ACTIVE,
+                ownerStaffMemberships: {
+                  some: {
+                    ownerProfileId: currentLink.ownerProfileId,
+                    role: { in: ['MANAGER', 'STAFF'] },
+                    status: OwnerStaffStatus.ACTIVE,
+                  },
+                },
+              },
+            })
+          : null;
+        const membership = currentUser?.ownerStaffMemberships.find(
+          (candidate) =>
+            candidate.ownerProfileId === currentLink?.ownerProfileId &&
+            candidate.status === 'ACTIVE' &&
+            (candidate.role === 'MANAGER' || candidate.role === 'STAFF'),
+        );
+        if (
+          !currentLink ||
+          !currentUser ||
+          !membership ||
+          currentUser.ownerProfile?.id === currentLink.ownerProfileId
+        )
+          throw this.staffAccessLoginFailed();
+        if (!(await this.crypto.verifyPassword(currentUser.passwordHash, input.password)))
+          throw this.staffAccessLoginFailed();
+        await transaction.user.update({
+          data: { failedLoginAttempts: 0, lastLoginAt: new Date(), loginLockedUntil: null },
+          where: { id: user.id },
+        });
+        const authentication = await this.createSession(currentUser, input, metadata, transaction);
+        return {
+          ...authentication,
+          authorizedWorkspace: this.staffWorkspace(currentUser, membership.id),
+          linkVersion: currentLink.version,
+          membershipId: membership.id,
+        };
+      },
+      { isolationLevel: 'Serializable' },
+    );
+    await this.events.record('STAFF_ACCESS_LOGIN_SUCCESS', {
+      ...metadata,
+      data: {
+        capacity: result.authorizedWorkspace.capacity,
+        handleFingerprint,
+        linkVersion: result.linkVersion,
+        membershipId: result.membershipId,
+        ownerProfileId: result.authorizedWorkspace.ownerProfileId,
+      },
+      sessionId: result.sessionId,
+      userId: user.id,
+    });
+    const { linkVersion: _linkVersion, membershipId: _membershipId, ...response } = result;
+    return response;
+  }
+
+  async requestStaffPasswordReset(
+    handle: string,
+    mobileNumber: string,
+    metadata: RequestMetadata,
+  ): Promise<{ challengeId: string; message: string }> {
+    const fallbackChallengeId = randomUUID();
+    let mobile: string;
+    try {
+      mobile = normalizePhilippineMobile(mobileNumber);
+    } catch {
+      mobile = `invalid:${this.crypto.hashIdentifier(mobileNumber).slice(0, 12)}`;
+    }
+    const handleFingerprint = this.crypto.hashIdentifier(handle).slice(0, 12);
+    const mobileFingerprint = this.crypto.hashIdentifier(mobile).slice(0, 12);
+    await this.rateLimits.assertAllowed(
+      'owner-staff-password-reset-request',
+      [
+        `ip:${metadata.ipAddress ?? 'unknown'}`,
+        `mobile:${mobileFingerprint}`,
+        `handle:${handleFingerprint}`,
+      ],
+      5,
+      3600,
+    );
+    if (mobile.startsWith('invalid:') || !/^[A-Za-z0-9_-]{22,64}$/.test(handle))
+      return this.staffResetRequested(fallbackChallengeId);
+    const eligible = await this.database.client.ownerStaffAccessLink.findFirst({
+      select: {
+        id: true,
+        ownerProfileId: true,
+        version: true,
+        ownerProfile: {
+          select: {
+            staffMemberships: {
+              select: { user: { select: { id: true } } },
+              take: 1,
+              where: {
+                role: { in: ['MANAGER', 'STAFF'] },
+                status: OwnerStaffStatus.ACTIVE,
+                user: {
+                  mobileVerifiedAt: { not: null },
+                  normalizedMobileNumber: mobile,
+                  status: UserStatus.ACTIVE,
+                },
+              },
+            },
+            userId: true,
+          },
+        },
+      },
+      where: { publicHandle: handle },
+    });
+    const userId = eligible?.ownerProfile.staffMemberships[0]?.user?.id;
+    if (!eligible || !userId || eligible.ownerProfile.userId === userId)
+      return this.staffResetRequested(fallbackChallengeId);
+    const now = new Date();
+    const recent = await this.database.client.otpChallenge.findFirst({
+      orderBy: { createdAt: 'desc' },
+      where: {
+        consumedAt: null,
+        ownerStaffAccessLinkId: eligible.id,
+        purpose: OtpPurpose.STAFF_PASSWORD_RESET,
+        userId,
+      },
+    });
+    if (recent && recent.resendAvailableAt > now)
+      throw new ApplicationException(
+        IdentityErrorCode.OTP_RESEND_LIMITED,
+        'Please wait before requesting another code.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    const code = this.crypto.randomOtp();
+    const challenge = await this.database.client.$transaction(async (transaction) => {
+      await transaction.otpChallenge.updateMany({
+        data: { consumedAt: now },
+        where: {
+          consumedAt: null,
+          ownerStaffAccessLinkId: eligible.id,
+          purpose: OtpPurpose.STAFF_PASSWORD_RESET,
+          userId,
+        },
+      });
+      return transaction.otpChallenge.create({
+        data: {
+          codeHash: this.crypto.hashToken(code),
+          destinationHash: this.crypto.hashIdentifier(mobile),
+          destinationLastFour: mobile.slice(-4),
+          expiresAt: new Date(
+            now.getTime() +
+              this.configuration.getOrThrow('OTP_TTL_MINUTES', { infer: true }) * 60_000,
+          ),
+          maxAttempts: this.configuration.getOrThrow('OTP_MAX_ATTEMPTS', { infer: true }),
+          ownerStaffAccessLinkId: eligible.id,
+          purpose: OtpPurpose.STAFF_PASSWORD_RESET,
+          resendAvailableAt: new Date(
+            now.getTime() +
+              this.configuration.getOrThrow('OTP_RESEND_COOLDOWN_SECONDS', { infer: true }) * 1000,
+          ),
+          staffAccessLinkVersion: eligible.version,
+          userId,
+        },
+      });
+    });
+    await this.smsProvider.send({ code, template: 'STAFF_PASSWORD_RESET_OTP', to: mobile });
+    await this.events.record('STAFF_PASSWORD_RESET_REQUESTED', {
+      ...metadata,
+      data: { handleFingerprint, ownerProfileId: eligible.ownerProfileId },
+      userId,
+    });
+    return this.staffResetRequested(challenge.id);
+  }
+
+  async verifyStaffPasswordReset(
+    handle: string,
+    challengeId: string,
+    code: string,
+    metadata: RequestMetadata,
+  ): Promise<{ resetToken: string }> {
+    await this.rateLimits.assertAllowed(
+      'owner-staff-password-reset-verify',
+      [`ip:${metadata.ipAddress ?? 'unknown'}`, `challenge:${challengeId}`],
+      10,
+      900,
+    );
+    const now = new Date();
+    const challenge = await this.database.client.otpChallenge.findUnique({
+      include: { ownerStaffAccessLink: true },
+      where: { id: challengeId },
+    });
+    if (
+      !challenge ||
+      challenge.purpose !== OtpPurpose.STAFF_PASSWORD_RESET ||
+      challenge.consumedAt ||
+      challenge.expiresAt <= now ||
+      challenge.attemptCount >= challenge.maxAttempts ||
+      !challenge.userId ||
+      !challenge.ownerStaffAccessLink ||
+      challenge.ownerStaffAccessLink.publicHandle !== handle ||
+      challenge.ownerStaffAccessLink.version !== challenge.staffAccessLinkVersion
+    )
+      throw this.invalidStaffReset();
+    const challengeUserId = challenge.userId;
+    if (!this.crypto.secureEqual(challenge.codeHash, this.crypto.hashToken(code))) {
+      await this.database.client.otpChallenge.update({
+        data: { attemptCount: { increment: 1 } },
+        where: { id: challenge.id },
+      });
+      throw this.invalidStaffReset();
+    }
+    const tokenId = randomUUID();
+    const token = this.tokens.opaqueToken(tokenId);
+    await this.database.client.$transaction(async (transaction) => {
+      const membership = await transaction.ownerStaffMembership.findFirst({
+        where: {
+          ownerProfileId: challenge.ownerStaffAccessLink!.ownerProfileId,
+          role: { in: ['MANAGER', 'STAFF'] },
+          status: OwnerStaffStatus.ACTIVE,
+          userId: challengeUserId,
+        },
+      });
+      if (!membership) throw this.invalidStaffReset();
+      const consumed = await transaction.otpChallenge.updateMany({
+        data: { consumedAt: now },
+        where: { consumedAt: null, id: challenge.id },
+      });
+      if (consumed.count !== 1) throw this.invalidStaffReset();
+      await transaction.authToken.create({
+        data: {
+          expiresAt: new Date(
+            now.getTime() +
+              this.configuration.getOrThrow('OTP_TTL_MINUTES', { infer: true }) * 60_000,
+          ),
+          id: tokenId,
+          ownerStaffAccessLinkId: challenge.ownerStaffAccessLinkId,
+          staffAccessLinkVersion: challenge.staffAccessLinkVersion,
+          tokenHash: token.hash,
+          type: AuthTokenType.STAFF_PASSWORD_RESET,
+          userId: challengeUserId,
+        },
+      });
+    });
+    return { resetToken: token.raw };
+  }
+
+  async completeStaffPasswordReset(
+    handle: string,
+    rawToken: string,
+    password: string,
+    confirmPassword: string,
+    metadata: RequestMetadata,
+  ): Promise<void> {
+    if (password !== confirmPassword)
+      throw new ApplicationException(
+        'STAFF_PASSWORD_RESET_PASSWORD_MISMATCH',
+        'Passwords do not match.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    try {
+      this.crypto.assertPasswordPolicy(password);
+    } catch (error) {
+      throw new ApplicationException(
+        IdentityErrorCode.PASSWORD_POLICY_VIOLATION,
+        error instanceof Error ? error.message : 'Password does not meet the policy.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    const tokenId = this.tokens.parseOpaqueId(rawToken);
+    if (!tokenId) throw this.invalidStaffReset();
+    await this.rateLimits.assertAllowed(
+      'owner-staff-password-reset-complete',
+      [`ip:${metadata.ipAddress ?? 'unknown'}`, `token:${tokenId}`],
+      5,
+      900,
+    );
+    const passwordHash = await this.crypto.hashPassword(password);
+    const now = new Date();
+    let userId = '';
+    await this.database.client.$transaction(async (transaction) => {
+      const token = await transaction.authToken.findUnique({
+        include: { ownerStaffAccessLink: true },
+        where: { id: tokenId },
+      });
+      if (
+        !token ||
+        token.type !== AuthTokenType.STAFF_PASSWORD_RESET ||
+        token.consumedAt ||
+        token.expiresAt <= now ||
+        !token.ownerStaffAccessLink ||
+        token.ownerStaffAccessLink.publicHandle !== handle ||
+        token.ownerStaffAccessLink.version !== token.staffAccessLinkVersion ||
+        !this.crypto.secureEqual(token.tokenHash, this.tokens.hashOpaque(rawToken))
+      )
+        throw this.invalidStaffReset();
+      const membership = await transaction.ownerStaffMembership.findFirst({
+        where: {
+          ownerProfileId: token.ownerStaffAccessLink.ownerProfileId,
+          role: { in: ['MANAGER', 'STAFF'] },
+          status: OwnerStaffStatus.ACTIVE,
+          userId: token.userId,
+        },
+      });
+      if (!membership) throw this.invalidStaffReset();
+      userId = token.userId;
+      const consumed = await transaction.authToken.updateMany({
+        data: { consumedAt: now },
+        where: { consumedAt: null, id: token.id },
+      });
+      if (consumed.count !== 1) throw this.invalidStaffReset();
+      await transaction.user.update({
+        data: { failedLoginAttempts: 0, loginLockedUntil: null, passwordHash },
+        where: { id: token.userId },
+      });
+      await transaction.session.updateMany({
+        data: { revocationReason: 'PASSWORD_RESET', revokedAt: now },
+        where: { revokedAt: null, userId: token.userId },
+      });
+      await transaction.devicePushToken.updateMany({
+        data: { disabledAt: now, status: PushTokenStatus.DISABLED },
+        where: { userId: token.userId, status: PushTokenStatus.ACTIVE },
+      });
+    });
+    await this.events.record('STAFF_PASSWORD_RESET_COMPLETED', { ...metadata, userId });
+  }
+
   async refresh(rawToken: string, metadata: RequestMetadata): Promise<AuthenticationResult> {
     const tokenId = this.tokens.parseOpaqueId(rawToken);
     if (!tokenId) throw this.invalidRefresh();
@@ -278,6 +676,26 @@ export class AuthService {
     if (!session) return;
     await this.revokeFamily(sessionId, 'USER_LOGOUT');
     await this.events.record('SESSION_REVOKED', { ...metadata, sessionId, userId: session.userId });
+  }
+
+  async createSessionForActivatedStaff(
+    userId: string,
+    device: DeviceDto,
+    metadata: RequestMetadata,
+  ): Promise<AuthenticationResult> {
+    const user = await this.database.client.user.findUniqueOrThrow({
+      include: sessionUserInclude,
+      where: { id: userId },
+    });
+    this.assertAccountActive(user.status);
+    return this.createSession(user, device, metadata);
+  }
+
+  recordStaffSetupEvent(
+    type: string,
+    metadata: RequestMetadata & { readonly userId?: string; readonly data?: Prisma.InputJsonValue },
+  ) {
+    return this.events.record(type, metadata);
   }
 
   async requestEmailVerification(userId: string, metadata: RequestMetadata): Promise<void> {
@@ -487,6 +905,7 @@ export class AuthService {
       include: { user: { include: sessionUserInclude } },
     });
     if (!challenge || challenge.consumedAt) throw this.invalidOtp();
+    if (!challenge.user) throw this.invalidOtp();
     if (challenge.expiresAt <= new Date()) {
       throw new ApplicationException(
         IdentityErrorCode.OTP_EXPIRED,
@@ -506,7 +925,7 @@ export class AuthService {
         data: { attemptCount: { increment: 1 } },
         where: { id: challenge.id },
       });
-      await this.events.record('OTP_FAILED', { ...metadata, userId: challenge.userId });
+      await this.events.record('OTP_FAILED', { ...metadata, userId: challenge.user.id });
       throw this.invalidOtp();
     }
     await this.database.client.otpChallenge.update({
@@ -516,7 +935,7 @@ export class AuthService {
     if (challenge.purpose === OtpPurpose.MOBILE_VERIFICATION) {
       await this.database.client.user.update({
         data: { mobileVerifiedAt: new Date() },
-        where: { id: challenge.userId },
+        where: { id: challenge.user.id },
       });
       return { verified: true };
     }
@@ -567,6 +986,7 @@ export class AuthService {
     user: Prisma.UserGetPayload<{ include: typeof sessionUserInclude }>,
     device: DeviceDto,
     metadata: RequestMetadata,
+    client: Prisma.TransactionClient | DatabaseService['client'] = this.database.client,
   ): Promise<AuthenticationResult> {
     const sessionId = randomUUID();
     const refreshId = randomUUID();
@@ -575,7 +995,7 @@ export class AuthService {
       Date.now() +
         this.configuration.getOrThrow('REFRESH_TOKEN_TTL_DAYS', { infer: true }) * 86_400_000,
     );
-    await this.database.client.session.create({
+    await client.session.create({
       data: {
         ...(device.appVersion ? { appVersion: device.appVersion } : {}),
         ...(device.deviceIdentifier ? { deviceIdentifier: device.deviceIdentifier } : {}),
@@ -601,6 +1021,49 @@ export class AuthService {
       sessionId,
       user: this.publicUser(user),
     };
+  }
+
+  private staffWorkspace(
+    user: Prisma.UserGetPayload<{ include: typeof sessionUserInclude }>,
+    membershipId: string,
+  ) {
+    const workspace = this.publicUser(user).ownerWorkspaces.find(
+      (candidate) => 'membershipId' in candidate && candidate.membershipId === membershipId,
+    );
+    if (!workspace || workspace.capacity === 'OWNER') throw this.staffAccessLoginFailed();
+    return workspace;
+  }
+
+  private async failedStaffAccessLogin(metadata: RequestMetadata, handle: string) {
+    await this.events.record('STAFF_ACCESS_LOGIN_FAILED', {
+      ...metadata,
+      data: { handleFingerprint: this.crypto.hashIdentifier(handle).slice(0, 12) },
+    });
+    return this.staffAccessLoginFailed();
+  }
+
+  private staffAccessLoginFailed() {
+    return new ApplicationException(
+      'STAFF_ACCESS_LOGIN_FAILED',
+      'The mobile number, password, or Staff access is unavailable.',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+
+  private staffResetRequested(challengeId: string) {
+    return {
+      challengeId,
+      message:
+        'If the account is eligible, we sent a verification code to the Staff mobile number.',
+    };
+  }
+
+  private invalidStaffReset() {
+    return new ApplicationException(
+      'STAFF_PASSWORD_RESET_INVALID',
+      'The verification or password reset request is invalid or expired.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
   }
 
   private async issueEmailToken(userId: string, email: string, type: AuthTokenType): Promise<void> {

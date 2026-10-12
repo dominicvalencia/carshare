@@ -31,7 +31,7 @@ describe('Phase 4 permission-aware Owner shell', () => {
     expect(navigation).toContain('<OwnerTabs.Screen name="More">');
   });
 
-  it('uses workspace-scoped delegated vehicle reads and removes write controls', () => {
+  it('uses workspace-scoped delegated vehicle reads and gates creation by permission', () => {
     expect(vehicles).toContain('DelegatedVehiclesScreen');
     expect(vehicles).toContain('/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles');
     expect(vehicles).toContain(
@@ -42,8 +42,13 @@ describe('Phase 4 permission-aware Owner shell', () => {
       vehicles.indexOf('function DelegatedVehiclesScreen'),
       vehicles.indexOf('function FleetVehicleCard'),
     );
-    expect(delegated).not.toContain('Add vehicle');
+    expect(delegated).toContain("hasOwnerPermission(ownerWorkspace, 'vehicles.create')");
+    expect(delegated).toContain("ownerWorkspace.capacity === 'MANAGER'");
+    expect(delegated).toContain("ownerWorkspace.membershipStatus === 'ACTIVE'");
+    expect(delegated).toContain("'Add vehicle'");
     expect(delegated).not.toContain('Manage vehicle');
+    expect(delegated).toContain('You can view vehicles in this workspace.');
+    expect(delegated).not.toContain('Read-only access for this Owner workspace.');
   });
 
   it('shows Staff only with permission and hides Owner financial/settings rows', () => {

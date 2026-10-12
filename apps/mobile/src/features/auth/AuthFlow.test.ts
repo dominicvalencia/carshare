@@ -117,6 +117,16 @@ describe('Welcome and native splash presentation', () => {
     expect(auth).toContain('keyboardShouldPersistTaps="handled"');
   });
 
+  it('keeps invitation auth inside the existing credential composition', () => {
+    expect(auth).toContain('invitationContext={invitationContext}');
+    expect(auth).toContain('<InvitationContextCard context={invitationContext} />');
+    expect(auth).toContain("mode === 'register' && invitationContext ? 'Set up your account'");
+    expect(auth).toContain("onBackToContext && (screen === 'login' || screen === 'register')");
+    expect(auth.indexOf('<Text accessibilityRole="header" style={styles.authTitle}>')).toBeLessThan(
+      auth.indexOf('<InvitationContextCard context={invitationContext} />'),
+    );
+  });
+
   it('provides independent accessible visibility controls for both registration passwords', () => {
     expect(auth).toContain("passwordVisible ? 'Hide password' : 'Show password'");
     expect(auth).toContain(

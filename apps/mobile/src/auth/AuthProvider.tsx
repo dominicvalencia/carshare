@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { apiClient } from './api-client';
-import type { AuthUser } from './auth.types';
+import type { AuthTokens, AuthUser } from './auth.types';
 import { tokenStorage } from './token-storage';
 import { appLockStorage } from '../app-lock/storage';
 import { activeRoleStorage } from '../navigation/active-role-storage';
@@ -23,6 +23,7 @@ interface AuthContextValue {
   readonly user: AuthUser | null;
   readonly renterOnboardingPending: boolean;
   login(identifier: string, password: string): Promise<void>;
+  acceptAuthentication(result: AuthTokens): Promise<void>;
   register(email: string, password: string): Promise<void>;
   logout(): Promise<void>;
   refreshIdentity(): Promise<void>;
@@ -91,6 +92,10 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       user?.roles.includes('RENTER') && !user.profile?.renterOnboardingCompletedAt,
     );
     return {
+      acceptAuthentication: async (result) => {
+        sessionGeneration.current += 1;
+        await accept(result);
+      },
       booting,
       renterOnboardingPending,
       user,

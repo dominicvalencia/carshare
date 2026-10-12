@@ -24,14 +24,14 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import { apiClient } from '../../auth/api-client';
+import { ApiError, apiClient } from '../../auth/api-client';
 import type { OwnerWorkspace } from '../../auth/auth.types';
 import { hasOwnerPermission } from '../../navigation/owner-workspace';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateTimeField } from '../../ui/DateTimeField';
 import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
 import { ensureCameraPermission } from '../../ui/camera-permission';
-import { domainLabel, money, vehicleStatusLabel } from '../../ui/format';
+import { dateTimeLabel, domainLabel, money, vehicleStatusLabel } from '../../ui/format';
 import { VehicleImage } from '../../ui/VehicleImage';
 import { SearchableReferenceSelector } from '../../ui/SearchableReferenceSelector';
 import { LocationPicker } from '../../location/LocationPicker';
@@ -148,6 +148,7 @@ interface AvailabilityToday {
 }
 interface Vehicle {
   readonly id: string;
+  readonly revision: number;
   readonly status: string;
   readonly operationalStatus: string;
   readonly availabilityToday?: AvailabilityToday;
@@ -162,6 +163,7 @@ interface Vehicle {
   readonly color: string | null;
   readonly plateNumber: string | null;
   readonly description: string | null;
+  readonly rentalRequirements: string | null;
   readonly categoryId: string | null;
   readonly category?: Reference | null;
   readonly powertrain: string | null;
@@ -187,6 +189,14 @@ interface Vehicle {
   } | null;
   readonly policyVersions: Policy[];
   readonly knownIssues: VehicleKnownIssue[];
+  readonly ownerApproval: {
+    readonly id: string;
+    readonly status: 'PENDING' | 'CHANGES_REQUIRED' | 'APPROVED' | 'WITHDRAWN';
+    readonly reviewReason: string | null;
+    readonly submittedAt: string;
+    readonly submittedByDisplayName: string;
+    readonly submittedRevision: number;
+  } | null;
 }
 
 interface VehicleKnownIssue {
@@ -307,17 +317,26 @@ const documentGuidance: Record<string, string> = {
   OWNERSHIP_AUTHORIZATION: 'Add this if ownership or permission needs supporting evidence.',
 };
 
-export function VehiclesScreen({ ownerWorkspace }: { readonly ownerWorkspace?: OwnerWorkspace }) {
+export function VehiclesScreen({
+  initialVehicleId,
+  ownerWorkspace,
+}: {
+  readonly initialVehicleId?: string;
+  readonly ownerWorkspace?: OwnerWorkspace;
+}) {
   return ownerWorkspace && ownerWorkspace.capacity !== 'OWNER' ? (
-    <DelegatedVehiclesScreen ownerWorkspace={ownerWorkspace} />
+    <DelegatedVehiclesScreen
+      {...(initialVehicleId ? { initialVehicleId } : {})}
+      ownerWorkspace={ownerWorkspace}
+    />
   ) : (
-    <ActualOwnerVehiclesScreen />
+    <ActualOwnerVehiclesScreen {...(initialVehicleId ? { initialVehicleId } : {})} />
   );
 }
 
-function ActualOwnerVehiclesScreen() {
+function ActualOwnerVehiclesScreen({ initialVehicleId }: { readonly initialVehicleId?: string }) {
   const client = useQueryClient();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialVehicleId ?? null);
   const [editing, setEditing] = useState(false);
   const [editStep, setEditStep] = useState<number | undefined>();
   const vehicles = useQuery({
@@ -412,15 +431,87 @@ function ActualOwnerVehiclesScreen() {
   );
 }
 
-function DelegatedVehiclesScreen({ ownerWorkspace }: { readonly ownerWorkspace: OwnerWorkspace }) {
-  const [selected, setSelected] = useState<Vehicle | null>(null);
+function DelegatedVehiclesScreen({
+  initialVehicleId,
+  ownerWorkspace,
+}: {
+  readonly initialVehicleId?: string;
+  readonly ownerWorkspace: OwnerWorkspace;
+}) {
+  const client = useQueryClient();
+  const [selectedId, setSelectedId] = useState<string | null>(initialVehicleId ?? null);
+  const [editing, setEditing] = useState(false);
+  const [operationalEditing, setOperationalEditing] = useState(false);
   const [managingAvailability, setManagingAvailability] = useState(false);
+  const canCreate =
+    ownerWorkspace.capacity === 'MANAGER' &&
+    ownerWorkspace.membershipStatus === 'ACTIVE' &&
+    hasOwnerPermission(ownerWorkspace, 'vehicles.create');
+  const canEditOperational =
+    ownerWorkspace.capacity === 'MANAGER' &&
+    ownerWorkspace.membershipStatus === 'ACTIVE' &&
+    hasOwnerPermission(ownerWorkspace, 'vehicles.update_operational_fields');
+  const workspaceBase = `/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles`;
   const vehicles = useQuery({
     queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicles'],
     queryFn: () =>
       apiClient.request<Vehicle[]>(`/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles`),
+    refetchInterval: (query) =>
+      query.state.data?.some(
+        (vehicle) =>
+          vehicle.ownerApproval?.status === 'PENDING' || vehicle.status === 'PENDING_APPROVAL',
+      )
+        ? 5_000
+        : false,
+    refetchOnWindowFocus: true,
     retry: false,
   });
+  const selected = vehicles.data?.find(({ id }) => id === selectedId) ?? null;
+  const create = useMutation({
+    mutationFn: () => apiClient.request<Vehicle>(workspaceBase, { body: '{}', method: 'POST' }),
+    onSuccess: (vehicle) => {
+      setSelectedId(vehicle.id);
+      setEditing(true);
+      void vehicles.refetch();
+    },
+  });
+  const withdraw = useMutation({
+    mutationFn: (vehicleId: string) =>
+      apiClient.request(`${workspaceBase}/${vehicleId}/owner-approval-submission`, {
+        method: 'DELETE',
+      }),
+    onSuccess: async () => {
+      await vehicles.refetch();
+      setEditing(true);
+    },
+  });
+  if (selectedId && editing)
+    return (
+      <VehicleEditor
+        delegated
+        endpointBase={`${workspaceBase}/${selectedId}`}
+        id={selectedId}
+        referenceBase={`${workspaceBase}/reference-data`}
+        onClose={() => {
+          setEditing(false);
+          void client.invalidateQueries({
+            queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicles'],
+          });
+        }}
+      />
+    );
+  if (selected && operationalEditing)
+    return (
+      <ManagerOperationalVehicleEditor
+        endpointBase={`${workspaceBase}/${selected.id}`}
+        ownerProfileId={ownerWorkspace.ownerProfileId}
+        vehicle={selected}
+        onClose={() => {
+          setOperationalEditing(false);
+          void vehicles.refetch();
+        }}
+      />
+    );
   if (selected)
     return (
       <SafeAreaView edges={['top']} style={styles.flex}>
@@ -428,7 +519,7 @@ function DelegatedVehiclesScreen({ ownerWorkspace }: { readonly ownerWorkspace: 
           <BackControl
             label={managingAvailability ? 'Vehicle detail' : 'Vehicles'}
             onPress={() =>
-              managingAvailability ? setManagingAvailability(false) : setSelected(null)
+              managingAvailability ? setManagingAvailability(false) : setSelectedId(null)
             }
           />
           {managingAvailability ? (
@@ -445,6 +536,59 @@ function DelegatedVehiclesScreen({ ownerWorkspace }: { readonly ownerWorkspace: 
               <Text style={styles.title}>
                 {[selected.make, selected.model].filter(Boolean).join(' ')}
               </Text>
+              <StatusBadge
+                label={delegatedApprovalLabel(selected)}
+                tone={delegatedApprovalTone(selected)}
+              />
+              {selected.ownerApproval?.status === 'PENDING' ? (
+                <Section title="Awaiting Owner approval">
+                  <Text style={styles.body}>
+                    Waiting for the Owner to review this vehicle before it can be submitted to
+                    CarShare.
+                  </Text>
+                  <Button
+                    label={withdraw.isPending ? 'Withdrawing…' : 'Withdraw submission'}
+                    variant="secondary"
+                    disabled={withdraw.isPending}
+                    onPress={() =>
+                      Alert.alert(
+                        'Withdraw submission?',
+                        'This will return the vehicle to draft so it can be edited before submitting again.',
+                        [
+                          { style: 'cancel', text: 'Keep waiting' },
+                          {
+                            style: 'destructive',
+                            text: 'Withdraw',
+                            onPress: () => withdraw.mutate(selected.id),
+                          },
+                        ],
+                      )
+                    }
+                  />
+                </Section>
+              ) : selected.ownerApproval?.status === 'CHANGES_REQUIRED' &&
+                selected.status === 'DRAFT' ? (
+                <Section title="Owner feedback">
+                  <Text style={styles.body}>
+                    {selected.ownerApproval.reviewReason ?? 'The Owner requested changes.'}
+                  </Text>
+                  <Button label="Continue editing" onPress={() => setEditing(true)} />
+                </Section>
+              ) : selected.status === 'DRAFT' && canCreate ? (
+                <Button label="Continue setup" onPress={() => setEditing(true)} />
+              ) : null}
+              {withdraw.error ? <Text style={styles.error}>{withdraw.error.message}</Text> : null}
+              {selected.status === 'APPROVED' && canEditOperational ? (
+                <View style={styles.vehicleEditAction}>
+                  <DetailAction
+                    label="Edit vehicle settings"
+                    onPress={() => setOperationalEditing(true)}
+                  />
+                  <Text style={styles.vehicleDetailHelper}>
+                    You can update day-to-day vehicle settings for this workspace.
+                  </Text>
+                </View>
+              ) : null}
               <VehicleDetailSection
                 action={
                   hasOwnerPermission(ownerWorkspace, 'availability.view') ? (
@@ -474,8 +618,23 @@ function DelegatedVehiclesScreen({ ownerWorkspace }: { readonly ownerWorkspace: 
         <View style={styles.fleetHeader}>
           <Text style={styles.eyebrow}>OWNER FLEET</Text>
           <Text style={styles.fleetTitle}>Vehicles</Text>
-          <Text style={styles.fleetHelper}>Read-only access for this Owner workspace.</Text>
+          <Text style={styles.fleetHelper}>
+            {canCreate
+              ? 'Create and manage vehicle drafts for this Owner workspace.'
+              : 'You can view vehicles in this workspace.'}
+          </Text>
         </View>
+        {canCreate ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={create.isPending}
+            onPress={() => create.mutate()}
+            style={[styles.primaryButton, styles.fleetAddAction]}
+          >
+            <Text style={styles.primaryText}>{create.isPending ? 'Creating…' : 'Add vehicle'}</Text>
+          </Pressable>
+        ) : null}
+        {create.error ? <Text style={styles.error}>{create.error.message}</Text> : null}
         {vehicles.isPending ? <StateView loading title="Loading assigned vehicles…" /> : null}
         {vehicles.isError ? (
           <StateView
@@ -490,7 +649,7 @@ function DelegatedVehiclesScreen({ ownerWorkspace }: { readonly ownerWorkspace: 
           <DelegatedVehicleCard
             key={vehicle.id}
             vehicle={vehicle}
-            onPress={() => setSelected(vehicle)}
+            onPress={() => setSelectedId(vehicle.id)}
           />
         ))}
         {!vehicles.isPending && !vehicles.isError && vehicles.data?.length === 0 ? (
@@ -527,14 +686,468 @@ function DelegatedVehicleCard({
           {title || 'Vehicle'}
         </Text>
         <StatusBadge
-          label={vehicleStatusLabel(vehicle.status)}
-          tone={vehicleTone(vehicle.status)}
+          label={delegatedApprovalLabel(vehicle)}
+          tone={delegatedApprovalTone(vehicle)}
         />
         {metadata ? <Text style={styles.fleetMetadata}>{metadata}</Text> : null}
-        <Text style={styles.fleetMarketplaceState}>Read only</Text>
+        <Text style={styles.fleetMarketplaceState}>
+          {vehicle.ownerApproval?.status === 'PENDING'
+            ? 'Waiting for Owner review'
+            : vehicle.ownerApproval?.status === 'CHANGES_REQUIRED' && vehicle.status === 'DRAFT'
+              ? 'Owner feedback available'
+              : vehicle.status === 'DRAFT'
+                ? 'Setup in progress'
+                : 'Read only'}
+        </Text>
       </View>
     </Pressable>
   );
+}
+
+function ManagerOperationalVehicleEditor({
+  endpointBase,
+  ownerProfileId,
+  vehicle,
+  onClose,
+}: {
+  readonly endpointBase: string;
+  readonly ownerProfileId: string;
+  readonly vehicle: Vehicle;
+  readonly onClose: () => void;
+}) {
+  const current = vehicle.policyVersions[0];
+  const [description, setDescription] = useState(vehicle.description ?? '');
+  const [rentalRequirements, setRentalRequirements] = useState(vehicle.rentalRequirements ?? '');
+  const [selectedFeatures, setSelectedFeatures] = useState(
+    vehicle.features.map(({ featureId }) => featureId),
+  );
+  const [minimumRentalDays, setMinimumRentalDays] = useState(
+    String(current?.minimumRentalDays ?? 1),
+  );
+  const [maximumRentalDays, setMaximumRentalDays] = useState(
+    String(current?.maximumRentalDays ?? 30),
+  );
+  const [includedKilometers, setIncludedKilometers] = useState(
+    String(current?.includedKilometersPerDay ?? 150),
+  );
+  const [limitedMileage, setLimitedMileage] = useState(current?.mileagePolicy !== 'UNLIMITED');
+  const [turnaround, setTurnaround] = useState(current?.turnaroundMinutes ?? 120);
+  const [availabilityPolicy, setAvailabilityPolicy] = useState(
+    current?.availabilityPolicy ?? 'EVERY_DAY',
+  );
+  const [availableDays, setAvailableDays] = useState({
+    friday: current?.friday ?? true,
+    monday: current?.monday ?? true,
+    saturday: current?.saturday ?? true,
+    sunday: current?.sunday ?? true,
+    thursday: current?.thursday ?? true,
+    tuesday: current?.tuesday ?? true,
+    wednesday: current?.wednesday ?? true,
+  });
+  const [fuelReturnPolicy, setFuelReturnPolicy] = useState(
+    current?.fuelReturnPolicy ?? 'SAME_TO_SAME',
+  );
+  const [fuelTolerance, setFuelTolerance] = useState(String(current?.fuelTolerancePercent ?? 5));
+  const [evReturnPolicy, setEvReturnPolicy] = useState(current?.evReturnPolicy ?? 'SAME_TO_SAME');
+  const [evRequiredPercentage, setEvRequiredPercentage] = useState(
+    String(current?.evRequiredPercentage ?? 80),
+  );
+  const [evTolerance, setEvTolerance] = useState(String(current?.evTolerancePercent ?? 5));
+  const [renterPickup, setRenterPickup] = useState(current?.supportsRenterPickup ?? true);
+  const [ownerDelivery, setOwnerDelivery] = useState(current?.supportsOwnerDelivery ?? false);
+  const [renterReturn, setRenterReturn] = useState(current?.supportsRenterReturn ?? true);
+  const [ownerCollection, setOwnerCollection] = useState(current?.supportsOwnerCollection ?? false);
+  const [serviceRadiusKm, setServiceRadiusKm] = useState(
+    String((current?.fulfillmentServiceRadiusMeters ?? 25_000) / 1000),
+  );
+  const [minimumNotice, setMinimumNotice] = useState(
+    String(current?.fulfillmentMinimumNoticeMinutes ?? 0),
+  );
+  const [operationalStatus, setOperationalStatus] = useState(vehicle.operationalStatus);
+  const [error, setError] = useState('');
+  const features = useQuery({
+    queryKey: ['owner-workspace', ownerProfileId, 'operational-features'],
+    queryFn: () =>
+      apiClient.request<Reference[]>(
+        `/owner/workspaces/${ownerProfileId}/vehicles/operational-reference-data/features`,
+      ),
+  });
+  const saveDetails = useMutation({
+    mutationFn: () =>
+      apiClient.request<Vehicle>(`${endpointBase}/operational-details`, {
+        body: JSON.stringify({
+          description,
+          expectedRevision: vehicle.revision,
+          rentalRequirements,
+        }),
+        method: 'PATCH',
+      }),
+    onError: (caught) => setError(managerOperationalEditError(caught)),
+    onSuccess: onClose,
+  });
+  const saveFeatures = useMutation({
+    mutationFn: () =>
+      apiClient.request<Vehicle>(`${endpointBase}/operational-features`, {
+        body: JSON.stringify({ expectedRevision: vehicle.revision, featureIds: selectedFeatures }),
+        method: 'PUT',
+      }),
+    onError: (caught) => setError(managerOperationalEditError(caught)),
+    onSuccess: onClose,
+  });
+  const savePolicy = useMutation({
+    mutationFn: () =>
+      apiClient.request<Vehicle>(`${endpointBase}/operational-policy`, {
+        body: JSON.stringify({
+          availabilityPolicy,
+          expectedRevision: vehicle.revision,
+          friday: availableDays.friday,
+          ...(vehicle.powertrain === 'BATTERY_ELECTRIC'
+            ? {
+                ...(evReturnPolicy === 'MINIMUM_PERCENTAGE'
+                  ? { evRequiredPercentage: Number(evRequiredPercentage) }
+                  : {}),
+                evReturnPolicy,
+                evTolerancePercent: Number(evTolerance),
+              }
+            : {
+                fuelReturnPolicy,
+                fuelTolerancePercent: Number(fuelTolerance),
+              }),
+          fulfillmentMinimumNoticeMinutes: Number(minimumNotice),
+          ...(ownerDelivery || ownerCollection
+            ? { fulfillmentServiceRadiusMeters: Math.round(Number(serviceRadiusKm) * 1000) }
+            : {}),
+          ...(limitedMileage ? { includedKilometersPerDay: Number(includedKilometers) } : {}),
+          maximumRentalDays: Number(maximumRentalDays),
+          mileagePolicy: limitedMileage ? 'LIMITED' : 'UNLIMITED',
+          minimumRentalDays: Number(minimumRentalDays),
+          monday: availableDays.monday,
+          saturday: availableDays.saturday,
+          sunday: availableDays.sunday,
+          supportsOwnerCollection: ownerCollection,
+          supportsOwnerDelivery: ownerDelivery,
+          supportsRenterPickup: renterPickup,
+          supportsRenterReturn: renterReturn,
+          thursday: availableDays.thursday,
+          turnaroundMinutes: turnaround,
+          tuesday: availableDays.tuesday,
+          wednesday: availableDays.wednesday,
+        }),
+        method: 'POST',
+      }),
+    onError: (caught) => setError(managerOperationalEditError(caught)),
+    onSuccess: onClose,
+  });
+  const saveStatus = useMutation({
+    mutationFn: () =>
+      apiClient.request<Vehicle>(`${endpointBase}/operational-status`, {
+        body: JSON.stringify({ expectedRevision: vehicle.revision, status: operationalStatus }),
+        method: 'PATCH',
+      }),
+    onError: (caught) => setError(managerOperationalEditError(caught)),
+    onSuccess: onClose,
+  });
+  return (
+    <SafeAreaView edges={['top']} style={styles.flex}>
+      <ScrollView
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        contentContainerStyle={styles.page}
+        keyboardDismissMode={formKeyboardDismissMode}
+        keyboardShouldPersistTaps="handled"
+      >
+        <BackControl label="Vehicle detail" onPress={onClose} />
+        <Text style={styles.title}>Edit vehicle settings</Text>
+        <Text style={styles.body}>Update day-to-day settings for this vehicle.</Text>
+        <Section title="Description & requirements">
+          <Field label="Description" multiline value={description} onChange={setDescription} />
+          <Field
+            label="Rental requirements"
+            multiline
+            value={rentalRequirements}
+            onChange={setRentalRequirements}
+          />
+          <Button
+            disabled={saveDetails.isPending}
+            label={saveDetails.isPending ? 'Saving…' : 'Save description'}
+            onPress={() => {
+              setError('');
+              saveDetails.mutate();
+            }}
+          />
+          <PolicyOptionGroup
+            exclusive
+            label="Weekly availability"
+            options={[
+              {
+                label: 'Every day',
+                onPress: () => setAvailabilityPolicy('EVERY_DAY'),
+                selected: availabilityPolicy === 'EVERY_DAY',
+              },
+              {
+                label: 'Choose days',
+                onPress: () => setAvailabilityPolicy('WEEKLY'),
+                selected: availabilityPolicy === 'WEEKLY',
+              },
+            ]}
+          />
+          {availabilityPolicy === 'WEEKLY' ? (
+            <View style={styles.policyOptionGrid}>
+              {(
+                [
+                  ['monday', 'Mon'],
+                  ['tuesday', 'Tue'],
+                  ['wednesday', 'Wed'],
+                  ['thursday', 'Thu'],
+                  ['friday', 'Fri'],
+                  ['saturday', 'Sat'],
+                  ['sunday', 'Sun'],
+                ] as const
+              ).map(([day, label]) => (
+                <CompactPolicyChoice
+                  key={day}
+                  label={label}
+                  selected={availableDays[day]}
+                  onPress={() => setAvailableDays({ ...availableDays, [day]: !availableDays[day] })}
+                />
+              ))}
+            </View>
+          ) : null}
+        </Section>
+        <Section title="Features">
+          {features.isPending ? <StateView loading title="Loading features…" /> : null}
+          <View style={styles.featureChips}>
+            {features.data?.map((feature) => {
+              const selected = selectedFeatures.includes(feature.id);
+              return (
+                <FeatureChip
+                  key={feature.id}
+                  label={feature.name}
+                  selected={selected}
+                  onPress={() =>
+                    setSelectedFeatures(
+                      selected
+                        ? selectedFeatures.filter((id) => id !== feature.id)
+                        : [...selectedFeatures, feature.id],
+                    )
+                  }
+                />
+              );
+            })}
+          </View>
+          <Button
+            disabled={saveFeatures.isPending || features.isPending}
+            label={saveFeatures.isPending ? 'Saving…' : 'Save features'}
+            onPress={() => {
+              setError('');
+              saveFeatures.mutate();
+            }}
+          />
+        </Section>
+        <Section title="Rental settings">
+          <PolicyOptionGroup
+            exclusive
+            label="Operational availability"
+            options={[
+              {
+                label: 'Available',
+                onPress: () => setOperationalStatus('AVAILABLE'),
+                selected: operationalStatus === 'AVAILABLE',
+              },
+              {
+                label: 'Unavailable',
+                onPress: () => setOperationalStatus('TEMPORARILY_UNAVAILABLE'),
+                selected: operationalStatus === 'TEMPORARILY_UNAVAILABLE',
+              },
+            ]}
+          />
+          <Button
+            disabled={saveStatus.isPending}
+            label={saveStatus.isPending ? 'Saving…' : 'Save availability status'}
+            onPress={() => {
+              setError('');
+              saveStatus.mutate();
+            }}
+          />
+          <View style={styles.compactFieldGrid}>
+            <PolicyNumberField
+              accessibilityLabel="Minimum rental days"
+              label="Minimum days"
+              value={minimumRentalDays}
+              onChange={setMinimumRentalDays}
+            />
+            <PolicyNumberField
+              accessibilityLabel="Maximum rental days"
+              label="Maximum days"
+              value={maximumRentalDays}
+              onChange={setMaximumRentalDays}
+            />
+          </View>
+          <PolicyOptionGroup
+            exclusive
+            label="Mileage allowance"
+            options={[
+              {
+                label: 'Limited',
+                onPress: () => setLimitedMileage(true),
+                selected: limitedMileage,
+              },
+              {
+                label: 'Unlimited',
+                onPress: () => setLimitedMileage(false),
+                selected: !limitedMileage,
+              },
+            ]}
+          />
+          {limitedMileage ? (
+            <PolicyNumberField
+              accessibilityLabel="Included kilometers per day"
+              label="Included km/day"
+              value={includedKilometers}
+              onChange={setIncludedKilometers}
+            />
+          ) : null}
+          <PolicyOptionGroup
+            label="Start of rental"
+            options={[
+              {
+                label: 'Renter pickup',
+                onPress: () => setRenterPickup(!renterPickup),
+                selected: renterPickup,
+              },
+              {
+                label: 'Owner delivery',
+                onPress: () => setOwnerDelivery(!ownerDelivery),
+                selected: ownerDelivery,
+              },
+            ]}
+          />
+          <PolicyOptionGroup
+            label="End of rental"
+            options={[
+              {
+                label: 'Renter return',
+                onPress: () => setRenterReturn(!renterReturn),
+                selected: renterReturn,
+              },
+              {
+                label: 'Owner collection',
+                onPress: () => setOwnerCollection(!ownerCollection),
+                selected: ownerCollection,
+              },
+            ]}
+          />
+          {ownerDelivery || ownerCollection ? (
+            <View style={styles.compactFieldGrid}>
+              <PolicyNumberField
+                accessibilityLabel="Service radius in kilometers"
+                label="Service radius (km)"
+                value={serviceRadiusKm}
+                onChange={setServiceRadiusKm}
+              />
+              <PolicyNumberField
+                accessibilityLabel="Minimum booking notice in minutes"
+                label="Minimum notice (minutes)"
+                value={minimumNotice}
+                onChange={setMinimumNotice}
+              />
+            </View>
+          ) : null}
+          <Text style={styles.compactFieldLabel}>Turnaround</Text>
+          <View style={styles.policyOptionGrid}>
+            {[120, 240, 360, 720, 1440].map((minutes) => (
+              <CompactPolicyChoice
+                key={minutes}
+                label={`${minutes / 60} hr`}
+                selected={turnaround === minutes}
+                onPress={() => setTurnaround(minutes)}
+              />
+            ))}
+          </View>
+          <PolicyOptionGroup
+            exclusive
+            label={
+              vehicle.powertrain === 'BATTERY_ELECTRIC' ? 'EV return level' : 'Fuel return level'
+            }
+            options={
+              vehicle.powertrain === 'BATTERY_ELECTRIC'
+                ? [
+                    {
+                      label: 'Same as pickup',
+                      onPress: () => setEvReturnPolicy('SAME_TO_SAME'),
+                      selected: evReturnPolicy === 'SAME_TO_SAME',
+                    },
+                    {
+                      label: 'Minimum level',
+                      onPress: () => setEvReturnPolicy('MINIMUM_PERCENTAGE'),
+                      selected: evReturnPolicy === 'MINIMUM_PERCENTAGE',
+                    },
+                  ]
+                : [
+                    {
+                      label: 'Same as pickup',
+                      onPress: () => setFuelReturnPolicy('SAME_TO_SAME'),
+                      selected: fuelReturnPolicy === 'SAME_TO_SAME',
+                    },
+                    {
+                      label: 'Full tank',
+                      onPress: () => setFuelReturnPolicy('FULL_TO_FULL'),
+                      selected: fuelReturnPolicy === 'FULL_TO_FULL',
+                    },
+                  ]
+            }
+          />
+          {vehicle.powertrain === 'BATTERY_ELECTRIC' ? (
+            <View style={styles.compactFieldGrid}>
+              {evReturnPolicy === 'MINIMUM_PERCENTAGE' ? (
+                <PolicyNumberField
+                  accessibilityLabel="Required EV return percentage"
+                  label="Required charge %"
+                  value={evRequiredPercentage}
+                  onChange={setEvRequiredPercentage}
+                />
+              ) : null}
+              <PolicyNumberField
+                accessibilityLabel="EV return tolerance percentage"
+                label="Tolerance %"
+                value={evTolerance}
+                onChange={setEvTolerance}
+              />
+            </View>
+          ) : (
+            <PolicyNumberField
+              accessibilityLabel="Fuel return tolerance percentage"
+              label="Tolerance %"
+              value={fuelTolerance}
+              onChange={setFuelTolerance}
+            />
+          )}
+          <Button
+            disabled={savePolicy.isPending || !current}
+            label={savePolicy.isPending ? 'Saving…' : 'Save rental settings'}
+            onPress={() => {
+              setError('');
+              savePolicy.mutate();
+            }}
+          />
+        </Section>
+        {error ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {error}
+          </Text>
+        ) : null}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function managerOperationalEditError(error: Error): string {
+  if (error instanceof ApiError && error.status === 409) {
+    return 'This vehicle changed since you opened it. Review the latest details before saving again.';
+  }
+  if (error instanceof ApiError && error.status === 403) {
+    return 'You no longer have permission to update this vehicle.';
+  }
+  return 'We couldn’t save these changes. Check your connection and try again.';
 }
 
 function FleetVehicleCard({
@@ -552,10 +1165,17 @@ function FleetVehicleCard({
       : 'Untitled vehicle draft';
   const policy = vehicle.policyVersions[0];
   const metadata = [vehicle.category?.name, vehicle.location?.city].filter(Boolean).join(' · ');
-  const actionLabel = draft ? 'Continue setup' : 'Manage vehicle';
+  const awaitingOwnerApproval = vehicle.ownerApproval?.status === 'PENDING' && draft;
+  const actionLabel = awaitingOwnerApproval
+    ? 'Review vehicle'
+    : draft
+      ? 'Continue setup'
+      : 'Manage vehicle';
   const distinctAvailability = fleetDistinctAvailabilityLabel(vehicle.availabilityToday);
   const accessibilityDetails = draft
-    ? `${title}. Draft. Setup in progress. Continue setup.`
+    ? awaitingOwnerApproval
+      ? `${title}. Awaiting your approval. Review vehicle.`
+      : `${title}. Draft. Setup in progress. Continue setup.`
     : `${title}. Status: ${vehicleStatusLabel(vehicle.status)}. ${policy ? `${money(policy.dailyRateMinor)} per day. ` : ''}${metadata ? `${metadata}. ` : ''}Marketplace: ${ownerMarketplaceStatus(vehicle)}. Vehicle availability: ${availabilityTodayLabel(vehicle.availabilityToday)}. Manage vehicle.`;
 
   return (
@@ -575,11 +1195,19 @@ function FleetVehicleCard({
           {title}
         </Text>
         <StatusBadge
-          label={vehicleStatusLabel(vehicle.status)}
-          tone={vehicleTone(vehicle.status)}
+          label={
+            awaitingOwnerApproval ? 'Awaiting your approval' : vehicleStatusLabel(vehicle.status)
+          }
+          tone={awaitingOwnerApproval ? 'warning' : vehicleTone(vehicle.status)}
         />
         {draft ? (
-          <Text style={styles.fleetDraftState}>Setup in progress</Text>
+          <Text style={styles.fleetDraftState}>
+            {awaitingOwnerApproval
+              ? 'Review the Manager submission'
+              : vehicle.ownerApproval?.status === 'CHANGES_REQUIRED'
+                ? 'Returned to Manager'
+                : 'Setup in progress'}
+          </Text>
         ) : (
           <>
             {policy && <Text style={styles.fleetRate}>{money(policy.dailyRateMinor)} / day</Text>}
@@ -620,9 +1248,11 @@ function VehicleDetail({
   readonly onEdit: (step?: number) => void;
   readonly onRemoved: () => void;
 }) {
+  const client = useQueryClient();
   const [managingAvailability, setManagingAvailability] = useState(false);
   const [managingKnownIssues, setManagingKnownIssues] = useState(false);
   const [removalReasonOpen, setRemovalReasonOpen] = useState(false);
+  const [returnForChangesOpen, setReturnForChangesOpen] = useState(false);
   const vehicle = useQuery({
     queryKey: ['vehicle', id],
     queryFn: () => apiClient.request<Vehicle>(`/owner/vehicles/${id}`),
@@ -655,6 +1285,34 @@ function VehicleDetail({
       }),
     onSuccess: onRemoved,
   });
+  const approveOwnerSubmission = useMutation({
+    mutationFn: (requestId: string) =>
+      apiClient.request(`/owner/vehicles/${id}/owner-approval/${requestId}/approve`, {
+        method: 'POST',
+      }),
+    onSuccess: async () => {
+      await vehicle.refetch();
+      await client.invalidateQueries({ queryKey: ['vehicles'] });
+    },
+    onError: async () => {
+      await vehicle.refetch();
+    },
+  });
+  const returnOwnerSubmission = useMutation({
+    mutationFn: ({ reason, requestId }: { reason: string; requestId: string }) =>
+      apiClient.request(`/owner/vehicles/${id}/owner-approval/${requestId}/return-for-changes`, {
+        body: JSON.stringify({ reason }),
+        method: 'POST',
+      }),
+    onSuccess: async () => {
+      setReturnForChangesOpen(false);
+      await vehicle.refetch();
+      await client.invalidateQueries({ queryKey: ['vehicles'] });
+    },
+    onError: async () => {
+      await vehicle.refetch();
+    },
+  });
   if (vehicle.isPending) return <StateView loading title="Loading vehicle…" />;
   if (vehicle.isError || !vehicle.data)
     return <StateView title="Vehicle unavailable" message={vehicle.error?.message} />;
@@ -682,6 +1340,10 @@ function VehicleDetail({
   const policy = value.policyVersions[0];
   const activeDocuments = value.documents.filter(({ replacedAt }) => !replacedAt);
   const activeIssues = value.knownIssues.filter(({ status }) => status === 'ACTIVE');
+  const pendingOwnerApproval =
+    value.status === 'DRAFT' && value.ownerApproval?.status === 'PENDING'
+      ? value.ownerApproval
+      : null;
   const editable = ['DRAFT', 'CHANGES_REQUIRED', 'REJECTED'].includes(value.status);
   const discountsEnabled = Boolean(
     policy &&
@@ -711,10 +1373,35 @@ function VehicleDetail({
             {value.modelYear ?? '—'} · {value.category?.name ?? 'Vehicle'} ·{' '}
             {domainLabel(value.fuelType)}
           </Text>
-          <StatusBadge label={vehicleStatusLabel(value.status)} tone={vehicleTone(value.status)} />
+          <StatusBadge
+            label={
+              pendingOwnerApproval ? 'Awaiting your approval' : vehicleStatusLabel(value.status)
+            }
+            tone={pendingOwnerApproval ? 'warning' : vehicleTone(value.status)}
+          />
         </View>
+        {pendingOwnerApproval ? (
+          <VehicleDetailSection emphasized title="Awaiting your approval">
+            <VehicleDetailRow
+              label="Submitted by"
+              value={pendingOwnerApproval.submittedByDisplayName}
+            />
+            <VehicleDetailRow
+              label="Submitted"
+              value={dateTimeLabel(pendingOwnerApproval.submittedAt)}
+            />
+            <Text style={styles.vehicleDetailHelper}>
+              Review the complete vehicle setup before submitting it to CarShare.
+            </Text>
+          </VehicleDetailSection>
+        ) : null}
         <View style={styles.vehicleEditAction}>
           <DetailAction label="Edit vehicle" onPress={() => onEdit()} />
+          {pendingOwnerApproval ? (
+            <Text style={styles.vehicleDetailHelper}>
+              Editing this vehicle will require you to review the updated version before approving.
+            </Text>
+          ) : null}
         </View>
         <VehicleDetailSection title="Vehicle overview">
           <View style={styles.vehicleOverviewGrid}>
@@ -920,6 +1607,51 @@ function VehicleDetail({
           ) : null}
         </View>
       </ScrollView>
+      {pendingOwnerApproval ? (
+        <View style={styles.ownerApprovalFooter}>
+          <Button
+            disabled={approveOwnerSubmission.isPending || returnOwnerSubmission.isPending}
+            label={
+              approveOwnerSubmission.isPending ? 'Approving…' : 'Approve and submit for review'
+            }
+            onPress={() =>
+              Alert.alert(
+                'Approve this vehicle?',
+                'This will submit the vehicle to CarShare for review.',
+                [
+                  { style: 'cancel', text: 'Cancel' },
+                  {
+                    text: 'Approve and submit',
+                    onPress: () => approveOwnerSubmission.mutate(pendingOwnerApproval.id),
+                  },
+                ],
+              )
+            }
+          />
+          <Button
+            disabled={approveOwnerSubmission.isPending || returnOwnerSubmission.isPending}
+            label="Return for changes"
+            onPress={() => setReturnForChangesOpen(true)}
+            variant="secondary"
+          />
+          {approveOwnerSubmission.error ? (
+            <Text accessibilityRole="alert" style={styles.error}>
+              {ownerApprovalErrorMessage(approveOwnerSubmission.error)}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+      <VehicleOwnerReturnSheet
+        error={returnOwnerSubmission.error}
+        loading={returnOwnerSubmission.isPending}
+        onCancel={() => setReturnForChangesOpen(false)}
+        onSubmit={(reason) =>
+          pendingOwnerApproval
+            ? returnOwnerSubmission.mutate({ reason, requestId: pendingOwnerApproval.id })
+            : undefined
+        }
+        visible={returnForChangesOpen && Boolean(pendingOwnerApproval)}
+      />
       <VehicleRemovalReasonSheet
         onCancel={() => setRemovalReasonOpen(false)}
         onContinue={(reason, otherReason) => {
@@ -1069,6 +1801,116 @@ function VehicleRemovalReasonSheet({
             <View style={styles.removalReasonContinue}>
               <Button disabled={!reason} label="Continue" onPress={continueRemoval} />
             </View>
+          </ScrollView>
+        </Reanimated.View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+function VehicleOwnerReturnSheet({
+  error,
+  loading,
+  onCancel,
+  onSubmit,
+  visible,
+}: {
+  readonly error: Error | null;
+  readonly loading: boolean;
+  readonly onCancel: () => void;
+  readonly onSubmit: (reason: string) => void;
+  readonly visible: boolean;
+}) {
+  const [reason, setReason] = useState('');
+  const [touched, setTouched] = useState(false);
+  const [measuredContentHeight, setMeasuredContentHeight] = useState(0);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
+  const meaningful = reason.trim().length >= 10;
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight: measuredContentHeight,
+        headerHeight: 0,
+        maxSafeViewportHeight: maximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [maximumHeight, measuredContentHeight],
+  );
+  const sheetHeight = useSharedValue(Math.min(420, maximumHeight));
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
+
+  useEffect(() => {
+    if (!visible || measuredContentHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
+  }, [measuredContentHeight, measuredLayout.height, sheetHeight, visible]);
+
+  const close = () => {
+    Keyboard.dismiss();
+    setReason('');
+    setTouched(false);
+    onCancel();
+  };
+  return (
+    <Modal
+      animationType="slide"
+      onRequestClose={close}
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      transparent
+      visible={visible}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.removalReasonModalRoot}
+      >
+        <View style={styles.removalReasonBackdrop} />
+        <Reanimated.View style={[styles.removalReasonSheet, animatedSheetStyle]}>
+          <ScrollView
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+            contentContainerStyle={[
+              styles.removalReasonContent,
+              { paddingBottom: Math.max(safeArea.bottom, spacing.lg) },
+            ]}
+            keyboardShouldPersistTaps="handled"
+            onContentSizeChange={(_width, height) => setMeasuredContentHeight(height)}
+            scrollEnabled={measuredLayout.scrollEnabled}
+          >
+            <BackControl label="Cancel" onPress={close} />
+            <Text accessibilityRole="header" style={styles.removalReasonTitle}>
+              Return for changes
+            </Text>
+            <Text style={styles.vehicleDetailHelper}>
+              Tell the Manager what needs to be updated before you review it again.
+            </Text>
+            <Field
+              label="Feedback"
+              multiline
+              onChange={setReason}
+              placeholder="Describe the changes needed"
+              value={reason}
+            />
+            {touched && !meaningful ? (
+              <Text accessibilityRole="alert" style={styles.error}>
+                Enter at least 10 meaningful characters.
+              </Text>
+            ) : null}
+            {error ? (
+              <Text accessibilityRole="alert" style={styles.error}>
+                {ownerApprovalErrorMessage(error)}
+              </Text>
+            ) : null}
+            <Button
+              disabled={loading || !meaningful}
+              label={loading ? 'Returning…' : 'Return for changes'}
+              onPress={() => {
+                setTouched(true);
+                if (meaningful) onSubmit(reason.trim());
+              }}
+            />
           </ScrollView>
         </Reanimated.View>
       </KeyboardAvoidingView>
@@ -1562,19 +2404,25 @@ function DetailAction({
 }
 
 function VehicleEditor({
+  delegated = false,
+  endpointBase,
   id,
   initialStep,
+  referenceBase = '/owner/vehicle-reference-data',
   onClose,
 }: {
+  readonly delegated?: boolean;
+  readonly endpointBase?: string;
   readonly id: string;
   readonly initialStep?: number;
+  readonly referenceBase?: string;
   readonly onClose: () => void;
 }) {
   const keyboardAwareBottomPadding = useKeyboardAwareBottomPadding(spacing.xl);
   const client = useQueryClient();
   const vehicle = useQuery({
     queryKey: ['vehicle', id],
-    queryFn: () => apiClient.request<Vehicle>(`/owner/vehicles/${id}`),
+    queryFn: () => apiClient.request<Vehicle>(endpointBase ?? `/owner/vehicles/${id}`),
   });
   const [selectedStep, setSelectedStep] = useState<number | null>(initialStep ?? null);
   const [wizardError, setWizardError] = useState('');
@@ -1606,18 +2454,33 @@ function VehicleEditor({
       body?: object;
       method?: string;
     }) =>
-      apiClient.request(`/owner/vehicles/${id}${path}`, {
+      apiClient.request(`${endpointBase ?? `/owner/vehicles/${id}`}${path}`, {
         ...(body ? { body: JSON.stringify(body) } : {}),
         method,
       }),
-    onSuccess: refresh,
+    onSuccess: async (_result, variables) => {
+      await refresh();
+      if (delegated && variables.path === '/owner-approval-submission') onClose();
+    },
+    onError: async (error) => {
+      if (!delegated) return;
+      await vehicle.refetch();
+      if (error instanceof ApiError && error.status === 403) onClose();
+    },
   });
   const continueDraft = useMutation({
     mutationFn: () => {
       const completionSection = stepCompletionIds[step];
-      return completionSection ? markSectionComplete(id, completionSection) : Promise.resolve();
+      return completionSection
+        ? markSectionComplete(endpointBase ?? `/owner/vehicles/${id}`, completionSection)
+        : Promise.resolve();
     },
     onSuccess: advance,
+    onError: async (error) => {
+      if (!delegated) return;
+      await vehicle.refetch();
+      if (error instanceof ApiError && error.status === 403) onClose();
+    },
   });
   const continueEditor = () => {
     if (continueDraft.isPending) return;
@@ -1690,6 +2553,8 @@ function VehicleEditor({
         {step === 0 ? (
           <DetailsStep
             contentBottomPadding={keyboardAwareBottomPadding}
+            endpointBase={endpointBase ?? `/owner/vehicles/${id}`}
+            referenceBase={referenceBase}
             vehicle={value}
             onSaved={refresh}
             onContinue={advance}
@@ -1697,8 +2562,9 @@ function VehicleEditor({
         ) : step === 1 ? (
           <FeaturesStep
             contentBottomPadding={keyboardAwareBottomPadding}
-            id={id}
+            endpointBase={endpointBase ?? `/owner/vehicles/${id}`}
             powertrain={value.powertrain}
+            referenceBase={referenceBase}
             selectedFeatureIds={value.features.map((item) => item.featureId)}
             onPrevious={goPrevious}
             onSaved={refresh}
@@ -1706,7 +2572,7 @@ function VehicleEditor({
           />
         ) : step === 4 ? (
           <LocationStep
-            id={id}
+            endpointBase={endpointBase ?? `/owner/vehicles/${id}`}
             vehicle={value}
             onPrevious={goPrevious}
             onSaved={refresh}
@@ -1715,7 +2581,7 @@ function VehicleEditor({
         ) : step === 5 ? (
           <PolicyStep
             contentBottomPadding={keyboardAwareBottomPadding}
-            id={id}
+            endpointBase={endpointBase ?? `/owner/vehicles/${id}`}
             mode="pricing"
             vehicle={value}
             onPrevious={goPrevious}
@@ -1725,7 +2591,7 @@ function VehicleEditor({
         ) : step === 6 ? (
           <PolicyStep
             contentBottomPadding={keyboardAwareBottomPadding}
-            id={id}
+            endpointBase={endpointBase ?? `/owner/vehicles/${id}`}
             mode="usage"
             vehicle={value}
             onPrevious={goPrevious}
@@ -1743,14 +2609,29 @@ function VehicleEditor({
               keyboardDismissMode={formKeyboardDismissMode}
               keyboardShouldPersistTaps="handled"
             >
-              {step === 2 && <PhotosStep id={id} photos={value.photos} onSaved={refresh} />}
+              {step === 2 && (
+                <PhotosStep
+                  endpointBase={endpointBase ?? `/owner/vehicles/${id}`}
+                  photos={value.photos}
+                  onSaved={refresh}
+                />
+              )}
               {step === 3 && (
-                <DocumentsStep id={id} documents={value.documents} onSaved={refresh} />
+                <DocumentsStep
+                  documents={value.documents}
+                  endpointBase={endpointBase ?? `/owner/vehicles/${id}`}
+                  referenceBase={referenceBase}
+                  onSaved={refresh}
+                />
               )}
               {step === 7 && (
                 <ReviewStep vehicle={value} action={action.mutate} onEdit={setSelectedStep} />
               )}
-              {action.error && <Text style={styles.error}>{action.error.message}</Text>}
+              {action.error && (
+                <Text accessibilityRole="alert" style={styles.error}>
+                  {vehicleMutationErrorMessage(action.error)}
+                </Text>
+              )}
               {wizardError && (
                 <Text accessibilityRole="alert" style={styles.error}>
                   {wizardError}
@@ -1783,10 +2664,18 @@ function VehicleEditor({
                     accessibilityRole="button"
                     disabled={action.isPending}
                     style={[styles.primaryButton, styles.editorActionButton]}
-                    onPress={() => action.mutate({ path: '/submission' })}
+                    onPress={() =>
+                      action.mutate({
+                        path: delegated ? '/owner-approval-submission' : '/submission',
+                      })
+                    }
                   >
                     <Text style={styles.primaryText}>
-                      {action.isPending ? 'Submitting…' : 'Submit for approval'}
+                      {action.isPending
+                        ? 'Submitting…'
+                        : delegated
+                          ? 'Submit for Owner approval'
+                          : 'Submit for approval'}
                     </Text>
                   </Pressable>
                 )}
@@ -1801,22 +2690,26 @@ function VehicleEditor({
 
 function DetailsStep({
   contentBottomPadding,
+  endpointBase,
+  referenceBase,
   vehicle,
   onSaved,
   onContinue,
 }: {
   readonly contentBottomPadding: number;
+  readonly endpointBase: string;
+  readonly referenceBase: string;
   readonly vehicle: Vehicle;
   readonly onSaved: () => void;
   readonly onContinue: () => void;
 }) {
   const categories = useQuery({
     queryKey: ['vehicle-categories'],
-    queryFn: () => apiClient.request<Reference[]>('/owner/vehicle-reference-data/categories'),
+    queryFn: () => apiClient.request<Reference[]>(`${referenceBase}/categories`),
   });
   const makes = useQuery({
     queryKey: ['vehicle-makes'],
-    queryFn: () => apiClient.request<Reference[]>('/owner/vehicle-reference-data/makes'),
+    queryFn: () => apiClient.request<Reference[]>(`${referenceBase}/makes`),
   });
   const [form, setForm] = useState({
     make: vehicle.make ?? '',
@@ -1839,15 +2732,13 @@ function DetailsStep({
     enabled: Boolean(selectedMake),
     queryKey: ['vehicle-models', selectedMake?.id],
     queryFn: () =>
-      apiClient.request<Reference[]>(
-        `/owner/vehicle-reference-data/models?makeId=${selectedMake?.id ?? ''}`,
-      ),
+      apiClient.request<Reference[]>(`${referenceBase}/models?makeId=${selectedMake?.id ?? ''}`),
   });
   const listedModel = models.data?.some(({ name }) => name === form.model) ?? false;
   const [customModel, setCustomModel] = useState(Boolean(vehicle.model) && !listedModel);
   const save = useMutation({
     mutationFn: () =>
-      apiClient.request(`/owner/vehicles/${vehicle.id}`, {
+      apiClient.request(endpointBase, {
         body: JSON.stringify({
           ...form,
           categoryId: form.categoryId || undefined,
@@ -1993,16 +2884,18 @@ function DetailsStep({
 
 function FeaturesStep({
   contentBottomPadding,
-  id,
+  endpointBase,
   powertrain,
+  referenceBase,
   selectedFeatureIds,
   onPrevious,
   onSaved,
   onContinue,
 }: {
   readonly contentBottomPadding: number;
-  readonly id: string;
+  readonly endpointBase: string;
   readonly powertrain: string | null;
+  readonly referenceBase: string;
   readonly selectedFeatureIds: string[];
   readonly onPrevious: () => void;
   readonly onSaved: () => void;
@@ -2010,7 +2903,7 @@ function FeaturesStep({
 }) {
   const definitions = useQuery({
     queryKey: ['vehicle-features'],
-    queryFn: () => apiClient.request<Reference[]>('/owner/vehicle-reference-data/features'),
+    queryFn: () => apiClient.request<Reference[]>(`${referenceBase}/features`),
   });
   const [selected, setSelected] = useState<string[]>(selectedFeatureIds);
   const groupedFeatures = useMemo(() => {
@@ -2032,11 +2925,11 @@ function FeaturesStep({
   }, [definitions.data, powertrain]);
   const save = useMutation({
     mutationFn: async () => {
-      await apiClient.request(`/owner/vehicles/${id}/features`, {
+      await apiClient.request(`${endpointBase}/features`, {
         body: JSON.stringify({ featureIds: selected }),
         method: 'PUT',
       });
-      return markSectionComplete(id, 'Features');
+      return markSectionComplete(endpointBase, 'Features');
     },
     onSuccess: () => {
       onSaved();
@@ -2094,11 +2987,11 @@ function FeaturesStep({
 }
 
 function PhotosStep({
-  id,
+  endpointBase,
   photos,
   onSaved,
 }: {
-  readonly id: string;
+  readonly endpointBase: string;
   readonly photos: VehiclePhoto[];
   readonly onSaved: () => void;
 }) {
@@ -2133,7 +3026,7 @@ function PhotosStep({
         mimeType: asset.mimeType ?? 'image/jpeg',
       });
       const displayOrder = Math.max(-1, ...photos.map((photo) => photo.displayOrder)) + 1;
-      await apiClient.request(`/owner/vehicles/${id}/photos`, {
+      await apiClient.request(`${endpointBase}/photos`, {
         body: JSON.stringify({
           fileAssetId: file.id,
           perspective,
@@ -2162,7 +3055,7 @@ function PhotosStep({
   ) => {
     if (!coverId) return;
     try {
-      await apiClient.request(`/owner/vehicles/${id}/photos/order`, {
+      await apiClient.request(`${endpointBase}/photos/order`, {
         body: JSON.stringify({
           photos: next.map((photo, displayOrder) => ({
             photoId: photo.id,
@@ -2184,7 +3077,7 @@ function PhotosStep({
   };
   const remove = async (photoId: string) => {
     try {
-      await apiClient.request(`/owner/vehicles/${id}/photos/${photoId}`, { method: 'DELETE' });
+      await apiClient.request(`${endpointBase}/photos/${photoId}`, { method: 'DELETE' });
       onSaved();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Removal failed.');
@@ -2307,18 +3200,19 @@ function PhotosStep({
 }
 
 function DocumentsStep({
-  id,
+  endpointBase,
+  referenceBase,
   documents,
   onSaved,
 }: {
-  readonly id: string;
+  readonly endpointBase: string;
+  readonly referenceBase: string;
   readonly documents: VehicleDocument[];
   readonly onSaved: () => void;
 }) {
   const definitions = useQuery({
     queryKey: ['vehicle-documents'],
-    queryFn: () =>
-      apiClient.request<Reference[]>('/owner/vehicle-reference-data/document-definitions'),
+    queryFn: () => apiClient.request<Reference[]>(`${referenceBase}/document-definitions`),
   });
   const [error, setError] = useState('');
   const [uploadingDefinitionId, setUploadingDefinitionId] = useState<string | null>(null);
@@ -2351,7 +3245,7 @@ function DocumentsStep({
       const current = documents.find(
         (document) => document.definitionId === definition.id && !document.replacedAt,
       );
-      await apiClient.request(`/owner/vehicles/${id}/documents`, {
+      await apiClient.request(`${endpointBase}/documents`, {
         body: JSON.stringify({
           definitionId: definition.id,
           fileAssetId: file.id,
@@ -2498,13 +3392,13 @@ function DocumentsStep({
 }
 
 function LocationStep({
-  id,
+  endpointBase,
   vehicle,
   onPrevious,
   onSaved,
   onContinue,
 }: {
-  readonly id: string;
+  readonly endpointBase: string;
   readonly vehicle: Vehicle;
   readonly onPrevious: () => void;
   readonly onSaved: () => void;
@@ -2529,7 +3423,7 @@ function LocationStep({
   const [pickerOpen, setPickerOpen] = useState(false);
   const save = useMutation({
     mutationFn: async () => {
-      await apiClient.request(`/owner/vehicles/${id}/location`, {
+      await apiClient.request(`${endpointBase}/location`, {
         body: JSON.stringify({
           ...(location?.addressLine1 ? { addressLine1: location.addressLine1 } : {}),
           ...(location?.barangay ? { barangay: location.barangay } : {}),
@@ -2544,7 +3438,7 @@ function LocationStep({
         }),
         method: 'PUT',
       });
-      return markSectionComplete(id, 'Location');
+      return markSectionComplete(endpointBase, 'Location');
     },
     onSuccess: () => {
       onSaved();
@@ -2626,7 +3520,7 @@ function LocationStep({
 
 function PolicyStep({
   contentBottomPadding,
-  id,
+  endpointBase,
   mode,
   vehicle,
   onPrevious,
@@ -2634,7 +3528,7 @@ function PolicyStep({
   onContinue,
 }: {
   readonly contentBottomPadding: number;
-  readonly id: string;
+  readonly endpointBase: string;
   readonly mode: 'pricing' | 'usage';
   readonly vehicle: Vehicle;
   readonly onPrevious: () => void;
@@ -2804,7 +3698,7 @@ function PolicyStep({
         setFulfillmentError('Enter a valid Collection fee. Zero means free collection.');
         throw new Error('Enter a valid Collection fee.');
       }
-      await apiClient.request(`/owner/vehicles/${id}/policy-versions`, {
+      await apiClient.request(`${endpointBase}/policy-versions`, {
         body: JSON.stringify({
           dailyRateMinor: Math.round(Number(dailyRate) * 100),
           currency: current?.currency ?? 'PHP',
@@ -2868,7 +3762,7 @@ function PolicyStep({
         }),
         method: 'POST',
       });
-      if (mode === 'usage') await markSectionComplete(id, 'Policies');
+      if (mode === 'usage') await markSectionComplete(endpointBase, 'Policies');
     },
     onSuccess: async () => {
       await onSaved();
@@ -4067,11 +4961,34 @@ function WizardSaveFooter({
     </View>
   );
 }
-function markSectionComplete(vehicleId: string, section: string) {
-  return apiClient.request(`/owner/vehicles/${vehicleId}`, {
+function markSectionComplete(endpointBase: string, section: string) {
+  return apiClient.request(endpointBase, {
     body: JSON.stringify({ lastCompletedSection: section.toUpperCase() }),
     method: 'PATCH',
   });
+}
+
+function vehicleMutationErrorMessage(error: Error) {
+  if (
+    error instanceof ApiError &&
+    (error.status === 409 || error.code === 'VEHICLE_OWNER_APPROVAL_STALE')
+  ) {
+    return 'This vehicle changed since you opened it. Review the latest version before continuing.';
+  }
+  if (error instanceof ApiError && error.status === 403) {
+    return 'You no longer have permission to change this vehicle.';
+  }
+  return error.message;
+}
+
+function ownerApprovalErrorMessage(error: Error) {
+  if (error instanceof ApiError && error.code === 'VEHICLE_OWNER_APPROVAL_STALE') {
+    return 'This vehicle changed after it was submitted. Review the latest version before approving.';
+  }
+  if (error instanceof ApiError && error.status === 409) {
+    return 'This approval has already changed. Review the current vehicle status.';
+  }
+  return error.message;
 }
 
 function vehicleTone(status: string): 'success' | 'warning' | 'neutral' | 'danger' {
@@ -4079,6 +4996,20 @@ function vehicleTone(status: string): 'success' | 'warning' | 'neutral' | 'dange
   if (['CHANGES_REQUIRED', 'PENDING_APPROVAL'].includes(status)) return 'warning';
   if (['REJECTED', 'SUSPENDED'].includes(status)) return 'danger';
   return 'neutral';
+}
+
+function delegatedApprovalLabel(vehicle: Vehicle) {
+  if (vehicle.ownerApproval?.status === 'PENDING') return 'Awaiting Owner approval';
+  if (vehicle.ownerApproval?.status === 'CHANGES_REQUIRED' && vehicle.status === 'DRAFT')
+    return 'Changes requested';
+  if (vehicle.status === 'PENDING_APPROVAL') return 'Under review';
+  return vehicleStatusLabel(vehicle.status);
+}
+
+function delegatedApprovalTone(vehicle: Vehicle): 'success' | 'warning' | 'neutral' | 'danger' {
+  if (['PENDING', 'CHANGES_REQUIRED'].includes(vehicle.ownerApproval?.status ?? ''))
+    return 'warning';
+  return vehicleTone(vehicle.status);
 }
 
 function ownerMarketplaceStatus(vehicle: Vehicle) {
@@ -4881,6 +5812,15 @@ const styles = StyleSheet.create({
   vehicleDetailActionText: { color: colors.primary, fontSize: 13, fontWeight: '800' },
   vehicleDetailHelper: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
   vehicleDetailPage: { paddingTop: spacing.sm },
+  ownerApprovalFooter: {
+    backgroundColor: colors.background,
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.lg,
+  },
   vehicleDetailRow: {
     alignItems: 'flex-start',
     flexDirection: 'row',

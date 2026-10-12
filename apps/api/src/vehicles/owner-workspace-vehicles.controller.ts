@@ -6,7 +6,10 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
+  Put,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -19,7 +22,21 @@ import { RequireOwnerPermission } from '../owner-access/owner-access.decorator';
 import { OwnerAccessService } from '../owner-access/owner-access.service';
 import type { RequestPrincipal } from '../security/security-context';
 import { VehiclesService } from './vehicles.service';
-import { CreateVehicleBlockDto } from './vehicles.dto';
+import {
+  AddVehicleDocumentDto,
+  AddVehiclePhotoDto,
+  CreateVehicleBlockDto,
+  CreateVehicleDto,
+  CreateVehiclePolicyVersionDto,
+  ManagerVehicleOperationalDetailsDto,
+  ManagerVehicleOperationalFeaturesDto,
+  ManagerVehicleOperationalPolicyDto,
+  ManagerVehicleOperationalStatusDto,
+  ReorderVehiclePhotosDto,
+  SetVehicleFeaturesDto,
+  SetVehicleLocationDto,
+  UpdateVehicleDto,
+} from './vehicles.dto';
 
 @Controller('owner/workspaces/:ownerProfileId/vehicles')
 @UseGuards(AccessTokenGuard, OwnerAccessGuard)
@@ -29,6 +46,236 @@ export class OwnerWorkspaceVehiclesController {
     private readonly vehicles: VehiclesService,
     private readonly ownerAccess: OwnerAccessService,
   ) {}
+
+  @Post()
+  @RequireOwnerPermission('vehicles.create')
+  create(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Body() input: CreateVehicleDto,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.createForOwnerAccess(
+      principal.ownerAccess!,
+      principal.userId,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post(':id/owner-approval-submission')
+  @RequireOwnerPermission('vehicles.create')
+  submitForOwnerApproval(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.submitForOwnerApproval(
+      principal.ownerAccess!,
+      principal.userId,
+      id,
+      requestMetadata(request),
+    );
+  }
+
+  @Delete(':id/owner-approval-submission')
+  @RequireOwnerPermission('vehicles.create')
+  withdrawOwnerApprovalSubmission(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.withdrawOwnerApprovalSubmission(
+      principal.ownerAccess!,
+      principal.userId,
+      id,
+      requestMetadata(request),
+    );
+  }
+
+  @Patch(':id')
+  @RequireOwnerPermission('vehicles.create')
+  updateDraft(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: UpdateVehicleDto,
+  ) {
+    return this.vehicles.update(principal.userId, id, input, principal.ownerAccess!);
+  }
+
+  @Put(':id/features')
+  @RequireOwnerPermission('vehicles.create')
+  setDraftFeatures(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: SetVehicleFeaturesDto,
+  ) {
+    return this.vehicles.setFeatures(principal.userId, id, input, principal.ownerAccess!);
+  }
+
+  @Post(':id/photos')
+  @RequireOwnerPermission('vehicles.create')
+  addDraftPhoto(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: AddVehiclePhotoDto,
+  ) {
+    return this.vehicles.addPhoto(principal.userId, id, input, principal.ownerAccess!);
+  }
+
+  @Put(':id/photos/order')
+  @RequireOwnerPermission('vehicles.create')
+  reorderDraftPhotos(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: ReorderVehiclePhotosDto,
+  ) {
+    return this.vehicles.reorderPhotos(principal.userId, id, input, principal.ownerAccess!);
+  }
+
+  @Delete(':id/photos/:photoId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequireOwnerPermission('vehicles.create')
+  removeDraftPhoto(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Param('photoId') photoId: string,
+  ) {
+    return this.vehicles.removePhoto(principal.userId, id, photoId, principal.ownerAccess!);
+  }
+
+  @Post(':id/documents')
+  @RequireOwnerPermission('vehicles.create')
+  addDraftDocument(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: AddVehicleDocumentDto,
+  ) {
+    return this.vehicles.addDocument(principal.userId, id, input, principal.ownerAccess!);
+  }
+
+  @Put(':id/location')
+  @RequireOwnerPermission('vehicles.create')
+  setDraftLocation(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: SetVehicleLocationDto,
+  ) {
+    return this.vehicles.setLocation(principal.userId, id, input, principal.ownerAccess!);
+  }
+
+  @Post(':id/policy-versions')
+  @RequireOwnerPermission('vehicles.create')
+  createDraftPolicy(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: CreateVehiclePolicyVersionDto,
+  ) {
+    return this.vehicles.createPolicyVersion(principal.userId, id, input, principal.ownerAccess!);
+  }
+
+  @Patch(':id/operational-details')
+  @RequireOwnerPermission('vehicles.update_operational_fields')
+  updateOperationalDetails(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: ManagerVehicleOperationalDetailsDto,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.updateManagerOperationalDetails(
+      principal.ownerAccess!,
+      principal.userId,
+      id,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Put(':id/operational-features')
+  @RequireOwnerPermission('vehicles.update_operational_fields')
+  updateOperationalFeatures(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: ManagerVehicleOperationalFeaturesDto,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.updateManagerOperationalFeatures(
+      principal.ownerAccess!,
+      principal.userId,
+      id,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Post(':id/operational-policy')
+  @RequireOwnerPermission('vehicles.update_operational_fields')
+  updateOperationalPolicy(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: ManagerVehicleOperationalPolicyDto,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.updateManagerOperationalPolicy(
+      principal.ownerAccess!,
+      principal.userId,
+      id,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Patch(':id/operational-status')
+  @RequireOwnerPermission('vehicles.update_operational_fields')
+  updateOperationalStatus(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Body() input: ManagerVehicleOperationalStatusDto,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.updateManagerOperationalStatus(
+      principal.ownerAccess!,
+      principal.userId,
+      id,
+      input,
+      requestMetadata(request),
+    );
+  }
+
+  @Get('reference-data/categories')
+  @RequireOwnerPermission('vehicles.create')
+  categories() {
+    return this.vehicles.categories();
+  }
+
+  @Get('reference-data/makes')
+  @RequireOwnerPermission('vehicles.create')
+  makes() {
+    return this.vehicles.makes();
+  }
+
+  @Get('reference-data/models')
+  @RequireOwnerPermission('vehicles.create')
+  models(@Query('makeId') makeId: string) {
+    return this.vehicles.models(makeId);
+  }
+
+  @Get('reference-data/features')
+  @RequireOwnerPermission('vehicles.create')
+  features() {
+    return this.vehicles.features();
+  }
+
+  @Get('operational-reference-data/features')
+  @RequireOwnerPermission('vehicles.update_operational_fields')
+  operationalFeatures() {
+    return this.vehicles.features();
+  }
+
+  @Get('reference-data/document-definitions')
+  @RequireOwnerPermission('vehicles.create')
+  documentDefinitions() {
+    return this.vehicles.documentDefinitions();
+  }
 
   @Get()
   async list(@CurrentPrincipal() principal: RequestPrincipal, @Req() request: Request) {

@@ -64,6 +64,8 @@ export async function consumeDomainEvent(
     uuid(payload.ticketId) ??
     uuid(payload.payoutId) ??
     uuid(payload.amendmentId) ??
+    uuid(payload.approvalRequestId) ??
+    uuid(payload.vehicleId) ??
     uuid(payload.aggregateId) ??
     uuid(payload.bookingId) ??
     uuid(outboxId);
@@ -107,6 +109,13 @@ export async function consumeDomainEvent(
           ...(eventType.startsWith('OVERDUE_HANDOVER_RECOVERY_') &&
           typeof payload.responseDeadlineAt === 'string'
             ? { responseDeadlineAt: payload.responseDeadlineAt }
+            : {}),
+          ...(eventType.startsWith('VEHICLE_OWNER_APPROVAL_') ||
+          eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED'
+            ? {
+                managerDisplayName: text(payload.managerDisplayName),
+                vehicleDisplayName: text(payload.vehicleDisplayName),
+              }
             : {}),
         } as Prisma.InputJsonValue,
         deepLink: deepLink(policy, eventType, payload, reference, applicationEnvironment),
@@ -292,6 +301,30 @@ async function applyResult(
 }
 
 function policyFor(eventType: string, payload: Payload): EventPolicy | null {
+  if (eventType === 'VEHICLE_OWNER_APPROVAL_SUBMITTED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-owner-approval.submitted',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_OWNER_APPROVAL_APPROVED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-owner-approval.approved',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_OWNER_APPROVAL_CHANGES_REQUIRED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-owner-approval.changes-required',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle.operational-fields-updated',
+      recipients: 'DIRECT',
+    };
   if (eventType === 'SECURITY_DEPOSIT_REQUIRED')
     return {
       category: NotificationCategory.RENTAL_REMINDERS,
@@ -655,7 +688,15 @@ async function resolveRecipients(
   }
   if (target === 'DIRECT')
     return uuid(payload.recipientUserId)
-      ? [{ userId: String(payload.recipientUserId), audience: NotificationAudience.ACCOUNT }]
+      ? [
+          {
+            userId: String(payload.recipientUserId),
+            audience:
+              payload.notificationAudience === 'OWNER'
+                ? NotificationAudience.OWNER
+                : NotificationAudience.ACCOUNT,
+          },
+        ]
       : [];
   const payoutId = uuid(payload.payoutId) ?? uuid(payload.aggregateId);
   if (target === 'OWNER' && payoutId) {
@@ -717,6 +758,13 @@ function deepLink(
   const payoutId =
     uuid(payload.payoutId) ?? (eventType.startsWith('PAYOUT_') ? uuid(payload.aggregateId) : null);
   if (payoutId) return `${scheme}://payouts/${payoutId}`;
+  const vehicleId = uuid(payload.vehicleId);
+  if (eventType === 'VEHICLE_OWNER_APPROVAL_SUBMITTED' && vehicleId)
+    return `${scheme}://owner/vehicle-approvals/${vehicleId}`;
+  if (eventType.startsWith('VEHICLE_OWNER_APPROVAL_') && vehicleId)
+    return `${scheme}://owner/vehicles/${vehicleId}`;
+  if (eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED' && vehicleId)
+    return `${scheme}://owner/vehicles/${vehicleId}`;
   if (eventType.startsWith('OVERDUE_HANDOVER_RECOVERY_') && bookingPublicReference)
     return `${scheme}://bookings/${bookingPublicReference}/handover-recovery`;
   if (!id) return eventType.startsWith('EARNING_') ? `${scheme}://earnings` : null;
@@ -727,13 +775,20 @@ function deepLink(
       : `${scheme}://bookings/${bookingPublicReference ?? id}`;
 }
 function sourceType(eventType: string) {
-  return eventType.startsWith('PAYOUT_')
-    ? 'PAYOUT'
-    : eventType.startsWith('SUPPORT_')
-      ? 'SUPPORT_TICKET'
-      : eventType === 'NEW_MESSAGE'
-        ? 'MESSAGE'
-        : 'BOOKING';
+  return eventType.startsWith('VEHICLE_OWNER_APPROVAL_')
+    ? 'VEHICLE_OWNER_APPROVAL'
+    : eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED'
+      ? 'VEHICLE'
+      : eventType.startsWith('PAYOUT_')
+        ? 'PAYOUT'
+        : eventType.startsWith('SUPPORT_')
+          ? 'SUPPORT_TICKET'
+          : eventType === 'NEW_MESSAGE'
+            ? 'MESSAGE'
+            : 'BOOKING';
+}
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 function uuid(value: unknown): string | null {
   return typeof value === 'string' &&

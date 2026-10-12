@@ -13,16 +13,50 @@ const auth = readFileSync(
 );
 
 describe('Owner Staff invitation acceptance UI', () => {
-  it('retains invitation context across ordinary login and registration', () => {
-    expect(app).toContain('<AuthFlow initialScreen={authScreen} />');
+  it('retains invitation context across ordinary login and password-only setup', () => {
+    expect(app).toContain('invitationContext={{');
+    expect(app).toContain('roleLabel: invitation.roleLabel');
+    expect(app).toContain('workspaceLabel: invitation.workspaceLabel');
+    expect(app).toContain('onBackToContext={() => setAuthScreen(null)}');
     expect(app).toContain("setAuthScreen('login')");
-    expect(app).toContain("setAuthScreen('register')");
+    expect(app).toContain('setShowSetup(true)');
+    expect(app).toContain('<StaffInvitationSetup');
     expect(auth).toContain("initialScreen = 'welcome'");
+  });
+
+  it('uses the standard auth composition with compact invitation context', () => {
+    const compactContext = auth.slice(
+      auth.indexOf('function InvitationContextCard('),
+      auth.indexOf('function AuthStatusScreen('),
+    );
+    expect(auth).toContain('<InvitationContextCard context={invitationContext} />');
+    expect(app).toContain('roleLabel={invitation.roleLabel}');
+    expect(compactContext).toContain('<Card');
+    expect(compactContext).toContain('JOINING');
+    expect(compactContext).toContain('context.workspaceLabel');
+    expect(compactContext).toContain('context.roleLabel');
+    expect(compactContext).not.toContain('SMS invitation');
+    expect(compactContext).not.toContain('YOU’VE BEEN INVITED TO JOIN');
+    expect(app).not.toContain('contextHeader={invitationCard}');
+  });
+
+  it('loads authoritative invitation context and reuses shared UI primitives', () => {
+    expect(app).toContain('/owner/staff-invitations/preview?token=');
+    expect(app).toContain('<Card style={styles.invitationCard}>');
+    expect(app).toContain('<BackControl label="Back"');
+    expect(app).toContain('<StatusBadge');
+    expect(app).toContain('<StateView');
+    expect(app).toContain('<Field');
+    expect(app).toContain("'/owner/staff-invitations/mobile-verification/requests'");
+    expect(app).toContain("'/auth/otp/verifications'");
+    expect(app).not.toContain('token}</Text>');
   });
 
   it('uses the authenticated acceptance endpoint and refreshes identity', () => {
     expect(app).toContain("'/owner/staff-invitations/accept'");
     expect(app).toContain('await auth.refreshIdentity()');
+    expect(app).toContain("setMode('owner')");
+    expect(app).toContain("activeRoleStorage.set(auth.user.id, 'owner')");
     expect(app).toContain('Invitation accepted');
   });
 

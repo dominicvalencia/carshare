@@ -39,6 +39,7 @@ export const OWNER_PERMISSIONS = {
   'support_cases.view': 'View Owner-business support cases',
   'users.view_basic_profile': 'View the minimum renter profile needed for assigned work',
   'vehicles.archive': 'Archive an eligible Owner vehicle',
+  'vehicles.create': 'Create a new vehicle inside an authorized Owner workspace',
   'vehicles.update_operational_fields': 'Edit non-ownership operational vehicle fields',
   'vehicles.view': 'View Owner vehicles',
 } as const;
@@ -90,6 +91,8 @@ export const OWNER_ONLY_PERMISSIONS = new Set<OwnerPermissionCode>([
   'vehicles.archive',
 ]);
 
+export const MANAGER_ONLY_PERMISSIONS = new Set<OwnerPermissionCode>(['vehicles.create']);
+
 export const OPERATIONS_STAFF_PERMISSIONS = [
   'vehicles.view',
   'vehicles.update_operational_fields',
@@ -140,6 +143,7 @@ export const MANAGER_PERMISSIONS = [
     'staff.reissue_invite',
     'staff.assign_permissions',
     'staff.assign_vehicles',
+    'vehicles.create',
   ]),
 ] satisfies readonly OwnerPermissionCode[];
 
@@ -164,6 +168,8 @@ export function assertAssignableOwnerPermissions(
   assertOwnerPermissionCodes(values);
   if (values.some((value) => OWNER_ONLY_PERMISSIONS.has(value)))
     throw new Error(`${role} cannot receive Owner-only permission.`);
+  if (role === OwnerStaffRole.STAFF && values.some((value) => MANAGER_ONLY_PERMISSIONS.has(value)))
+    throw new Error('Ordinary Staff cannot receive Manager-only permission.');
 }
 
 export function assertManagerTargetRole(targetRole: OwnerStaffRole): void {

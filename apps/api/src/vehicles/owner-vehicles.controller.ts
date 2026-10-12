@@ -31,6 +31,7 @@ import {
   CreateVehiclePolicyVersionDto,
   ReorderVehiclePhotosDto,
   RemoveVehicleDto,
+  ReturnVehicleOwnerApprovalDto,
   SetVehicleFeaturesDto,
   SetVehicleLocationDto,
   UpdateVehicleDto,
@@ -223,6 +224,38 @@ export class OwnerVehiclesController {
     @Req() request: Request,
   ) {
     return this.vehicles.submit(principal.userId, id, requestMetadata(request));
+  }
+
+  @Post(':id/owner-approval/:requestId/approve')
+  approveOwnerApproval(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Param('requestId') requestId: string,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.approveOwnerApproval(
+      principal.userId,
+      id,
+      requestId,
+      requestMetadata(request),
+    );
+  }
+
+  @Post(':id/owner-approval/:requestId/return-for-changes')
+  returnOwnerApprovalForChanges(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Param('requestId') requestId: string,
+    @Body() input: ReturnVehicleOwnerApprovalDto,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.returnOwnerApprovalForChanges(
+      principal.userId,
+      id,
+      requestId,
+      input.reason,
+      requestMetadata(request),
+    );
   }
 
   @Post(':id/archive')

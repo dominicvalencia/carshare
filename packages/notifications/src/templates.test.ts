@@ -2,6 +2,47 @@ import { describe, expect, it } from 'vitest';
 import { renderNotification } from './templates';
 
 describe('overdue reminder content', () => {
+  it('renders safe vehicle Owner-approval lifecycle copy', () => {
+    expect(
+      renderNotification('vehicle-owner-approval.submitted', {
+        managerDisplayName: 'Mika Santos',
+        vehicleDisplayName: 'Honda Civic',
+        reviewReason: 'private feedback',
+      }),
+    ).toEqual({
+      title: 'Vehicle needs your approval',
+      body: 'Mika Santos submitted Honda Civic for your approval.',
+    });
+    expect(
+      renderNotification('vehicle-owner-approval.approved', {
+        vehicleDisplayName: 'Honda Civic',
+      }).title,
+    ).toBe('Vehicle approved by Owner');
+    expect(
+      renderNotification('vehicle-owner-approval.changes-required', {
+        vehicleDisplayName: 'Honda Civic',
+        reviewReason: 'private feedback',
+      }),
+    ).toEqual({
+      title: 'Changes requested',
+      body: 'The Owner requested changes to Honda Civic.',
+    });
+  });
+
+  it('renders a safe Manager operational-edit notification', () => {
+    expect(
+      renderNotification('vehicle.operational-fields-updated', {
+        managerDisplayName: 'Mika Santos',
+        vehicleDisplayName: 'Honda Civic',
+        plateNumber: 'PRIVATE',
+        dailyRateMinor: 999_999,
+      }),
+    ).toEqual({
+      title: 'Vehicle updated',
+      body: 'Mika Santos updated Honda Civic.',
+    });
+  });
+
   it.each([
     ['security-deposit.required', 'Security deposit required'],
     ['security-deposit.24-hour-reminder', 'Your trip starts tomorrow'],

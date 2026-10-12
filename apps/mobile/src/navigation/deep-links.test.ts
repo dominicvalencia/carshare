@@ -16,6 +16,14 @@ describe('notification deep-link routing', () => {
     ['carrental://support/ticket-id', { name: 'Support', params: { ticketId: 'ticket-id' } }],
     ['carrental://earnings', { name: 'OwnerEarnings' }],
     ['carrental://payouts/payout-id', { name: 'Payout', params: { payoutId: 'payout-id' } }],
+    [
+      'carrental://owner/vehicle-approvals/vehicle-id',
+      { name: 'OwnerVehicleApproval', params: { vehicleId: 'vehicle-id' } },
+    ],
+    [
+      'carrental://owner/vehicles/vehicle-id',
+      { name: 'OwnerWorkspaceVehicle', params: { vehicleId: 'vehicle-id' } },
+    ],
   ])('maps %s to an in-app destination', (link, expected) => {
     expect(internalDestination(link)).toEqual(expected);
   });

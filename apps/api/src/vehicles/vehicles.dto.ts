@@ -54,6 +54,14 @@ export class RemoveVehicleDto {
   otherReason?: string;
 }
 
+export class ReturnVehicleOwnerApprovalDto {
+  @ApiProperty({ maxLength: 1000, minLength: 10 })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(1000)
+  reason!: string;
+}
+
 export class CreateVehicleDto {
   @ApiPropertyOptional() @IsOptional() @IsUUID() categoryId?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(100) make?: string;
@@ -276,6 +284,72 @@ export class ChangeOperationalStatusDto {
   @ApiProperty({ enum: VehicleOperationalStatus })
   @IsEnum(VehicleOperationalStatus)
   status!: VehicleOperationalStatus;
+}
+
+export class ManagerVehicleOperationalDetailsDto {
+  @ApiProperty() @IsInt() @Min(0) expectedRevision!: number;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(3000) description?: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  rentalRequirements?: string;
+}
+
+export class ManagerVehicleOperationalFeaturesDto extends SetVehicleFeaturesDto {
+  @ApiProperty() @IsInt() @Min(0) expectedRevision!: number;
+}
+
+export class ManagerVehicleOperationalStatusDto extends ChangeOperationalStatusDto {
+  @ApiProperty() @IsInt() @Min(0) expectedRevision!: number;
+}
+
+export class ManagerVehicleOperationalPolicyDto {
+  @ApiProperty() @IsInt() @Min(0) expectedRevision!: number;
+  @ApiProperty() @IsInt() @Min(1) @Max(365) minimumRentalDays!: number;
+  @ApiProperty() @IsInt() @Min(1) @Max(365) maximumRentalDays!: number;
+  @ApiProperty({ enum: MileagePolicyType })
+  @IsEnum(MileagePolicyType)
+  mileagePolicy!: MileagePolicyType;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) includedKilometersPerDay?: number;
+  @ApiPropertyOptional({ enum: FuelReturnPolicyType })
+  @IsOptional()
+  @IsEnum(FuelReturnPolicyType)
+  fuelReturnPolicy?: FuelReturnPolicyType;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) @Max(100) fuelTolerancePercent?: number;
+  @ApiPropertyOptional({ enum: EvReturnPolicyType })
+  @IsOptional()
+  @IsEnum(EvReturnPolicyType)
+  evReturnPolicy?: EvReturnPolicyType;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) @Max(100) evRequiredPercentage?: number;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) @Max(100) evTolerancePercent?: number;
+  @ApiProperty({ enum: [120, 240, 360, 720, 1440] }) @IsInt() turnaroundMinutes!: number;
+  @ApiProperty({ enum: AvailabilityPolicyType })
+  @IsEnum(AvailabilityPolicyType)
+  availabilityPolicy!: AvailabilityPolicyType;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() monday?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() tuesday?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() wednesday?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() thursday?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() friday?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() saturday?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() sunday?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() supportsRenterPickup?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() supportsOwnerDelivery?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() supportsRenterReturn?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() supportsOwnerCollection?: boolean;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(50_000)
+  fulfillmentServiceRadiusMeters?: number;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(10_080)
+  fulfillmentMinimumNoticeMinutes?: number;
 }
 
 export class CreateVehicleKnownIssueDto {

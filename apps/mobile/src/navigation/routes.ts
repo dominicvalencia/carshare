@@ -17,7 +17,7 @@ export type RenterTabParamList = {
 };
 export type OwnerTabParamList = {
   Dashboard: { initialTab?: 'Today' | 'Upcoming' | 'Requests' } | undefined;
-  Vehicles: undefined;
+  Vehicles: { vehicleId?: string | undefined } | undefined;
   Requests: undefined;
   Messages: { conversationId?: string | undefined } | undefined;
   More: { payoutId?: string | undefined } | undefined;
@@ -45,6 +45,8 @@ export type RootStackParamList = {
   OwnerPayoutMethodDetail: { payoutMethodId: string };
   OwnerAddPayoutMethod: undefined;
   OwnerStaff: undefined;
+  OwnerVehicleApproval: { vehicleId: string };
+  OwnerWorkspaceVehicle: { vehicleId: string };
   Booking: { bookingId: string };
   BookingRecovery: { bookingId: string };
   Claim: { claimId: string };

@@ -3,6 +3,127 @@ import type { PrismaClient } from '@carrental/database';
 import { consumeDomainEvent, workerPushProvider } from './notification-delivery';
 import type { WorkerEnvironment } from '@carrental/config';
 
+describe('vehicle Owner approval notification delivery', () => {
+  it('delivers a deduplicated Manager edit notification only to the actual Owner', async () => {
+    const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const vehicleId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const creates = new Map<string, Record<string, unknown>>();
+    const database = {
+      devicePushToken: { findMany: vi.fn(async () => []) },
+      notificationPreference: { findUnique: vi.fn(async () => null) },
+      notification: {
+        upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+          creates.set(String(create.stableKey), create);
+          return { id: vehicleId };
+        }),
+      },
+    } as unknown as PrismaClient;
+    const payload = {
+      managerDisplayName: 'Mika Santos',
+      notificationAudience: 'OWNER',
+      notificationIdentity: `${vehicleId}:5:operational-edit`,
+      recipientUserId: ownerUserId,
+      vehicleDisplayName: 'Honda Civic',
+      vehicleId,
+    };
+    await consumeDomainEvent(database, 'VEHICLE_OPERATIONAL_FIELDS_UPDATED', payload, 'outbox-1');
+    await consumeDomainEvent(database, 'VEHICLE_OPERATIONAL_FIELDS_UPDATED', payload, 'outbox-2');
+    expect(creates).toHaveLength(1);
+    expect([...creates.values()][0]).toMatchObject({
+      audience: 'OWNER',
+      deepLink: `carrental://owner/vehicles/${vehicleId}`,
+      sourceType: 'VEHICLE',
+      templateKey: 'vehicle.operational-fields-updated',
+      userId: ownerUserId,
+    });
+  });
+
+  it('creates one safe Owner notification and deduplicates retried outbox delivery', async () => {
+    const approvalRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const vehicleId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const creates = new Map<string, Record<string, unknown>>();
+    const database = {
+      devicePushToken: { findMany: vi.fn(async () => []) },
+      notificationPreference: { findUnique: vi.fn(async () => null) },
+      notification: {
+        upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+          creates.set(String(create.stableKey), create);
+          return { id: approvalRequestId };
+        }),
+      },
+    } as unknown as PrismaClient;
+    const payload = {
+      approvalRequestId,
+      managerDisplayName: 'Mika Santos',
+      notificationAudience: 'OWNER',
+      notificationIdentity: `${approvalRequestId}:SUBMITTED`,
+      recipientUserId: ownerUserId,
+      vehicleDisplayName: 'Honda Civic',
+      vehicleId,
+    };
+    await consumeDomainEvent(database, 'VEHICLE_OWNER_APPROVAL_SUBMITTED', payload, 'outbox-1');
+    await consumeDomainEvent(database, 'VEHICLE_OWNER_APPROVAL_SUBMITTED', payload, 'outbox-2');
+    expect(creates).toHaveLength(1);
+    expect([...creates.values()][0]).toMatchObject({
+      audience: 'OWNER',
+      deepLink: `carrental://owner/vehicle-approvals/${vehicleId}`,
+      sourceId: approvalRequestId,
+      sourceType: 'VEHICLE_OWNER_APPROVAL',
+      templateKey: 'vehicle-owner-approval.submitted',
+      userId: ownerUserId,
+      variables: {
+        managerDisplayName: 'Mika Santos',
+        vehicleDisplayName: 'Honda Civic',
+      },
+    });
+    expect(JSON.stringify([...creates.values()][0])).not.toMatch(
+      /membership|permission|reviewReason|SMS|EMAIL/u,
+    );
+  });
+
+  it.each([
+    ['VEHICLE_OWNER_APPROVAL_APPROVED', 'vehicle-owner-approval.approved'],
+    ['VEHICLE_OWNER_APPROVAL_CHANGES_REQUIRED', 'vehicle-owner-approval.changes-required'],
+  ])(
+    'routes %s to the submitting Manager current vehicle state',
+    async (eventType, templateKey) => {
+      const approvalRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const managerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const vehicleId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+      const creates: Record<string, unknown>[] = [];
+      const database = {
+        devicePushToken: { findMany: vi.fn(async () => []) },
+        notificationPreference: { findUnique: vi.fn(async () => null) },
+        notification: {
+          upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+            creates.push(create);
+            return { id: approvalRequestId };
+          }),
+        },
+      } as unknown as PrismaClient;
+      await consumeDomainEvent(
+        database,
+        eventType,
+        {
+          approvalRequestId,
+          notificationAudience: 'OWNER',
+          recipientUserId: managerUserId,
+          vehicleDisplayName: 'Honda Civic',
+          vehicleId,
+        },
+        'outbox-1',
+      );
+      expect(creates[0]).toMatchObject({
+        audience: 'OWNER',
+        deepLink: `carrental://owner/vehicles/${vehicleId}`,
+        templateKey,
+        userId: managerUserId,
+      });
+    },
+  );
+});
+
 describe('booking request notification delivery', () => {
   it('creates the authoritative deposit-completed notification exactly once for the renter', async () => {
     const bookingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

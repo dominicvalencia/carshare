@@ -38,7 +38,11 @@ import {
 } from './owner-home';
 
 type OwnerHomeTab = 'Today' | 'Upcoming' | 'Requests';
-type OwnerVehicleSummary = { readonly id: string; readonly status: string };
+type OwnerVehicleSummary = {
+  readonly id: string;
+  readonly status: string;
+  readonly ownerApproval?: { readonly status: string } | null;
+};
 type OwnerAmendmentTarget = {
   readonly amendmentReference: string;
   readonly bookingReference: string;
@@ -165,6 +169,10 @@ export function OwnerDashboardScreen({
           ? 'Complete your vehicle info'
           : null
       : null;
+  const pendingOwnerApprovals =
+    vehicles.data?.filter(
+      ({ ownerApproval, status }) => status === 'DRAFT' && ownerApproval?.status === 'PENDING',
+    ) ?? [];
   if (selectedAmendment)
     return (
       <OwnerBookingRequestsScreen
@@ -216,6 +224,34 @@ export function OwnerDashboardScreen({
       <View style={styles.tabContent}>
         {selectedTab === 'Today' && (
           <View style={styles.tabPanel}>
+            {pendingOwnerApprovals.length > 0 ? (
+              <Pressable
+                accessibilityLabel={`${pendingOwnerApprovals.length} ${pendingOwnerApprovals.length === 1 ? 'vehicle' : 'vehicles'} awaiting your approval`}
+                accessibilityRole="button"
+                onPress={() =>
+                  pendingOwnerApprovals.length === 1
+                    ? navigation.navigate('OwnerVehicleApproval', {
+                        vehicleId: pendingOwnerApprovals[0]!.id,
+                      })
+                    : navigation.navigate('Vehicles')
+                }
+              >
+                <Card style={styles.requestSummary}>
+                  <View style={styles.summaryIcon}>
+                    <Icon color={colors.primary} name="car-sport-outline" />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text style={styles.cardTitle}>
+                      {pendingOwnerApprovals.length}{' '}
+                      {pendingOwnerApprovals.length === 1 ? 'vehicle' : 'vehicles'} awaiting your
+                      approval
+                    </Text>
+                    <Text style={styles.link}>Review approvals</Text>
+                  </View>
+                  <Icon color={colors.primary} name="chevron-forward" />
+                </Card>
+              </Pressable>
+            ) : null}
             {model.today.attention.length > 0 && (
               <TodaySection title="Needs attention">
                 {model.today.attention.map((item) => (
@@ -263,7 +299,7 @@ export function OwnerDashboardScreen({
                 ))}
               </TodaySection>
             )}
-            {ownerHomeIsOperationallyEmpty(model) && (
+            {ownerHomeIsOperationallyEmpty(model) && pendingOwnerApprovals.length === 0 && (
               <View style={requestCount === 0 && styles.centeredEmpty}>
                 <Card style={styles.emptyCard}>
                   <Icon color={colors.primary} name="sunny-outline" size={28} />

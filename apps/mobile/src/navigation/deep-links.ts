@@ -13,7 +13,12 @@ export function internalDestination(
   const prefix = `${scheme}://`;
   if (!link?.startsWith(prefix)) return null;
   const [path] = link.slice(prefix.length).split(/[?#]/, 1);
-  const [resource, identifier] = path?.split('/').filter(Boolean) ?? [];
+  const segments = path?.split('/').filter(Boolean) ?? [];
+  const [resource, identifier] = segments;
+  if (resource === 'owner' && identifier === 'vehicle-approvals' && segments[2])
+    return { name: 'OwnerVehicleApproval', params: { vehicleId: segments[2] } };
+  if (resource === 'owner' && identifier === 'vehicles' && segments[2])
+    return { name: 'OwnerWorkspaceVehicle', params: { vehicleId: segments[2] } };
   if (resource === 'bookings' && identifier)
     return path?.endsWith('/handover-recovery')
       ? { name: 'BookingRecovery', params: { bookingId: identifier } }

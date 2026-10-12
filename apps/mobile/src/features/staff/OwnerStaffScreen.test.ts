@@ -38,6 +38,38 @@ describe('Owner Staff management UI', () => {
     expect(source).toContain('<StateView');
   });
 
+  it('shows stable Staff access-link management only for the actual Owner', () => {
+    expect(source).toContain("capacity === 'OWNER' ? (");
+    expect(source).toContain('<StaffAccessLinkCard');
+    expect(source).toContain("queryKey = ['owner-staff-access-link', ownerProfileId]");
+    expect(source).toContain('title="Staff access link"');
+    expect(source).toContain('Use this link when existing Staff need to sign in on a new device.');
+    expect(source).not.toContain("capacity === 'MANAGER' ? <StaffAccessLinkCard");
+  });
+
+  it('loads, retries, copies, and shares the authoritative full link safely', () => {
+    expect(source).toContain('`/owner/workspaces/${ownerProfileId}/staff-access-link`');
+    expect(source).toContain('title="Loading Staff access link"');
+    expect(source).toContain('title="Unable to load Staff access link"');
+    expect(source).toContain('onAction={() => void accessLink.refetch()}');
+    expect(source).toContain('numberOfLines={1}');
+    expect(source).toContain('Clipboard.setStringAsync(accessLink.data.url)');
+    expect(source).toContain("Alert.alert('Link copied')");
+    expect(source).toContain('Share.share({');
+    expect(source).toContain('accessLink.data.url');
+    expect(source).not.toContain('ownerProfileId}\\n${accessLink.data.url}');
+  });
+
+  it('confirms rotation and atomically replaces the cached link', () => {
+    expect(source).toContain('Regenerate Staff access link?');
+    expect(source).toContain('The current link will stop working immediately.');
+    expect(source).toContain('Existing Staff accounts and active');
+    expect(source).toContain('/staff-access-link/regenerate`');
+    expect(source).toContain('client.setQueryData(queryKey, next)');
+    expect(source).toContain("Alert.alert('New Staff access link created')");
+    expect(source).toContain('label="Cancel"');
+  });
+
   it('keeps Manager role choice owner-only and never exposes Verification Staff', () => {
     expect(source).toContain("capacity === 'OWNER' || option.role !== 'MANAGER'");
     expect(source).toContain("preset: 'MANAGER'");

@@ -12,7 +12,25 @@ export function renderNotification(
 ): NotificationContent {
   const reference = text(variables.reference, 'your booking');
   const scope = text(variables.scope, 'BOTH');
+  const managerDisplayName = text(variables.managerDisplayName, 'A Manager');
+  const vehicleDisplayName = text(variables.vehicleDisplayName, 'a vehicle');
   const templates: Readonly<Record<string, NotificationContent>> = {
+    'vehicle-owner-approval.submitted': {
+      title: 'Vehicle needs your approval',
+      body: `${managerDisplayName} submitted ${vehicleDisplayName} for your approval.`,
+    },
+    'vehicle-owner-approval.approved': {
+      title: 'Vehicle approved by Owner',
+      body: `${vehicleDisplayName} was approved and submitted to CarShare for review.`,
+    },
+    'vehicle-owner-approval.changes-required': {
+      title: 'Changes requested',
+      body: `The Owner requested changes to ${vehicleDisplayName}.`,
+    },
+    'vehicle.operational-fields-updated': {
+      title: 'Vehicle updated',
+      body: `${managerDisplayName} updated ${vehicleDisplayName}.`,
+    },
     'security-deposit.required': {
       title: 'Security deposit required',
       body: `Complete the security deposit for ${reference} before pickup.`,

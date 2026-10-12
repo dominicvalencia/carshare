@@ -456,6 +456,93 @@ export class OwnerAccessService {
     };
   }
 
+  async previewInvitation(rawToken: string) {
+    const invitationId = this.tokens.parseOpaqueId(rawToken);
+    if (!invitationId) throw this.invalidInvitation();
+    const invitation = await this.database.client.ownerStaffInvitation.findUnique({
+      select: {
+        channel: true,
+        consumedAt: true,
+        expiresAt: true,
+        revokedAt: true,
+        tokenHash: true,
+        membership: {
+          select: {
+            ownerProfile: {
+              select: {
+                legalName: true,
+                user: { select: { profile: { select: { displayName: true } } } },
+              },
+            },
+            permissions: { select: { permission: { select: { code: true } } } },
+            role: true,
+            status: true,
+          },
+        },
+      },
+      where: { id: invitationId },
+    });
+    if (
+      !invitation ||
+      !this.crypto.secureEqual(invitation.tokenHash, this.tokens.hashOpaque(rawToken))
+    )
+      throw this.invalidInvitation();
+    const state = invitation.consumedAt
+      ? 'CONSUMED'
+      : invitation.revokedAt
+        ? 'REVOKED'
+        : invitation.expiresAt <= new Date()
+          ? 'EXPIRED'
+          : invitation.membership.status === OwnerStaffStatus.INVITED
+            ? 'PENDING'
+            : 'REVOKED';
+    return {
+      channel: invitation.channel,
+      expiresAt: invitation.expiresAt,
+      permissions: invitation.membership.permissions.map(({ permission }) => permission.code),
+      role: invitation.membership.role,
+      state,
+      workspaceLabel:
+        invitation.membership.ownerProfile.legalName?.trim() ||
+        invitation.membership.ownerProfile.user.profile?.displayName?.trim() ||
+        'CarShare owner',
+    } as const;
+  }
+
+  async invitationMobileDestination(rawToken: string): Promise<string> {
+    const invitationId = this.tokens.parseOpaqueId(rawToken);
+    if (!invitationId) throw this.invalidInvitation();
+    const invitation = await this.database.client.ownerStaffInvitation.findUnique({
+      include: { membership: true },
+      where: { id: invitationId },
+    });
+    if (
+      !invitation ||
+      !this.crypto.secureEqual(invitation.tokenHash, this.tokens.hashOpaque(rawToken)) ||
+      !isUsableOwnerStaffInvitation(invitation, true, new Date()) ||
+      invitation.channel !== OwnerStaffInvitationChannel.SMS
+    )
+      throw this.invalidInvitation();
+    return invitation.destinationNormalized;
+  }
+
+  async setupInvitation(rawToken: string) {
+    const invitationId = this.tokens.parseOpaqueId(rawToken);
+    if (!invitationId) throw this.invalidInvitation();
+    const invitation = await this.database.client.ownerStaffInvitation.findUnique({
+      include: { membership: true, setup: true },
+      where: { id: invitationId },
+    });
+    if (
+      !invitation ||
+      !this.crypto.secureEqual(invitation.tokenHash, this.tokens.hashOpaque(rawToken)) ||
+      !isUsableOwnerStaffInvitation(invitation, true, new Date()) ||
+      invitation.channel !== OwnerStaffInvitationChannel.SMS
+    )
+      throw this.invalidInvitation();
+    return invitation;
+  }
+
   async auditDelegatedAction(input: {
     readonly actorUserId: string;
     readonly context: OwnerAccessContext;
@@ -543,6 +630,12 @@ export class OwnerAccessService {
   ): void {
     if (!user) throw this.invalidInvitation();
     if (invitation.channel === OwnerStaffInvitationChannel.SMS) {
+      if (!user.normalizedMobileNumber)
+        throw new ApplicationException(
+          'MOBILE_VERIFICATION_REQUIRED',
+          'Verify this mobile number before accepting the Staff invitation.',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
       if (
         user.normalizedMobileNumber === invitation.destinationNormalized &&
         !user.mobileVerifiedAt

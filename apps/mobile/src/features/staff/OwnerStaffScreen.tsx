@@ -1,6 +1,7 @@
 import type {
   InviteOwnerStaffRequest,
   OwnerStaffDetail,
+  OwnerStaffAccessLinkResponse,
   OwnerStaffListItem,
   OwnerStaffPreset,
   OwnerStaffRole,
@@ -10,6 +11,7 @@ import type {
 } from '@carrental/api-contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
+import * as Clipboard from 'expo-clipboard';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -17,6 +19,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -213,9 +216,11 @@ export function canManageMember(
 export function OwnerStaffScreen({
   capacity,
   ownerProfileId,
+  workspaceLabel,
 }: {
   readonly capacity: StaffCapacity;
   readonly ownerProfileId: string;
+  readonly workspaceLabel: string | null | undefined;
 }) {
   const [view, setView] = useState<ViewState>({ type: 'directory' });
   if (view.type === 'invite')
@@ -240,6 +245,7 @@ export function OwnerStaffScreen({
     <StaffDirectory
       capacity={capacity}
       ownerProfileId={ownerProfileId}
+      workspaceLabel={workspaceLabel}
       onAdd={() => setView({ type: 'invite' })}
       onOpen={(id) => setView({ type: 'detail', id })}
     />
@@ -249,11 +255,13 @@ export function OwnerStaffScreen({
 function StaffDirectory({
   capacity,
   ownerProfileId,
+  workspaceLabel,
   onAdd,
   onOpen,
 }: {
   readonly capacity: StaffCapacity;
   readonly ownerProfileId: string;
+  readonly workspaceLabel: string | null | undefined;
   readonly onAdd: () => void;
   readonly onOpen: (id: string) => void;
 }) {
@@ -269,6 +277,9 @@ function StaffDirectory({
       subtitle="Manage Managers and Staff who help operate your vehicles."
       action={<Button compact icon="person-add-outline" label="Add staff" onPress={onAdd} />}
     >
+      {capacity === 'OWNER' ? (
+        <StaffAccessLinkCard ownerProfileId={ownerProfileId} workspaceLabel={workspaceLabel} />
+      ) : null}
       {staff.isPending ? (
         <StateView compact loading title="Loading Staff" />
       ) : staff.isError ? (
@@ -335,6 +346,147 @@ function StaffDirectory({
         </View>
       )}
     </NestedScreen>
+  );
+}
+
+function StaffAccessLinkCard({
+  ownerProfileId,
+  workspaceLabel,
+}: {
+  readonly ownerProfileId: string;
+  readonly workspaceLabel: string | null | undefined;
+}) {
+  const client = useQueryClient();
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false);
+  const queryKey = ['owner-staff-access-link', ownerProfileId] as const;
+  const accessLink = useQuery({
+    queryKey,
+    queryFn: () =>
+      apiClient.request<OwnerStaffAccessLinkResponse>(
+        `/owner/workspaces/${ownerProfileId}/staff-access-link`,
+      ),
+    retry: false,
+  });
+  const regenerate = useMutation({
+    mutationFn: () =>
+      apiClient.request<OwnerStaffAccessLinkResponse>(
+        `/owner/workspaces/${ownerProfileId}/staff-access-link/regenerate`,
+        { method: 'POST' },
+      ),
+    onSuccess: (next) => {
+      client.setQueryData(queryKey, next);
+      setConfirmRegenerate(false);
+      Alert.alert('New Staff access link created');
+    },
+    onError: () => Alert.alert('Link not regenerated', 'Check your connection and try again.'),
+  });
+  const copy = async () => {
+    if (!accessLink.data) return;
+    try {
+      await Clipboard.setStringAsync(accessLink.data.url);
+      Alert.alert('Link copied');
+    } catch {
+      Alert.alert('Link not copied', 'Try again.');
+    }
+  };
+  const share = async () => {
+    if (!accessLink.data) return;
+    const context = workspaceLabel?.trim()
+      ? `Use this link to sign in to ${workspaceLabel.trim()}:`
+      : 'Use this link to sign in to your Owner workspace:';
+    try {
+      await Share.share({ message: `CarShare Staff access\n${context}\n${accessLink.data.url}` });
+    } catch {
+      Alert.alert('Link not shared', 'Try again.');
+    }
+  };
+  return (
+    <View style={styles.accessLinkSection}>
+      <SectionHeader title="Staff access link" />
+      {accessLink.isPending ? (
+        <Card>
+          <StateView compact loading title="Loading Staff access link" />
+        </Card>
+      ) : accessLink.isError || !accessLink.data ? (
+        <Card>
+          <StateView
+            compact
+            icon="alert-circle-outline"
+            title="Unable to load Staff access link"
+            actionLabel="Retry"
+            onAction={() => void accessLink.refetch()}
+          />
+        </Card>
+      ) : (
+        <Card style={styles.accessLinkCard}>
+          <Text style={styles.meta}>
+            Use this link when existing Staff need to sign in on a new device.
+          </Text>
+          <Text
+            accessibilityLabel={`Current Staff access link: ${accessLink.data.url}`}
+            numberOfLines={1}
+            style={styles.accessLinkUrl}
+          >
+            {accessLink.data.url}
+          </Text>
+          {accessLink.data.rotatedAt ? (
+            <Text style={styles.meta}>Updated {dateTimeLabel(accessLink.data.rotatedAt)}</Text>
+          ) : null}
+          <View style={styles.actionRow}>
+            <Button compact label="Copy link" variant="secondary" onPress={() => void copy()} />
+            <Button compact label="Share link" variant="secondary" onPress={() => void share()} />
+          </View>
+          <Button
+            compact
+            label="Regenerate link"
+            variant="ghost"
+            onPress={() => setConfirmRegenerate(true)}
+          />
+        </Card>
+      )}
+      <AccessLinkConfirmationModal
+        pending={regenerate.isPending}
+        visible={confirmRegenerate}
+        onCancel={() => setConfirmRegenerate(false)}
+        onConfirm={() => regenerate.mutate()}
+      />
+    </View>
+  );
+}
+
+function AccessLinkConfirmationModal({
+  pending,
+  visible,
+  onCancel,
+  onConfirm,
+}: {
+  readonly pending: boolean;
+  readonly visible: boolean;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}) {
+  if (!visible) return null;
+  return (
+    <Modal animationType="slide" transparent visible onRequestClose={onCancel}>
+      <View style={styles.modalBackdrop}>
+        <View accessibilityViewIsModal style={styles.confirmSheet}>
+          <Text accessibilityRole="header" style={styles.confirmTitle}>
+            Regenerate Staff access link?
+          </Text>
+          <Text style={styles.confirmCopy}>
+            The current link will stop working immediately. Existing Staff accounts and active
+            sessions will not be affected.
+          </Text>
+          <Button
+            disabled={pending}
+            label={pending ? 'Regenerating…' : 'Regenerate link'}
+            variant="danger"
+            onPress={onConfirm}
+          />
+          <Button disabled={pending} label="Cancel" variant="ghost" onPress={onCancel} />
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -1319,6 +1471,9 @@ function ConfirmationModal({
 }
 
 const styles = StyleSheet.create({
+  accessLinkCard: { gap: spacing.sm },
+  accessLinkSection: { gap: spacing.xs },
+  accessLinkUrl: { color: colors.ink, fontSize: 14, fontWeight: '700' },
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   avatar: {
     alignItems: 'center',

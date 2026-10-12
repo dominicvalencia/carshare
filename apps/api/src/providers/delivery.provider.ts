@@ -16,7 +16,7 @@ export interface EmailMessage {
 
 export interface OtpSmsMessage {
   readonly to: string;
-  readonly template: 'LOGIN_OTP' | 'MOBILE_VERIFICATION_OTP';
+  readonly template: 'LOGIN_OTP' | 'MOBILE_VERIFICATION_OTP' | 'STAFF_PASSWORD_RESET_OTP';
   readonly code: string;
 }
 
@@ -38,9 +38,11 @@ export function renderSmsMessage(message: SmsMessage): string {
         : 'a CarShare owner';
     return `CarShare: ${workspace} invited you to join as ${message.roleLabel}. Accept within 24 hours: ${message.invitationUrl}`;
   }
-  return message.template === 'LOGIN_OTP'
-    ? `Your CarShare login code is ${message.code}. It expires soon.`
-    : `Your CarShare verification code is ${message.code}. It expires soon.`;
+  if (message.template === 'LOGIN_OTP')
+    return `Your CarShare login code is ${message.code}. It expires soon.`;
+  if (message.template === 'STAFF_PASSWORD_RESET_OTP')
+    return `Your CarShare Staff password reset code is ${message.code}. It expires soon.`;
+  return `Your CarShare verification code is ${message.code}. It expires soon.`;
 }
 
 export type DeliveryStatus =

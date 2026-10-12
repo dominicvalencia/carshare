@@ -1,4 +1,10 @@
-import type { AuthTokens } from './auth.types';
+import type {
+  CompleteOwnerStaffInvitationSetupRequest,
+  CompleteOwnerStaffInvitationSetupResponse,
+  OwnerStaffAccessLoginRequest,
+  OwnerStaffAccessLoginResponse,
+} from '@carrental/api-contracts';
+import type { AuthTokens, AuthUser } from './auth.types';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000/api/v1';
 
@@ -51,11 +57,13 @@ export class ApiClient {
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const anonymousAuthenticationRoute = [
-      '/auth/login',
-      '/auth/register',
-      '/auth/refresh',
-    ].includes(path);
+    const anonymousAuthenticationRoute =
+      ['/auth/login', '/auth/register', '/auth/refresh'].includes(path) ||
+      /^\/owner\/staff-access\/[^/]+(?:\/login|\/password-reset\/(?:requests|verify|complete))?$/.test(
+        path,
+      ) ||
+      path === '/owner/staff-invitations/setup' ||
+      path === '/owner/staff-invitations/setup/complete';
     const allowsAuthenticationRefresh = !anonymousAuthenticationRoute;
     let response = await this.fetch(`${this.apiUrl}${path}`, {
       ...init,
@@ -135,6 +143,25 @@ export class ApiClient {
   refresh(refreshToken: string): Promise<AuthTokens> {
     return this.request('/auth/refresh', {
       body: JSON.stringify({ refreshToken }),
+      method: 'POST',
+    });
+  }
+
+  loginStaffAccess(
+    handle: string,
+    input: Omit<OwnerStaffAccessLoginRequest, 'platform'>,
+  ): Promise<OwnerStaffAccessLoginResponse<AuthUser>> {
+    return this.request(`/owner/staff-access/${encodeURIComponent(handle)}/login`, {
+      body: JSON.stringify({ ...input, platform: devicePlatform() }),
+      method: 'POST',
+    });
+  }
+
+  completeStaffInvitationSetup(
+    input: CompleteOwnerStaffInvitationSetupRequest,
+  ): Promise<CompleteOwnerStaffInvitationSetupResponse<AuthUser>> {
+    return this.request('/owner/staff-invitations/setup/complete', {
+      body: JSON.stringify({ ...input, platform: devicePlatform() }),
       method: 'POST',
     });
   }

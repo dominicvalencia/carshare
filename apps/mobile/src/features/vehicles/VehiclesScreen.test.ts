@@ -19,7 +19,7 @@ const primitivesSource = readFileSync(
 describe('Phase 12 owner vehicle acceptance UX', () => {
   it('renders the compact Fleet hierarchy without changing list navigation or Add vehicle', () => {
     const fleet = source.slice(
-      source.indexOf('function ActualOwnerVehiclesScreen()'),
+      source.indexOf('function ActualOwnerVehiclesScreen('),
       source.indexOf('function FleetVehicleCard('),
     );
 
@@ -48,7 +48,9 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(card).toContain(".join(' · ')");
     expect(card).toContain('fleetMarketplaceStatus(vehicle)');
     expect(card).toContain('fleetDistinctAvailabilityLabel(vehicle.availabilityToday)');
-    expect(card).toContain("draft ? 'Continue setup' : 'Manage vehicle'");
+    expect(card).toContain("? 'Review vehicle'");
+    expect(card).toContain("? 'Continue setup'");
+    expect(card).toContain(": 'Manage vehicle'");
   });
 
   it('keeps draft cards simplified while using the same whole-card route', () => {
@@ -59,7 +61,9 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
 
     expect(card).toContain("const draft = vehicle.status === 'DRAFT'");
     expect(card).toContain("'Untitled vehicle draft'");
-    expect(card).toContain('<Text style={styles.fleetDraftState}>Setup in progress</Text>');
+    expect(card).toContain('<Text style={styles.fleetDraftState}>');
+    expect(card).toContain("? 'Review the Manager submission'");
+    expect(card).toContain(": 'Setup in progress'");
     expect(card).toContain('{draft ? (');
     expect(card).toContain('{policy && <Text style={styles.fleetRate}>');
     expect(card).toContain('onPress={onPress}');
@@ -76,7 +80,8 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
   });
 
   it('aligns standard and draft actions through one compact card authority', () => {
-    expect(source).toContain("const actionLabel = draft ? 'Continue setup' : 'Manage vehicle'");
+    expect(source).toContain('const actionLabel = awaitingOwnerApproval');
+    expect(source).toContain("? 'Review vehicle'");
     expect(source).toContain('<Text style={styles.fleetAction}>{actionLabel} →</Text>');
     expect(source).toContain("marginTop: 'auto'");
     expect(source).toContain('fleetContent: { flex: 1, gap: spacing.xxs, minHeight: 120');
@@ -427,7 +432,9 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(editor).toContain('stepCompletionIds.findIndex');
     expect(editor).toContain('Math.min(completedIndex + 1, steps.length - 1)');
     expect(editor).toContain("completedSection === 'AVAILABILITY'");
-    expect(source).toContain("if (mode === 'usage') await markSectionComplete(id, 'Policies');");
+    expect(source).toContain(
+      "if (mode === 'usage') await markSectionComplete(endpointBase, 'Policies');",
+    );
   });
 
   it('keeps both policy screens on the same immutable payload and sticky save flow', () => {
@@ -436,7 +443,7 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
       source.indexOf('function AvailabilityStep('),
     );
 
-    expect(policy).toContain('`/owner/vehicles/${id}/policy-versions`');
+    expect(policy).toContain('`${endpointBase}/policy-versions`');
     expect(policy).toContain('dailyRateMinor: Math.round(Number(dailyRate) * 100)');
     expect(policy).toContain('shortDurationDiscountBps');
     expect(policy).toContain('weeklyDiscountBps');
@@ -527,7 +534,7 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     );
 
     expect(editor).toContain("['DRAFT', 'CHANGES_REQUIRED', 'REJECTED'].includes(value.status)");
-    expect(editor).toContain("action.mutate({ path: '/submission' })");
+    expect(editor).toContain("path: delegated ? '/owner-approval-submission' : '/submission'");
     expect(editor).toContain("'Submit for approval'");
     expect(review).toContain("'AWAITING_REVIEW'");
     expect(review).toContain('Your vehicle has been submitted and is waiting for review.');
@@ -574,7 +581,7 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
       source.indexOf('function LocationStep('),
     );
 
-    expect(documents).toContain("'/owner/vehicle-reference-data/document-definitions'");
+    expect(documents).toContain('`${referenceBase}/document-definitions`');
     expect(documents).toContain('definitions.data?.map((definition) =>');
     expect(documents).toContain("definition.required ? 'Required' : 'Optional'");
     expect(documents).toContain('definitions.data?.filter(({ required }) => required)');
@@ -1015,7 +1022,9 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(policy).toContain('supportsOwnerDelivery: ownerDelivery');
     expect(policy).toContain('supportsRenterReturn: renterReturn');
     expect(policy).toContain('supportsOwnerCollection: ownerCollection');
-    expect(policy).toContain("if (mode === 'usage') await markSectionComplete(id, 'Policies')");
+    expect(policy).toContain(
+      "if (mode === 'usage') await markSectionComplete(endpointBase, 'Policies')",
+    );
   });
 
   it('keeps every long-booking field in the dedicated pricing step', () => {

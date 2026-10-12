@@ -6,6 +6,7 @@ import {
   OwnerStaffVehicleScopeMode,
 } from '@carrental/database';
 import type { OwnerAccessContext } from '../security/security-context';
+import { OPERATIONS_STAFF_PERMISSIONS } from '../owner-access/owner-permissions';
 import { OwnerStaffPreset } from './owner-staff.dto';
 import { OwnerStaffService } from './owner-staff.service';
 
@@ -55,9 +56,11 @@ function createService(
     { send: deliveryOverrides.email ?? vi.fn() } as never,
     { send: deliveryOverrides.sms ?? vi.fn() } as never,
     { assertAllowed: vi.fn() } as never,
+    { hashIdentifier: vi.fn(), randomSecret: vi.fn() } as never,
     {
       getOrThrow: vi.fn((key: string) => (key === 'APP_ENV' ? 'local' : 'http://localhost:3000')),
     } as never,
+    { requestMobileVerification: vi.fn() } as never,
   );
 }
 
@@ -87,6 +90,31 @@ function member(overrides: Record<string, unknown> = {}) {
 }
 
 describe('OwnerStaffService management boundaries', () => {
+  it('projects only safe invitation context for the public preview', async () => {
+    const service = createService(
+      {},
+      {
+        previewInvitation: vi.fn().mockResolvedValue({
+          channel: OwnerStaffInvitationChannel.SMS,
+          expiresAt: new Date('2026-10-13T00:00:00.000Z'),
+          permissions: OPERATIONS_STAFF_PERMISSIONS,
+          role: OwnerStaffRole.STAFF,
+          state: 'PENDING',
+          workspaceLabel: 'Dominic Rentals',
+        }),
+      },
+    );
+
+    await expect(service.previewInvitation('opaque-token')).resolves.toEqual({
+      channel: OwnerStaffInvitationChannel.SMS,
+      expiresAt: new Date('2026-10-13T00:00:00.000Z'),
+      role: OwnerStaffRole.STAFF,
+      roleLabel: 'Operations Staff',
+      state: 'PENDING',
+      workspaceLabel: 'Dominic Rentals',
+    });
+  });
+
   it.each(['09171234567', '+639171234567'])(
     'normalizes %s into an SMS invite without sending email',
     async (mobileNumber) => {
@@ -134,11 +162,13 @@ describe('OwnerStaffService management boundaries', () => {
         { send: emailSend } as never,
         { send: smsSend } as never,
         { assertAllowed: vi.fn() } as never,
+        { hashIdentifier: vi.fn(), randomSecret: vi.fn() } as never,
         {
           getOrThrow: vi.fn((key: string) =>
             key === 'APP_ENV' ? 'local' : 'http://localhost:3000',
           ),
         } as never,
+        { requestMobileVerification: vi.fn() } as never,
       );
 
       await service.invite(
@@ -231,9 +261,11 @@ describe('OwnerStaffService management boundaries', () => {
       { send: vi.fn() } as never,
       { send: smsSend } as never,
       { assertAllowed: rateLimit } as never,
+      { hashIdentifier: vi.fn(), randomSecret: vi.fn() } as never,
       {
         getOrThrow: vi.fn((key: string) => (key === 'APP_ENV' ? 'local' : 'http://localhost:3000')),
       } as never,
+      { requestMobileVerification: vi.fn() } as never,
     );
 
     await expect(
@@ -312,9 +344,11 @@ describe('OwnerStaffService management boundaries', () => {
       { send: emailSend } as never,
       { send: smsSend } as never,
       { assertAllowed: rateLimit } as never,
+      { hashIdentifier: vi.fn(), randomSecret: vi.fn() } as never,
       {
         getOrThrow: vi.fn((key: string) => (key === 'APP_ENV' ? 'local' : 'http://localhost:3000')),
       } as never,
+      { requestMobileVerification: vi.fn() } as never,
     );
 
     await service.reissueInvitation(owner, 'owner-user', 'staff-a', {

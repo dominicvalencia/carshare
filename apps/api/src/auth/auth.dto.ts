@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEmail,
   IsEnum,
+  IsIn,
   IsOptional,
   IsPhoneNumber,
   IsString,
@@ -37,6 +38,11 @@ export class LoginDto extends DeviceDto {
   @ApiProperty() @IsString() @Length(1, 128) password!: string;
 }
 
+export class StaffAccessLoginDto extends DeviceDto {
+  @ApiProperty() @IsPhoneNumber('PH') mobileNumber!: string;
+  @ApiProperty() @IsString() @Length(1, 128) password!: string;
+}
+
 export class RefreshDto {
   @ApiPropertyOptional({
     description: 'Required for mobile; admin web may use its HttpOnly cookie.',
@@ -60,7 +66,7 @@ export class PasswordResetDto extends TokenDto {
 
 export class OtpRequestDto extends DeviceDto {
   @ApiProperty() @IsPhoneNumber('PH') mobileNumber!: string;
-  @ApiProperty({ enum: OtpPurpose }) @IsEnum(OtpPurpose) purpose!: OtpPurpose;
+  @ApiProperty({ enum: [OtpPurpose.LOGIN] }) @IsIn([OtpPurpose.LOGIN]) purpose!: OtpPurpose;
 }
 
 export class MobileVerificationRequestDto extends DeviceDto {

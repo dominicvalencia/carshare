@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { OwnerStaffRole, OwnerStaffStatus } from '@carrental/database';
 import {
   MANAGER_PERMISSIONS,
+  MANAGER_ONLY_PERMISSIONS,
   DEFAULT_OWNER_STAFF_PERMISSIONS,
   OPERATIONS_STAFF_PERMISSIONS,
   OWNER_PERMISSIONS,
   OWNER_ONLY_PERMISSIONS,
+  VEHICLE_SCOPED_OWNER_PERMISSIONS,
   SUPPORT_STAFF_PERMISSIONS,
   assertAssignableOwnerPermissions,
   assertActorCanGrantOwnerPermissions,
@@ -36,6 +38,24 @@ describe('Owner Staff authority policy', () => {
     );
     expect(() => assertManagerTargetRole(OwnerStaffRole.MANAGER)).toThrow('ordinary Staff only');
     expect(() => assertManagerTargetRole(OwnerStaffRole.STAFF)).not.toThrow();
+  });
+
+  it('makes vehicle creation Manager-default without granting it to Staff presets or custom Staff', () => {
+    expect(OWNER_PERMISSIONS['vehicles.create']).toBe(
+      'Create a new vehicle inside an authorized Owner workspace',
+    );
+    expect(MANAGER_PERMISSIONS).toContain('vehicles.create');
+    expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('vehicles.create' as never);
+    expect(SUPPORT_STAFF_PERMISSIONS).not.toContain('vehicles.create' as never);
+    expect(MANAGER_ONLY_PERMISSIONS).toContain('vehicles.create');
+    expect(VEHICLE_SCOPED_OWNER_PERMISSIONS).not.toContain('vehicles.create');
+    expect(() =>
+      assertAssignableOwnerPermissions(OwnerStaffRole.STAFF, ['vehicles.create']),
+    ).toThrow('Manager-only permission');
+    expect(() =>
+      assertAssignableOwnerPermissions(OwnerStaffRole.MANAGER, ['vehicles.create']),
+    ).not.toThrow();
+    expect(Object.keys(OWNER_PERMISSIONS)).toContain('vehicles.create');
   });
 
   it('makes own-activity visibility a default for every delegated preset and custom access', () => {

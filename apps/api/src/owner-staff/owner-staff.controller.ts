@@ -21,9 +21,17 @@ import { OwnerAccessGuard } from '../owner-access/owner-access.guard';
 import type { RequestPrincipal } from '../security/security-context';
 import {
   AcceptOwnerStaffInvitationDto,
+  BeginOwnerStaffSetupDto,
+  CompleteOwnerStaffSetupDto,
+  CompleteStaffPasswordResetDto,
   InviteOwnerStaffDto,
   OwnerStaffQueryDto,
   OwnerStaffReasonDto,
+  StaffAccessLoginDto,
+  RequestStaffPasswordResetDto,
+  VerifyStaffPasswordResetDto,
+  PreviewOwnerStaffInvitationDto,
+  VerifyOwnerStaffInvitationMobileDto,
   UpdateOwnerStaffDto,
   UpdateOwnerStaffPermissionsDto,
   UpdateOwnerStaffScopeDto,
@@ -180,10 +188,65 @@ export class OwnerStaffController {
 }
 
 @ApiBearerAuth()
+@ApiTags('Owner Staff Access')
+@Controller('owner/workspaces/:ownerProfileId/staff-access-link')
+@UseGuards(AccessTokenGuard, OwnerAccessGuard)
+export class OwnerStaffAccessLinkController {
+  constructor(private readonly staff: OwnerStaffService) {}
+
+  @Get()
+  accessLink(@CurrentPrincipal() actor: RequestPrincipal, @Req() request: Request) {
+    return this.staff.staffAccessLink(actor.ownerAccess!, actor.userId, requestMetadata(request));
+  }
+
+  @Post('regenerate')
+  regenerateAccessLink(@CurrentPrincipal() actor: RequestPrincipal, @Req() request: Request) {
+    return this.staff.regenerateStaffAccessLink(
+      actor.ownerAccess!,
+      actor.userId,
+      requestMetadata(request),
+    );
+  }
+}
+
+@ApiBearerAuth()
 @ApiTags('Owner Staff Invitations')
 @Controller('owner/staff-invitations')
 export class OwnerStaffInvitationController {
   constructor(private readonly staff: OwnerStaffService) {}
+
+  @Get('preview')
+  preview(@Query() input: PreviewOwnerStaffInvitationDto) {
+    return this.staff.previewInvitation(input.token);
+  }
+
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('setup')
+  beginSetup(@Body() input: BeginOwnerStaffSetupDto, @Req() request: Request) {
+    return this.staff.beginInvitationSetup(input, requestMetadata(request));
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('setup/complete')
+  completeSetup(@Body() input: CompleteOwnerStaffSetupDto, @Req() request: Request) {
+    return this.staff.completeInvitationSetup(input, requestMetadata(request));
+  }
+
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('mobile-verification/requests')
+  @UseGuards(AccessTokenGuard)
+  requestMobileVerification(
+    @CurrentPrincipal() actor: RequestPrincipal,
+    @Body() input: VerifyOwnerStaffInvitationMobileDto,
+    @Req() request: Request,
+  ) {
+    return this.staff.requestInvitationMobileVerification(
+      input.token,
+      actor.userId,
+      input,
+      requestMetadata(request),
+    );
+  }
 
   @HttpCode(HttpStatus.OK)
   @Post('accept')
@@ -194,5 +257,72 @@ export class OwnerStaffInvitationController {
     @Req() request: Request,
   ) {
     return this.staff.acceptInvitation(input.token, actor.userId, requestMetadata(request));
+  }
+}
+
+@ApiTags('Owner Staff Access')
+@Controller('owner/staff-access')
+export class OwnerStaffAccessController {
+  constructor(private readonly staff: OwnerStaffService) {}
+
+  @Get(':handle')
+  resolve(@Param('handle') handle: string, @Req() request: Request) {
+    return this.staff.resolveStaffAccessLink(handle, requestMetadata(request));
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post(':handle/login')
+  login(
+    @Param('handle') handle: string,
+    @Body() input: StaffAccessLoginDto,
+    @Req() request: Request,
+  ) {
+    return this.staff.loginStaffAccess(handle, input, requestMetadata(request));
+  }
+
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post(':handle/password-reset/requests')
+  requestPasswordReset(
+    @Param('handle') handle: string,
+    @Body() input: RequestStaffPasswordResetDto,
+    @Req() request: Request,
+  ) {
+    return this.staff.requestStaffPasswordReset(
+      handle,
+      input.mobileNumber,
+      requestMetadata(request),
+    );
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post(':handle/password-reset/verify')
+  verifyPasswordReset(
+    @Param('handle') handle: string,
+    @Body() input: VerifyStaffPasswordResetDto,
+    @Req() request: Request,
+  ) {
+    return this.staff.verifyStaffPasswordReset(handle, input, requestMetadata(request));
+  }
+
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post(':handle/password-reset/complete')
+  completePasswordReset(
+    @Param('handle') handle: string,
+    @Body() input: CompleteStaffPasswordResetDto,
+    @Req() request: Request,
+  ) {
+    return this.staff.completeStaffPasswordReset(handle, input, requestMetadata(request));
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post(':handle/authorize')
+  @UseGuards(AccessTokenGuard)
+  authorize(
+    @CurrentPrincipal() actor: RequestPrincipal,
+    @Param('handle') handle: string,
+    @Req() request: Request,
+  ) {
+    return this.staff.authorizeStaffAccessLink(handle, actor.userId, requestMetadata(request));
   }
 }

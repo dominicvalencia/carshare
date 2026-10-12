@@ -113,6 +113,86 @@ export interface AcceptOwnerStaffInvitationResponse {
   readonly role: OwnerStaffRole;
 }
 
+export interface OwnerStaffInvitationPreview {
+  readonly channel: OwnerStaffInvitationChannel;
+  readonly expiresAt: string;
+  readonly role: OwnerStaffRole;
+  readonly roleLabel: string;
+  readonly state: OwnerStaffInvitationState;
+  readonly workspaceLabel: string;
+}
+
+export interface OwnerStaffAccessLinkResponse {
+  readonly createdAt: string;
+  readonly rotatedAt: string | null;
+  readonly url: string;
+  readonly version: number;
+}
+
+export interface OwnerStaffAccessLinkResolution {
+  readonly type: 'STAFF_ACCESS';
+  readonly valid: boolean;
+}
+
+export interface OwnerStaffAccessAuthorization {
+  readonly capacity: OwnerStaffRole;
+  readonly membershipId: string;
+  readonly membershipStatus: 'ACTIVE';
+  readonly ownerProfileId: string;
+  readonly ownerProfileStatus:
+    'DRAFT' | 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED' | 'SUSPENDED';
+  readonly permissions: readonly string[];
+  readonly vehicleScopeMode: OwnerStaffVehicleScopeMode;
+  readonly workspaceLabel: string | null;
+}
+
+export interface OwnerStaffAccessLoginRequest {
+  readonly appVersion?: string;
+  readonly deviceIdentifier?: string;
+  readonly deviceName?: string;
+  readonly mobileNumber: string;
+  readonly password: string;
+  readonly platform?: 'IOS' | 'ANDROID' | 'WEB' | 'UNKNOWN';
+}
+
+export interface OwnerStaffAccessLoginResponse<TUser = unknown> {
+  readonly accessToken: string;
+  readonly accessTokenExpiresIn: number;
+  readonly authorizedWorkspace: OwnerStaffAccessAuthorization;
+  readonly refreshToken: string;
+  readonly sessionId: string;
+  readonly user: TUser;
+}
+
+export interface RequestStaffPasswordResetResponse {
+  readonly challengeId: string;
+  readonly message: string;
+}
+
+export interface VerifyStaffPasswordResetResponse {
+  readonly resetToken: string;
+}
+
+export interface BeginOwnerStaffInvitationSetupRequest {
+  readonly confirmPassword: string;
+  readonly password: string;
+  readonly token: string;
+}
+
+export interface BeginOwnerStaffInvitationSetupResponse {
+  readonly challengeId: string;
+  readonly expiresAt: string;
+}
+
+export interface CompleteOwnerStaffInvitationSetupRequest {
+  readonly challengeId: string;
+  readonly code: string;
+  readonly token: string;
+}
+
+export type CompleteOwnerStaffInvitationSetupResponse<TUser = unknown> =
+  OwnerStaffAccessLoginResponse<TUser>;
+
 export const SystemErrorCode = {
   INTERNAL_ERROR: 'INTERNAL_ERROR',
   NOT_FOUND: 'NOT_FOUND',
@@ -174,6 +254,11 @@ export const VehicleErrorCode = {
   VEHICLE_DELETE_BLOCKED: 'VEHICLE_DELETE_BLOCKED',
   VEHICLE_INCOMPLETE: 'VEHICLE_INCOMPLETE',
   VEHICLE_NOT_FOUND: 'VEHICLE_NOT_FOUND',
+  VEHICLE_OWNER_APPROVAL_ALREADY_PENDING: 'VEHICLE_OWNER_APPROVAL_ALREADY_PENDING',
+  VEHICLE_OWNER_APPROVAL_FORBIDDEN: 'VEHICLE_OWNER_APPROVAL_FORBIDDEN',
+  VEHICLE_OWNER_APPROVAL_NOT_PENDING: 'VEHICLE_OWNER_APPROVAL_NOT_PENDING',
+  VEHICLE_OWNER_APPROVAL_STALE: 'VEHICLE_OWNER_APPROVAL_STALE',
+  VEHICLE_NOT_READY_FOR_OWNER_APPROVAL: 'VEHICLE_NOT_READY_FOR_OWNER_APPROVAL',
 } as const;
 
 export type VehicleErrorCode = (typeof VehicleErrorCode)[keyof typeof VehicleErrorCode];

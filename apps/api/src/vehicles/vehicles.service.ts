@@ -7,6 +7,8 @@ import {
   FileClassification,
   InspectionConditionClassification,
   MileagePolicyType,
+  OwnerStaffStatus,
+  OwnerStaffVehicleScopeMode,
   PostReturnClaimStatus,
   Prisma,
   ReviewType,
@@ -16,6 +18,7 @@ import {
   VehiclePhotoPerspective,
   VehiclePowertrain,
   VehicleKnownIssueStatus,
+  VehicleOwnerApprovalStatus,
   VerificationStatus,
 } from '@carrental/database';
 import { VehicleErrorCode } from '@carrental/api-contracts';
@@ -38,6 +41,10 @@ import type {
   CreateVehicleBlockDto,
   CreateVehicleDto,
   CreateVehiclePolicyVersionDto,
+  ManagerVehicleOperationalDetailsDto,
+  ManagerVehicleOperationalFeaturesDto,
+  ManagerVehicleOperationalPolicyDto,
+  ManagerVehicleOperationalStatusDto,
   ReorderVehiclePhotosDto,
   RemoveVehicleDto,
   SetVehicleFeaturesDto,
@@ -86,6 +93,18 @@ const safeFileSelect = {
   status: true,
   updatedAt: true,
 };
+const safeOwnerApprovalSelect = {
+  id: true,
+  reviewReason: true,
+  status: true,
+  submittedAt: true,
+  submittedBy: {
+    select: {
+      profile: { select: { displayName: true, firstName: true, lastName: true } },
+    },
+  },
+  submittedRevision: true,
+} as const;
 
 const ownerVehicleInclude = {
   category: true,
@@ -105,9 +124,15 @@ const ownerVehicleInclude = {
     where: { removedAt: null },
   },
   policyVersions: { orderBy: { version: 'desc' as const } },
+  ownerApprovalRequests: {
+    orderBy: { submittedAt: 'desc' as const },
+    select: safeOwnerApprovalSelect,
+    take: 1,
+  },
   statusHistory: { orderBy: { occurredAt: 'asc' as const } },
 };
 type OwnerVehicleRecord = Prisma.VehicleGetPayload<{ include: typeof ownerVehicleInclude }>;
+type SafeOwnerVehicleRecord = Omit<OwnerVehicleRecord, 'createdByMembershipId' | 'createdByUserId'>;
 type VehicleDeleteBlocker = {
   readonly code:
     | 'ONGOING_RENTAL'
@@ -172,6 +197,71 @@ export class VehiclesService {
   async create(userId: string, input: CreateVehicleDto, request: RequestMetadata) {
     await this.owners.assertDraftCapable(userId);
     const owner = await this.database.client.ownerProfile.findUniqueOrThrow({ where: { userId } });
+    return this.createDraft(
+      {
+        actorUserId: userId,
+        ownerProfileId: owner.id,
+        ownerUserId: userId,
+      },
+      input,
+      request,
+    );
+  }
+
+  async createForOwnerAccess(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    input: CreateVehicleDto,
+    request: RequestMetadata,
+  ) {
+    this.ownerAccess.requirePermission(context, 'vehicles.create');
+    if (
+      context.capacity !== 'MANAGER' ||
+      context.membershipStatus !== OwnerStaffStatus.ACTIVE ||
+      !context.membershipId
+    ) {
+      throw new ApplicationException(
+        'OWNER_ACCESS_DENIED',
+        'Manager vehicle creation is unavailable for this Owner workspace.',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    const owner = await this.database.client.ownerProfile.findUnique({
+      select: { userId: true },
+      where: { id: context.ownerProfileId },
+    });
+    if (!owner) {
+      throw new ApplicationException(
+        'OWNER_ACCESS_DENIED',
+        'Manager vehicle creation is unavailable for this Owner workspace.',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    await this.owners.assertDraftCapable(owner.userId);
+    return this.createDraft(
+      {
+        actorUserId,
+        creatorMembershipId: context.membershipId,
+        delegatedContext: context,
+        ownerProfileId: context.ownerProfileId,
+        ownerUserId: owner.userId,
+      },
+      input,
+      request,
+    );
+  }
+
+  private async createDraft(
+    authority: {
+      readonly actorUserId: string;
+      readonly creatorMembershipId?: string;
+      readonly delegatedContext?: OwnerAccessContext;
+      readonly ownerProfileId: string;
+      readonly ownerUserId: string;
+    },
+    input: CreateVehicleDto,
+    request: RequestMetadata,
+  ) {
     if (input.categoryId) await this.assertCategory(input.categoryId);
     const make = input.make === undefined ? undefined : await this.canonicalMake(input.make);
     const vehicle = await this.database.client.$transaction(async (transaction) => {
@@ -180,21 +270,57 @@ export class VehiclesService {
           ...(input.categoryId ? { categoryId: input.categoryId } : {}),
           ...(make === undefined ? {} : { make }),
           ...(input.model === undefined ? {} : { model: input.model.trim() || null }),
-          ownerProfileId: owner.id,
-          ownerUserId: userId,
+          createdByUserId: authority.actorUserId,
+          ...(authority.creatorMembershipId
+            ? { createdByMembershipId: authority.creatorMembershipId }
+            : {}),
+          ownerProfileId: authority.ownerProfileId,
+          ownerUserId: authority.ownerUserId,
         },
       });
+      if (
+        authority.creatorMembershipId &&
+        authority.delegatedContext?.vehicleScopeMode ===
+          OwnerStaffVehicleScopeMode.SELECTED_VEHICLES
+      ) {
+        await transaction.ownerStaffVehicleAssignment.create({
+          data: {
+            assignedByUserId: authority.actorUserId,
+            membershipId: authority.creatorMembershipId,
+            vehicleId: created.id,
+          },
+        });
+      }
       await transaction.vehicleStatusHistory.create({
         data: {
-          actorUserId: userId,
+          actorUserId: authority.actorUserId,
           ...(request.correlationId ? { correlationId: request.correlationId } : {}),
           newStatus: VehicleLifecycleStatus.DRAFT,
           vehicleId: created.id,
         },
       });
+      if (authority.delegatedContext) {
+        await transaction.auditLog.create({
+          data: {
+            action: 'OWNER_WORKSPACE_VEHICLE_CREATED',
+            actorUserId: authority.actorUserId,
+            ...(request.correlationId ? { correlationId: request.correlationId } : {}),
+            ...(request.ipAddress ? { ipAddress: request.ipAddress } : {}),
+            metadata: {
+              capacity: authority.delegatedContext.capacity,
+              membershipId: authority.creatorMembershipId,
+              ownerProfileId: authority.ownerProfileId,
+              permission: 'vehicles.create',
+              vehicleId: created.id,
+            },
+            targetId: created.id,
+            targetType: 'VEHICLE',
+          },
+        });
+      }
       return created;
     });
-    return this.getOwned(userId, vehicle.id);
+    return this.getAccessible({ id: vehicle.id, ownerProfileId: authority.ownerProfileId });
   }
 
   async listOwned(userId: string) {
@@ -217,6 +343,11 @@ export class VehiclesService {
           where: { isCover: true, removedAt: null },
         },
         policyVersions: { orderBy: { version: 'desc' }, take: 1 },
+        ownerApprovalRequests: {
+          orderBy: { submittedAt: 'desc' },
+          select: safeOwnerApprovalSelect,
+          take: 1,
+        },
       },
       orderBy: { updatedAt: 'desc' },
       where: { ...accessWhere, status: { not: VehicleLifecycleStatus.ARCHIVED } },
@@ -246,7 +377,7 @@ export class VehiclesService {
         ])
       : [[], []];
     return vehicles.map((vehicle) => ({
-      ...this.withOwnerPhotoGrants(vehicle),
+      ...this.withoutInternalVehicleProvenance(this.withOwnerPhotoGrants(vehicle)),
       availabilityToday: ownerAvailabilityToday({
         blocks: blocks.filter(({ vehicleId }) => vehicleId === vehicle.id),
         lifecycleStatus: vehicle.status,
@@ -314,7 +445,7 @@ export class VehiclesService {
       }),
     ]);
     return {
-      ...this.withOwnerPhotoGrants(vehicle),
+      ...this.withoutInternalVehicleProvenance(this.withOwnerPhotoGrants(vehicle)),
       knownIssues: this.withKnownIssueEvidenceGrants(vehicle.knownIssues),
       availabilityToday: ownerAvailabilityToday({
         blocks,
@@ -598,9 +729,13 @@ export class VehiclesService {
     return (await this.listKnownIssues(userId, id)).find(({ id: value }) => value === issueId);
   }
 
-  async update(userId: string, id: string, input: UpdateVehicleDto) {
-    await this.owners.assertDraftCapable(userId);
-    const vehicle = await this.ownedRecord(userId, id);
+  async update(
+    userId: string,
+    id: string,
+    input: UpdateVehicleDto,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    const vehicle = await this.editableVehicle(userId, id, delegatedContext);
     const keys = Object.keys(input).filter(
       (key) => input[key as keyof UpdateVehicleDto] !== undefined,
     );
@@ -635,6 +770,7 @@ export class VehiclesService {
       );
     }
     const data: Prisma.VehicleUpdateInput = {
+      ...(keys.length ? { revision: { increment: 1 } } : {}),
       ...(input.categoryId ? { category: { connect: { id: input.categoryId } } } : {}),
       ...this.stringUpdates(input, [
         'make',
@@ -675,12 +811,16 @@ export class VehiclesService {
       }
       throw error;
     }
-    return this.getOwned(userId, id);
+    return this.mutatedVehicle(userId, id, delegatedContext);
   }
 
-  async setFeatures(userId: string, id: string, input: SetVehicleFeaturesDto) {
-    await this.owners.assertDraftCapable(userId);
-    const vehicle = await this.ownedRecord(userId, id);
+  async setFeatures(
+    userId: string,
+    id: string,
+    input: SetVehicleFeaturesDto,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    const vehicle = await this.editableVehicle(userId, id, delegatedContext);
     this.assertState(vehicle.status, POLICY_EDITABLE, 'Features cannot be changed in this state.');
     const unique = [...new Set(input.featureIds)];
     const count = await this.database.client.vehicleFeature.count({
@@ -703,13 +843,18 @@ export class VehiclesService {
           data: unique.map((featureId) => ({ featureId, vehicleId: id })),
         });
       }
+      await this.bumpVehicleRevision(transaction, id);
     });
-    return this.getOwned(userId, id);
+    return this.mutatedVehicle(userId, id, delegatedContext);
   }
 
-  async addPhoto(userId: string, id: string, input: AddVehiclePhotoDto) {
-    await this.owners.assertDraftCapable(userId);
-    const vehicle = await this.ownedRecord(userId, id);
+  async addPhoto(
+    userId: string,
+    id: string,
+    input: AddVehiclePhotoDto,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    const vehicle = await this.editableVehicle(userId, id, delegatedContext);
     this.assertState(vehicle.status, MATERIAL_EDITABLE, 'Photos cannot be changed in this state.');
     const file = await this.database.client.fileAsset.findFirst({
       where: {
@@ -735,13 +880,18 @@ export class VehiclesService {
       await transaction.vehiclePhoto.create({
         data: { ...input, isCover: makeCover, vehicleId: id },
       });
+      await this.bumpVehicleRevision(transaction, id);
     });
-    return this.getOwned(userId, id);
+    return this.mutatedVehicle(userId, id, delegatedContext);
   }
 
-  async reorderPhotos(userId: string, id: string, input: ReorderVehiclePhotosDto) {
-    await this.owners.assertDraftCapable(userId);
-    const vehicle = await this.ownedRecord(userId, id);
+  async reorderPhotos(
+    userId: string,
+    id: string,
+    input: ReorderVehiclePhotosDto,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    const vehicle = await this.editableVehicle(userId, id, delegatedContext);
     this.assertState(vehicle.status, MATERIAL_EDITABLE, 'Photos cannot be changed in this state.');
     const active = await this.database.client.vehiclePhoto.findMany({
       where: { removedAt: null, vehicleId: id },
@@ -772,24 +922,37 @@ export class VehiclesService {
           where: { id: photo.photoId },
         });
       }
+      await this.bumpVehicleRevision(transaction, id);
     });
-    return this.getOwned(userId, id);
+    return this.mutatedVehicle(userId, id, delegatedContext);
   }
 
-  async removePhoto(userId: string, id: string, photoId: string) {
-    await this.owners.assertDraftCapable(userId);
-    const vehicle = await this.ownedRecord(userId, id);
+  async removePhoto(
+    userId: string,
+    id: string,
+    photoId: string,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    const vehicle = await this.editableVehicle(userId, id, delegatedContext);
     this.assertState(vehicle.status, MATERIAL_EDITABLE, 'Photos cannot be changed in this state.');
-    const result = await this.database.client.vehiclePhoto.updateMany({
-      data: { isCover: false, removedAt: new Date() },
-      where: { id: photoId, removedAt: null, vehicleId: id },
+    const result = await this.database.client.$transaction(async (transaction) => {
+      const removed = await transaction.vehiclePhoto.updateMany({
+        data: { isCover: false, removedAt: new Date() },
+        where: { id: photoId, removedAt: null, vehicleId: id },
+      });
+      if (removed.count) await this.bumpVehicleRevision(transaction, id);
+      return removed;
     });
     if (!result.count) this.notFound();
   }
 
-  async addDocument(userId: string, id: string, input: AddVehicleDocumentDto) {
-    await this.owners.assertDraftCapable(userId);
-    const vehicle = await this.ownedRecord(userId, id);
+  async addDocument(
+    userId: string,
+    id: string,
+    input: AddVehicleDocumentDto,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    const vehicle = await this.editableVehicle(userId, id, delegatedContext);
     this.assertState(
       vehicle.status,
       MATERIAL_EDITABLE,
@@ -838,13 +1001,18 @@ export class VehiclesService {
           version: (current?.version ?? 0) + 1,
         },
       });
+      await this.bumpVehicleRevision(transaction, id);
     });
-    return this.getOwned(userId, id);
+    return this.mutatedVehicle(userId, id, delegatedContext);
   }
 
-  async setLocation(userId: string, id: string, input: SetVehicleLocationDto) {
-    await this.owners.assertDraftCapable(userId);
-    const vehicle = await this.ownedRecord(userId, id);
+  async setLocation(
+    userId: string,
+    id: string,
+    input: SetVehicleLocationDto,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    const vehicle = await this.editableVehicle(userId, id, delegatedContext);
     this.assertState(
       vehicle.status,
       MATERIAL_EDITABLE,
@@ -892,42 +1060,49 @@ export class VehiclesService {
           provinceCode: null,
           regionCode: null,
         };
-    await this.database.client.vehicleLocation.upsert({
-      create: {
-        ...structured,
-        addressLine1: this.clean(input.addressLine1) ?? null,
-        barangay: address?.barangay.name ?? this.clean(input.barangay) ?? null,
-        city,
-        country: (input.country ?? 'PH').toUpperCase(),
-        latitude,
-        longitude,
-        pickupAreaLabel: this.clean(input.pickupAreaLabel) ?? null,
-        landmark: this.clean(input.landmark) ?? null,
-        province,
-        timezone: input.timezone ?? 'Asia/Manila',
-        vehicleId: id,
-      },
-      update: {
-        ...structured,
-        addressLine1: this.clean(input.addressLine1) ?? null,
-        barangay: address?.barangay.name ?? this.clean(input.barangay) ?? null,
-        city,
-        country: (input.country ?? 'PH').toUpperCase(),
-        latitude,
-        longitude,
-        pickupAreaLabel: this.clean(input.pickupAreaLabel) ?? null,
-        landmark: this.clean(input.landmark) ?? null,
-        province,
-        timezone: input.timezone ?? 'Asia/Manila',
-      },
-      where: { vehicleId: id },
+    await this.database.client.$transaction(async (transaction) => {
+      await transaction.vehicleLocation.upsert({
+        create: {
+          ...structured,
+          addressLine1: this.clean(input.addressLine1) ?? null,
+          barangay: address?.barangay.name ?? this.clean(input.barangay) ?? null,
+          city,
+          country: (input.country ?? 'PH').toUpperCase(),
+          latitude,
+          longitude,
+          pickupAreaLabel: this.clean(input.pickupAreaLabel) ?? null,
+          landmark: this.clean(input.landmark) ?? null,
+          province,
+          timezone: input.timezone ?? 'Asia/Manila',
+          vehicleId: id,
+        },
+        update: {
+          ...structured,
+          addressLine1: this.clean(input.addressLine1) ?? null,
+          barangay: address?.barangay.name ?? this.clean(input.barangay) ?? null,
+          city,
+          country: (input.country ?? 'PH').toUpperCase(),
+          latitude,
+          longitude,
+          pickupAreaLabel: this.clean(input.pickupAreaLabel) ?? null,
+          landmark: this.clean(input.landmark) ?? null,
+          province,
+          timezone: input.timezone ?? 'Asia/Manila',
+        },
+        where: { vehicleId: id },
+      });
+      await this.bumpVehicleRevision(transaction, id);
     });
-    return this.getOwned(userId, id);
+    return this.mutatedVehicle(userId, id, delegatedContext);
   }
 
-  async createPolicyVersion(userId: string, id: string, input: CreateVehiclePolicyVersionDto) {
-    await this.owners.assertDraftCapable(userId);
-    const vehicle = await this.ownedRecord(userId, id);
+  async createPolicyVersion(
+    userId: string,
+    id: string,
+    input: CreateVehiclePolicyVersionDto,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    const vehicle = await this.editableVehicle(userId, id, delegatedContext);
     this.assertState(vehicle.status, POLICY_EDITABLE, 'Policies cannot be changed in this state.');
     this.validatePolicy(vehicle.powertrain, input);
     const securityDeposit = this.validateSecurityDeposit(input);
@@ -936,58 +1111,382 @@ export class VehiclesService {
       orderBy: { version: 'desc' },
       where: { vehicleId: id },
     });
-    await this.database.client.vehiclePolicyVersion.create({
-      data: {
+    await this.database.client.$transaction(async (transaction) => {
+      await transaction.vehiclePolicyVersion.create({
+        data: {
+          availabilityPolicy: input.availabilityPolicy,
+          createdByUserId: userId,
+          currency: 'PHP',
+          dailyRateMinor: input.dailyRateMinor,
+          shortDurationDiscountBps: input.shortDurationDiscountBps ?? null,
+          weeklyDiscountBps: input.weeklyDiscountBps ?? null,
+          extendedTripDiscountBps: input.extendedTripDiscountBps ?? null,
+          monthlyDiscountBps: input.monthlyDiscountBps ?? null,
+          evCalculationPolicyRef: input.evReturnPolicy ? 'PH_EV_DEFICIENCY_MVP_V1' : null,
+          evRequiredPercentage: input.evRequiredPercentage ?? null,
+          evReturnPolicy: input.evReturnPolicy ?? null,
+          evTolerancePercent: input.evTolerancePercent ?? null,
+          excessKilometerRateMinor:
+            input.mileagePolicy === MileagePolicyType.LIMITED
+              ? (input.excessKilometerRateMinor ?? null)
+              : null,
+          friday:
+            input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.friday === true,
+          fuelCalculationPolicyRef: input.fuelReturnPolicy ? 'PH_FUEL_DEFICIENCY_MVP_V1' : null,
+          fuelReturnPolicy: input.fuelReturnPolicy ?? null,
+          fuelTolerancePercent: input.fuelTolerancePercent ?? null,
+          includedKilometersPerDay:
+            input.mileagePolicy === MileagePolicyType.LIMITED
+              ? (input.includedKilometersPerDay ?? null)
+              : null,
+          maximumRentalDays: input.maximumRentalDays,
+          mileagePolicy: input.mileagePolicy,
+          minimumRentalDays: input.minimumRentalDays,
+          monday:
+            input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.monday === true,
+          saturday:
+            input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            input.saturday === true,
+          sunday:
+            input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.sunday === true,
+          ...fulfillment,
+          securityDepositAmountMinor: securityDeposit.amountMinor,
+          securityDepositCurrency: securityDeposit.currency,
+          securityDepositRequired: securityDeposit.required,
+          thursday:
+            input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            input.thursday === true,
+          turnaroundMinutes: input.turnaroundMinutes,
+          tuesday:
+            input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.tuesday === true,
+          vehicleId: id,
+          version: (latest?.version ?? 0) + 1,
+          wednesday:
+            input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            input.wednesday === true,
+        },
+      });
+      await this.bumpVehicleRevision(transaction, id);
+    });
+    return this.mutatedVehicle(userId, id, delegatedContext);
+  }
+
+  async updateManagerOperationalDetails(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    id: string,
+    input: ManagerVehicleOperationalDetailsDto,
+    request: RequestMetadata,
+  ) {
+    const changedFields = (['description', 'rentalRequirements'] as const).filter(
+      (field) => input[field] !== undefined,
+    );
+    if (!changedFields.length) {
+      throw new ApplicationException(
+        VehicleErrorCode.INVALID_VEHICLE_SPECIFICATION,
+        'Choose at least one vehicle setting to update.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    await this.assertManagerOperationalAuthority(context, id);
+    await this.database.client.$transaction(async (transaction) => {
+      const vehicle = await this.lockManagerOperationalVehicle(
+        transaction,
+        context,
+        id,
+        input.expectedRevision,
+      );
+      await transaction.vehicle.update({
+        data: {
+          ...(input.description === undefined
+            ? {}
+            : { description: this.clean(input.description) ?? null }),
+          ...(input.rentalRequirements === undefined
+            ? {}
+            : { rentalRequirements: this.clean(input.rentalRequirements) ?? null }),
+          revision: { increment: 1 },
+        },
+        where: { id },
+      });
+      await this.recordManagerOperationalEdit(transaction, {
+        actorUserId,
+        changedFields,
+        context,
+        request,
+        resultingRevision: vehicle.revision + 1,
+        vehicle,
+      });
+    });
+    return this.getForOwnerAccess(context, id);
+  }
+
+  async updateManagerOperationalFeatures(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    id: string,
+    input: ManagerVehicleOperationalFeaturesDto,
+    request: RequestMetadata,
+  ) {
+    await this.assertManagerOperationalAuthority(context, id);
+    const unique = [...new Set(input.featureIds)];
+    const count = await this.database.client.vehicleFeature.count({
+      where: { active: true, id: { in: unique } },
+    });
+    if (count !== unique.length) {
+      throw new ApplicationException(
+        VehicleErrorCode.INVALID_FEATURE,
+        'One or more vehicle features are invalid.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    await this.database.client.$transaction(async (transaction) => {
+      const vehicle = await this.lockManagerOperationalVehicle(
+        transaction,
+        context,
+        id,
+        input.expectedRevision,
+      );
+      await transaction.vehicleFeatureAssignment.deleteMany({ where: { vehicleId: id } });
+      if (unique.length) {
+        await transaction.vehicleFeatureAssignment.createMany({
+          data: unique.map((featureId) => ({ featureId, vehicleId: id })),
+        });
+      }
+      await this.bumpVehicleRevision(transaction, id);
+      await this.recordManagerOperationalEdit(transaction, {
+        actorUserId,
+        changedFields: ['features'],
+        context,
+        request,
+        resultingRevision: vehicle.revision + 1,
+        vehicle,
+      });
+    });
+    return this.getForOwnerAccess(context, id);
+  }
+
+  async updateManagerOperationalPolicy(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    id: string,
+    input: ManagerVehicleOperationalPolicyDto,
+    request: RequestMetadata,
+  ) {
+    await this.assertManagerOperationalAuthority(context, id);
+    await this.database.client.$transaction(async (transaction) => {
+      const vehicle = await this.lockManagerOperationalVehicle(
+        transaction,
+        context,
+        id,
+        input.expectedRevision,
+      );
+      const latest = await transaction.vehiclePolicyVersion.findFirst({
+        orderBy: { version: 'desc' },
+        where: { vehicleId: id },
+      });
+      if (!latest) this.invalidState('This vehicle does not have an active policy to update.');
+      const policy: CreateVehiclePolicyVersionDto = {
         availabilityPolicy: input.availabilityPolicy,
-        createdByUserId: userId,
-        currency: 'PHP',
-        dailyRateMinor: input.dailyRateMinor,
-        shortDurationDiscountBps: input.shortDurationDiscountBps ?? null,
-        weeklyDiscountBps: input.weeklyDiscountBps ?? null,
-        extendedTripDiscountBps: input.extendedTripDiscountBps ?? null,
-        monthlyDiscountBps: input.monthlyDiscountBps ?? null,
-        evCalculationPolicyRef: input.evReturnPolicy ? 'PH_EV_DEFICIENCY_MVP_V1' : null,
-        evRequiredPercentage: input.evRequiredPercentage ?? null,
-        evReturnPolicy: input.evReturnPolicy ?? null,
-        evTolerancePercent: input.evTolerancePercent ?? null,
-        excessKilometerRateMinor:
-          input.mileagePolicy === MileagePolicyType.LIMITED
-            ? (input.excessKilometerRateMinor ?? null)
-            : null,
-        friday:
-          input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.friday === true,
-        fuelCalculationPolicyRef: input.fuelReturnPolicy ? 'PH_FUEL_DEFICIENCY_MVP_V1' : null,
-        fuelReturnPolicy: input.fuelReturnPolicy ?? null,
-        fuelTolerancePercent: input.fuelTolerancePercent ?? null,
-        includedKilometersPerDay:
-          input.mileagePolicy === MileagePolicyType.LIMITED
-            ? (input.includedKilometersPerDay ?? null)
-            : null,
+        ...(latest.collectionFeeMinor === null
+          ? {}
+          : { collectionFeeMinor: latest.collectionFeeMinor }),
+        currency: latest.currency,
+        dailyRateMinor: latest.dailyRateMinor,
+        ...(latest.deliveryFeeMinor === null ? {} : { deliveryFeeMinor: latest.deliveryFeeMinor }),
+        ...(input.evRequiredPercentage === undefined
+          ? {}
+          : { evRequiredPercentage: input.evRequiredPercentage }),
+        ...(input.evReturnPolicy === undefined ? {} : { evReturnPolicy: input.evReturnPolicy }),
+        ...(input.evTolerancePercent === undefined
+          ? {}
+          : { evTolerancePercent: input.evTolerancePercent }),
+        ...(latest.excessKilometerRateMinor === null
+          ? {}
+          : { excessKilometerRateMinor: latest.excessKilometerRateMinor }),
+        ...(latest.extendedTripDiscountBps === null
+          ? {}
+          : { extendedTripDiscountBps: latest.extendedTripDiscountBps }),
+        ...(input.friday === undefined ? {} : { friday: input.friday }),
+        ...(input.fuelReturnPolicy === undefined
+          ? {}
+          : { fuelReturnPolicy: input.fuelReturnPolicy }),
+        ...(input.fuelTolerancePercent === undefined
+          ? {}
+          : { fuelTolerancePercent: input.fuelTolerancePercent }),
+        ...(input.fulfillmentMinimumNoticeMinutes === undefined
+          ? {}
+          : { fulfillmentMinimumNoticeMinutes: input.fulfillmentMinimumNoticeMinutes }),
+        ...(input.fulfillmentServiceRadiusMeters === undefined
+          ? {}
+          : { fulfillmentServiceRadiusMeters: input.fulfillmentServiceRadiusMeters }),
+        ...(input.includedKilometersPerDay === undefined
+          ? {}
+          : { includedKilometersPerDay: input.includedKilometersPerDay }),
         maximumRentalDays: input.maximumRentalDays,
         mileagePolicy: input.mileagePolicy,
         minimumRentalDays: input.minimumRentalDays,
-        monday:
-          input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.monday === true,
-        saturday:
-          input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.saturday === true,
-        sunday:
-          input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.sunday === true,
-        ...fulfillment,
-        securityDepositAmountMinor: securityDeposit.amountMinor,
-        securityDepositCurrency: securityDeposit.currency,
-        securityDepositRequired: securityDeposit.required,
-        thursday:
-          input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.thursday === true,
+        ...(input.monday === undefined ? {} : { monday: input.monday }),
+        ...(latest.monthlyDiscountBps === null
+          ? {}
+          : { monthlyDiscountBps: latest.monthlyDiscountBps }),
+        ...(input.saturday === undefined ? {} : { saturday: input.saturday }),
+        ...(latest.securityDepositAmountMinor === null
+          ? {}
+          : { securityDepositAmountMinor: latest.securityDepositAmountMinor }),
+        ...(latest.securityDepositCurrency === null
+          ? {}
+          : { securityDepositCurrency: latest.securityDepositCurrency }),
+        securityDepositRequired: latest.securityDepositRequired,
+        ...(latest.shortDurationDiscountBps === null
+          ? {}
+          : { shortDurationDiscountBps: latest.shortDurationDiscountBps }),
+        ...(input.sunday === undefined ? {} : { sunday: input.sunday }),
+        ...(input.supportsOwnerCollection === undefined
+          ? {}
+          : { supportsOwnerCollection: input.supportsOwnerCollection }),
+        ...(input.supportsOwnerDelivery === undefined
+          ? {}
+          : { supportsOwnerDelivery: input.supportsOwnerDelivery }),
+        ...(input.supportsRenterPickup === undefined
+          ? {}
+          : { supportsRenterPickup: input.supportsRenterPickup }),
+        ...(input.supportsRenterReturn === undefined
+          ? {}
+          : { supportsRenterReturn: input.supportsRenterReturn }),
+        ...(input.thursday === undefined ? {} : { thursday: input.thursday }),
         turnaroundMinutes: input.turnaroundMinutes,
-        tuesday:
-          input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.tuesday === true,
-        vehicleId: id,
-        version: (latest?.version ?? 0) + 1,
-        wednesday:
-          input.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY || input.wednesday === true,
-      },
+        ...(input.tuesday === undefined ? {} : { tuesday: input.tuesday }),
+        ...(input.wednesday === undefined ? {} : { wednesday: input.wednesday }),
+        ...(latest.weeklyDiscountBps === null
+          ? {}
+          : { weeklyDiscountBps: latest.weeklyDiscountBps }),
+      };
+      this.validatePolicy(vehicle.powertrain, policy);
+      const fulfillment = normalizeFulfillmentPolicy(policy);
+      await transaction.vehiclePolicyVersion.create({
+        data: {
+          availabilityPolicy: policy.availabilityPolicy,
+          createdByUserId: actorUserId,
+          currency: latest.currency,
+          dailyRateMinor: latest.dailyRateMinor,
+          evCalculationPolicyRef: policy.evReturnPolicy ? 'PH_EV_DEFICIENCY_MVP_V1' : null,
+          evRequiredPercentage: policy.evRequiredPercentage ?? null,
+          evReturnPolicy: policy.evReturnPolicy ?? null,
+          evTolerancePercent: policy.evTolerancePercent ?? null,
+          excessKilometerRateMinor: latest.excessKilometerRateMinor,
+          extendedTripDiscountBps: latest.extendedTripDiscountBps,
+          friday:
+            policy.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            policy.friday === true,
+          fuelCalculationPolicyRef: policy.fuelReturnPolicy ? 'PH_FUEL_DEFICIENCY_MVP_V1' : null,
+          fuelReturnPolicy: policy.fuelReturnPolicy ?? null,
+          fuelTolerancePercent: policy.fuelTolerancePercent ?? null,
+          includedKilometersPerDay:
+            policy.mileagePolicy === MileagePolicyType.LIMITED
+              ? (policy.includedKilometersPerDay ?? null)
+              : null,
+          maximumRentalDays: policy.maximumRentalDays,
+          mileagePolicy: policy.mileagePolicy,
+          minimumRentalDays: policy.minimumRentalDays,
+          monday:
+            policy.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            policy.monday === true,
+          monthlyDiscountBps: latest.monthlyDiscountBps,
+          saturday:
+            policy.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            policy.saturday === true,
+          securityDepositAmountMinor: latest.securityDepositAmountMinor,
+          securityDepositCurrency: latest.securityDepositCurrency,
+          securityDepositRequired: latest.securityDepositRequired,
+          shortDurationDiscountBps: latest.shortDurationDiscountBps,
+          sunday:
+            policy.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            policy.sunday === true,
+          ...fulfillment,
+          thursday:
+            policy.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            policy.thursday === true,
+          turnaroundMinutes: policy.turnaroundMinutes,
+          tuesday:
+            policy.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            policy.tuesday === true,
+          vehicleId: id,
+          version: latest.version + 1,
+          wednesday:
+            policy.availabilityPolicy === AvailabilityPolicyType.EVERY_DAY ||
+            policy.wednesday === true,
+          weeklyDiscountBps: latest.weeklyDiscountBps,
+        },
+      });
+      await this.bumpVehicleRevision(transaction, id);
+      await this.recordManagerOperationalEdit(transaction, {
+        actorUserId,
+        changedFields: [
+          'availability',
+          'rentalDuration',
+          'fulfillmentModes',
+          'serviceRadius',
+          'minimumNotice',
+          'returnSettings',
+          'mileage',
+        ],
+        context,
+        request,
+        resultingRevision: vehicle.revision + 1,
+        vehicle,
+      });
     });
-    return this.getOwned(userId, id);
+    return this.getForOwnerAccess(context, id);
+  }
+
+  async updateManagerOperationalStatus(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    id: string,
+    input: ManagerVehicleOperationalStatusDto,
+    request: RequestMetadata,
+  ) {
+    await this.assertManagerOperationalAuthority(context, id);
+    if (input.status !== VehicleOperationalStatus.AVAILABLE) {
+      await this.occupancy.assertNoFutureBooking(id);
+    } else {
+      const blockingIssue = await this.database.client.vehicleKnownIssue.findFirst({
+        where: {
+          classification: {
+            in: [
+              InspectionConditionClassification.OPERATIONAL,
+              InspectionConditionClassification.SAFETY_CRITICAL,
+            ],
+          },
+          status: VehicleKnownIssueStatus.ACTIVE,
+          vehicleId: id,
+        },
+      });
+      if (blockingIssue) {
+        this.invalidState('Resolve active operational and safety-critical issues first.');
+      }
+    }
+    await this.database.client.$transaction(async (transaction) => {
+      const vehicle = await this.lockManagerOperationalVehicle(
+        transaction,
+        context,
+        id,
+        input.expectedRevision,
+      );
+      await transaction.vehicle.update({
+        data: { operationalStatus: input.status, revision: { increment: 1 } },
+        where: { id },
+      });
+      await this.recordManagerOperationalEdit(transaction, {
+        actorUserId,
+        changedFields: ['operationalAvailability'],
+        context,
+        request,
+        resultingRevision: vehicle.revision + 1,
+        vehicle,
+      });
+    });
+    return this.getForOwnerAccess(context, id);
   }
 
   async addBlockedPeriod(userId: string, id: string, input: CreateVehicleBlockDto) {
@@ -1114,7 +1613,18 @@ export class VehiclesService {
 
   async submit(userId: string, id: string, request: RequestMetadata) {
     await this.owners.assertOperational(userId);
-    const vehicle = await this.getOwned(userId, id);
+    const vehicle = await this.database.client.vehicle.findFirst({
+      include: ownerVehicleInclude,
+      where: { id, ownerUserId: userId },
+    });
+    if (!vehicle) this.notFound();
+    if (vehicle.createdByMembershipId) {
+      throw new ApplicationException(
+        VehicleErrorCode.VEHICLE_OWNER_APPROVAL_FORBIDDEN,
+        'Manager-created vehicles must be approved through the Owner review flow.',
+        HttpStatus.CONFLICT,
+      );
+    }
     this.assertState(vehicle.status, MATERIAL_EDITABLE, 'This vehicle cannot be submitted.');
     const failures = await this.readinessFailures(vehicle);
     if (failures.length) {
@@ -1135,6 +1645,272 @@ export class VehiclesService {
       { reviewReason: null, submittedAt: new Date() },
     );
     return this.getOwned(userId, id);
+  }
+
+  async submitForOwnerApproval(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    id: string,
+    request: RequestMetadata,
+  ) {
+    this.assertManagerVehicleCreationAuthority(context);
+    await this.ownerAccess.assertVehicleAccess(context, id, 'vehicles.create');
+    try {
+      return await this.database.client.$transaction(async (transaction) => {
+        await transaction.$queryRaw`SELECT id FROM vehicles WHERE id = ${id}::uuid FOR UPDATE`;
+        const vehicle = await transaction.vehicle.findFirst({
+          include: ownerVehicleInclude,
+          where: { id, ownerProfileId: context.ownerProfileId },
+        });
+        if (!vehicle || !vehicle.createdByMembershipId) this.ownerApprovalForbidden();
+        this.assertState(
+          vehicle.status,
+          [VehicleLifecycleStatus.DRAFT],
+          'Only a delegated draft can be submitted for Owner approval.',
+        );
+        const failures = await this.readinessFailures(vehicle, transaction);
+        if (failures.length) {
+          throw new ApplicationException(
+            VehicleErrorCode.VEHICLE_NOT_READY_FOR_OWNER_APPROVAL,
+            'Complete the required vehicle sections before Owner review.',
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            failures,
+          );
+        }
+        const approval = await transaction.vehicleOwnerApprovalRequest.create({
+          data: {
+            ownerProfileId: context.ownerProfileId,
+            submittedByMembershipId: context.membershipId!,
+            submittedByUserId: actorUserId,
+            submittedRevision: vehicle.revision,
+            vehicleId: id,
+          },
+        });
+        await this.writeVehicleApprovalAudit(transaction, {
+          action: 'VEHICLE_OWNER_APPROVAL_SUBMITTED',
+          actorUserId,
+          context,
+          request,
+          requestId: approval.id,
+          submittedRevision: vehicle.revision,
+          vehicleId: id,
+        });
+        const manager = await transaction.user.findUnique({
+          select: {
+            profile: { select: { displayName: true, firstName: true, lastName: true } },
+          },
+          where: { id: actorUserId },
+        });
+        await this.writeVehicleApprovalOutbox(transaction, approval.id, 'SUBMITTED', {
+          managerDisplayName: this.displayName(manager?.profile),
+          recipientUserId: vehicle.ownerUserId,
+          vehicleDisplayName: this.vehicleDisplayName(vehicle),
+          vehicleId: id,
+        });
+        return approval;
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ApplicationException(
+          VehicleErrorCode.VEHICLE_OWNER_APPROVAL_ALREADY_PENDING,
+          'This vehicle already has a pending Owner approval request.',
+          HttpStatus.CONFLICT,
+        );
+      }
+      throw error;
+    }
+  }
+
+  async withdrawOwnerApprovalSubmission(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    id: string,
+    request: RequestMetadata,
+  ) {
+    this.assertManagerVehicleCreationAuthority(context);
+    await this.ownerAccess.assertVehicleAccess(context, id, 'vehicles.create');
+    return this.database.client.$transaction(async (transaction) => {
+      await transaction.$queryRaw`SELECT id FROM vehicles WHERE id = ${id}::uuid FOR UPDATE`;
+      const vehicle = await transaction.vehicle.findFirst({
+        select: { createdByMembershipId: true, id: true, ownerProfileId: true, status: true },
+        where: { id, ownerProfileId: context.ownerProfileId },
+      });
+      if (!vehicle?.createdByMembershipId) this.ownerApprovalForbidden();
+      const approval = await transaction.vehicleOwnerApprovalRequest.findFirst({
+        where: {
+          ownerProfileId: context.ownerProfileId,
+          status: VehicleOwnerApprovalStatus.PENDING,
+          vehicleId: id,
+        },
+      });
+      if (!approval) this.ownerApprovalNotPending();
+      const updated = await transaction.vehicleOwnerApprovalRequest.update({
+        data: { status: VehicleOwnerApprovalStatus.WITHDRAWN },
+        where: { id: approval.id },
+      });
+      await this.writeVehicleApprovalAudit(transaction, {
+        action: 'VEHICLE_OWNER_APPROVAL_WITHDRAWN',
+        actorUserId,
+        context,
+        request,
+        requestId: approval.id,
+        vehicleId: id,
+      });
+      return updated;
+    });
+  }
+
+  async approveOwnerApproval(
+    ownerUserId: string,
+    id: string,
+    requestId: string,
+    request: RequestMetadata,
+  ) {
+    await this.owners.assertOperational(ownerUserId);
+    await this.database.client.$transaction(async (transaction) => {
+      await transaction.$queryRaw`SELECT id FROM vehicles WHERE id = ${id}::uuid FOR UPDATE`;
+      const vehicle = await transaction.vehicle.findFirst({
+        include: ownerVehicleInclude,
+        where: { id, ownerUserId },
+      });
+      if (!vehicle) this.notFound();
+      if (!vehicle.createdByMembershipId) this.ownerApprovalForbidden();
+      const approval = await transaction.vehicleOwnerApprovalRequest.findFirst({
+        where: { id: requestId, ownerProfileId: vehicle.ownerProfileId, vehicleId: id },
+      });
+      if (!approval || approval.status !== VehicleOwnerApprovalStatus.PENDING) {
+        this.ownerApprovalNotPending();
+      }
+      this.assertState(
+        vehicle.status,
+        [VehicleLifecycleStatus.DRAFT],
+        'Only a delegated draft can be approved.',
+      );
+      if (vehicle.revision !== approval.submittedRevision) {
+        throw new ApplicationException(
+          VehicleErrorCode.VEHICLE_OWNER_APPROVAL_STALE,
+          'The vehicle changed after it was submitted. Review the latest version before approving.',
+          HttpStatus.CONFLICT,
+        );
+      }
+      const failures = await this.readinessFailures(vehicle, transaction);
+      if (failures.length) {
+        throw new ApplicationException(
+          VehicleErrorCode.VEHICLE_NOT_READY_FOR_OWNER_APPROVAL,
+          'The vehicle is no longer ready for Owner approval.',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+          failures,
+        );
+      }
+      const reviewedAt = new Date();
+      await transaction.vehicleOwnerApprovalRequest.update({
+        data: {
+          reviewedAt,
+          reviewedByUserId: ownerUserId,
+          status: VehicleOwnerApprovalStatus.APPROVED,
+        },
+        where: { id: approval.id },
+      });
+      await this.transitionInTransaction(
+        transaction,
+        id,
+        ownerUserId,
+        VehicleLifecycleStatus.DRAFT,
+        VehicleLifecycleStatus.PENDING_APPROVAL,
+        undefined,
+        request,
+        { reviewReason: null, submittedAt: reviewedAt },
+      );
+      await transaction.auditLog.create({
+        data: {
+          action: 'VEHICLE_OWNER_APPROVAL_APPROVED',
+          actorUserId: ownerUserId,
+          ...(request.correlationId ? { correlationId: request.correlationId } : {}),
+          ...(request.ipAddress ? { ipAddress: request.ipAddress } : {}),
+          metadata: {
+            ownerProfileId: vehicle.ownerProfileId,
+            requestId: approval.id,
+            submittedRevision: approval.submittedRevision,
+            vehicleId: id,
+          },
+          targetId: id,
+          targetType: 'VEHICLE',
+        },
+      });
+      await this.writeVehicleApprovalOutbox(transaction, approval.id, 'APPROVED', {
+        recipientUserId: approval.submittedByUserId,
+        vehicleDisplayName: this.vehicleDisplayName(vehicle),
+        vehicleId: id,
+      });
+    });
+    return this.getOwned(ownerUserId, id);
+  }
+
+  async returnOwnerApprovalForChanges(
+    ownerUserId: string,
+    id: string,
+    requestId: string,
+    reason: string,
+    request: RequestMetadata,
+  ) {
+    await this.owners.assertDraftCapable(ownerUserId);
+    return this.database.client.$transaction(async (transaction) => {
+      await transaction.$queryRaw`SELECT id FROM vehicles WHERE id = ${id}::uuid FOR UPDATE`;
+      const vehicle = await transaction.vehicle.findFirst({
+        select: {
+          createdByMembershipId: true,
+          id: true,
+          make: true,
+          model: true,
+          ownerProfileId: true,
+          status: true,
+        },
+        where: { id, ownerUserId },
+      });
+      if (!vehicle) this.notFound();
+      if (!vehicle.createdByMembershipId) this.ownerApprovalForbidden();
+      const approval = await transaction.vehicleOwnerApprovalRequest.findFirst({
+        where: { id: requestId, ownerProfileId: vehicle.ownerProfileId, vehicleId: id },
+      });
+      if (!approval || approval.status !== VehicleOwnerApprovalStatus.PENDING)
+        this.ownerApprovalNotPending();
+      this.assertState(
+        vehicle.status,
+        [VehicleLifecycleStatus.DRAFT],
+        'Only a delegated draft can be returned.',
+      );
+      const updated = await transaction.vehicleOwnerApprovalRequest.update({
+        data: {
+          reviewReason: reason.trim(),
+          reviewedAt: new Date(),
+          reviewedByUserId: ownerUserId,
+          status: VehicleOwnerApprovalStatus.CHANGES_REQUIRED,
+        },
+        where: { id: approval.id },
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: 'VEHICLE_OWNER_APPROVAL_CHANGES_REQUIRED',
+          actorUserId: ownerUserId,
+          ...(request.correlationId ? { correlationId: request.correlationId } : {}),
+          ...(request.ipAddress ? { ipAddress: request.ipAddress } : {}),
+          metadata: {
+            ownerProfileId: vehicle.ownerProfileId,
+            requestId: approval.id,
+            vehicleId: id,
+          },
+          reason: reason.trim(),
+          targetId: id,
+          targetType: 'VEHICLE',
+        },
+      });
+      await this.writeVehicleApprovalOutbox(transaction, approval.id, 'CHANGES_REQUIRED', {
+        recipientUserId: approval.submittedByUserId,
+        vehicleDisplayName: this.vehicleDisplayName(vehicle),
+        vehicleId: id,
+      });
+      return updated;
+    });
   }
 
   async archive(userId: string, id: string, request: RequestMetadata) {
@@ -1195,7 +1971,7 @@ export class VehiclesService {
       }
     }
     return this.database.client.vehicle.update({
-      data: { operationalStatus: input.status },
+      data: { operationalStatus: input.status, revision: { increment: 1 } },
       where: { id },
     });
   }
@@ -1231,6 +2007,209 @@ export class VehiclesService {
         },
       })),
     };
+  }
+
+  private withoutInternalVehicleProvenance<
+    T extends {
+      createdByMembershipId: string | null;
+      createdByUserId: string;
+      ownerApprovalRequests?: Array<{
+        id: string;
+        reviewReason: string | null;
+        status: VehicleOwnerApprovalStatus;
+        submittedAt: Date;
+        submittedBy: {
+          profile: {
+            displayName: string | null;
+            firstName: string | null;
+            lastName: string | null;
+          } | null;
+        };
+        submittedRevision: number;
+      }>;
+    },
+  >(
+    vehicle: T,
+  ): Omit<T, 'createdByMembershipId' | 'createdByUserId' | 'ownerApprovalRequests'> & {
+    ownerApproval: {
+      id: string;
+      reviewReason: string | null;
+      status: VehicleOwnerApprovalStatus;
+      submittedAt: Date;
+      submittedByDisplayName: string;
+      submittedRevision: number;
+    } | null;
+  } {
+    const { createdByMembershipId, createdByUserId, ownerApprovalRequests, ...safeVehicle } =
+      vehicle;
+    void createdByMembershipId;
+    void createdByUserId;
+    const ownerApproval = ownerApprovalRequests?.[0];
+    return {
+      ...safeVehicle,
+      ownerApproval: ownerApproval
+        ? {
+            id: ownerApproval.id,
+            reviewReason: ownerApproval.reviewReason,
+            status: ownerApproval.status,
+            submittedAt: ownerApproval.submittedAt,
+            submittedByDisplayName: this.displayName(ownerApproval.submittedBy.profile),
+            submittedRevision: ownerApproval.submittedRevision,
+          }
+        : null,
+    } as never;
+  }
+
+  private displayName(
+    profile:
+      | { displayName: string | null; firstName: string | null; lastName: string | null }
+      | null
+      | undefined,
+  ): string {
+    return (
+      profile?.displayName?.trim() ||
+      [profile?.firstName, profile?.lastName].filter(Boolean).join(' ').trim() ||
+      'Manager'
+    );
+  }
+
+  private vehicleDisplayName(vehicle: { make: string | null; model: string | null }): string {
+    return [vehicle.make, vehicle.model].filter(Boolean).join(' ').trim() || 'Vehicle draft';
+  }
+
+  private writeVehicleApprovalOutbox(
+    transaction: Prisma.TransactionClient,
+    approvalRequestId: string,
+    outcome: 'APPROVED' | 'CHANGES_REQUIRED' | 'SUBMITTED',
+    payload: {
+      managerDisplayName?: string;
+      recipientUserId: string;
+      vehicleDisplayName: string;
+      vehicleId: string;
+    },
+  ) {
+    return transaction.outboxEvent.create({
+      data: {
+        aggregateId: approvalRequestId,
+        aggregateType: 'VEHICLE_OWNER_APPROVAL',
+        eventType: `VEHICLE_OWNER_APPROVAL_${outcome}`,
+        payload: {
+          approvalRequestId,
+          notificationAudience: 'OWNER',
+          notificationIdentity: `${approvalRequestId}:${outcome}`,
+          ...payload,
+        },
+      },
+    });
+  }
+
+  private async assertManagerOperationalAuthority(context: OwnerAccessContext, vehicleId: string) {
+    if (
+      context.capacity !== 'MANAGER' ||
+      context.membershipStatus !== OwnerStaffStatus.ACTIVE ||
+      !context.membershipId
+    ) {
+      throw new ApplicationException(
+        'OWNER_ACCESS_DENIED',
+        'Vehicle settings are unavailable for this account.',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    await this.ownerAccess.assertVehicleAccess(
+      context,
+      vehicleId,
+      'vehicles.update_operational_fields',
+    );
+  }
+
+  private async lockManagerOperationalVehicle(
+    transaction: Prisma.TransactionClient,
+    context: OwnerAccessContext,
+    vehicleId: string,
+    expectedRevision: number,
+  ) {
+    await transaction.$queryRaw`SELECT id FROM vehicles WHERE id = ${vehicleId}::uuid FOR UPDATE`;
+    const vehicle = await transaction.vehicle.findFirst({
+      select: {
+        id: true,
+        make: true,
+        model: true,
+        ownerProfileId: true,
+        ownerUserId: true,
+        powertrain: true,
+        revision: true,
+        status: true,
+      },
+      where: { id: vehicleId, ownerProfileId: context.ownerProfileId },
+    });
+    if (!vehicle) this.notFound();
+    if (vehicle.status !== VehicleLifecycleStatus.APPROVED) {
+      this.invalidState('Only approved vehicles can update day-to-day settings.');
+    }
+    if (vehicle.revision !== expectedRevision) {
+      throw new ApplicationException(
+        VehicleErrorCode.INVALID_VEHICLE_STATE,
+        'This vehicle changed since you opened it. Review the latest details before saving again.',
+        HttpStatus.CONFLICT,
+      );
+    }
+    return vehicle;
+  }
+
+  private async recordManagerOperationalEdit(
+    transaction: Prisma.TransactionClient,
+    input: {
+      actorUserId: string;
+      changedFields: readonly string[];
+      context: OwnerAccessContext;
+      request: RequestMetadata;
+      resultingRevision: number;
+      vehicle: {
+        id: string;
+        make: string | null;
+        model: string | null;
+        ownerUserId: string;
+      };
+    },
+  ) {
+    const actor = await transaction.user.findUnique({
+      select: { profile: { select: { displayName: true, firstName: true, lastName: true } } },
+      where: { id: input.actorUserId },
+    });
+    await transaction.auditLog.create({
+      data: {
+        action: 'OWNER_WORKSPACE_VEHICLE_OPERATIONAL_FIELDS_UPDATED',
+        actorUserId: input.actorUserId,
+        ...(input.request.correlationId ? { correlationId: input.request.correlationId } : {}),
+        ...(input.request.ipAddress ? { ipAddress: input.request.ipAddress } : {}),
+        metadata: {
+          changedFields: [...input.changedFields],
+          membershipId: input.context.membershipId,
+          ownerProfileId: input.context.ownerProfileId,
+          permission: 'vehicles.update_operational_fields',
+          resultingRevision: input.resultingRevision,
+          vehicleId: input.vehicle.id,
+        },
+        targetId: input.vehicle.id,
+        targetType: 'VEHICLE',
+      },
+    });
+    await transaction.outboxEvent.create({
+      data: {
+        aggregateId: input.vehicle.id,
+        aggregateType: 'VEHICLE',
+        eventType: 'VEHICLE_OPERATIONAL_FIELDS_UPDATED',
+        payload: {
+          changedFields: [...input.changedFields],
+          managerDisplayName: this.displayName(actor?.profile),
+          notificationAudience: 'OWNER',
+          notificationIdentity: `${input.vehicle.id}:${input.resultingRevision}:operational-edit`,
+          recipientUserId: input.vehicle.ownerUserId,
+          vehicleDisplayName: this.vehicleDisplayName(input.vehicle),
+          vehicleId: input.vehicle.id,
+        },
+      },
+    });
   }
 
   listAdmin(status?: VehicleLifecycleStatus) {
@@ -1449,7 +2428,10 @@ export class VehiclesService {
     return this.adminDetail(id);
   }
 
-  private async readinessFailures(vehicle: OwnerVehicleRecord) {
+  private async readinessFailures(
+    vehicle: OwnerVehicleRecord | SafeOwnerVehicleRecord,
+    client: Prisma.TransactionClient | DatabaseService['client'] = this.database.client,
+  ) {
     const failures: { field: string; issue: string }[] = [];
     if (
       !vehicle.categoryId ||
@@ -1475,7 +2457,7 @@ export class VehiclesService {
         failures.push({ field: 'photos', issue: `Missing required ${perspective} photo.` });
       }
     }
-    const requiredDefinitions = await this.database.client.vehicleDocumentDefinition.findMany({
+    const requiredDefinitions = await client.vehicleDocumentDefinition.findMany({
       where: { active: true, jurisdiction: 'PH', required: true },
     });
     const activeDocuments = vehicle.documents.filter(({ replacedAt }) => !replacedAt);
@@ -1510,6 +2492,128 @@ export class VehiclesService {
       failures.push({ field: 'policies', issue: 'Configure a compatible fuel return policy.' });
     }
     return failures;
+  }
+
+  private assertManagerVehicleCreationAuthority(context: OwnerAccessContext): void {
+    this.ownerAccess.requirePermission(context, 'vehicles.create');
+    if (
+      context.capacity !== 'MANAGER' ||
+      context.membershipStatus !== OwnerStaffStatus.ACTIVE ||
+      !context.membershipId
+    ) {
+      this.ownerApprovalForbidden();
+    }
+  }
+
+  async assertDelegatedDraftMutationAllowed(
+    client: Prisma.TransactionClient | DatabaseService['client'],
+    vehicleId: string,
+  ): Promise<void> {
+    const pending = await client.vehicleOwnerApprovalRequest.findFirst({
+      select: { id: true },
+      where: { status: VehicleOwnerApprovalStatus.PENDING, vehicleId },
+    });
+    if (pending) {
+      throw new ApplicationException(
+        VehicleErrorCode.VEHICLE_OWNER_APPROVAL_ALREADY_PENDING,
+        'Withdraw the pending Owner approval request before editing this draft.',
+        HttpStatus.CONFLICT,
+      );
+    }
+  }
+
+  private async editableVehicle(
+    actorUserId: string,
+    vehicleId: string,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    if (!delegatedContext) {
+      await this.owners.assertDraftCapable(actorUserId);
+      return this.ownedRecord(actorUserId, vehicleId);
+    }
+    this.assertManagerVehicleCreationAuthority(delegatedContext);
+    await this.ownerAccess.assertVehicleAccess(delegatedContext, vehicleId, 'vehicles.create');
+    const vehicle = await this.database.client.vehicle.findFirst({
+      where: { id: vehicleId, ownerProfileId: delegatedContext.ownerProfileId },
+    });
+    if (
+      !vehicle ||
+      vehicle.createdByMembershipId !== delegatedContext.membershipId ||
+      vehicle.status !== VehicleLifecycleStatus.DRAFT
+    ) {
+      this.ownerApprovalForbidden();
+    }
+    await this.assertDelegatedDraftMutationAllowed(this.database.client, vehicleId);
+    return vehicle;
+  }
+
+  private mutatedVehicle(
+    actorUserId: string,
+    vehicleId: string,
+    delegatedContext?: OwnerAccessContext,
+  ) {
+    return delegatedContext
+      ? this.getForOwnerAccess(delegatedContext, vehicleId)
+      : this.getOwned(actorUserId, vehicleId);
+  }
+
+  private bumpVehicleRevision(transaction: Prisma.TransactionClient, vehicleId: string) {
+    return transaction.vehicle.update({
+      data: { revision: { increment: 1 } },
+      select: { revision: true },
+      where: { id: vehicleId },
+    });
+  }
+
+  private ownerApprovalForbidden(): never {
+    throw new ApplicationException(
+      VehicleErrorCode.VEHICLE_OWNER_APPROVAL_FORBIDDEN,
+      'Owner approval is unavailable for this vehicle or account.',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+
+  private ownerApprovalNotPending(): never {
+    throw new ApplicationException(
+      VehicleErrorCode.VEHICLE_OWNER_APPROVAL_NOT_PENDING,
+      'This vehicle does not have a pending Owner approval request.',
+      HttpStatus.CONFLICT,
+    );
+  }
+
+  private writeVehicleApprovalAudit(
+    transaction: Prisma.TransactionClient,
+    input: {
+      readonly action: string;
+      readonly actorUserId: string;
+      readonly context: OwnerAccessContext;
+      readonly request: RequestMetadata;
+      readonly requestId: string;
+      readonly submittedRevision?: number;
+      readonly vehicleId: string;
+    },
+  ) {
+    return transaction.auditLog.create({
+      data: {
+        action: input.action,
+        actorUserId: input.actorUserId,
+        ...(input.request.correlationId ? { correlationId: input.request.correlationId } : {}),
+        ...(input.request.ipAddress ? { ipAddress: input.request.ipAddress } : {}),
+        metadata: {
+          capacity: input.context.capacity,
+          membershipId: input.context.membershipId,
+          ownerProfileId: input.context.ownerProfileId,
+          permission: 'vehicles.create',
+          requestId: input.requestId,
+          ...(input.submittedRevision === undefined
+            ? {}
+            : { submittedRevision: input.submittedRevision }),
+          vehicleId: input.vehicleId,
+        },
+        targetId: input.vehicleId,
+        targetType: 'VEHICLE',
+      },
+    });
   }
 
   private validatePolicy(

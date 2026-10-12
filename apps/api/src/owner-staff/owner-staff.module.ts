@@ -1,9 +1,19 @@
 import { Module } from '@nestjs/common';
-import { OwnerStaffController, OwnerStaffInvitationController } from './owner-staff.controller';
+import {
+  OwnerStaffAccessController,
+  OwnerStaffAccessLinkController,
+  OwnerStaffController,
+  OwnerStaffInvitationController,
+} from './owner-staff.controller';
 import { OwnerStaffService } from './owner-staff.service';
 
 @Module({
-  controllers: [OwnerStaffController, OwnerStaffInvitationController],
+  controllers: [
+    OwnerStaffController,
+    OwnerStaffInvitationController,
+    OwnerStaffAccessController,
+    OwnerStaffAccessLinkController,
+  ],
   providers: [OwnerStaffService],
 })
 export class OwnerStaffModule {}

@@ -29,6 +29,8 @@ export function parentTabFor(destination: string, mode: MobileMode): string {
   if (destination === 'Booking' || destination === 'BookingRecovery' || destination === 'Claim')
     return mode === 'owner' ? 'Requests' : 'Bookings';
   if (destination === 'OwnerEarnings' || destination === 'Payout') return 'More';
+  if (destination === 'OwnerVehicleApproval' || destination === 'OwnerWorkspaceVehicle')
+    return 'Vehicles';
   if (['VehicleDetails', 'HostProfile', 'PublicReviews', 'Favorites'].includes(destination))
     return mode === 'owner' ? 'Dashboard' : 'Home';
   return mode === 'owner' ? 'More' : 'Profile';
