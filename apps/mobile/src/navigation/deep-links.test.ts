@@ -21,6 +21,13 @@ describe('notification deep-link routing', () => {
       { name: 'OwnerVehicleApproval', params: { vehicleId: 'vehicle-id' } },
     ],
     [
+      'carrental://owner/vehicle-change-proposals/vehicle-id/proposal-id',
+      {
+        name: 'OwnerVehicleChangeProposal',
+        params: { proposalId: 'proposal-id', vehicleId: 'vehicle-id' },
+      },
+    ],
+    [
       'carrental://owner/vehicles/vehicle-id',
       { name: 'OwnerWorkspaceVehicle', params: { vehicleId: 'vehicle-id' } },
     ],

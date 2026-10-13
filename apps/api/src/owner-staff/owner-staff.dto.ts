@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayUnique,
+  IsBoolean,
   IsArray,
   IsEnum,
   IsOptional,
@@ -85,6 +86,12 @@ export class UpdateOwnerStaffScopeDto {
   @ArrayUnique()
   @IsUUID('4', { each: true })
   vehicleIds?: string[];
+}
+
+export class UpdateManagerAuthorityDto {
+  @ApiProperty()
+  @IsBoolean()
+  ownerApprovalBypassEnabled!: boolean;
 }
 
 export class OwnerStaffReasonDto {

@@ -49,6 +49,7 @@ import {
   type OwnerMarketplaceTrends,
 } from './OwnerMarketplaceReportsDashboard';
 import { BookingAmendmentsAdminPanel } from './BookingAmendmentsAdminPanel';
+import { AdminVehicleChangeProposalsPanel } from './AdminVehicleChangeProposalsPanel';
 
 import { API_URL, adminEnvironment } from './admin-environment';
 interface Envelope<T> {
@@ -644,9 +645,11 @@ const moduleTitles: Record<AdminModule, { eyebrow: string; title: string; descri
 export function AdminConsole({
   activeModule,
   detailId,
+  vehicleChangeProposalId,
 }: {
   readonly activeModule: AdminModule;
   readonly detailId?: string;
+  readonly vehicleChangeProposalId?: string;
 }) {
   const { accessToken, admin, can, logout } = useAdminSession();
   const [query, setQuery] = useState('');
@@ -1090,6 +1093,11 @@ export function AdminConsole({
         >
           <span className="eyebrow">VEHICLE REVIEW</span>
           <h2>Pending listings</h2>
+          <AdminVehicleChangeProposalsPanel
+            request={api}
+            requestFileAccess={grantFile}
+            {...(vehicleChangeProposalId ? { initialSelectedId: vehicleChangeProposalId } : {})}
+          />
           {vehicles.isLoading && <p>Loading queue…</p>}
           {vehicles.data?.length === 0 && (
             <EmptyState

@@ -55,6 +55,7 @@ export interface OwnerStaffListItem {
     readonly revokedAt: string | null;
     readonly state: OwnerStaffInvitationState;
   } | null;
+  readonly ownerApprovalBypassEnabled: boolean;
   readonly invitedAt: string;
   readonly permissions: readonly string[];
   readonly preset: OwnerStaffPreset;
@@ -92,6 +93,10 @@ export interface UpdateOwnerStaffRequest {
 export interface UpdateOwnerStaffVehicleScopeRequest {
   readonly vehicleIds?: readonly string[];
   readonly vehicleScopeMode: OwnerStaffVehicleScopeMode;
+}
+
+export interface UpdateManagerAuthorityRequest {
+  readonly ownerApprovalBypassEnabled: boolean;
 }
 
 export interface OwnerStaffReasonRequest {
@@ -633,3 +638,4 @@ export type ClaimErrorCode = (typeof ClaimErrorCode)[keyof typeof ClaimErrorCode
 export type SystemErrorCode = (typeof SystemErrorCode)[keyof typeof SystemErrorCode];
 /** Immutable booking policy metadata. Null denotes legacy/unclassified; never custody evidence. */
 export const HANDOVER_WORKFLOW_VERSION_B4 = 1 as const;
+export * from './vehicle-change-proposal';

@@ -15,5 +15,13 @@ export default async function AdminModulePage({
     redirect('/admin/owner/reports');
   const activeModule = resolveAdminModule(segments);
   const detailId = resolveAdminDetailId(segments, activeModule);
-  return <AdminConsole activeModule={activeModule} {...(detailId ? { detailId } : {})} />;
+  const vehicleChangeProposalId =
+    activeModule === 'vehicles' && segments[1] === 'changes' ? segments[2] : undefined;
+  return (
+    <AdminConsole
+      activeModule={activeModule}
+      {...(detailId ? { detailId } : {})}
+      {...(vehicleChangeProposalId ? { vehicleChangeProposalId } : {})}
+    />
+  );
 }

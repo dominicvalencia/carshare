@@ -99,6 +99,7 @@ const ALLOWED_PUSH_TARGETS = new Set([
   'claims',
   'support',
   'notifications',
+  'owner',
   'vehicles',
   'hosts',
   'earnings',

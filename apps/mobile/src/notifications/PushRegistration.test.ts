@@ -28,6 +28,7 @@ describe('push registration safety', () => {
   it('keeps strict scheme and destination allowlisting', () => {
     expect(source).toContain('ALLOWED_PUSH_TARGETS');
     expect(source).toContain("'notifications'");
+    expect(source).toContain("'owner'");
     expect(source).toContain('parsed.protocol === `${expectedScheme}:`');
   });
 

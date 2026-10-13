@@ -42,6 +42,10 @@ describe('admin information architecture', () => {
       'settings/commissions': 'commissions',
     });
     expect(resolveAdminModule(['rentals', 'CR-2026-TEST'])).toBe('rentals');
+    expect(resolveAdminModule(['vehicles', 'changes', 'proposal-id'])).toBe('vehicles');
+    expect(
+      resolveAdminDetailId(['vehicles', 'changes', 'proposal-id'], 'vehicles'),
+    ).toBeUndefined();
     expect(resolveAdminModule(['verification', 'owners', 'owner-id'])).toBe('owner-verification');
     expect(resolveAdminModule(['users', '00000000-0000-0000-0000-000000000000'])).toBe('users');
     expect(resolveAdminModule(['staff', 'new'])).toBe('staff-new');
@@ -67,6 +71,15 @@ describe('admin information architecture', () => {
         'owner-verification',
       ),
     ).toBe('00000000-0000-0000-0000-000000000000');
+  });
+
+  it('keeps vehicle-change proposal review separate from live listing review', () => {
+    const source = readFileSync('src/components/AdminVehicleChangeProposalsPanel.tsx', 'utf8');
+    expect(source).toContain('Vehicle changes awaiting review');
+    expect(source).toContain('Current live vs proposed');
+    expect(source).toContain('/admin/vehicle-change-proposals/');
+    expect(source).not.toContain('/admin/vehicles/${initialSelectedId}/');
+    expect(source).toContain('Approval is unavailable');
   });
 
   it('uses client navigation for every Dashboard queue link and provides account detail views', () => {

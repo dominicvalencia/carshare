@@ -65,6 +65,7 @@ export async function consumeDomainEvent(
     uuid(payload.payoutId) ??
     uuid(payload.amendmentId) ??
     uuid(payload.approvalRequestId) ??
+    uuid(payload.proposalId) ??
     uuid(payload.vehicleId) ??
     uuid(payload.aggregateId) ??
     uuid(payload.bookingId) ??
@@ -111,7 +112,8 @@ export async function consumeDomainEvent(
             ? { responseDeadlineAt: payload.responseDeadlineAt }
             : {}),
           ...(eventType.startsWith('VEHICLE_OWNER_APPROVAL_') ||
-          eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED'
+          eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED' ||
+          eventType.startsWith('VEHICLE_CHANGE_PROPOSAL_')
             ? {
                 managerDisplayName: text(payload.managerDisplayName),
                 vehicleDisplayName: text(payload.vehicleDisplayName),
@@ -323,6 +325,60 @@ function policyFor(eventType: string, payload: Payload): EventPolicy | null {
     return {
       category: NotificationCategory.BOOKING_UPDATES,
       templateKey: 'vehicle.operational-fields-updated',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_TRUSTED_APPLIED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-change-proposal.trusted-applied',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_SUBMITTED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-change-proposal.submitted',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_OWNER_CHANGES_REQUIRED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-change-proposal.owner-changes-required',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_OWNER_APPROVED_APPLIED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-change-proposal.owner-approved-applied',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_OWNER_APPROVED_PLATFORM_REVIEW')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-change-proposal.owner-approved-platform-review',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_TRUSTED_PLATFORM_REVIEW_SUBMITTED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-change-proposal.trusted-platform-review',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_PLATFORM_APPROVED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-change-proposal.platform-approved',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_PLATFORM_CHANGES_REQUIRED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-change-proposal.platform-changes-required',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_PLATFORM_REJECTED')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle-change-proposal.platform-rejected',
       recipients: 'DIRECT',
     };
   if (eventType === 'SECURITY_DEPOSIT_REQUIRED')
@@ -765,6 +821,11 @@ function deepLink(
     return `${scheme}://owner/vehicles/${vehicleId}`;
   if (eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED' && vehicleId)
     return `${scheme}://owner/vehicles/${vehicleId}`;
+  const proposalId = uuid(payload.proposalId);
+  if (eventType === 'VEHICLE_CHANGE_PROPOSAL_SUBMITTED' && vehicleId && proposalId)
+    return `${scheme}://owner/vehicle-change-proposals/${vehicleId}/${proposalId}`;
+  if (eventType.startsWith('VEHICLE_CHANGE_PROPOSAL_') && vehicleId)
+    return `${scheme}://owner/vehicles/${vehicleId}`;
   if (eventType.startsWith('OVERDUE_HANDOVER_RECOVERY_') && bookingPublicReference)
     return `${scheme}://bookings/${bookingPublicReference}/handover-recovery`;
   if (!id) return eventType.startsWith('EARNING_') ? `${scheme}://earnings` : null;
@@ -779,13 +840,15 @@ function sourceType(eventType: string) {
     ? 'VEHICLE_OWNER_APPROVAL'
     : eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED'
       ? 'VEHICLE'
-      : eventType.startsWith('PAYOUT_')
-        ? 'PAYOUT'
-        : eventType.startsWith('SUPPORT_')
-          ? 'SUPPORT_TICKET'
-          : eventType === 'NEW_MESSAGE'
-            ? 'MESSAGE'
-            : 'BOOKING';
+      : eventType.startsWith('VEHICLE_CHANGE_PROPOSAL_')
+        ? 'VEHICLE_CHANGE_PROPOSAL'
+        : eventType.startsWith('PAYOUT_')
+          ? 'PAYOUT'
+          : eventType.startsWith('SUPPORT_')
+            ? 'SUPPORT_TICKET'
+            : eventType === 'NEW_MESSAGE'
+              ? 'MESSAGE'
+              : 'BOOKING';
 }
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;

@@ -16,6 +16,27 @@ const primitivesSource = readFileSync(
   'utf8',
 );
 
+describe('Manager vehicle proposal media editing', () => {
+  it('reuses the shared photo and document editors in proposal mode', () => {
+    const editor = source.slice(
+      source.indexOf('function ManagerVehicleProposalEditor('),
+      source.indexOf('function ManagerOperationalVehicleEditor('),
+    );
+    expect(editor).toContain('<PhotosStep');
+    expect(editor).toContain('<DocumentsStep');
+    expect(editor).toContain('proposalMode');
+    expect(editor).toContain('beforeMutation={persistProposalDraft}');
+    expect(editor).toContain('Current marketplace details stay live');
+  });
+
+  it('targets proposal routes and keeps uploads private or sensitive', () => {
+    expect(source).toContain('`${proposalBase}/${proposal.data.id}`');
+    expect(source).toContain("apiClient.upload<SafeFile>('/files', 'PRIVATE'");
+    expect(source).toContain("apiClient.upload<SafeFile>('/files', 'SENSITIVE'");
+    expect(source).toContain('removeProposalDocument(endpointBase, definitionId');
+  });
+});
+
 describe('Phase 12 owner vehicle acceptance UX', () => {
   it('renders the compact Fleet hierarchy without changing list navigation or Add vehicle', () => {
     const fleet = source.slice(
@@ -82,7 +103,7 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
   it('aligns standard and draft actions through one compact card authority', () => {
     expect(source).toContain('const actionLabel = awaitingOwnerApproval');
     expect(source).toContain("? 'Review vehicle'");
-    expect(source).toContain('<Text style={styles.fleetAction}>{actionLabel} →</Text>');
+    expect(source).toContain("{delegated ? 'View vehicle' : actionLabel} →");
     expect(source).toContain("marginTop: 'auto'");
     expect(source).toContain('fleetContent: { flex: 1, gap: spacing.xxs, minHeight: 120');
     expect(source).toContain("fleetImage: { alignSelf: 'stretch'");

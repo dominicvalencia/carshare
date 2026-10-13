@@ -85,6 +85,12 @@ export function NotificationCenter({ mode }: { readonly mode: MobileMode }) {
           case 'OwnerEarnings':
             navigation.navigate('OwnerEarnings');
             break;
+          case 'OwnerVehicleApproval':
+            navigation.navigate('OwnerVehicleApproval', destination.params);
+            break;
+          case 'OwnerWorkspaceVehicle':
+            navigation.navigate('OwnerWorkspaceVehicle', destination.params);
+            break;
           case 'Notifications':
             break;
           default:

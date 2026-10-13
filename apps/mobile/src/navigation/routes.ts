@@ -46,6 +46,7 @@ export type RootStackParamList = {
   OwnerAddPayoutMethod: undefined;
   OwnerStaff: undefined;
   OwnerVehicleApproval: { vehicleId: string };
+  OwnerVehicleChangeProposal: { vehicleId: string; proposalId: string };
   OwnerWorkspaceVehicle: { vehicleId: string };
   Booking: { bookingId: string };
   BookingRecovery: { bookingId: string };

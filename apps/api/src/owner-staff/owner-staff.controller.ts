@@ -33,6 +33,7 @@ import {
   PreviewOwnerStaffInvitationDto,
   VerifyOwnerStaffInvitationMobileDto,
   UpdateOwnerStaffDto,
+  UpdateManagerAuthorityDto,
   UpdateOwnerStaffPermissionsDto,
   UpdateOwnerStaffScopeDto,
 } from './owner-staff.dto';
@@ -108,6 +109,22 @@ export class OwnerStaffController {
       actor.userId,
       membershipId,
       input,
+      requestMetadata(request),
+    );
+  }
+
+  @Patch(':membershipId/manager-authority')
+  managerAuthority(
+    @CurrentPrincipal() actor: RequestPrincipal,
+    @Param('membershipId') membershipId: string,
+    @Body() input: UpdateManagerAuthorityDto,
+    @Req() request: Request,
+  ) {
+    return this.staff.updateManagerAuthority(
+      actor.ownerAccess!,
+      actor.userId,
+      membershipId,
+      input.ownerApprovalBypassEnabled,
       requestMetadata(request),
     );
   }

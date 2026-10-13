@@ -60,6 +60,9 @@ const safeMemberSelect = {
   },
   invitedAt: true,
   normalizedEmail: true,
+  ownerApprovalBypassChangedAt: true,
+  ownerApprovalBypassChangedByUserId: true,
+  ownerApprovalBypassEnabled: true,
   ownerProfileId: true,
   permissions: {
     orderBy: { permission: { code: 'asc' as const } },
@@ -527,7 +530,7 @@ export class OwnerStaffService {
 
   private assertActualOwner(context: OwnerAccessContext): void {
     if (context.capacity !== 'OWNER')
-      throw this.denied('Only the Owner can manage the Staff workspace access link.');
+      throw this.denied('Only the actual Owner can manage this workspace setting.');
   }
 
   private async ensureStaffAccessLink(
@@ -778,6 +781,69 @@ export class OwnerStaffService {
       afterVehicleIds: vehicleIds,
       beforeScope: target.vehicleScopeMode,
       beforeVehicleIds: beforeIds,
+    });
+    return this.publicMember(updated, true);
+  }
+
+  async updateManagerAuthority(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    membershipId: string,
+    ownerApprovalBypassEnabled: boolean,
+    request: RequestMetadata,
+  ) {
+    this.assertActualOwner(context);
+    const updated = await this.database.client.$transaction(async (transaction) => {
+      const target = await transaction.ownerStaffMembership.findFirst({
+        select: safeMemberSelect,
+        where: { id: membershipId, ownerProfileId: context.ownerProfileId },
+      });
+      if (!target) throw this.notFound();
+      if (target.role !== OwnerStaffRole.MANAGER)
+        throw this.denied('Trusted authority can only be changed for a Manager.');
+      if (target.status !== OwnerStaffStatus.ACTIVE)
+        throw this.conflict('Trusted authority can only be changed for an active Manager.');
+      if (target.ownerApprovalBypassEnabled === ownerApprovalBypassEnabled) return target;
+
+      const changedAt = new Date();
+      const changed = await transaction.ownerStaffMembership.updateMany({
+        data: {
+          ownerApprovalBypassChangedAt: changedAt,
+          ownerApprovalBypassChangedByUserId: actorUserId,
+          ownerApprovalBypassEnabled,
+        },
+        where: {
+          id: membershipId,
+          ownerApprovalBypassEnabled: target.ownerApprovalBypassEnabled,
+          ownerProfileId: context.ownerProfileId,
+          role: OwnerStaffRole.MANAGER,
+          status: OwnerStaffStatus.ACTIVE,
+        },
+      });
+      if (changed.count !== 1)
+        throw this.conflict('Manager authority changed while this action was being completed.');
+      const result = await transaction.ownerStaffMembership.findUniqueOrThrow({
+        select: safeMemberSelect,
+        where: { id: membershipId },
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: 'OWNER_STAFF_MANAGER_AUTHORITY_CHANGED',
+          actorUserId,
+          ...(request.correlationId ? { correlationId: request.correlationId } : {}),
+          ...(request.ipAddress ? { ipAddress: request.ipAddress } : {}),
+          metadata: {
+            changedAt: changedAt.toISOString(),
+            newOwnerApprovalBypassEnabled: ownerApprovalBypassEnabled,
+            ownerProfileId: context.ownerProfileId,
+            previousOwnerApprovalBypassEnabled: target.ownerApprovalBypassEnabled,
+            targetRole: target.role,
+          },
+          targetId: target.id,
+          targetType: 'OWNER_STAFF_MEMBERSHIP',
+        },
+      });
+      return result;
     });
     return this.publicMember(updated, true);
   }
@@ -1109,6 +1175,7 @@ export class OwnerStaffService {
                   : 'PENDING',
           }
         : null,
+      ownerApprovalBypassEnabled: member.ownerApprovalBypassEnabled,
       invitedAt: member.invitedAt,
       permissions,
       preset: this.presetMatch(member.role, permissions),

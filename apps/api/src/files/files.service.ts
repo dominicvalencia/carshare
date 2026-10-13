@@ -65,6 +65,35 @@ export class FilesService {
     return this.serialize(await this.authorizedAsset(id, principal));
   }
 
+  async discardUnattached(userId: string, id: string) {
+    const asset = await this.database.client.fileAsset.findFirst({
+      select: { id: true, objectKey: true },
+      where: {
+        id,
+        uploadedById: userId,
+        status: FileAssetStatus.READY,
+        claimEvidence: { none: {} },
+        disputeEvidence: { none: {} },
+        incidentEvidence: { none: {} },
+        inspectionMedia: { none: {} },
+        profileAvatars: { none: {} },
+        vehicleChangeProposalAssets: { none: {} },
+        vehicleDocuments: { none: {} },
+        vehicleKnownIssueEvidence: { none: {} },
+        vehiclePhotos: { none: {} },
+        verificationDocuments: { none: {} },
+      },
+    });
+    if (!asset) return { discarded: false };
+    const changed = await this.database.client.fileAsset.updateMany({
+      data: { status: FileAssetStatus.DELETED },
+      where: { id: asset.id, status: FileAssetStatus.READY, uploadedById: userId },
+    });
+    if (!changed.count) return { discarded: false };
+    await this.storage.delete(asset.objectKey);
+    return { discarded: true };
+  }
+
   async content(id: string, principal: RequestPrincipal, request?: RequestMetadata) {
     const asset = await this.authorizedAsset(id, principal);
     await this.auditRenterDocumentAccess(asset, principal, request, 'RENTER_DOCUMENT_VIEWED');
@@ -163,6 +192,17 @@ export class FilesService {
         },
         vehicleDocuments: { select: { vehicle: { select: { ownerUserId: true } } } },
         vehiclePhotos: { select: { vehicle: { select: { ownerUserId: true } } } },
+        vehicleChangeProposalAssets: {
+          select: {
+            kind: true,
+            proposal: {
+              select: {
+                ownerProfile: { select: { userId: true } },
+                submittedByUserId: true,
+              },
+            },
+          },
+        },
         verificationDocuments: {
           select: { id: true, verification: { select: { type: true, userId: true } } },
         },
@@ -171,6 +211,11 @@ export class FilesService {
     });
     const vehicleOwner = [...asset.vehicleDocuments, ...asset.vehiclePhotos].some(
       ({ vehicle }) => vehicle.ownerUserId === principal.userId,
+    );
+    const proposalParticipant = asset.vehicleChangeProposalAssets.some(
+      ({ proposal }) =>
+        proposal.ownerProfile.userId === principal.userId ||
+        proposal.submittedByUserId === principal.userId,
     );
     const renterVerificationDocument = asset.verificationDocuments.some(({ verification }) =>
       ['IDENTITY', 'DRIVER_LICENSE'].includes(verification.type),
@@ -184,6 +229,13 @@ export class FilesService {
       (ownerVerificationDocument && principal.permissions.includes('owners.read')) ||
       (asset.vehicleDocuments.length > 0 && principal.permissions.includes('vehicles.review')) ||
       (asset.vehiclePhotos.length > 0 && principal.permissions.includes('vehicles.read')) ||
+      asset.vehicleChangeProposalAssets.some(
+        ({ kind }) =>
+          (kind === 'PHOTO' &&
+            (principal.permissions.includes('vehicles.read') ||
+              principal.permissions.includes('vehicles.review'))) ||
+          (kind === 'DOCUMENT' && principal.permissions.includes('vehicles.review')),
+      ) ||
       (asset.inspectionMedia.length > 0 && principal.permissions.includes('inspections.read')) ||
       (asset.claimEvidence.length > 0 && principal.permissions.includes('claims.read')) ||
       (asset.disputeEvidence.length > 0 && principal.permissions.includes('disputes.read')) ||
@@ -202,6 +254,7 @@ export class FilesService {
       !publicAsset &&
       asset.uploadedById !== principal.userId &&
       !vehicleOwner &&
+      !proposalParticipant &&
       !rentalParticipant &&
       !administrative
     ) {

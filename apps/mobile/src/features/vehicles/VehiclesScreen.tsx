@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { NavigationProp } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  classifyVehicleChangedFields,
+  diffVehicleChangeProposalSnapshots,
+  type CreateVehicleChangeProposalResponse,
+  type GetVehicleChangeProposalResponse,
+  type OwnerVehicleChangeProposalListResponse,
+  type OwnerVehicleChangeProposalReviewModel,
+  type SubmitVehicleChangeProposalResponse,
+  type UpdateVehicleChangeProposalResponse,
+  type VehicleChangeProposalSnapshotV1,
   VEHICLE_REMOVAL_OTHER_REASON_MAX_LENGTH,
   VehicleRemovalReason,
   type SecurityDepositPolicyCatalog,
@@ -26,6 +37,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import Reanimated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { ApiError, apiClient } from '../../auth/api-client';
 import type { OwnerWorkspace } from '../../auth/auth.types';
+import type { RootStackParamList } from '../../navigation/routes';
 import { hasOwnerPermission } from '../../navigation/owner-workspace';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { DateTimeField } from '../../ui/DateTimeField';
@@ -197,6 +209,25 @@ interface Vehicle {
     readonly submittedByDisplayName: string;
     readonly submittedRevision: number;
   } | null;
+  readonly activeChangeProposal?: {
+    readonly id: string;
+    readonly isCreator: boolean;
+    readonly ownerApprovalBypassed: boolean;
+    readonly platformReviewRequired: boolean;
+    readonly status:
+      | 'DRAFT'
+      | 'PENDING_OWNER_APPROVAL'
+      | 'OWNER_CHANGES_REQUIRED'
+      | 'PENDING_PLATFORM_REVIEW'
+      | 'PLATFORM_CHANGES_REQUIRED';
+  } | null;
+  readonly capabilities?: {
+    readonly canArchiveVehicle: false;
+    readonly canEditOperationalFields: boolean;
+    readonly canManageKnownIssues: false;
+    readonly canStartVehicleProposal: boolean;
+    readonly ownerApprovalBypassEnabled: boolean;
+  } | null;
 }
 
 interface VehicleKnownIssue {
@@ -335,6 +366,7 @@ export function VehiclesScreen({
 }
 
 function ActualOwnerVehiclesScreen({ initialVehicleId }: { readonly initialVehicleId?: string }) {
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const client = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(initialVehicleId ?? null);
   const [editing, setEditing] = useState(false);
@@ -348,6 +380,15 @@ function ActualOwnerVehiclesScreen({ initialVehicleId }: { readonly initialVehic
         : false,
     refetchOnWindowFocus: true,
   });
+  const changeProposals = useQuery({
+    queryKey: ['owner-vehicle-change-proposals'],
+    queryFn: () =>
+      apiClient.request<OwnerVehicleChangeProposalListResponse>('/owner/vehicle-change-proposals'),
+    retry: false,
+  });
+  const proposalByVehicle = new Map(
+    changeProposals.data?.proposals.map((proposal) => [proposal.vehicleId, proposal]) ?? [],
+  );
   const create = useMutation({
     mutationFn: () => apiClient.request<Vehicle>('/owner/vehicles', { body: '{}', method: 'POST' }),
     onSuccess: (vehicle) => {
@@ -415,8 +456,21 @@ function ActualOwnerVehiclesScreen({ initialVehicleId }: { readonly initialVehic
         {vehicles.data?.map((vehicle) => (
           <FleetVehicleCard
             key={vehicle.id}
+            {...(proposalByVehicle.get(vehicle.id)
+              ? { changeProposal: proposalByVehicle.get(vehicle.id)! }
+              : {})}
             vehicle={vehicle}
-            onPress={() => setSelectedId(vehicle.id)}
+            onPress={() => {
+              const proposal = proposalByVehicle.get(vehicle.id);
+              if (proposal?.status === 'PENDING_OWNER_APPROVAL') {
+                navigation.navigate('OwnerVehicleChangeProposal', {
+                  proposalId: proposal.id,
+                  vehicleId: vehicle.id,
+                });
+                return;
+              }
+              setSelectedId(vehicle.id);
+            }}
           />
         ))}
         {!vehicles.isPending && !vehicles.isError && vehicles.data?.length === 0 && (
@@ -441,7 +495,7 @@ function DelegatedVehiclesScreen({
   const client = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(initialVehicleId ?? null);
   const [editing, setEditing] = useState(false);
-  const [operationalEditing, setOperationalEditing] = useState(false);
+  const [proposalEditing, setProposalEditing] = useState(false);
   const [managingAvailability, setManagingAvailability] = useState(false);
   const canCreate =
     ownerWorkspace.capacity === 'MANAGER' &&
@@ -500,117 +554,32 @@ function DelegatedVehiclesScreen({
         }}
       />
     );
-  if (selected && operationalEditing)
+  if (selected && proposalEditing)
     return (
-      <ManagerOperationalVehicleEditor
-        endpointBase={`${workspaceBase}/${selected.id}`}
-        ownerProfileId={ownerWorkspace.ownerProfileId}
+      <ManagerVehicleProposalEditor
+        workspaceBase={workspaceBase}
         vehicle={selected}
         onClose={() => {
-          setOperationalEditing(false);
+          setProposalEditing(false);
           void vehicles.refetch();
         }}
       />
     );
   if (selected)
     return (
-      <SafeAreaView edges={['top']} style={styles.flex}>
-        <ScrollView contentContainerStyle={styles.page}>
-          <BackControl
-            label={managingAvailability ? 'Vehicle detail' : 'Vehicles'}
-            onPress={() =>
-              managingAvailability ? setManagingAvailability(false) : setSelectedId(null)
-            }
-          />
-          {managingAvailability ? (
-            <AvailabilityStep
-              canUpdate={hasOwnerPermission(ownerWorkspace, 'availability.update')}
-              endpointBase={`/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles/${selected.id}`}
-              id={selected.id}
-              ownerProfileId={ownerWorkspace.ownerProfileId}
-              vehicle={selected}
-              onSaved={() => void vehicles.refetch()}
-            />
-          ) : (
-            <>
-              <Text style={styles.title}>
-                {[selected.make, selected.model].filter(Boolean).join(' ')}
-              </Text>
-              <StatusBadge
-                label={delegatedApprovalLabel(selected)}
-                tone={delegatedApprovalTone(selected)}
-              />
-              {selected.ownerApproval?.status === 'PENDING' ? (
-                <Section title="Awaiting Owner approval">
-                  <Text style={styles.body}>
-                    Waiting for the Owner to review this vehicle before it can be submitted to
-                    CarShare.
-                  </Text>
-                  <Button
-                    label={withdraw.isPending ? 'Withdrawing…' : 'Withdraw submission'}
-                    variant="secondary"
-                    disabled={withdraw.isPending}
-                    onPress={() =>
-                      Alert.alert(
-                        'Withdraw submission?',
-                        'This will return the vehicle to draft so it can be edited before submitting again.',
-                        [
-                          { style: 'cancel', text: 'Keep waiting' },
-                          {
-                            style: 'destructive',
-                            text: 'Withdraw',
-                            onPress: () => withdraw.mutate(selected.id),
-                          },
-                        ],
-                      )
-                    }
-                  />
-                </Section>
-              ) : selected.ownerApproval?.status === 'CHANGES_REQUIRED' &&
-                selected.status === 'DRAFT' ? (
-                <Section title="Owner feedback">
-                  <Text style={styles.body}>
-                    {selected.ownerApproval.reviewReason ?? 'The Owner requested changes.'}
-                  </Text>
-                  <Button label="Continue editing" onPress={() => setEditing(true)} />
-                </Section>
-              ) : selected.status === 'DRAFT' && canCreate ? (
-                <Button label="Continue setup" onPress={() => setEditing(true)} />
-              ) : null}
-              {withdraw.error ? <Text style={styles.error}>{withdraw.error.message}</Text> : null}
-              {selected.status === 'APPROVED' && canEditOperational ? (
-                <View style={styles.vehicleEditAction}>
-                  <DetailAction
-                    label="Edit vehicle settings"
-                    onPress={() => setOperationalEditing(true)}
-                  />
-                  <Text style={styles.vehicleDetailHelper}>
-                    You can update day-to-day vehicle settings for this workspace.
-                  </Text>
-                </View>
-              ) : null}
-              <VehicleDetailSection
-                action={
-                  hasOwnerPermission(ownerWorkspace, 'availability.view') ? (
-                    <DetailAction
-                      label="Manage availability"
-                      onPress={() => setManagingAvailability(true)}
-                    />
-                  ) : null
-                }
-                emphasized
-                title="Marketplace & availability"
-              >
-                <VehicleDetailRow label="Review status" value={ownerMarketplaceStatus(selected)} />
-                <VehicleDetailRow
-                  label="Availability"
-                  value={availabilityTodayLabel(selected.availabilityToday)}
-                />
-              </VehicleDetailSection>
-            </>
-          )}
-        </ScrollView>
-      </SafeAreaView>
+      <DelegatedVehicleDetail
+        canCreate={canCreate}
+        canEdit={canEditOperational}
+        managingAvailability={managingAvailability}
+        ownerWorkspace={ownerWorkspace}
+        vehicleId={selected.id}
+        workspaceBase={workspaceBase}
+        onBack={() => setSelectedId(null)}
+        onContinueSetup={() => setEditing(true)}
+        onEditProposal={() => setProposalEditing(true)}
+        onManageAvailability={setManagingAvailability}
+        onWithdraw={() => withdraw.mutate(selected.id)}
+      />
     );
   return (
     <SafeAreaView edges={['top']} style={styles.flex}>
@@ -646,7 +615,8 @@ function DelegatedVehiclesScreen({
           />
         ) : null}
         {vehicles.data?.map((vehicle) => (
-          <DelegatedVehicleCard
+          <FleetVehicleCard
+            delegated
             key={vehicle.id}
             vehicle={vehicle}
             onPress={() => setSelectedId(vehicle.id)}
@@ -664,7 +634,286 @@ function DelegatedVehiclesScreen({
   );
 }
 
-function DelegatedVehicleCard({
+function DelegatedVehicleDetail({
+  canCreate,
+  canEdit,
+  managingAvailability,
+  ownerWorkspace,
+  vehicleId,
+  workspaceBase,
+  onBack,
+  onContinueSetup,
+  onEditProposal,
+  onManageAvailability,
+  onWithdraw,
+}: {
+  readonly canCreate: boolean;
+  readonly canEdit: boolean;
+  readonly managingAvailability: boolean;
+  readonly ownerWorkspace: OwnerWorkspace;
+  readonly vehicleId: string;
+  readonly workspaceBase: string;
+  readonly onBack: () => void;
+  readonly onContinueSetup: () => void;
+  readonly onEditProposal: () => void;
+  readonly onManageAvailability: (value: boolean) => void;
+  readonly onWithdraw: () => void;
+}) {
+  const vehicle = useQuery({
+    queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicle', vehicleId],
+    queryFn: () => apiClient.request<Vehicle>(`${workspaceBase}/${vehicleId}`),
+    refetchOnWindowFocus: true,
+  });
+  if (vehicle.isPending) return <StateView loading title="Loading vehicle…" />;
+  if (vehicle.isError || !vehicle.data)
+    return <StateView title="Vehicle unavailable" message={vehicle.error?.message} />;
+  const value = vehicle.data;
+  if (managingAvailability)
+    return (
+      <SafeAreaView edges={['top']} style={styles.flex}>
+        <ScrollView contentContainerStyle={styles.page}>
+          <BackControl label="Vehicle detail" onPress={() => onManageAvailability(false)} />
+          <AvailabilityStep
+            canUpdate={hasOwnerPermission(ownerWorkspace, 'availability.update')}
+            endpointBase={`${workspaceBase}/${vehicleId}`}
+            id={vehicleId}
+            ownerProfileId={ownerWorkspace.ownerProfileId}
+            vehicle={value}
+            onSaved={() => void vehicle.refetch()}
+          />
+        </ScrollView>
+      </SafeAreaView>
+    );
+  const cover = value.photos.find(({ isCover }) => isCover) ?? value.photos[0];
+  const policy = value.policyVersions[0];
+  const activeDocuments = value.documents.filter(({ replacedAt }) => !replacedAt);
+  const activeIssues = value.knownIssues.filter(({ status }) => status === 'ACTIVE');
+  const proposal = value.activeChangeProposal;
+  const proposalEditable =
+    proposal?.isCreator &&
+    ['DRAFT', 'OWNER_CHANGES_REQUIRED', 'PLATFORM_CHANGES_REQUIRED'].includes(proposal.status);
+  const canStartProposal =
+    value.status === 'APPROVED' &&
+    canEdit &&
+    value.capabilities?.canStartVehicleProposal === true &&
+    (!proposal || proposalEditable);
+  const proposalLabel = delegatedProposalStatusLabel(proposal?.status);
+  return (
+    <SafeAreaView edges={['top']} style={styles.flex}>
+      <View style={styles.vehicleDetailHeader}>
+        <BackControl label="Back" onPress={onBack} />
+      </View>
+      <ScrollView contentContainerStyle={[styles.page, styles.vehicleDetailPage]}>
+        <VehicleImage
+          accessibilityLabel={`${value.make ?? ''} ${value.model ?? 'vehicle'} cover photo`}
+          contentPath={cover?.fileAsset.contentGrant?.contentPath}
+          style={styles.hero}
+        />
+        <Text style={styles.title}>{[value.make, value.model].filter(Boolean).join(' ')}</Text>
+        <View style={styles.vehicleMetaRow}>
+          <Text style={[styles.body, styles.vehicleMetaText]}>
+            {value.modelYear ?? '—'} · {value.category?.name ?? 'Vehicle'} ·{' '}
+            {domainLabel(value.fuelType)}
+          </Text>
+          <StatusBadge label={vehicleStatusLabel(value.status)} tone={vehicleTone(value.status)} />
+        </View>
+        {proposalLabel ? (
+          <VehicleDetailSection
+            emphasized
+            title={
+              proposal?.status === 'DRAFT' && !proposal.isCreator
+                ? 'Vehicle changes are already being prepared'
+                : proposalLabel
+            }
+          >
+            <Text style={styles.vehicleDetailHelper}>
+              The live vehicle details below remain unchanged while these changes are reviewed.
+            </Text>
+          </VehicleDetailSection>
+        ) : null}
+        {value.status === 'DRAFT' && value.ownerApproval?.status === 'PENDING' ? (
+          <VehicleDetailSection title="Waiting for Owner review">
+            <Text style={styles.vehicleDetailHelper}>
+              The Owner needs to approve this vehicle before it can be submitted to CarShare.
+            </Text>
+            <DetailAction label="Withdraw submission" onPress={onWithdraw} />
+          </VehicleDetailSection>
+        ) : value.status === 'DRAFT' && canCreate ? (
+          <View style={styles.vehicleEditAction}>
+            <DetailAction label="Continue setup" onPress={onContinueSetup} />
+          </View>
+        ) : null}
+        {canStartProposal ? (
+          <View style={styles.vehicleEditAction}>
+            <DetailAction
+              label={proposalEditable ? 'Continue editing changes' : 'Edit vehicle'}
+              onPress={onEditProposal}
+            />
+            <Text style={styles.vehicleDetailHelper}>
+              Vehicle changes use the workspace approval and CarShare review flow.
+            </Text>
+          </View>
+        ) : null}
+        <VehicleDetailSection title="Vehicle overview">
+          <View style={styles.vehicleOverviewGrid}>
+            <VehicleDetailValue label="Transmission" value={domainLabel(value.transmission)} />
+            <VehicleDetailValue label="Powertrain" value={domainLabel(value.powertrain)} />
+            <VehicleDetailValue label="Color" value={value.color ?? 'Not set'} />
+            <VehicleDetailValue label="Seats" value={String(value.seatCount ?? '—')} />
+          </View>
+        </VehicleDetailSection>
+        <VehicleDetailSection title="Description & rental requirements">
+          <VehicleDetailSummary label="Description" value={value.description ?? 'Not configured'} />
+          <VehicleDetailSummary
+            label="Rental requirements"
+            value={value.rentalRequirements ?? 'Not configured'}
+          />
+        </VehicleDetailSection>
+        <VehicleDetailSection title="Registration & verification">
+          <VehicleDetailRow label="Documents" value={`${activeDocuments.length} attached`} />
+          <VehicleDetailRow label="Photos" value={`${value.photos.length} attached`} />
+          <VehicleDetailRow label="Plate number" value={value.plateNumber ?? 'Not set'} />
+        </VehicleDetailSection>
+        <VehicleDetailSection title="Private pickup location">
+          <VehicleDetailRow
+            label="Location"
+            value={
+              value.location
+                ? `${value.location.city}, ${value.location.province}`
+                : 'Not configured'
+            }
+          />
+          {value.location ? (
+            <Text style={styles.vehicleDetailHelper}>
+              {ownerPrivateLocationLabel(value.location)}
+            </Text>
+          ) : null}
+        </VehicleDetailSection>
+        <VehicleDetailSection title="Pricing">
+          <VehicleDetailRow
+            label="Daily rate"
+            value={policy ? money(policy.dailyRateMinor) : 'Not configured'}
+          />
+          <VehicleDetailRow
+            label="Security deposit"
+            value={
+              policy?.securityDepositRequired
+                ? money(policy.securityDepositAmountMinor ?? 0)
+                : 'Not required'
+            }
+          />
+          <VehicleDetailRow
+            label="Rental duration"
+            value={
+              policy
+                ? `${policy.minimumRentalDays}–${policy.maximumRentalDays} days`
+                : 'Not configured'
+            }
+          />
+          <VehicleDetailRow
+            label="Delivery fee"
+            value={policy?.deliveryFeeMinor ? money(policy.deliveryFeeMinor) : 'Not configured'}
+          />
+          <VehicleDetailRow
+            label="Collection fee"
+            value={policy?.collectionFeeMinor ? money(policy.collectionFeeMinor) : 'Not configured'}
+          />
+          <VehicleDetailRow
+            label="Excess-distance fee"
+            value={
+              policy?.excessKilometerRateMinor
+                ? `${money(policy.excessKilometerRateMinor)} / km`
+                : 'Not configured'
+            }
+          />
+          <VehicleDetailRow
+            label="Long-booking discounts"
+            value={
+              policy &&
+              [
+                policy.shortDurationDiscountBps,
+                policy.weeklyDiscountBps,
+                policy.extendedTripDiscountBps,
+                policy.monthlyDiscountBps,
+              ].some((value) => (value ?? 0) > 0)
+                ? 'Enabled'
+                : 'Not enabled'
+            }
+          />
+        </VehicleDetailSection>
+        <VehicleDetailSection title="Features">
+          <VehicleDetailRow label="Selected features" value={String(value.features.length)} />
+        </VehicleDetailSection>
+        <VehicleDetailSection title="Handover & usage">
+          <VehicleDetailSummary
+            label="Mileage"
+            value={
+              policy?.mileagePolicy === 'UNLIMITED'
+                ? 'Unlimited'
+                : policy
+                  ? `${policy.includedKilometersPerDay ?? 0} km/day included`
+                  : 'Not configured'
+            }
+          />
+          <VehicleDetailSummary
+            label="Turnaround"
+            value={policy ? `${policy.turnaroundMinutes / 60} hours` : 'Not configured'}
+          />
+          <VehicleDetailSummary
+            label="Minimum notice"
+            value={policy ? `${policy.fulfillmentMinimumNoticeMinutes} minutes` : 'Not configured'}
+          />
+          <VehicleDetailSummary
+            label="Fuel return"
+            value={
+              policy?.fuelReturnPolicy ? domainLabel(policy.fuelReturnPolicy) : 'Not applicable'
+            }
+          />
+          <VehicleDetailSummary
+            label="EV return"
+            value={policy?.evReturnPolicy ? domainLabel(policy.evReturnPolicy) : 'Not applicable'}
+          />
+          <VehicleDetailSummary
+            label="Availability policy"
+            value={policy ? domainLabel(policy.availabilityPolicy) : 'Not configured'}
+          />
+          <VehicleDetailSummary
+            label="Fulfillment"
+            value={policy ? fulfillmentSummary(policy) : 'Not configured'}
+          />
+        </VehicleDetailSection>
+        <VehicleDetailSection title="Known vehicle issues">
+          <Text style={styles.vehicleOperationalValue}>{activeIssues.length} active</Text>
+          {activeIssues.slice(0, 3).map((issue) => (
+            <Text key={issue.id} style={styles.vehicleDetailHelper}>
+              {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+            </Text>
+          ))}
+        </VehicleDetailSection>
+        <VehicleDetailSection
+          action={
+            hasOwnerPermission(ownerWorkspace, 'availability.view') ? (
+              <DetailAction
+                label="Manage availability"
+                onPress={() => onManageAvailability(true)}
+              />
+            ) : null
+          }
+          emphasized
+          title="Marketplace & availability"
+        >
+          <VehicleDetailRow label="Review status" value={ownerMarketplaceStatus(value)} />
+          <VehicleDetailRow
+            label="Availability"
+            value={availabilityTodayLabel(value.availabilityToday)}
+          />
+        </VehicleDetailSection>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function _DelegatedVehicleCard({
   vehicle,
   onPress,
 }: {
@@ -704,6 +953,311 @@ function DelegatedVehicleCard({
   );
 }
 
+function ManagerVehicleProposalEditor({
+  workspaceBase,
+  vehicle,
+  onClose,
+}: {
+  readonly workspaceBase: string;
+  readonly vehicle: Vehicle;
+  readonly onClose: () => void;
+}) {
+  const proposalBase = `${workspaceBase}/${vehicle.id}/change-proposals`;
+  const active = vehicle.activeChangeProposal;
+  const proposal = useQuery({
+    queryKey: ['manager-vehicle-change-proposal', vehicle.id, active?.id ?? 'new'],
+    queryFn: () =>
+      active?.id
+        ? apiClient.request<GetVehicleChangeProposalResponse>(`${proposalBase}/${active.id}`)
+        : apiClient.request<CreateVehicleChangeProposalResponse>(proposalBase, {
+            body: '{}',
+            method: 'POST',
+          }),
+    retry: false,
+  });
+  const [snapshotOverride, setSnapshot] = useState<VehicleChangeProposalSnapshotV1 | null>(null);
+  const snapshot = snapshotOverride ?? proposal.data?.proposedSnapshot ?? null;
+  const submit = useMutation({
+    mutationFn: async () => {
+      if (!proposal.data || !snapshot) throw new Error('Proposal is not ready.');
+      await apiClient.request<UpdateVehicleChangeProposalResponse>(
+        `${proposalBase}/${proposal.data.id}`,
+        { body: JSON.stringify({ proposedSnapshot: snapshot }), method: 'PATCH' },
+      );
+      return apiClient.request<SubmitVehicleChangeProposalResponse>(
+        `${proposalBase}/${proposal.data.id}/submission`,
+        { method: 'POST' },
+      );
+    },
+    onSuccess: onClose,
+  });
+  if (proposal.isPending || !snapshot) return <StateView loading title="Preparing changes…" />;
+  if (proposal.isError)
+    return <StateView title="Changes unavailable" message={proposal.error.message} />;
+  const updateVehicle = (
+    key: keyof VehicleChangeProposalSnapshotV1['vehicle'],
+    value: string | number | null,
+  ) => setSnapshot({ ...snapshot, vehicle: { ...snapshot.vehicle, [key]: value } });
+  const updatePolicy = (
+    key: keyof VehicleChangeProposalSnapshotV1['policy'],
+    value: string | number | boolean | null,
+  ) => setSnapshot({ ...snapshot, policy: { ...snapshot.policy, [key]: value } });
+  const trusted = vehicle.capabilities?.ownerApprovalBypassEnabled === true;
+  const sensitive =
+    proposal.data?.classification === 'PLATFORM_REVIEW_REQUIRED' ||
+    (proposal.data && snapshot
+      ? classifyVehicleChangedFields(
+          diffVehicleChangeProposalSnapshots(proposal.data.proposedSnapshot, snapshot),
+        ) === 'PLATFORM_REVIEW_REQUIRED'
+      : false);
+  const resubmission =
+    active?.status === 'OWNER_CHANGES_REQUIRED' || active?.status === 'PLATFORM_CHANGES_REQUIRED';
+  const actionLabel = submit.isPending
+    ? 'Submitting…'
+    : resubmission
+      ? 'Resubmit changes'
+      : trusted
+        ? sensitive
+          ? 'Submit changes for review'
+          : 'Save changes'
+        : 'Submit changes for Owner approval';
+  const proposalAssets = new Map(
+    (proposal.data?.assets ?? []).map((asset) => [asset.fileAssetId, asset]),
+  );
+  const proposedPhotos: VehiclePhoto[] = snapshot.photos.map((photo) => {
+    const live = vehicle.photos.find(({ fileAsset }) => fileAsset.id === photo.fileAssetId);
+    const asset = proposalAssets.get(photo.fileAssetId);
+    return {
+      displayOrder: photo.displayOrder,
+      fileAsset: live?.fileAsset ?? {
+        id: photo.fileAssetId,
+        originalName: asset?.originalName ?? 'Proposed photo',
+        ...(asset?.contentGrant ? { contentGrant: asset.contentGrant } : {}),
+      },
+      id: photo.fileAssetId,
+      isCover: photo.isCover,
+      perspective: photo.perspective,
+    };
+  });
+  const proposedDocuments: VehicleDocument[] = snapshot.documents.map((document) => {
+    const live = vehicle.documents.find(({ fileAsset }) => fileAsset.id === document.fileAssetId);
+    const asset = proposalAssets.get(document.fileAssetId);
+    return {
+      definition: live?.definition ?? {
+        code: document.documentType,
+        id: document.definitionId,
+        name: domainLabel(document.documentType),
+      },
+      definitionId: document.definitionId,
+      fileAsset: live?.fileAsset ?? {
+        id: document.fileAssetId,
+        originalName: asset?.originalName ?? domainLabel(document.documentType),
+        ...(asset?.contentGrant ? { contentGrant: asset.contentGrant } : {}),
+      },
+      id: document.fileAssetId,
+      replacedAt: null,
+    };
+  });
+  const refreshProposalAssets = async () => {
+    setSnapshot(null);
+    await proposal.refetch();
+  };
+  const persistProposalDraft = () =>
+    apiClient.request<UpdateVehicleChangeProposalResponse>(`${proposalBase}/${proposal.data.id}`, {
+      body: JSON.stringify({ proposedSnapshot: snapshot }),
+      method: 'PATCH',
+    });
+  return (
+    <SafeAreaView edges={['top']} style={styles.flex}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.flex}
+      >
+        <ScrollView
+          contentContainerStyle={styles.page}
+          keyboardDismissMode={formKeyboardDismissMode}
+          keyboardShouldPersistTaps="handled"
+        >
+          <BackControl label="Vehicle detail" onPress={onClose} />
+          <Text style={styles.eyebrow}>VEHICLE CHANGES</Text>
+          <Text style={styles.title}>Edit vehicle</Text>
+          <Text style={styles.body}>
+            Current marketplace details stay live until this proposal completes the required review.
+          </Text>
+          <Section title="Vehicle details">
+            <Field
+              label="Make"
+              value={snapshot.vehicle.make ?? ''}
+              onChange={(value) => updateVehicle('make', value)}
+            />
+            <Field
+              label="Model"
+              value={snapshot.vehicle.model ?? ''}
+              onChange={(value) => updateVehicle('model', value)}
+            />
+            <Field
+              keyboard="numeric"
+              label="Model year"
+              value={String(snapshot.vehicle.modelYear ?? '')}
+              onChange={(value) => updateVehicle('modelYear', value ? Number(value) : null)}
+            />
+            <Field
+              label="Variant"
+              value={snapshot.vehicle.variant ?? ''}
+              onChange={(value) => updateVehicle('variant', value)}
+            />
+            <Field
+              label="Color"
+              value={snapshot.vehicle.color ?? ''}
+              onChange={(value) => updateVehicle('color', value)}
+            />
+            <Field
+              label="Description"
+              multiline
+              value={snapshot.vehicle.description ?? ''}
+              onChange={(value) => updateVehicle('description', value)}
+            />
+            <Field
+              label="Rental requirements"
+              multiline
+              value={snapshot.vehicle.rentalRequirements ?? ''}
+              onChange={(value) => updateVehicle('rentalRequirements', value)}
+            />
+          </Section>
+          <Section title="Pricing & rental policy">
+            <Field
+              keyboard="numeric"
+              label="Daily rate"
+              prefix="₱"
+              value={String(snapshot.policy.dailyRateMinor / 100)}
+              onChange={(value) =>
+                updatePolicy('dailyRateMinor', Math.round(Number(value || 0) * 100))
+              }
+            />
+            <Field
+              keyboard="numeric"
+              label="Minimum rental days"
+              value={String(snapshot.policy.minimumRentalDays)}
+              onChange={(value) => updatePolicy('minimumRentalDays', Number(value || 0))}
+            />
+            <Field
+              keyboard="numeric"
+              label="Maximum rental days"
+              value={String(snapshot.policy.maximumRentalDays)}
+              onChange={(value) => updatePolicy('maximumRentalDays', Number(value || 0))}
+            />
+            <Field
+              keyboard="numeric"
+              label="Included kilometers per day"
+              value={String(snapshot.policy.includedKilometersPerDay ?? '')}
+              onChange={(value) =>
+                updatePolicy('includedKilometersPerDay', value ? Number(value) : null)
+              }
+            />
+            <Field
+              keyboard="numeric"
+              label="Turnaround minutes"
+              value={String(snapshot.policy.turnaroundMinutes)}
+              onChange={(value) => updatePolicy('turnaroundMinutes', Number(value || 0))}
+            />
+            <Field
+              keyboard="numeric"
+              label="Minimum notice minutes"
+              value={String(snapshot.policy.fulfillmentMinimumNoticeMinutes)}
+              onChange={(value) =>
+                updatePolicy('fulfillmentMinimumNoticeMinutes', Number(value || 0))
+              }
+            />
+            <DepositRequirementSelector
+              required={snapshot.policy.securityDepositRequired}
+              onChange={(required) =>
+                setSnapshot({
+                  ...snapshot,
+                  policy: {
+                    ...snapshot.policy,
+                    securityDepositAmountMinor: required
+                      ? snapshot.policy.securityDepositAmountMinor
+                      : null,
+                    securityDepositRequired: required,
+                  },
+                })
+              }
+            />
+            {snapshot.policy.securityDepositRequired ? (
+              <Field
+                keyboard="numeric"
+                label="Security deposit"
+                prefix="₱"
+                value={String((snapshot.policy.securityDepositAmountMinor ?? 0) / 100)}
+                onChange={(value) =>
+                  updatePolicy('securityDepositAmountMinor', Math.round(Number(value || 0) * 100))
+                }
+              />
+            ) : null}
+          </Section>
+          <Section title="Location">
+            {snapshot.location ? (
+              <>
+                <Field
+                  label="City"
+                  value={snapshot.location.city}
+                  onChange={(city) =>
+                    setSnapshot({ ...snapshot, location: { ...snapshot.location!, city } })
+                  }
+                />
+                <Field
+                  label="Province"
+                  value={snapshot.location.province}
+                  onChange={(province) =>
+                    setSnapshot({ ...snapshot, location: { ...snapshot.location!, province } })
+                  }
+                />
+                <Field
+                  label="Pickup area"
+                  value={snapshot.location.pickupAreaLabel ?? ''}
+                  onChange={(pickupAreaLabel) =>
+                    setSnapshot({
+                      ...snapshot,
+                      location: { ...snapshot.location!, pickupAreaLabel },
+                    })
+                  }
+                />
+              </>
+            ) : (
+              <Text style={styles.vehicleDetailHelper}>No pickup location configured</Text>
+            )}
+            <VehicleDetailRow label="Features" value={`${snapshot.featureIds.length} selected`} />
+          </Section>
+          <PhotosStep
+            endpointBase={`${proposalBase}/${proposal.data.id}`}
+            photos={proposedPhotos}
+            proposalMode
+            beforeMutation={persistProposalDraft}
+            onSaved={() => void refreshProposalAssets()}
+          />
+          <DocumentsStep
+            documents={proposedDocuments}
+            endpointBase={`${proposalBase}/${proposal.data.id}`}
+            proposalMode
+            referenceBase={`${workspaceBase}/reference-data`}
+            beforeMutation={persistProposalDraft}
+            onSaved={() => void refreshProposalAssets()}
+          />
+          <Button disabled={submit.isPending} label={actionLabel} onPress={() => submit.mutate()} />
+          {submit.error ? (
+            <Text accessibilityRole="alert" style={styles.error}>
+              {submit.error.message}
+            </Text>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+// Retained temporarily for compatibility with the narrow legacy operational endpoints.
+// New Manager editing enters ManagerVehicleProposalEditor above.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ManagerOperationalVehicleEditor({
   endpointBase,
   ownerProfileId,
@@ -1151,9 +1705,13 @@ function managerOperationalEditError(error: Error): string {
 }
 
 function FleetVehicleCard({
+  changeProposal,
+  delegated = false,
   vehicle,
   onPress,
 }: {
+  readonly changeProposal?: OwnerVehicleChangeProposalReviewModel;
+  readonly delegated?: boolean;
   readonly vehicle: Vehicle;
   readonly onPress: () => void;
 }) {
@@ -1166,11 +1724,16 @@ function FleetVehicleCard({
   const policy = vehicle.policyVersions[0];
   const metadata = [vehicle.category?.name, vehicle.location?.city].filter(Boolean).join(' · ');
   const awaitingOwnerApproval = vehicle.ownerApproval?.status === 'PENDING' && draft;
+  const changeAwaitingOwner = changeProposal?.status === 'PENDING_OWNER_APPROVAL';
+  const changeUnderReview = changeProposal?.status === 'PENDING_PLATFORM_REVIEW';
+  const delegatedProposal = vehicle.activeChangeProposal;
   const actionLabel = awaitingOwnerApproval
     ? 'Review vehicle'
-    : draft
-      ? 'Continue setup'
-      : 'Manage vehicle';
+    : changeAwaitingOwner
+      ? 'Review changes'
+      : draft
+        ? 'Continue setup'
+        : 'Manage vehicle';
   const distinctAvailability = fleetDistinctAvailabilityLabel(vehicle.availabilityToday);
   const accessibilityDetails = draft
     ? awaitingOwnerApproval
@@ -1196,9 +1759,20 @@ function FleetVehicleCard({
         </Text>
         <StatusBadge
           label={
-            awaitingOwnerApproval ? 'Awaiting your approval' : vehicleStatusLabel(vehicle.status)
+            delegatedProposal
+              ? (delegatedProposalStatusLabel(delegatedProposal.status) ??
+                vehicleStatusLabel(vehicle.status))
+              : changeAwaitingOwner
+                ? 'Changes awaiting your approval'
+                : changeUnderReview
+                  ? 'Changes under CarShare review'
+                  : awaitingOwnerApproval
+                    ? 'Awaiting your approval'
+                    : vehicleStatusLabel(vehicle.status)
           }
-          tone={awaitingOwnerApproval ? 'warning' : vehicleTone(vehicle.status)}
+          tone={
+            changeAwaitingOwner || awaitingOwnerApproval ? 'warning' : vehicleTone(vehicle.status)
+          }
         />
         {draft ? (
           <Text style={styles.fleetDraftState}>
@@ -1231,7 +1805,7 @@ function FleetVehicleCard({
             )}
           </>
         )}
-        <Text style={styles.fleetAction}>{actionLabel} →</Text>
+        <Text style={styles.fleetAction}>{delegated ? 'View vehicle' : actionLabel} →</Text>
       </View>
     </Pressable>
   );
@@ -2986,14 +3560,22 @@ function FeaturesStep({
   );
 }
 
+async function discardUnattachedProposalFile(fileAssetId: string) {
+  await apiClient.request(`/files/${fileAssetId}`, { method: 'DELETE' }).catch(() => {});
+}
+
 function PhotosStep({
+  beforeMutation,
   endpointBase,
   photos,
   onSaved,
+  proposalMode = false,
 }: {
+  readonly beforeMutation?: () => Promise<unknown>;
   readonly endpointBase: string;
   readonly photos: VehiclePhoto[];
   readonly onSaved: () => void;
+  readonly proposalMode?: boolean;
 }) {
   const [error, setError] = useState('');
   const [uploadingPerspective, setUploadingPerspective] = useState<string | null>(null);
@@ -3019,12 +3601,15 @@ function PhotosStep({
     const asset = result.assets[0];
     if (!asset) return;
     setUploadingPerspective(perspective);
+    let uploadedFileId: string | null = null;
     try {
+      await beforeMutation?.();
       const file = await apiClient.upload<SafeFile>('/files', 'PRIVATE', {
         uri: asset.uri,
         name: asset.fileName ?? `${perspective}.jpg`,
         mimeType: asset.mimeType ?? 'image/jpeg',
       });
+      uploadedFileId = file.id;
       const displayOrder = Math.max(-1, ...photos.map((photo) => photo.displayOrder)) + 1;
       await apiClient.request(`${endpointBase}/photos`, {
         body: JSON.stringify({
@@ -3037,6 +3622,7 @@ function PhotosStep({
       });
       onSaved();
     } catch (caught) {
+      if (proposalMode && uploadedFileId) await discardUnattachedProposalFile(uploadedFileId);
       setError(caught instanceof Error ? caught.message : 'Upload failed.');
     } finally {
       setUploadingPerspective(null);
@@ -3055,12 +3641,15 @@ function PhotosStep({
   ) => {
     if (!coverId) return;
     try {
+      await beforeMutation?.();
       await apiClient.request(`${endpointBase}/photos/order`, {
         body: JSON.stringify({
           photos: next.map((photo, displayOrder) => ({
-            photoId: photo.id,
+            [proposalMode ? 'fileAssetId' : 'photoId']: proposalMode
+              ? photo.fileAsset.id
+              : photo.id,
             displayOrder,
-            isCover: photo.id === coverId,
+            isCover: (proposalMode ? photo.fileAsset.id : photo.id) === coverId,
           })),
         }),
         method: 'PUT',
@@ -3071,12 +3660,23 @@ function PhotosStep({
     }
   };
   const setCover = (photoId: string) => {
-    const selected = photos.find(({ id: value }) => value === photoId);
+    const selected = photos.find((photo) =>
+      proposalMode ? photo.fileAsset.id === photoId : photo.id === photoId,
+    );
     if (!selected) return;
-    void reorder([selected, ...photos.filter(({ id }) => id !== photoId)], photoId);
+    void reorder(
+      [
+        selected,
+        ...photos.filter((photo) =>
+          proposalMode ? photo.fileAsset.id !== photoId : photo.id !== photoId,
+        ),
+      ],
+      photoId,
+    );
   };
   const remove = async (photoId: string) => {
     try {
+      await beforeMutation?.();
       await apiClient.request(`${endpointBase}/photos/${photoId}`, { method: 'DELETE' });
       onSaved();
     } catch (caught) {
@@ -3094,14 +3694,21 @@ function PhotosStep({
         {
           text: 'Remove photo',
           style: 'destructive',
-          onPress: () => void remove(photo.id),
+          onPress: () => void remove(proposalMode ? photo.fileAsset.id : photo.id),
         },
       ],
     );
   };
   const showPhotoActions = (photo: VehiclePhoto) => {
     Alert.alert('Photo options', undefined, [
-      ...(!photo.isCover ? [{ text: 'Set as cover', onPress: () => setCover(photo.id) }] : []),
+      ...(!photo.isCover
+        ? [
+            {
+              text: 'Set as cover',
+              onPress: () => setCover(proposalMode ? photo.fileAsset.id : photo.id),
+            },
+          ]
+        : []),
       { text: 'Remove photo', style: 'destructive' as const, onPress: () => confirmRemove(photo) },
       { text: 'Cancel', style: 'cancel' },
     ]);
@@ -3110,8 +3717,9 @@ function PhotosStep({
     <Section title="Vehicle photos">
       <View style={styles.photosIntro}>
         <Text style={styles.photosHelper}>
-          Add clear exterior and interior photos. Your cover appears first in search, and all photos
-          stay private until the listing is approved.
+          {proposalMode
+            ? 'Edit the proposed photo set. Current marketplace photos stay live until approval.'
+            : 'Add clear exterior and interior photos. Your cover appears first in search, and all photos stay private until the listing is approved.'}
         </Text>
         <Text accessibilityLiveRegion="polite" style={styles.photosCount}>
           {photos.length} added
@@ -3199,16 +3807,37 @@ function PhotosStep({
   );
 }
 
+async function removeProposalDocument(
+  endpointBase: string,
+  definitionId: string,
+  beforeMutation?: () => Promise<unknown>,
+) {
+  await beforeMutation?.();
+  await apiClient.request(`${endpointBase}/documents/${definitionId}`, { method: 'DELETE' });
+}
+
+function proposalDocumentRemovalAction(definition: Reference, onRemove: (id: string) => void) {
+  return {
+    text: 'Remove document',
+    style: 'destructive' as const,
+    onPress: () => onRemove(definition.id),
+  };
+}
+
 function DocumentsStep({
+  beforeMutation,
   endpointBase,
   referenceBase,
   documents,
   onSaved,
+  proposalMode = false,
 }: {
+  readonly beforeMutation?: () => Promise<unknown>;
   readonly endpointBase: string;
   readonly referenceBase: string;
   readonly documents: VehicleDocument[];
   readonly onSaved: () => void;
+  readonly proposalMode?: boolean;
 }) {
   const definitions = useQuery({
     queryKey: ['vehicle-documents'],
@@ -3236,12 +3865,15 @@ function DocumentsStep({
     const asset = camera ? cameraResult?.assets[0] : pickerResult?.assets[0];
     if (!asset) return;
     setUploadingDefinitionId(definition.id);
+    let uploadedFileId: string | null = null;
     try {
+      await beforeMutation?.();
       const file = await apiClient.upload<SafeFile>('/files', 'SENSITIVE', {
         uri: asset.uri,
         name: 'name' in asset ? asset.name : (asset.fileName ?? `${definition.code}.jpg`),
         mimeType: asset.mimeType ?? (camera ? 'image/jpeg' : 'application/octet-stream'),
       });
+      uploadedFileId = file.id;
       const current = documents.find(
         (document) => document.definitionId === definition.id && !document.replacedAt,
       );
@@ -3249,15 +3881,25 @@ function DocumentsStep({
         body: JSON.stringify({
           definitionId: definition.id,
           fileAssetId: file.id,
-          ...(current ? { replacesDocumentId: current.id } : {}),
+          ...(current && !proposalMode ? { replacesDocumentId: current.id } : {}),
         }),
         method: 'POST',
       });
       onSaved();
     } catch (caught) {
+      if (proposalMode && uploadedFileId) await discardUnattachedProposalFile(uploadedFileId);
       setError(caught instanceof Error ? caught.message : 'Upload failed.');
     } finally {
       setUploadingDefinitionId(null);
+    }
+  };
+  const remove = async (definitionId: string) => {
+    setError('');
+    try {
+      await removeProposalDocument(endpointBase, definitionId, beforeMutation);
+      onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Removal failed.');
     }
   };
   const chooseDocumentSource = (definition: Reference, replacing = false) => {
@@ -3270,6 +3912,7 @@ function DocumentsStep({
   const showDocumentActions = (definition: Reference) => {
     Alert.alert('Document options', undefined, [
       { text: 'Replace document', onPress: () => chooseDocumentSource(definition, true) },
+      ...(proposalMode ? [proposalDocumentRemovalAction(definition, (id) => void remove(id))] : []),
       { text: 'Cancel', style: 'cancel' },
     ]);
   };
@@ -3283,8 +3926,9 @@ function DocumentsStep({
     <Section title="Verification documents">
       <View style={styles.documentsIntro}>
         <Text style={styles.documentsHelper}>
-          Upload the documents needed to verify your vehicle. Files remain sensitive and available
-          only through authorized access.
+          {proposalMode
+            ? 'Edit the proposed document set. Current verified documents stay unchanged until approval.'
+            : 'Upload the documents needed to verify your vehicle. Files remain sensitive and available only through authorized access.'}
         </Text>
         {requiredDefinitions.length > 0 && (
           <Text accessibilityLiveRegion="polite" style={styles.documentsProgress}>
@@ -5010,6 +5654,33 @@ function delegatedApprovalTone(vehicle: Vehicle): 'success' | 'warning' | 'neutr
   if (['PENDING', 'CHANGES_REQUIRED'].includes(vehicle.ownerApproval?.status ?? ''))
     return 'warning';
   return vehicleTone(vehicle.status);
+}
+
+function delegatedProposalStatusLabel(
+  status?:
+    | 'DRAFT'
+    | 'PENDING_OWNER_APPROVAL'
+    | 'OWNER_CHANGES_REQUIRED'
+    | 'PENDING_PLATFORM_REVIEW'
+    | 'PLATFORM_CHANGES_REQUIRED',
+): string | null {
+  if (status === 'DRAFT') return 'Changes in progress';
+  if (status === 'PENDING_OWNER_APPROVAL') return 'Pending Owner approval';
+  if (status === 'OWNER_CHANGES_REQUIRED') return 'Changes requested';
+  if (status === 'PENDING_PLATFORM_REVIEW') return 'Changes under CarShare review';
+  if (status === 'PLATFORM_CHANGES_REQUIRED') return 'CarShare requested changes';
+  return null;
+}
+
+function fulfillmentSummary(policy: Policy): string {
+  return [
+    policy.supportsRenterPickup ? 'Renter pickup' : null,
+    policy.supportsOwnerDelivery ? 'Owner delivery' : null,
+    policy.supportsRenterReturn ? 'Renter return' : null,
+    policy.supportsOwnerCollection ? 'Owner collection' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 function ownerMarketplaceStatus(vehicle: Vehicle) {

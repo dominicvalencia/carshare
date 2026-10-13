@@ -31,6 +31,42 @@ export function renderNotification(
       title: 'Vehicle updated',
       body: `${managerDisplayName} updated ${vehicleDisplayName}.`,
     },
+    'vehicle-change-proposal.trusted-applied': {
+      title: 'Vehicle updated',
+      body: `${managerDisplayName} updated ${vehicleDisplayName} using trusted authority.`,
+    },
+    'vehicle-change-proposal.submitted': {
+      title: 'Vehicle changes need your approval',
+      body: `${managerDisplayName} submitted changes to ${vehicleDisplayName}.`,
+    },
+    'vehicle-change-proposal.owner-changes-required': {
+      title: 'Changes requested',
+      body: `The Owner requested updates to the proposed changes for ${vehicleDisplayName}.`,
+    },
+    'vehicle-change-proposal.owner-approved-applied': {
+      title: 'Vehicle changes approved',
+      body: `The Owner approved the changes to ${vehicleDisplayName}.`,
+    },
+    'vehicle-change-proposal.owner-approved-platform-review': {
+      title: 'Vehicle changes sent for review',
+      body: `The Owner approved the changes to ${vehicleDisplayName} for CarShare review.`,
+    },
+    'vehicle-change-proposal.trusted-platform-review': {
+      title: 'Vehicle changes submitted',
+      body: `${managerDisplayName} submitted changes to ${vehicleDisplayName} for CarShare review.`,
+    },
+    'vehicle-change-proposal.platform-approved': {
+      title: 'Vehicle changes approved',
+      body: `CarShare approved the proposed changes to ${vehicleDisplayName}.`,
+    },
+    'vehicle-change-proposal.platform-changes-required': {
+      title: 'Vehicle changes need updates',
+      body: `CarShare requested changes to the proposed update for ${vehicleDisplayName}.`,
+    },
+    'vehicle-change-proposal.platform-rejected': {
+      title: 'Vehicle changes were not approved',
+      body: `CarShare did not approve the proposed changes to ${vehicleDisplayName}.`,
+    },
     'security-deposit.required': {
       title: 'Security deposit required',
       body: `Complete the security deposit for ${reference} before pickup.`,

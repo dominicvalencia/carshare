@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -38,6 +39,11 @@ export class FilesController {
     @UploadedFile() file: Express.Multer.File,
   ) {
     return this.files.upload(principal.userId, input.classification, file);
+  }
+
+  @Delete(':id')
+  discard(@CurrentPrincipal() principal: RequestPrincipal, @Param('id') id: string) {
+    return this.files.discardUnattached(principal.userId, id);
   }
 
   @Get(':id')

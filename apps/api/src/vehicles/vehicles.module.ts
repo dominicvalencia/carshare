@@ -10,16 +10,30 @@ import {
 } from './owner-vehicles.controller';
 import { VehiclesService } from './vehicles.service';
 import { OwnerWorkspaceVehiclesController } from './owner-workspace-vehicles.controller';
+import { VehicleChangeProposalSnapshotService } from './vehicle-change-proposal-snapshot.service';
+import { VehicleChangeProposalsService } from './vehicle-change-proposals.service';
+import { OwnerWorkspaceVehicleChangeProposalsController } from './owner-workspace-vehicle-change-proposals.controller';
+import { OwnerVehicleChangeProposalsController } from './owner-vehicle-change-proposals.controller';
+import { AdminVehicleChangeProposalsController } from './admin-vehicle-change-proposals.controller';
+import { AdminVehicleChangeProposalsService } from './admin-vehicle-change-proposals.service';
 
 @Module({
   controllers: [
     OwnerVehiclesController,
     OwnerWorkspaceVehiclesController,
+    OwnerWorkspaceVehicleChangeProposalsController,
+    OwnerVehicleChangeProposalsController,
     VehicleReferenceDataController,
     AdminVehiclesController,
+    AdminVehicleChangeProposalsController,
   ],
-  exports: [VehiclesService],
+  exports: [VehicleChangeProposalSnapshotService, VehiclesService],
   imports: [BookingsModule, FilesModule, GeographyModule, OwnersModule],
-  providers: [VehiclesService],
+  providers: [
+    AdminVehicleChangeProposalsService,
+    VehicleChangeProposalSnapshotService,
+    VehicleChangeProposalsService,
+    VehiclesService,
+  ],
 })
 export class VehiclesModule {}

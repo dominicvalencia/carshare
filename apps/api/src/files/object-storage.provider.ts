@@ -1,5 +1,5 @@
 import { createReadStream, ReadStream } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -8,6 +8,7 @@ import type { ApiEnvironment } from '@carrental/config';
 export abstract class ObjectStorageProvider {
   abstract put(objectKey: string, content: Buffer): Promise<void>;
   abstract open(objectKey: string): ReadStream;
+  abstract delete(objectKey: string): Promise<void>;
 }
 
 @Injectable()
@@ -30,6 +31,10 @@ export class LocalObjectStorageProvider extends ObjectStorageProvider {
 
   open(objectKey: string): ReadStream {
     return createReadStream(this.pathFor(objectKey));
+  }
+
+  async delete(objectKey: string): Promise<void> {
+    await rm(this.pathFor(objectKey), { force: true });
   }
 
   private pathFor(objectKey: string): string {

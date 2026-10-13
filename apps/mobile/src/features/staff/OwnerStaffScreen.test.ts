@@ -19,6 +19,10 @@ const primitives = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '../../ui/primitives.tsx'),
   'utf8',
 );
+const labels = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), 'owner-staff-labels.ts'),
+  'utf8',
+);
 
 describe('Owner Staff management UI', () => {
   it('places Staff in the existing More Operations menu and wires its route', () => {
@@ -30,6 +34,8 @@ describe('Owner Staff management UI', () => {
 
   it('supports the directory states and compact shared presentation', () => {
     expect(source).toContain('title="No staff yet"');
+    expect(source).toContain('compactNestedHeader');
+    expect(source).toContain('<SectionHeader title="Staff members" />');
     expect(source).toContain('<StatusBadge');
     expect(source).toContain("ACTIVE: 'success'");
     expect(source).toContain("INVITED: 'warning'");
@@ -43,7 +49,7 @@ describe('Owner Staff management UI', () => {
     expect(source).toContain('<StaffAccessLinkCard');
     expect(source).toContain("queryKey = ['owner-staff-access-link', ownerProfileId]");
     expect(source).toContain('title="Staff access link"');
-    expect(source).toContain('Use this link when existing Staff need to sign in on a new device.');
+    expect(source).toContain('Existing Staff can use this link to sign in on a new device.');
     expect(source).not.toContain("capacity === 'MANAGER' ? <StaffAccessLinkCard");
   });
 
@@ -57,7 +63,170 @@ describe('Owner Staff management UI', () => {
     expect(source).toContain("Alert.alert('Link copied')");
     expect(source).toContain('Share.share({');
     expect(source).toContain('accessLink.data.url');
+    expect(source).toContain('styles.accessLinkActions');
+    expect(source).toContain('styles.regenerateAction');
     expect(source).not.toContain('ownerProfileId}\\n${accessLink.data.url}');
+  });
+
+  it('keeps Staff member cards compact with status aligned to the name row', () => {
+    expect(source).toContain('styles.memberHeadingRow');
+    expect(source).toContain('minHeight: 76');
+    expect(source).toContain('paddingVertical: spacing.sm');
+    expect(source).toContain('{staffRoleLabel(member)} · {scopeLabel(member)}');
+    expect(source).toContain('{invitationIdentity(member)!.value}');
+  });
+
+  it('prioritizes membership role in directory and detail terminology', () => {
+    expect(labels).toContain("if (member.role === 'MANAGER') return 'Manager'");
+    expect(labels).toContain("CUSTOM: 'Custom Staff'");
+    expect(source).toContain('staffPermissionLabel(value.role, value.preset)');
+    expect(source).toContain('label="Permissions"');
+    expect(source).not.toContain('label="Access level" value={presetLabel(value.preset)}');
+  });
+
+  it('presents semantic access details and reuses the existing editors', () => {
+    expect(source).toContain('<SectionHeader title="Access" />');
+    expect(source).toContain('label="Role"');
+    expect(source).toContain('label="Permissions"');
+    expect(source).toContain('label="Vehicle access"');
+    expect(source).not.toContain('`${value.permissions.length} configured`');
+    expect(source).toContain('accessibilityLabel="Edit access"');
+    expect(source).toContain('style={styles.accessActionRow}');
+    expect(source).toContain('name="chevron-forward"');
+    expect(source).toContain("manageable && value.status !== 'DISABLED'");
+    expect(source).toContain("onSelect('permissions')");
+    expect(source).toContain("onSelect('vehicles')");
+    expect(source).toContain(
+      '<PermissionEditor selected={permissions} onChange={setPermissions} />',
+    );
+    expect(source).toContain('<SegmentedControl');
+  });
+
+  it('uses one native modal while switching from the access menu to an editor', () => {
+    expect(source).toContain('const [editorView, setEditorView]');
+    expect(source).toContain('visible={editorView !== null}');
+    expect(source).toContain("editorView === 'menu'");
+    expect(source).toContain('onSelect={setEditorView}');
+    expect(source).toContain('kind={editorView}');
+    expect(source).toContain('<MemberEditorPanel');
+    expect(source).toContain('style={[styles.sheet, animatedSheetStyle]}');
+    expect(source).toContain('adaptiveSheetLayout({');
+    expect(source).not.toContain('const [accessMenu, setAccessMenu]');
+    expect(source).not.toContain('const [pendingEditor, setPendingEditor]');
+    expect(source).not.toContain('<MemberEditorModal');
+  });
+
+  it('uses the shared top Cancel control for the Edit access menu without a bottom action', () => {
+    const menu = source.slice(
+      source.indexOf('function AccessEditorMenu'),
+      source.indexOf('function MemberEditorPanel'),
+    );
+    expect(menu).toContain('<BackControl label="Cancel" onPress={onClose} />');
+    expect(menu).toContain("onPress={() => onSelect('permissions')}");
+    expect(menu).toContain("onPress={() => onSelect('vehicles')}");
+    expect(menu).toContain('Math.max(safeArea.bottom, spacing.xl)');
+    expect(menu).not.toContain('<Button label="Cancel"');
+  });
+
+  it('keeps the identity summary read-only on the Staff detail screen', () => {
+    expect(source).not.toContain('label="Edit display name"');
+    expect(source).not.toContain("setEditor('identity')");
+    expect(source).toContain("subtitle={`${value.role === 'MANAGER' ? 'Manager' : 'Staff'}");
+    expect(source).toContain('action={');
+    expect(source).toContain('style={styles.staffStatusAction}');
+  });
+
+  it('shows trusted Manager authority only to the actual Owner with confirmation and refresh', () => {
+    expect(source).toContain("capacity === 'OWNER' && value.role === 'MANAGER'");
+    expect(source).toContain('<SectionHeader title="Manager authority" />');
+    expect(source).toContain('Allow this Manager to act without Owner approval');
+    expect(source).toContain('still be notified of every trusted vehicle update or submission.');
+    expect(source).toContain('setManagerAuthorityConfirmation(enabled)');
+    expect(source).toContain('Give this Manager trusted authority?');
+    expect(source).toContain('Enable trusted authority');
+    expect(source).toContain('Remove trusted authority?');
+    expect(source).toContain('Remove trusted authority');
+    expect(source).toContain('/manager-authority`');
+    expect(source).toContain('await refresh()');
+    expect(source).toContain('(error.status === 403 || error.status === 409)');
+  });
+
+  it('shows a compact selected-vehicle summary row and removes the standalone picker button', () => {
+    expect(source).toContain('vehicleSelectionLabel(vehicleIds.length)');
+    expect(source).toContain('Selected vehicles. ${vehicleSelectionLabel(vehicleIds.length)}');
+    expect(source).toContain('pressed && styles.selectorRowPressed');
+    expect(source).toContain('hitSlop={4}');
+    expect(source).not.toContain("'Select vehicles'\n                  }");
+  });
+
+  it('gates picker completion and saving on resolved, valid, dirty state', () => {
+    expect(source).toContain(
+      'disabled={vehicles.isPending || vehicles.isError || selected.length === 0}',
+    );
+    expect(source).toContain('const dirty =');
+    expect(source).toContain('scope !== member.vehicleScopeMode');
+    expect(source).toContain('!sameStringSet(vehicleIds, initialVehicleIds)');
+    expect(source).toContain('disabled={!dirty || !valid || mutation.isPending}');
+    expect(source).toContain(
+      "variant={!dirty || !valid || mutation.isPending ? 'secondary' : 'primary'}",
+    );
+  });
+
+  it('shows lifecycle actions only for their authoritative member states', () => {
+    expect(source).toContain("value.status === 'INVITED'");
+    expect(source).toContain('label="Reissue invitation"');
+    expect(source).toContain('>Revoke invitation</Text>');
+    expect(source).toContain("value.status === 'ACTIVE' || value.status === 'SUSPENDED'");
+    expect(source).toContain('label="Suspend access"');
+    expect(source).toContain('label="Reactivate"');
+    expect(source).toContain('label="Remove access"');
+    expect(source).toContain("value.status === 'DISABLED'");
+  });
+
+  it('keeps expired invitation management visible and prioritizes reissue', () => {
+    expect(source).toContain('tone={invitationStateTone(value.invitation.state)}');
+    expect(source).toContain("EXPIRED: 'danger'");
+    expect(source).toContain("value.invitation.state === 'EXPIRED' ? 'primary' : 'secondary'");
+    expect(source).toContain('label="Reissue invitation"');
+    expect(source).toContain('>Revoke invitation</Text>');
+    expect(source).toContain("value.status === 'INVITED' && value.invitation");
+    expect(source).toContain('styles.invitationActions');
+    expect(source).toContain('style={styles.destructiveTextAction}');
+    expect(source).toContain('invitationActions: { gap: spacing.sm }');
+  });
+
+  it('refreshes authoritative invitation state and expiration after reissue', () => {
+    expect(source).toContain("if (confirm === 'reissue') Alert.alert('Invitation sent again')");
+    expect(source).toContain('await refresh()');
+    expect(source).toContain('label="Expires" value={dateTimeLabel(value.invitation.expiresAt)}');
+  });
+
+  it('keeps Activity informational and after contextual management actions', () => {
+    const manageAccess = source.indexOf('<SectionHeader title="Manage access" />');
+    const dangerZone = source.indexOf('>Danger zone</Text>');
+    const activity = source.indexOf('<SectionHeader title="Activity" />');
+    expect(activity).toBeGreaterThan(manageAccess);
+    expect(activity).toBeGreaterThan(dangerZone);
+    expect(source).toContain('style={styles.activityCard}');
+  });
+
+  it('keeps destructive workspace removal separate with explicit confirmation copy', () => {
+    expect(source).toContain('Remove access from workspace');
+    expect(source).toContain('previous activity and audit history will be preserved');
+    expect(source).toContain('This invitation will no longer be usable.');
+    expect(source).toContain('temporarily lose access to this Owner workspace');
+    expect(source).toContain("completedAction === 'disable'");
+  });
+
+  it('keeps Owner versus Manager target restrictions on every detail action', () => {
+    expect(source).toContain('const manageable = canManageMember(capacity, value)');
+    expect(source).toContain('selfMembershipId !== undefined');
+    expect(source).toContain('memberId !== undefined');
+    expect(source).toContain('return !isSelf');
+    expect(source).toContain("capacity === 'OWNER' || member.role === 'STAFF'");
+    expect(source).toContain('manageable && value.status');
+    expect(source).toContain('error.status === 403 || error.status === 409');
+    expect(source).toContain('await refresh()');
   });
 
   it('confirms rotation and atomically replaces the cached link', () => {
@@ -71,6 +240,8 @@ describe('Owner Staff management UI', () => {
   });
 
   it('keeps Manager role choice owner-only and never exposes Verification Staff', () => {
+    expect(source).toContain('Managers can manage Staff, but not other Managers.');
+    expect(source).not.toContain('Managers can administer ordinary Staff only.');
     expect(source).toContain("capacity === 'OWNER' || option.role !== 'MANAGER'");
     expect(source).toContain("preset: 'MANAGER'");
     expect(source).not.toContain('Verification Staff');
@@ -184,11 +355,12 @@ describe('Owner Staff management UI', () => {
   });
 
   it('keeps the vehicle selector visibly sized through loading, empty, error, and loaded states', () => {
-    expect(source).toContain('useSharedValue(Math.min(360, maximumHeight))');
+    expect(source).toContain('useSharedValue(Math.min(320, maximumHeight))');
     expect(source).toContain('adaptiveSheetLayout({');
     expect(source).toContain('style={[styles.sheet, animatedSheetStyle]}');
     expect(source).toContain('title="Loading vehicles"');
     expect(source).toContain('title="Unable to load vehicles"');
+    expect(source).toContain('actionLabel="Retry"');
     expect(source).toContain('title="No vehicles available"');
     expect(source).toContain('There are no vehicles available to assign in this workspace.');
   });

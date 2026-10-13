@@ -10,6 +10,7 @@ import {
   IsInt,
   IsLatitude,
   IsLongitude,
+  IsObject,
   Matches,
   IsOptional,
   IsString,
@@ -39,8 +40,44 @@ import {
 } from '@carrental/database';
 import {
   VEHICLE_REMOVAL_OTHER_REASON_MAX_LENGTH,
+  type VehicleChangeProposalSnapshotV1,
   VehicleRemovalReason,
 } from '@carrental/api-contracts';
+
+export class UpdateVehicleChangeProposalDto {
+  @ApiProperty({ additionalProperties: true, type: 'object' })
+  @IsObject()
+  proposedSnapshot!: VehicleChangeProposalSnapshotV1;
+}
+
+export class VehicleChangeProposalPhotoOrderItemDto {
+  @ApiProperty() @IsUUID() fileAssetId!: string;
+  @ApiProperty() @IsInt() @Min(0) @Max(99) displayOrder!: number;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() isCover?: boolean;
+}
+
+export class ReorderVehicleChangeProposalPhotosDto {
+  @ApiProperty({ type: [VehicleChangeProposalPhotoOrderItemDto] })
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => VehicleChangeProposalPhotoOrderItemDto)
+  photos!: VehicleChangeProposalPhotoOrderItemDto[];
+}
+
+export class AddVehicleChangeProposalDocumentDto {
+  @ApiProperty() @IsUUID() definitionId!: string;
+  @ApiProperty() @IsUUID() fileAssetId!: string;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() expiresAt?: string;
+}
+
+export class ReturnVehicleChangeProposalDto {
+  @ApiProperty({ maxLength: 1000, minLength: 10 })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(1000)
+  reason!: string;
+}
 
 export class RemoveVehicleDto {
   @ApiProperty({ enum: VehicleRemovalReason })
@@ -121,6 +158,8 @@ export class AddVehiclePhotoDto {
   @ApiProperty() @IsInt() @Min(0) @Max(99) displayOrder!: number;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() isCover?: boolean;
 }
+
+export class AddVehicleChangeProposalPhotoDto extends AddVehiclePhotoDto {}
 
 export class VehiclePhotoOrderItemDto {
   @ApiProperty() @IsUUID() photoId!: string;

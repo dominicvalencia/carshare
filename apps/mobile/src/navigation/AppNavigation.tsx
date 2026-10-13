@@ -39,6 +39,7 @@ import { ClaimDetailScreen } from '../features/claims/ClaimsPanels';
 import { SupportCenter } from '../features/support/SupportCenter';
 import { OwnerStaffScreen } from '../features/staff/OwnerStaffScreen';
 import { OwnerDashboardScreen } from '../features/vehicles/OwnerDashboardScreen';
+import { OwnerVehicleChangeProposalScreen } from '../features/vehicles/OwnerVehicleChangeProposalScreen';
 import { VehiclesScreen } from '../features/vehicles/VehiclesScreen';
 import { colors } from '../theme/tokens';
 import { Screen, StateView } from '../ui/primitives';
@@ -379,6 +380,7 @@ export function AppNavigation(properties: AppNavigationProperties) {
             HostProfile: 'hosts/:hostReference',
             VehicleDetails: 'vehicles/:vehicleId',
             OwnerVehicleApproval: 'owner/vehicle-approvals/:vehicleId',
+            OwnerVehicleChangeProposal: 'owner/vehicle-change-proposals/:vehicleId/:proposalId',
             OwnerWorkspaceVehicle: 'owner/vehicles/:vehicleId',
             PublicReviews: 'reviews/public',
           },
@@ -454,6 +456,18 @@ export function AppNavigation(properties: AppNavigationProperties) {
           {({ route }) =>
             properties.mode === 'owner' && properties.ownerWorkspace?.capacity === 'OWNER' ? (
               <VehiclesScreen initialVehicleId={route.params.vehicleId} />
+            ) : (
+              <AccessUnavailable />
+            )
+          }
+        </Stack.Screen>
+        <Stack.Screen name="OwnerVehicleChangeProposal" options={{ headerShown: false }}>
+          {({ route }) =>
+            properties.mode === 'owner' && properties.ownerWorkspace?.capacity === 'OWNER' ? (
+              <OwnerVehicleChangeProposalScreen
+                proposalId={route.params.proposalId}
+                vehicleId={route.params.vehicleId}
+              />
             ) : (
               <AccessUnavailable />
             )

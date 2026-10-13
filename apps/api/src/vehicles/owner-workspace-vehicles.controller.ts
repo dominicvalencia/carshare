@@ -92,6 +92,22 @@ export class OwnerWorkspaceVehiclesController {
     );
   }
 
+  @Delete(':id/draft')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequireOwnerPermission('vehicles.create')
+  discardDraft(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('id') id: string,
+    @Req() request: Request,
+  ) {
+    return this.vehicles.discardDelegatedDraft(
+      principal.ownerAccess!,
+      principal.userId,
+      id,
+      requestMetadata(request),
+    );
+  }
+
   @Patch(':id')
   @RequireOwnerPermission('vehicles.create')
   updateDraft(

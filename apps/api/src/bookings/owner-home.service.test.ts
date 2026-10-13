@@ -41,6 +41,7 @@ function booking(reference: string, status: BookingStatus, rentalStart: string, 
     id: `${reference}-id`,
     inspections: [],
     operationalHold: false,
+    overdueHandoverRecoveries: [],
     pickupHandoverResponse: null,
     pickupWindowEnd: new Date(new Date(rentalStart).getTime() + 30 * 60_000),
     publicReference: reference,
@@ -245,6 +246,35 @@ describe('Owner Home read model', () => {
     expect(bookingCount.mock.calls[0]?.[0].where.AND[0]).toEqual({
       vehicle: { id: { in: ['vehicle-request'] } },
     });
+  });
+
+  it('removes overdue handover attention after a recovery report is submitted', async () => {
+    const recovered = booking(
+      'RECOVERY-SUBMITTED',
+      BookingStatus.RETURN_PENDING,
+      '2026-09-30T01:00:00.000Z',
+      '2026-10-02T02:00:00.000Z',
+    );
+    (
+      recovered.overdueHandoverRecoveries as Array<{
+        acceptance: null;
+        response: null;
+      }>
+    ).push({ acceptance: null, response: null });
+    findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([recovered]);
+    amendmentFindMany.mockResolvedValue([]);
+    bookingCount.mockResolvedValue(0);
+    amendmentCount.mockResolvedValue(0);
+    findFirst.mockResolvedValue(null);
+
+    const result = await service.today('owner-a', NOW);
+
+    expect(result.today.attention).toEqual([]);
+    expect(result.today.counts.needsAttentionCount).toBe(0);
   });
 
   it('returns future confirmed rentals with deterministic bounded pagination', async () => {

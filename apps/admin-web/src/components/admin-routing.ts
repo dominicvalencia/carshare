@@ -53,6 +53,7 @@ export function resolveAdminDetailId(
   segments: readonly string[],
   module: AdminModule,
 ): string | undefined {
+  if (module === 'vehicles' && segments[1] === 'changes') return undefined;
   if (module === 'staff-detail') return segments[1];
   if (segments[0] === 'owner') return undefined;
   const nestedModule = [

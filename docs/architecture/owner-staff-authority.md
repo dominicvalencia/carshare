@@ -167,12 +167,22 @@ CarShare/platform review. Approval requests preserve submitter, reviewer, submit
 and decision history, while database constraints keep the vehicle, membership, and request in the
 same Owner workspace and allow only one pending request per vehicle.
 
+A Manager-created plain `DRAFT` is private to its creating Manager and is excluded from the actual
+Owner's normal Fleet until its latest Owner-approval request is `PENDING`. A `CHANGES_REQUIRED`
+draft remains visible because the Owner has established review context; a latest `WITHDRAWN`
+request hides the draft again. Owner-created drafts and vehicles that have advanced to platform
+review remain visible as before. The creating Manager alone may discard their own `DRAFT`, including
+`PENDING`, `CHANGES_REQUIRED`, or `WITHDRAWN` approval states. Discard atomically withdraws a pending
+request, transitions the draft to the durable archived tombstone, and preserves creator provenance,
+approval history, status history, vehicle assignments, and an actor-attributed audit record. This
+does not grant Managers the Owner archive/remove operation for platform-review or live vehicles.
+
 An active Manager with `vehicles.update_operational_fields` may update only the approved vehicle's
 day-to-day description/requirements, features, operational availability, weekly availability,
 turnaround, rental-duration limits, handover modes, service radius/minimum notice, fuel or EV return
 settings, and mileage settings. Pricing, discounts, fees, Security Deposits, plate/VIN and other core
 identity, documents, photos, private location, ownership, lifecycle/review state, and archive/remove
-remain Owner-only. Each Manager operational save locks the Vehicle, compares `expectedRevision`,
+of platform-review or live vehicles remain Owner-only. Each Manager operational save locks the Vehicle, compares `expectedRevision`,
 increments the revision once, and writes the actual Manager audit plus one transactional Owner
 outbox event. Actual-Owner changes to overlapping operational fields also advance the revision, so a
 stale Manager save fails instead of overwriting newer Owner state. Notifications carry only the
@@ -289,3 +299,169 @@ clients that depend on these projections. Migration
 `20261012190000_delegated_vehicle_creation_foundation` adds Manager-default vehicle-creation
 authority, immutable creator provenance, vehicle revisioning, and the separate Owner-approval
 request foundation without enabling the later delegated creation or approval endpoints.
+
+## Trusted Manager authority
+
+`OwnerStaffMembership.ownerApprovalBypassEnabled` is a narrow, Owner-controlled trust setting for
+members whose role remains `MANAGER`. It is separate from permission grants: it adds no permission,
+does not confer the Owner role, and cannot make an otherwise unauthorized action valid. The database
+prevents the setting from being enabled for ordinary Staff, and only the actual workspace Owner may
+change it for an active Manager.
+
+Trust changes apply only to future actions and submissions. Enabling trust never auto-approves an
+existing request, and disabling it never rewrites an action or platform-review submission that was
+already made. CarShare review, workspace and vehicle scope, lifecycle checks, and every existing
+permission check remain authoritative.
+
+Trusted authority must never bypass Owner identity, ownership transfer, workspace deletion, payout
+or bank settings, payout destinations, Owner-only financial ledger/reporting, manual refunds or
+charges, Security Deposit settlement, Manager administration, trust configuration, Owner-only live
+vehicle archive/removal, or platform review and compliance.
+
+No successful vehicle mutation that uses trusted authority may be silent. Future vehicle-action
+implementation must create an in-app notification for the actual Owner and request push delivery
+when enabled:
+
+- Safe applied change: **Vehicle updated** — `[Manager name] updated [Vehicle name] using trusted authority.`
+- Review-sensitive submission: **Vehicle changes submitted** — `[Manager name] submitted changes to [Vehicle name] for CarShare review.`
+- New trusted vehicle submission: **Vehicle submitted for review** — `[Manager name] submitted [Vehicle name] to CarShare review using trusted authority.`
+
+Push copy must not contain sensitive raw values. This phase records the invariant only; it does not
+implement approval bypass for any vehicle mutation.
+
+## Vehicle change proposal foundation
+
+Manager configuration changes use a dedicated `VehicleChangeProposal` aggregate rather than
+writing pending values into the live vehicle aggregate. A proposal owns a complete canonical
+`VehicleChangeProposalSnapshotV1` (`snapshotSchemaVersion = 1`) covering configurable vehicle
+specifications, feature IDs, ordered photos, documents, private location, and the complete current
+policy. Ownership identity, lifecycle state, payout data, workspace assignment, and audit internals
+are excluded.
+
+Creating or storing a proposal does not change `Vehicle`, increment its revision, create a
+`VehiclePolicyVersion`, replace live features/photos/documents/location, or affect the public
+listing. The proposal records the live `Vehicle.revision` as `baseVehicleRevision`; later submission
+and application must fail with `VEHICLE_CHANGE_PROPOSAL_STALE` when that revision no longer matches.
+
+Changed fields are derived server-side by a deterministic canonical-snapshot diff. Owner-approval
+fields include description, rental requirements, features, and policy configuration. Identity,
+specification, photo, document, and private-location changes are classified
+`PLATFORM_REVIEW_REQUIRED`. Operational availability and blocked periods remain in their existing
+authority paths, while Owner-only ownership, lifecycle, financial, settlement, administration, and
+trust controls cannot enter a proposal.
+
+Only one active proposal (`DRAFT`, either changes-required state, or either pending-review state)
+may exist per vehicle. Terminal proposals remain immutable history and do not prevent a new cycle.
+Composite foreign keys keep the vehicle and submitting Manager membership in the same Owner
+workspace, while submitter provenance preserves the Manager user and membership separately from
+the Owner of record.
+
+Proposal photo/document references are proposal-owned and must use non-public file assets. Database
+guards prevent active proposal assets from being published or attached to live `VehiclePhoto` or
+`VehicleDocument` rows. Terminalizing a proposal preserves its asset references as history; later
+promotion/cleanup must be explicit.
+
+Trust decision fields default safely and are populated only by submission orchestration. The
+foundation was introduced without review behavior; the current submission, Owner review, trusted
+bypass, Admin review, and asset-promotion behavior is described by the consolidated sections below.
+
+### Phase 3: Manager proposal draft API
+
+Phase 3 exposes workspace-scoped create, creator-read, update, and withdraw operations for Manager
+vehicle-change proposals. These operations require an `ACTIVE` Manager membership, the existing
+`vehicles.update_operational_fields` permission, and access to the vehicle under the membership's
+`ALL_VEHICLES` or selected-vehicle scope. This broad permission is the narrowest existing authority
+for editing an existing vehicle; every canonical proposal field maps to it until a future permission
+model introduces narrower field capabilities. The target must be an `APPROVED` live vehicle, which
+matches the existing Manager operational-edit lifecycle ceiling; suspended, archived, and
+pre-approval vehicles are ineligible.
+
+Only the Manager who created a proposal may read, edit, or withdraw it in this phase, and only
+`DRAFT` proposals are editable or withdrawable. Withdrawal records the `WITHDRAWN` transition and
+retains proposal history. The database partial unique index continues to permit at most one active
+proposal per vehicle.
+
+Create copies the current canonical V1 snapshot and current `Vehicle.revision`. Update accepts only
+a complete, validated V1 snapshot. The server reloads the live canonical snapshot, rejects an
+outdated base with `VEHICLE_CHANGE_PROPOSAL_STALE`, and recomputes `changedFields`, classification,
+and `platformReviewRequired`. Clients cannot write those authority fields, and proposals are never
+silently rebased.
+
+Proposal mutations use serializable transactions and audit the actual Manager user and membership.
+They do not write the live vehicle, policy versions, photos, documents, location, availability, or
+blocked periods. Availability remains on its existing operational authority path and is not part of
+proposal editing.
+
+The initial Phase 3 slice did not add proposal asset upload. The current flow does: proposal photo
+and document uploads remain private proposal assets, are authorized through proposal-scoped preview
+grants, and cannot enter live vehicle tables until an approved promotion transaction.
+
+Trusted and non-trusted Managers have identical draft behavior. Trust is not read or consumed until
+a later submission decision. This phase does not provide submission, Owner approval or bypass,
+Owner notifications, Admin review, live application, or a mobile vehicle editor.
+
+### Phase 4: normal submission and Owner review
+
+The creating Manager may submit a non-empty, valid, fresh `DRAFT`. Submission re-reads the live
+canonical snapshot, recomputes changed fields and classification, and freezes the result as
+`PENDING_OWNER_APPROVAL` for a normal Manager. Trusted submission behavior is described in Phase 6;
+trust is always re-read transactionally and is never accepted from the client.
+
+Only the actual vehicle Owner can use the pending-proposal list, comparison detail, approval, and
+change-request routes. A change request requires a meaningful reason and transitions
+`PENDING_OWNER_APPROVAL` to `OWNER_CHANGES_REQUIRED` without touching live data. The creating Manager
+reopens the same proposal by updating it: the first valid update atomically moves it back to
+`DRAFT`, after which it can be resubmitted. No second proposal row is created. The creator may also
+withdraw either a `DRAFT` or `PENDING_OWNER_APPROVAL` proposal; platform-review and terminal states
+cannot be withdrawn through this flow.
+
+Owner approval recomputes the classification once more under vehicle and proposal locks. An
+`OWNER_APPROVAL_ONLY` proposal applies description, rental requirements, the complete feature set,
+and a new durable policy version in one serializable transaction. The vehicle revision increments
+exactly once, and the proposal becomes `APPLIED`. A failure in any live update, policy creation,
+proposal transition, or audit rolls back the transaction.
+
+A `PLATFORM_REVIEW_REQUIRED` proposal instead moves only the proposal to
+`PENDING_PLATFORM_REVIEW`. The live vehicle stays `APPROVED`; its revision, configuration, active
+policy, features, photos, documents, private location, public listing, and proposal-owned private
+assets remain unchanged. Phase 4 does not implement the Admin queue, Admin decision, or later
+proposal promotion. The proposal-specific Admin queue and decision flow now performs that promotion
+as described below.
+
+Submission and Owner decisions reject a stale base with `VEHICLE_CHANGE_PROPOSAL_STALE` and never
+silently rebase. Mutation audits remain transactional and distinguish the Manager submission actor
+from the actual Owner reviewer. The completed workflow emits transactional outbox events for normal
+submission and Owner decisions. Delivery uses privacy-safe templates; Owner submissions deep-link
+to the proposal review screen, while Manager outcomes return to the currently authorized vehicle
+state. No SMS delivery is introduced by this proposal workflow.
+
+### Phase 6: trusted proposal submission
+
+Submission now re-reads the current `ACTIVE` Manager membership, exact edit permission, workspace,
+vehicle assignment, and `ownerApprovalBypassEnabled` value inside the serializable transaction.
+Client or proposal-creation-time trust is never authoritative. Trust remains future-actions-only:
+changing it does not rewrite proposals already awaiting Owner or platform review.
+
+A normal Manager still transitions a fresh `DRAFT` to `PENDING_OWNER_APPROVAL`. A trusted Manager's
+`OWNER_APPROVAL_ONLY` proposal instead applies atomically, creates exactly one new policy version,
+replaces the feature set, increments the vehicle revision once, and becomes `APPLIED`. A trusted
+review-sensitive proposal becomes `PENDING_PLATFORM_REVIEW` without changing any live vehicle,
+policy, media, document, location, lifecycle, revision, or public-listing state. Trusted authority
+never bypasses CarShare review.
+
+Both trusted outcomes record the Manager actor, membership, workspace, permission, changed fields,
+base/result revision, trust decision, approval-bypass decision, platform-review requirement, and
+resulting proposal status. They also create an Owner-directed notification outbox event in the same
+transaction. Stable proposal/action/revision identities deduplicate worker retries. Notifications
+support in-app delivery and push when enabled, contain only safe Manager and vehicle display names,
+and deep-link to the current authorized Owner vehicle state. They never become Owner approval tasks.
+
+Trust adds no permissions and does not change the Manager role. Ownership/workspace changes,
+payout/bank controls, manual money movement, Security Deposit settlement, trust configuration,
+Manager administration, live-vehicle archive/removal, and platform compliance remain Owner-only.
+
+Trusted bypass for the legacy Manager-created **new vehicle** submission remains narrowly deferred.
+That flow uses the separate `VehicleOwnerApprovalRequest` aggregate and platform-submission
+orchestration, not `VehicleChangeProposal`; combining it in this phase would couple two independent
+state machines without a shared transactional application boundary. Normal new-vehicle Owner
+approval therefore remains unchanged until a dedicated phase audits and extends that flow.

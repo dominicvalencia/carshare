@@ -21,6 +21,7 @@ import {
   ScrollView,
   Share,
   StyleSheet,
+  Switch,
   Text,
   useWindowDimensions,
   View,
@@ -43,8 +44,16 @@ import {
   StatusBadge,
 } from '../../ui/primitives';
 import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
+import {
+  sameStringSet,
+  staffPermissionLabel,
+  staffRoleLabel,
+  vehicleSelectionLabel,
+} from './owner-staff-labels';
 
 type StaffCapacity = 'OWNER' | 'MANAGER';
+type StaffEditorKind = 'permissions' | 'vehicles';
+type StaffEditorView = 'menu' | StaffEditorKind;
 type ViewState = { type: 'directory' } | { type: 'invite' } | { type: 'detail'; id: string };
 
 const permissionGroups = [
@@ -185,13 +194,13 @@ function statusTone(status: OwnerStaffStatus): 'success' | 'warning' | 'neutral'
   ] as 'success' | 'warning' | 'neutral' | 'danger';
 }
 
-function presetLabel(preset: OwnerStaffPreset): string {
+function invitationStateTone(state: NonNullable<OwnerStaffListItem['invitation']>['state']) {
   return {
-    MANAGER: 'Manager',
-    OPERATIONS_STAFF: 'Operations Staff',
-    SUPPORT_STAFF: 'Support Staff',
-    CUSTOM: 'Custom Staff',
-  }[preset];
+    CONSUMED: 'success',
+    EXPIRED: 'danger',
+    PENDING: 'warning',
+    REVOKED: 'neutral',
+  }[state] as 'success' | 'warning' | 'neutral' | 'danger';
 }
 
 function scopeLabel(member: Pick<OwnerStaffListItem, 'assignedVehicleCount' | 'vehicleScopeMode'>) {
@@ -210,7 +219,9 @@ export function canManageMember(
   selfMembershipId?: string,
   memberId?: string,
 ) {
-  return selfMembershipId !== memberId && (capacity === 'OWNER' || member.role === 'STAFF');
+  const isSelf =
+    selfMembershipId !== undefined && memberId !== undefined && selfMembershipId === memberId;
+  return !isSelf && (capacity === 'OWNER' || member.role === 'STAFF');
 }
 
 export function OwnerStaffScreen({
@@ -272,6 +283,7 @@ function StaffDirectory({
   });
   return (
     <NestedScreen
+      compactNestedHeader
       eyebrow="Operations"
       title="Staff"
       subtitle="Manage Managers and Staff who help operate your vehicles."
@@ -280,6 +292,7 @@ function StaffDirectory({
       {capacity === 'OWNER' ? (
         <StaffAccessLinkCard ownerProfileId={ownerProfileId} workspaceLabel={workspaceLabel} />
       ) : null}
+      <SectionHeader title="Staff members" />
       {staff.isPending ? (
         <StateView compact loading title="Loading Staff" />
       ) : staff.isError ? (
@@ -307,7 +320,7 @@ function StaffDirectory({
           {staff.data.map((member) => (
             <Pressable
               key={member.id}
-              accessibilityLabel={`${member.displayName}. ${presetLabel(member.preset)}. ${member.status}. ${scopeLabel(member)}`}
+              accessibilityLabel={`${member.displayName}. ${staffRoleLabel(member)}. ${member.status}. ${scopeLabel(member)}`}
               accessibilityRole="button"
               onPress={() => onOpen(member.id)}
             >
@@ -318,30 +331,30 @@ function StaffDirectory({
                   </Text>
                 </View>
                 <View style={styles.flex}>
-                  <Text numberOfLines={1} style={styles.memberName}>
-                    {member.displayName}
-                  </Text>
+                  <View style={styles.memberHeadingRow}>
+                    <Text numberOfLines={1} style={styles.memberName}>
+                      {member.displayName}
+                    </Text>
+                    <StatusBadge
+                      label={member.status.charAt(0) + member.status.slice(1).toLowerCase()}
+                      tone={statusTone(member.status)}
+                    />
+                  </View>
                   {invitationIdentity(member) ? (
                     <Text numberOfLines={1} style={styles.meta}>
                       {invitationIdentity(member)!.value}
                     </Text>
                   ) : null}
                   <Text style={styles.meta}>
-                    {presetLabel(member.preset)} · {scopeLabel(member)}
+                    {staffRoleLabel(member)} · {scopeLabel(member)}
                   </Text>
                 </View>
-                <View style={styles.rowEnd}>
-                  <StatusBadge
-                    label={member.status.charAt(0) + member.status.slice(1).toLowerCase()}
-                    tone={statusTone(member.status)}
-                  />
-                  <Icon color={colors.subtleText} name="chevron-forward" size={18} />
-                </View>
+                <Icon color={colors.subtleText} name="chevron-forward" size={18} />
               </Card>
             </Pressable>
           ))}
           {capacity === 'MANAGER' ? (
-            <Text style={styles.note}>Managers can administer ordinary Staff only.</Text>
+            <Text style={styles.note}>Managers can manage Staff, but not other Managers.</Text>
           ) : null}
         </View>
       )}
@@ -420,7 +433,7 @@ function StaffAccessLinkCard({
       ) : (
         <Card style={styles.accessLinkCard}>
           <Text style={styles.meta}>
-            Use this link when existing Staff need to sign in on a new device.
+            Existing Staff can use this link to sign in on a new device.
           </Text>
           <Text
             accessibilityLabel={`Current Staff access link: ${accessLink.data.url}`}
@@ -432,16 +445,22 @@ function StaffAccessLinkCard({
           {accessLink.data.rotatedAt ? (
             <Text style={styles.meta}>Updated {dateTimeLabel(accessLink.data.rotatedAt)}</Text>
           ) : null}
-          <View style={styles.actionRow}>
-            <Button compact label="Copy link" variant="secondary" onPress={() => void copy()} />
-            <Button compact label="Share link" variant="secondary" onPress={() => void share()} />
+          <View style={styles.accessLinkActions}>
+            <View style={styles.accessLinkAction}>
+              <Button compact label="Copy link" variant="secondary" onPress={() => void copy()} />
+            </View>
+            <View style={styles.accessLinkAction}>
+              <Button compact label="Share link" variant="secondary" onPress={() => void share()} />
+            </View>
           </View>
-          <Button
-            compact
-            label="Regenerate link"
-            variant="ghost"
-            onPress={() => setConfirmRegenerate(true)}
-          />
+          <View style={styles.regenerateAction}>
+            <Button
+              compact
+              label="Regenerate link"
+              variant="ghost"
+              onPress={() => setConfirmRegenerate(true)}
+            />
+          </View>
         </Card>
       )}
       <AccessLinkConfirmationModal
@@ -935,7 +954,7 @@ function VehiclePickerModal({
       }),
     [contentHeight, footerHeight, headerHeight, maximumHeight],
   );
-  const sheetHeight = useSharedValue(Math.min(360, maximumHeight));
+  const sheetHeight = useSharedValue(Math.min(320, maximumHeight));
   const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
 
   useEffect(() => {
@@ -980,7 +999,7 @@ function VehiclePickerModal({
         >
           <View
             onLayout={({ nativeEvent }) => setHeaderHeight(nativeEvent.layout.height)}
-            style={styles.sheetHeader}
+            style={[styles.sheetHeader, styles.pickerSheetHeader]}
           >
             <BackControl label="Cancel" onPress={onClose} />
             <Text accessibilityRole="header" style={styles.sheetTitle}>
@@ -1011,7 +1030,7 @@ function VehiclePickerModal({
                 compact
                 icon="alert-circle-outline"
                 title="Unable to load vehicles"
-                actionLabel="Try again"
+                actionLabel="Retry"
                 onAction={() => void vehicles.refetch()}
               />
             ) : vehicles.data.length === 0 ? (
@@ -1066,7 +1085,11 @@ function VehiclePickerModal({
             onLayout={({ nativeEvent }) => setFooterHeight(nativeEvent.layout.height)}
             style={[styles.sheetFooter, { paddingBottom: Math.max(safeArea.bottom, spacing.lg) }]}
           >
-            <Button label="Done" onPress={onClose} />
+            <Button
+              disabled={vehicles.isPending || vehicles.isError || selected.length === 0}
+              label="Done"
+              onPress={onClose}
+            />
           </View>
         </Reanimated.View>
       </KeyboardAvoidingView>
@@ -1089,7 +1112,10 @@ function StaffDetailScreen({
   const [confirm, setConfirm] = useState<
     'suspend' | 'reactivate' | 'disable' | 'reissue' | 'revoke' | null
   >(null);
-  const [editor, setEditor] = useState<'identity' | 'permissions' | 'vehicles' | null>(null);
+  const [managerAuthorityConfirmation, setManagerAuthorityConfirmation] = useState<boolean | null>(
+    null,
+  );
+  const [editorView, setEditorView] = useState<StaffEditorView | null>(null);
   const staffKey = ['owner-staff', ownerProfileId] as const;
   const detailKey = ['owner-staff', ownerProfileId, membershipId] as const;
   const member = useQuery({
@@ -1124,11 +1150,37 @@ function StaffDetailScreen({
         },
       ),
     onSuccess: async () => {
+      const completedAction = confirm;
       if (confirm === 'reissue') Alert.alert('Invitation sent again');
       setConfirm(null);
       await refresh();
+      if (completedAction === 'disable') onBack();
     },
-    onError: (error) => Alert.alert('Change not saved', friendlyError(error)),
+    onError: async (error) => {
+      if (error instanceof ApiError && (error.status === 403 || error.status === 409))
+        await refresh();
+      Alert.alert('Change not saved', friendlyError(error));
+    },
+  });
+  const managerAuthority = useMutation({
+    mutationFn: (ownerApprovalBypassEnabled: boolean) =>
+      apiClient.request<OwnerStaffDetail>(
+        `/owner/workspaces/${ownerProfileId}/staff/${membershipId}/manager-authority`,
+        {
+          body: JSON.stringify({ ownerApprovalBypassEnabled }),
+          method: 'PATCH',
+        },
+      ),
+    onSuccess: async () => {
+      setManagerAuthorityConfirmation(null);
+      await refresh();
+    },
+    onError: async (error) => {
+      if (error instanceof ApiError && (error.status === 403 || error.status === 409))
+        await refresh();
+      setManagerAuthorityConfirmation(null);
+      Alert.alert('Change not saved', friendlyError(error));
+    },
   });
   if (member.isPending) return <StateView loading title="Loading Staff member" />;
   if (!member.data)
@@ -1146,112 +1198,156 @@ function StaffDetailScreen({
   const manageable = canManageMember(capacity, value);
   return (
     <NestedScreen
+      compactNestedHeader
       backLabel="Staff"
       onBack={onBack}
       eyebrow="Staff member"
       title={value.displayName}
-      subtitle={identity?.value}
-    >
-      <Card style={styles.detailCard}>
-        <View style={styles.headingRow}>
-          <Text style={styles.cardTitle}>Identity</Text>
+      subtitle={`${value.role === 'MANAGER' ? 'Manager' : 'Staff'}${identity ? `\n${identity.value}` : ''}`}
+      action={
+        <View style={styles.staffStatusAction}>
           <StatusBadge
             label={value.status.charAt(0) + value.status.slice(1).toLowerCase()}
             tone={statusTone(value.status)}
           />
         </View>
-        <DetailRow label="Role" value={value.role === 'MANAGER' ? 'Manager' : 'Staff'} />
-        <DetailRow label="Access level" value={presetLabel(value.preset)} />
-        {manageable && value.status !== 'DISABLED' ? (
-          <Button
-            compact
-            label="Edit display name"
-            variant="secondary"
-            onPress={() => setEditor('identity')}
-          />
-        ) : null}
-      </Card>
-      {value.status === 'INVITED' && value.invitation ? (
-        <Card style={styles.detailCard}>
-          <Text style={styles.cardTitle}>Invitation</Text>
+      }
+    >
+      <View style={styles.compactSection}>
+        <SectionHeader title="Access" />
+        <Card style={styles.compactDetailCard}>
+          <DetailRow inline label="Role" value={value.role === 'MANAGER' ? 'Manager' : 'Staff'} />
           <DetailRow
-            label={identity?.label ?? 'Destination'}
-            value={value.invitation.destination}
+            inline
+            label="Permissions"
+            value={staffPermissionLabel(value.role, value.preset)}
           />
-          <DetailRow label="Expires" value={dateTimeLabel(value.invitation.expiresAt)} />
-          {manageable ? (
-            <View style={styles.actionRow}>
-              <Button
-                compact
-                label="Reissue invitation"
-                variant="secondary"
-                onPress={() => setConfirm('reissue')}
-              />
-              <Button
-                compact
-                label="Revoke invitation"
-                variant="danger"
-                onPress={() => setConfirm('revoke')}
-              />
-            </View>
+          <DetailRow inline label="Vehicle access" value={scopeLabel(value)} />
+          {manageable && value.status !== 'DISABLED' ? (
+            <Pressable
+              accessibilityLabel="Edit access"
+              accessibilityRole="button"
+              onPress={() => setEditorView('menu')}
+              style={styles.accessActionRow}
+            >
+              <Text style={styles.accessActionText}>Edit access</Text>
+              <Icon color={colors.subtleText} name="chevron-forward" size={19} />
+            </Pressable>
           ) : null}
         </Card>
-      ) : null}
-      <Card style={styles.detailCard}>
-        <View style={styles.headingRow}>
-          <Text style={styles.cardTitle}>Access</Text>
+      </View>
+      {capacity === 'OWNER' && value.role === 'MANAGER' ? (
+        <View style={styles.compactSection}>
+          <SectionHeader title="Manager authority" />
+          <Card style={styles.managerAuthorityCard}>
+            <View style={styles.managerAuthorityRow}>
+              <Text style={styles.managerAuthorityTitle}>
+                Allow this Manager to act without Owner approval
+              </Text>
+              <Switch
+                accessibilityLabel="Allow this Manager to act without Owner approval"
+                disabled={value.status !== 'ACTIVE' || managerAuthority.isPending}
+                onValueChange={(enabled) => setManagerAuthorityConfirmation(enabled)}
+                trackColor={{ true: colors.primarySoft }}
+                thumbColor={value.ownerApprovalBypassEnabled ? colors.primary : undefined}
+                value={value.ownerApprovalBypassEnabled}
+              />
+            </View>
+            <Text style={styles.meta}>
+              This Manager can make and submit supported vehicle changes without your approval.
+              Owner-only financial, ownership, and workspace controls remain restricted. You will
+              still be notified of every trusted vehicle update or submission.
+            </Text>
+            {value.status !== 'ACTIVE' ? (
+              <Text style={styles.note}>
+                Trusted authority is available only for active Managers.
+              </Text>
+            ) : null}
+          </Card>
         </View>
-        <DetailRow label="Permissions" value={`${value.permissions.length} configured`} />
-        {manageable && value.status !== 'DISABLED' ? (
-          <Button
-            compact
-            label="Edit permissions"
-            variant="secondary"
-            onPress={() => setEditor('permissions')}
-          />
-        ) : null}
-        <DetailRow label="Vehicle access" value={scopeLabel(value)} />
-        {manageable && value.status !== 'DISABLED' ? (
-          <Button
-            compact
-            label="Edit vehicle access"
-            variant="secondary"
-            onPress={() => setEditor('vehicles')}
-          />
-        ) : null}
-      </Card>
-      <Card style={styles.detailCard}>
-        <Text style={styles.cardTitle}>Activity</Text>
-        <DetailRow label="Invited" value={dateTimeLabel(value.invitedAt)} />
-        {value.activatedAt ? (
-          <DetailRow label="Activated" value={dateTimeLabel(value.activatedAt)} />
-        ) : null}
-        {value.suspendedAt ? (
-          <DetailRow label="Suspended" value={dateTimeLabel(value.suspendedAt)} />
-        ) : null}
-      </Card>
-      {manageable && value.status === 'SUSPENDED' ? (
-        <Button
-          label="Reactivate access"
-          variant="secondary"
-          onPress={() => setConfirm('reactivate')}
-        />
       ) : null}
-      {manageable && value.status === 'ACTIVE' ? (
+      {value.status === 'INVITED' && value.invitation ? (
+        <View style={styles.compactSection}>
+          <SectionHeader title="Invitation" />
+          <Card style={styles.compactDetailCard}>
+            <DetailRow
+              label={identity?.label ?? 'Destination'}
+              value={value.invitation.destination}
+            />
+            <DetailRow label="Expires" value={dateTimeLabel(value.invitation.expiresAt)} />
+            <View style={styles.invitationStateRow}>
+              <Text style={styles.detailLabel}>State</Text>
+              <StatusBadge
+                label={
+                  value.invitation.state.charAt(0) + value.invitation.state.slice(1).toLowerCase()
+                }
+                tone={invitationStateTone(value.invitation.state)}
+              />
+            </View>
+            {manageable ? (
+              <View style={styles.invitationActions}>
+                <Button
+                  compact
+                  label="Reissue invitation"
+                  variant={value.invitation.state === 'EXPIRED' ? 'primary' : 'secondary'}
+                  onPress={() => setConfirm('reissue')}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setConfirm('revoke')}
+                  style={styles.destructiveTextAction}
+                >
+                  <Text style={styles.destructiveText}>Revoke invitation</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </Card>
+        </View>
+      ) : null}
+      {manageable && (value.status === 'ACTIVE' || value.status === 'SUSPENDED') ? (
+        <View style={styles.compactSection}>
+          <SectionHeader title="Manage access" />
+          <Card style={styles.manageAccessCard}>
+            {value.status === 'ACTIVE' ? (
+              <Button
+                compact
+                label="Suspend access"
+                variant="secondary"
+                onPress={() => setConfirm('suspend')}
+              />
+            ) : (
+              <Button
+                compact
+                label="Reactivate"
+                variant="secondary"
+                onPress={() => setConfirm('reactivate')}
+              />
+            )}
+          </Card>
+        </View>
+      ) : null}
+      {manageable && (value.status === 'ACTIVE' || value.status === 'SUSPENDED') ? (
         <Card style={styles.dangerCard}>
           <Text style={styles.dangerEyebrow}>Danger zone</Text>
-          <Text style={styles.cardTitle}>Staff access</Text>
+          <Text style={styles.cardTitle}>Remove access from workspace</Text>
           <Text style={styles.meta}>
-            Suspend access temporarily or permanently disable this membership.
+            Permanently disable this workspace membership while preserving its activity history.
           </Text>
-          <Button
-            label="Suspend access"
-            variant="secondary"
-            onPress={() => setConfirm('suspend')}
-          />
-          <Button label="Disable access" variant="danger" onPress={() => setConfirm('disable')} />
+          <Button label="Remove access" variant="danger" onPress={() => setConfirm('disable')} />
         </Card>
       ) : null}
+      <View style={styles.compactSection}>
+        <SectionHeader title="Activity" />
+        <Card style={styles.activityCard}>
+          <DetailRow label="Invited" value={dateTimeLabel(value.invitedAt)} />
+          {value.activatedAt ? (
+            <DetailRow label="Activated" value={dateTimeLabel(value.activatedAt)} />
+          ) : null}
+          {value.suspendedAt ? (
+            <DetailRow label="Suspended" value={dateTimeLabel(value.suspendedAt)} />
+          ) : null}
+        </Card>
+      </View>
       {value.status === 'DISABLED' ? (
         <Text style={styles.note}>
           This membership is permanently disabled and cannot be reactivated.
@@ -1259,50 +1355,117 @@ function StaffDetailScreen({
       ) : null}
       <ConfirmationModal
         kind={confirm}
+        memberName={value.displayName}
         pending={action.isPending}
         onCancel={() => setConfirm(null)}
         onConfirm={() => confirm && action.mutate(confirm)}
       />
-      <MemberEditorModal
-        kind={editor}
-        member={value}
-        ownerProfileId={ownerProfileId}
-        onClose={() => setEditor(null)}
-        onSaved={refresh}
+      <ManagerAuthorityConfirmationModal
+        enabled={managerAuthorityConfirmation}
+        pending={managerAuthority.isPending}
+        onCancel={() => setManagerAuthorityConfirmation(null)}
+        onConfirm={() =>
+          managerAuthorityConfirmation !== null &&
+          managerAuthority.mutate(managerAuthorityConfirmation)
+        }
       />
+      <Modal
+        animationType="slide"
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
+        transparent
+        visible={editorView !== null}
+        onRequestClose={() => setEditorView(null)}
+      >
+        {editorView === 'menu' ? (
+          <AccessEditorMenu onClose={() => setEditorView(null)} onSelect={setEditorView} />
+        ) : (
+          <MemberEditorPanel
+            kind={editorView}
+            member={value}
+            ownerProfileId={ownerProfileId}
+            onClose={() => setEditorView(null)}
+            onSaved={refresh}
+          />
+        )}
+      </Modal>
     </NestedScreen>
   );
 }
 
-function MemberEditorModal({
+function AccessEditorMenu({
+  onClose,
+  onSelect,
+}: {
+  readonly onClose: () => void;
+  readonly onSelect: (kind: StaffEditorKind) => void;
+}) {
+  const safeArea = useSafeAreaInsets();
+  return (
+    <View style={styles.modalBackdrop}>
+      <View
+        accessibilityViewIsModal
+        style={[styles.confirmSheet, { paddingBottom: Math.max(safeArea.bottom, spacing.xl) }]}
+      >
+        <BackControl label="Cancel" onPress={onClose} />
+        <Text accessibilityRole="header" style={styles.confirmTitle}>
+          Edit access
+        </Text>
+        <Text style={styles.confirmCopy}>
+          Choose which part of this member&apos;s workspace access to update.
+        </Text>
+        <View style={styles.accessMenuActions}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => onSelect('permissions')}
+            style={styles.accessMenuRow}
+          >
+            <Text style={styles.accessActionText}>Edit permissions</Text>
+            <Icon color={colors.subtleText} name="chevron-forward" size={19} />
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => onSelect('vehicles')}
+            style={styles.accessMenuRow}
+          >
+            <Text style={styles.accessActionText}>Edit vehicle access</Text>
+            <Icon color={colors.subtleText} name="chevron-forward" size={19} />
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function MemberEditorPanel({
   kind,
   member,
   ownerProfileId,
   onClose,
   onSaved,
 }: {
-  readonly kind: 'identity' | 'permissions' | 'vehicles' | null;
+  readonly kind: StaffEditorKind | null;
   readonly member: OwnerStaffDetail;
   readonly ownerProfileId: string;
   readonly onClose: () => void;
   readonly onSaved: () => Promise<void>;
 }) {
-  const [name, setName] = useState(member.displayName);
+  const { height: viewportHeight } = useWindowDimensions();
+  const safeArea = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
+  const [footerHeight, setFooterHeight] = useState(0);
   const [permissions, setPermissions] = useState<string[]>([...member.permissions]);
   const [scope, setScope] = useState<OwnerStaffVehicleScopeMode>(member.vehicleScopeMode);
   const [vehicleIds, setVehicleIds] = useState<string[]>(
     member.assignedVehicles.map((vehicle) => vehicle.id),
   );
+  const initialVehicleIds = member.assignedVehicles.map((vehicle) => vehicle.id);
   const [picker, setPicker] = useState(false);
   const [error, setError] = useState('');
   const mutation = useMutation({
     mutationFn: async () => {
       const base = `/owner/workspaces/${ownerProfileId}/staff/${member.id}`;
-      if (kind === 'identity')
-        return apiClient.request<OwnerStaffDetail>(base, {
-          method: 'PATCH',
-          body: JSON.stringify({ displayName: name.trim() }),
-        });
       if (kind === 'permissions')
         return apiClient.request<OwnerStaffDetail>(`${base}/permissions`, {
           method: 'PUT',
@@ -1322,101 +1485,170 @@ function MemberEditorModal({
     },
     onError: (value) => setError(friendlyError(value)),
   });
-  if (!kind) return null;
   const valid =
-    kind === 'identity'
-      ? name.trim().length > 1
-      : kind === 'permissions'
-        ? permissions.length > 0
-        : scope === 'ALL_VEHICLES' || vehicleIds.length > 0;
+    kind === 'permissions'
+      ? permissions.length > 0
+      : scope === 'ALL_VEHICLES' || vehicleIds.length > 0;
+  const dirty =
+    kind === 'permissions'
+      ? !sameStringSet(permissions, member.permissions)
+      : scope !== member.vehicleScopeMode ||
+        (scope === 'SELECTED_VEHICLES' && !sameStringSet(vehicleIds, initialVehicleIds));
+  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
+  const measuredLayout = useMemo(
+    () =>
+      adaptiveSheetLayout({
+        contentHeight,
+        headerHeight: headerHeight + footerHeight,
+        maxSafeViewportHeight: maximumHeight,
+        safeAreaAllowance: 0,
+      }),
+    [contentHeight, footerHeight, headerHeight, maximumHeight],
+  );
+  const sheetHeight = useSharedValue(Math.min(kind === 'permissions' ? 520 : 360, maximumHeight));
+  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
+
+  useEffect(() => {
+    if (!kind || headerHeight <= 0 || contentHeight <= 0 || footerHeight <= 0) return;
+    // Reanimated shared values are intentionally mutable UI-thread animation state.
+    // eslint-disable-next-line react-hooks/immutability
+    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
+  }, [
+    contentHeight,
+    dirty,
+    error,
+    footerHeight,
+    headerHeight,
+    kind,
+    measuredLayout.height,
+    permissions.length,
+    scope,
+    sheetHeight,
+    vehicleIds.length,
+  ]);
+  if (!kind) return null;
   return (
-    <Modal animationType="slide" transparent visible onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.sheet}>
-          <NestedScreen
-            contentGrows={false}
-            contentBottomPadding={spacing.lg}
-            backLabel="Cancel"
-            onBack={onClose}
-            title={
-              kind === 'identity'
-                ? 'Edit display name'
-                : kind === 'permissions'
-                  ? 'Edit permissions'
-                  : 'Vehicle access'
-            }
-          >
-            {kind === 'identity' ? (
-              <Card>
-                <Field label="Display name" value={name} onChangeText={setName} />
-              </Card>
-            ) : kind === 'permissions' ? (
-              <PermissionEditor selected={permissions} onChange={setPermissions} />
-            ) : (
-              <Card style={styles.formCard}>
-                <SegmentedControl
-                  accessibilityLabel="Vehicle access"
-                  options={[
-                    { label: 'All vehicles', value: 'ALL_VEHICLES' },
-                    { label: 'Selected vehicles', value: 'SELECTED_VEHICLES' },
-                  ]}
-                  value={scope}
-                  onChange={setScope}
-                />
-                {scope === 'SELECTED_VEHICLES' ? (
-                  <Button
-                    compact
-                    label={
-                      vehicleIds.length
-                        ? `${vehicleIds.length} vehicles selected`
-                        : 'Select vehicles'
-                    }
-                    variant="secondary"
-                    onPress={() => setPicker(true)}
-                  />
-                ) : null}
-              </Card>
-            )}
-            {error ? (
-              <Text accessibilityRole="alert" style={styles.error}>
-                {error}
-              </Text>
-            ) : null}
-            <Button
-              disabled={!valid || mutation.isPending}
-              label={mutation.isPending ? 'Saving…' : 'Save changes'}
-              onPress={() => mutation.mutate()}
-            />
-          </NestedScreen>
+    <View style={styles.modalRoot}>
+      <Pressable
+        accessibilityLabel="Close access editor"
+        onPress={onClose}
+        style={styles.backdrop}
+      />
+      <Reanimated.View
+        accessibilityLabel={kind === 'permissions' ? 'Edit permissions' : 'Vehicle access'}
+        accessibilityViewIsModal
+        style={[styles.sheet, animatedSheetStyle]}
+      >
+        <View
+          onLayout={({ nativeEvent }) => setHeaderHeight(nativeEvent.layout.height)}
+          style={styles.sheetHeader}
+        >
+          <BackControl label="Cancel" onPress={onClose} />
+          <Text accessibilityRole="header" style={styles.sheetTitle}>
+            {kind === 'permissions' ? 'Edit permissions' : 'Vehicle access'}
+          </Text>
         </View>
-        <VehiclePickerModal
-          ownerProfileId={ownerProfileId}
-          visible={picker}
-          selected={vehicleIds}
-          onClose={() => setPicker(false)}
-          onChange={setVehicleIds}
-        />
-      </View>
-    </Modal>
+        <ScrollView
+          contentContainerStyle={styles.sheetContent}
+          onContentSizeChange={(_width, height) => setContentHeight(Math.max(height, 120))}
+          scrollEnabled={measuredLayout.scrollEnabled}
+          showsVerticalScrollIndicator={measuredLayout.scrollEnabled}
+        >
+          {kind === 'permissions' ? (
+            <PermissionEditor selected={permissions} onChange={setPermissions} />
+          ) : (
+            <Card style={styles.formCard}>
+              <SegmentedControl
+                accessibilityLabel="Vehicle access"
+                options={[
+                  { label: 'All vehicles', value: 'ALL_VEHICLES' },
+                  { label: 'Selected vehicles', value: 'SELECTED_VEHICLES' },
+                ]}
+                value={scope}
+                onChange={setScope}
+              />
+              {scope === 'SELECTED_VEHICLES' ? (
+                <Pressable
+                  accessibilityLabel={`Selected vehicles. ${vehicleSelectionLabel(vehicleIds.length)}. Change selection`}
+                  accessibilityRole="button"
+                  hitSlop={4}
+                  onPress={() => setPicker(true)}
+                  style={({ pressed }) => [
+                    styles.selectorRow,
+                    pressed && styles.selectorRowPressed,
+                  ]}
+                >
+                  <View style={styles.flex}>
+                    <Text style={styles.detailLabel}>Selected vehicles</Text>
+                    <Text style={styles.selectorTitle}>
+                      {vehicleSelectionLabel(vehicleIds.length)}
+                    </Text>
+                  </View>
+                  <Icon color={colors.subtleText} name="chevron-forward" size={19} />
+                </Pressable>
+              ) : null}
+            </Card>
+          )}
+        </ScrollView>
+        <View
+          onLayout={({ nativeEvent }) => setFooterHeight(nativeEvent.layout.height)}
+          style={[styles.sheetFooter, { paddingBottom: Math.max(safeArea.bottom, spacing.lg) }]}
+        >
+          {error ? (
+            <Text accessibilityRole="alert" style={styles.error}>
+              {error}
+            </Text>
+          ) : null}
+          <Button
+            disabled={!dirty || !valid || mutation.isPending}
+            label={mutation.isPending ? 'Saving…' : 'Save changes'}
+            onPress={() => mutation.mutate()}
+            variant={!dirty || !valid || mutation.isPending ? 'secondary' : 'primary'}
+          />
+        </View>
+      </Reanimated.View>
+      <VehiclePickerModal
+        ownerProfileId={ownerProfileId}
+        visible={picker}
+        selected={vehicleIds}
+        onClose={() => setPicker(false)}
+        onChange={setVehicleIds}
+      />
+    </View>
   );
 }
 
-function DetailRow({ label, value }: { readonly label: string; readonly value: string }) {
+function DetailRow({
+  label,
+  value,
+  inline = false,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly inline?: boolean;
+}) {
   return (
-    <View style={styles.detailRow}>
-      <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={styles.detailValue}>{value}</Text>
+    <View style={[styles.detailRow, inline && styles.detailRowInline]}>
+      <Text style={[styles.detailLabel, inline && styles.detailLabelInline]}>{label}</Text>
+      <Text
+        numberOfLines={inline ? 2 : undefined}
+        style={[styles.detailValue, inline && styles.detailValueInline]}
+      >
+        {value}
+      </Text>
     </View>
   );
 }
 
 function ConfirmationModal({
   kind,
+  memberName,
   pending,
   onCancel,
   onConfirm,
 }: {
   readonly kind: 'suspend' | 'reactivate' | 'disable' | 'reissue' | 'revoke' | null;
+  readonly memberName: string;
   readonly pending: boolean;
   readonly onCancel: () => void;
   readonly onConfirm: () => void;
@@ -1425,7 +1657,7 @@ function ConfirmationModal({
   const copies: Record<NonNullable<typeof kind>, readonly [string, string, string]> = {
     suspend: [
       'Suspend access?',
-      'This staff member will immediately lose access to this Owner workspace. Their renter account and other workspace access will not be affected.',
+      'This person will temporarily lose access to this Owner workspace until you reactivate them.',
       'Suspend access',
     ],
     reactivate: [
@@ -1434,9 +1666,9 @@ function ConfirmationModal({
       'Reactivate',
     ],
     disable: [
-      'Disable staff access?',
-      "This permanently disables this Staff membership. It does not delete the user's CarShare account.",
-      'Disable access',
+      `Remove ${memberName.trim() || 'this member'}’s access?`,
+      `${memberName.trim() || 'This member'} will no longer be able to access or operate vehicles in this Owner workspace. Their previous activity and audit history will be preserved.`,
+      'Remove access',
     ],
     reissue: [
       'Reissue invitation?',
@@ -1445,7 +1677,7 @@ function ConfirmationModal({
     ],
     revoke: [
       'Revoke invitation?',
-      'This invitation will no longer be available to accept.',
+      'This invitation will no longer be usable.',
       'Revoke invitation',
     ],
   };
@@ -1470,18 +1702,88 @@ function ConfirmationModal({
   );
 }
 
+function ManagerAuthorityConfirmationModal({
+  enabled,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  readonly enabled: boolean | null;
+  readonly pending: boolean;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}) {
+  if (enabled === null) return null;
+  return (
+    <Modal animationType="slide" transparent visible onRequestClose={onCancel}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.confirmSheet}>
+          <BackControl label="Cancel" onPress={onCancel} />
+          <Text accessibilityRole="header" style={styles.confirmTitle}>
+            {enabled ? 'Give this Manager trusted authority?' : 'Remove trusted authority?'}
+          </Text>
+          <Text style={styles.confirmCopy}>
+            {enabled
+              ? 'This Manager will no longer need your approval for supported vehicle and operational changes. Their actions will still be recorded, you will still be notified of vehicle changes, and CarShare review and Owner-only restrictions still apply.'
+              : 'This Manager will need your approval again for supported vehicle changes submitted after this change.'}
+          </Text>
+          <Button
+            disabled={pending}
+            label={
+              pending
+                ? 'Saving…'
+                : enabled
+                  ? 'Enable trusted authority'
+                  : 'Remove trusted authority'
+            }
+            variant={enabled ? 'primary' : 'danger'}
+            onPress={onConfirm}
+          />
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 const styles = StyleSheet.create({
-  accessLinkCard: { gap: spacing.sm },
-  accessLinkSection: { gap: spacing.xs },
+  accessActionRow: {
+    alignItems: 'center',
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 48,
+    paddingTop: spacing.xs,
+  },
+  accessActionText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
+  accessLinkAction: { flex: 1 },
+  accessLinkActions: { flexDirection: 'row', gap: spacing.sm },
+  accessLinkCard: { gap: spacing.xs, padding: spacing.sm },
+  accessLinkSection: { gap: spacing.xxs },
   accessLinkUrl: { color: colors.ink, fontSize: 14, fontWeight: '700' },
-  actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  accessMenuActions: {
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+  },
+  accessMenuRow: {
+    alignItems: 'center',
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 52,
+    paddingHorizontal: spacing.md,
+  },
+  activityCard: { gap: spacing.xs, padding: spacing.sm },
   avatar: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
     borderRadius: radius.pill,
-    height: 46,
+    height: 44,
     justifyContent: 'center',
-    width: 46,
+    width: 44,
   },
   avatarText: { color: colors.primaryDark, fontSize: 18, fontWeight: '800' },
   cardTitle: { color: colors.ink, fontSize: 17, fontWeight: '800' },
@@ -1490,6 +1792,7 @@ const styles = StyleSheet.create({
   choiceSelected: { borderColor: colors.primary, borderWidth: 2 },
   choiceTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
   compactSection: { gap: spacing.xs },
+  compactDetailCard: { gap: spacing.sm, padding: spacing.sm },
   confirmCopy: { color: colors.subtleText, fontSize: 15, lineHeight: 22 },
   confirmSheet: {
     backgroundColor: colors.surface,
@@ -1500,17 +1803,32 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   confirmTitle: { color: colors.ink, fontSize: 24, fontWeight: '900' },
-  dangerCard: { borderColor: colors.dangerSoft, gap: spacing.md },
+  dangerCard: { borderColor: colors.dangerSoft, gap: spacing.sm },
   dangerEyebrow: {
     color: colors.danger,
     fontSize: 13,
     fontWeight: '900',
     textTransform: 'uppercase',
   },
-  detailCard: { gap: spacing.md },
+  detailCard: { gap: spacing.xs, padding: spacing.sm },
   detailLabel: { color: colors.subtleText, fontSize: 13, fontWeight: '700' },
+  detailLabelInline: { flex: 1 },
   detailRow: { gap: spacing.xxs },
+  detailRowInline: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.md,
+    justifyContent: 'space-between',
+    minHeight: 32,
+  },
   detailValue: { color: colors.ink, fontSize: 15, fontWeight: '700' },
+  detailValueInline: { flex: 1.35, textAlign: 'right' },
+  destructiveText: { color: colors.danger, fontSize: 14, fontWeight: '800' },
+  destructiveTextAction: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
   error: { color: colors.danger, lineHeight: 20 },
   flex: { flex: 1 },
   formCard: { gap: spacing.md },
@@ -1522,9 +1840,37 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
   },
-  list: { gap: spacing.sm },
-  memberName: { color: colors.ink, fontSize: 16, fontWeight: '800' },
-  memberRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, padding: spacing.md },
+  invitationStateRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  invitationActions: { gap: spacing.sm },
+  list: { gap: spacing.xs },
+  manageAccessCard: { gap: spacing.sm, padding: spacing.sm },
+  managerAuthorityCard: { gap: spacing.sm, padding: spacing.sm },
+  managerAuthorityRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.md,
+    justifyContent: 'space-between',
+  },
+  managerAuthorityTitle: { color: colors.ink, flex: 1, fontSize: 15, fontWeight: '800' },
+  memberHeadingRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    justifyContent: 'space-between',
+  },
+  memberName: { color: colors.ink, flex: 1, fontSize: 16, fontWeight: '800' },
+  memberRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    minHeight: 76,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
   meta: { color: colors.subtleText, fontSize: 13, lineHeight: 19 },
   modalBackdrop: { backgroundColor: 'rgba(16, 35, 27, 0.36)', flex: 1, justifyContent: 'flex-end' },
   modalRoot: { flex: 1, justifyContent: 'flex-end' },
@@ -1541,7 +1887,7 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: spacing.md,
   },
-  rowEnd: { alignItems: 'flex-end', gap: spacing.sm },
+  regenerateAction: { alignItems: 'flex-end' },
   selectAllControl: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -1554,11 +1900,14 @@ const styles = StyleSheet.create({
   selectorAction: { color: colors.primary, fontSize: 14, fontWeight: '800' },
   selectorRow: {
     alignItems: 'center',
+    borderRadius: radius.sm,
     flexDirection: 'row',
     gap: spacing.xs,
     minHeight: 64,
+    paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
   },
+  selectorRowPressed: { backgroundColor: colors.muted },
   selectorTitle: { color: colors.ink, fontSize: 15, fontWeight: '800' },
   compactSelectorSummary: {
     alignItems: 'center',
@@ -1581,7 +1930,9 @@ const styles = StyleSheet.create({
   },
   sheetFooter: { paddingHorizontal: spacing.xl, paddingTop: spacing.sm },
   sheetHeader: { gap: spacing.sm, paddingHorizontal: spacing.xl, paddingTop: spacing.lg },
+  pickerSheetHeader: { gap: spacing.xs },
   sheetSubtitle: { color: colors.subtleText, fontSize: 14, lineHeight: 20 },
   sheetTitle: { color: colors.ink, fontSize: 28, fontWeight: '900' },
+  staffStatusAction: { marginTop: spacing.xl },
   vehicleRow: { alignItems: 'center', flexDirection: 'row', minHeight: 54, padding: spacing.md },
 });

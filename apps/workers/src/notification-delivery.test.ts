@@ -4,6 +4,82 @@ import { consumeDomainEvent, workerPushProvider } from './notification-delivery'
 import type { WorkerEnvironment } from '@carrental/config';
 
 describe('vehicle Owner approval notification delivery', () => {
+  it.each([
+    ['VEHICLE_CHANGE_PROPOSAL_SUBMITTED', 'vehicle-change-proposal.submitted'],
+    [
+      'VEHICLE_CHANGE_PROPOSAL_OWNER_CHANGES_REQUIRED',
+      'vehicle-change-proposal.owner-changes-required',
+    ],
+    [
+      'VEHICLE_CHANGE_PROPOSAL_OWNER_APPROVED_APPLIED',
+      'vehicle-change-proposal.owner-approved-applied',
+    ],
+    [
+      'VEHICLE_CHANGE_PROPOSAL_OWNER_APPROVED_PLATFORM_REVIEW',
+      'vehicle-change-proposal.owner-approved-platform-review',
+    ],
+    ['VEHICLE_CHANGE_PROPOSAL_TRUSTED_APPLIED', 'vehicle-change-proposal.trusted-applied'],
+    [
+      'VEHICLE_CHANGE_PROPOSAL_TRUSTED_PLATFORM_REVIEW_SUBMITTED',
+      'vehicle-change-proposal.trusted-platform-review',
+    ],
+    ['VEHICLE_CHANGE_PROPOSAL_PLATFORM_APPROVED', 'vehicle-change-proposal.platform-approved'],
+    [
+      'VEHICLE_CHANGE_PROPOSAL_PLATFORM_CHANGES_REQUIRED',
+      'vehicle-change-proposal.platform-changes-required',
+    ],
+    ['VEHICLE_CHANGE_PROPOSAL_PLATFORM_REJECTED', 'vehicle-change-proposal.platform-rejected'],
+  ])(
+    'delivers and deduplicates trusted proposal event %s only to the Owner',
+    async (eventType, templateKey) => {
+      const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const proposalId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const vehicleId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+      const creates = new Map<string, Record<string, unknown>>();
+      const database = {
+        devicePushToken: { findMany: vi.fn(async () => []) },
+        notificationPreference: { findUnique: vi.fn(async () => null) },
+        notification: {
+          upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+            creates.set(String(create.stableKey), create);
+            return { id: proposalId };
+          }),
+        },
+      } as unknown as PrismaClient;
+      const payload = {
+        managerDisplayName: 'Mika Santos',
+        notificationAudience: 'OWNER',
+        notificationIdentity: `${proposalId}:${eventType}:5`,
+        proposalId,
+        recipientUserId: ownerUserId,
+        vehicleDisplayName: 'Honda Civic',
+        vehicleId,
+      };
+      await consumeDomainEvent(database, eventType, payload, 'outbox-1');
+      await consumeDomainEvent(database, eventType, payload, 'outbox-2');
+      expect(creates).toHaveLength(1);
+      expect([...creates.values()][0]).toMatchObject({
+        audience: 'OWNER',
+        deepLink:
+          eventType === 'VEHICLE_CHANGE_PROPOSAL_SUBMITTED'
+            ? `carrental://owner/vehicle-change-proposals/${vehicleId}/${proposalId}`
+            : `carrental://owner/vehicles/${vehicleId}`,
+        sourceId: proposalId,
+        sourceType: 'VEHICLE_CHANGE_PROPOSAL',
+        templateKey,
+        userId: ownerUserId,
+        variables: {
+          managerDisplayName: 'Mika Santos',
+          vehicleDisplayName: 'Honda Civic',
+        },
+      });
+      expect((creates.values().next().value as { variables: object }).variables).toEqual({
+        managerDisplayName: 'Mika Santos',
+        vehicleDisplayName: 'Honda Civic',
+      });
+    },
+  );
+
   it('delivers a deduplicated Manager edit notification only to the actual Owner', async () => {
     const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     const vehicleId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';

@@ -99,6 +99,24 @@ describe('OwnerWorkspaceVehiclesController proof endpoint', () => {
     );
   });
 
+  it('routes draft discard through the narrow delegated authority', async () => {
+    const discardDelegatedDraft = vi.fn().mockResolvedValue(undefined);
+    const controller = new OwnerWorkspaceVehiclesController(
+      { discardDelegatedDraft } as never,
+      { auditDelegatedAction: vi.fn() } as never,
+    );
+    await controller.discardDraft(managerPrincipal, 'vehicle-a', {
+      headers: {},
+      ip: '127.0.0.1',
+    } as never);
+    expect(discardDelegatedDraft).toHaveBeenCalledWith(
+      managerPrincipal.ownerAccess,
+      'manager-user',
+      'vehicle-a',
+      expect.objectContaining({ ipAddress: '127.0.0.1' }),
+    );
+  });
+
   it('reuses authoritative reference data through the workspace route', async () => {
     const categories = vi.fn().mockResolvedValue([{ id: 'category-a' }]);
     const controller = new OwnerWorkspaceVehiclesController(

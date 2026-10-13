@@ -43,6 +43,59 @@ describe('overdue reminder content', () => {
     });
   });
 
+  it('renders privacy-safe trusted Manager proposal notifications', () => {
+    expect(
+      renderNotification('vehicle-change-proposal.trusted-applied', {
+        managerDisplayName: 'Mika Santos',
+        vehicleDisplayName: 'Honda Civic',
+        vin: 'PRIVATE',
+      }),
+    ).toEqual({
+      body: 'Mika Santos updated Honda Civic using trusted authority.',
+      title: 'Vehicle updated',
+    });
+    expect(
+      renderNotification('vehicle-change-proposal.trusted-platform-review', {
+        managerDisplayName: 'Mika Santos',
+        vehicleDisplayName: 'Honda Civic',
+        plateNumber: 'PRIVATE',
+      }),
+    ).toEqual({
+      body: 'Mika Santos submitted changes to Honda Civic for CarShare review.',
+      title: 'Vehicle changes submitted',
+    });
+  });
+
+  it.each([
+    ['vehicle-change-proposal.submitted', 'Vehicle changes need your approval'],
+    ['vehicle-change-proposal.owner-changes-required', 'Changes requested'],
+    ['vehicle-change-proposal.owner-approved-applied', 'Vehicle changes approved'],
+    ['vehicle-change-proposal.owner-approved-platform-review', 'Vehicle changes sent for review'],
+  ])('renders a privacy-safe normal proposal notification for %s', (key, title) => {
+    const result = renderNotification(key, {
+      managerDisplayName: 'Mika Santos',
+      vehicleDisplayName: 'Honda Civic',
+      privateLocation: 'secret',
+      reviewReason: 'private feedback',
+    });
+    expect(result.title).toBe(title);
+    expect(JSON.stringify(result)).not.toContain('secret');
+    expect(JSON.stringify(result)).not.toContain('private feedback');
+  });
+
+  it.each([
+    ['vehicle-change-proposal.platform-approved', 'Vehicle changes approved'],
+    ['vehicle-change-proposal.platform-changes-required', 'Vehicle changes need updates'],
+    ['vehicle-change-proposal.platform-rejected', 'Vehicle changes were not approved'],
+  ])('renders a privacy-safe platform proposal decision for %s', (key, title) => {
+    const result = renderNotification(key, {
+      vehicleDisplayName: 'Honda Civic',
+      privateLocation: 'secret',
+    });
+    expect(result.title).toBe(title);
+    expect(JSON.stringify(result)).not.toContain('secret');
+  });
+
   it.each([
     ['security-deposit.required', 'Security deposit required'],
     ['security-deposit.24-hour-reminder', 'Your trip starts tomorrow'],

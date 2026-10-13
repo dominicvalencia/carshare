@@ -17,6 +17,16 @@ export function internalDestination(
   const [resource, identifier] = segments;
   if (resource === 'owner' && identifier === 'vehicle-approvals' && segments[2])
     return { name: 'OwnerVehicleApproval', params: { vehicleId: segments[2] } };
+  if (
+    resource === 'owner' &&
+    identifier === 'vehicle-change-proposals' &&
+    segments[2] &&
+    segments[3]
+  )
+    return {
+      name: 'OwnerVehicleChangeProposal',
+      params: { proposalId: segments[3], vehicleId: segments[2] },
+    };
   if (resource === 'owner' && identifier === 'vehicles' && segments[2])
     return { name: 'OwnerWorkspaceVehicle', params: { vehicleId: segments[2] } };
   if (resource === 'bookings' && identifier)

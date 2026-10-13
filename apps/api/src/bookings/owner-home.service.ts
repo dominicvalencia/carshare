@@ -52,6 +52,13 @@ const ownerHomeBookingInclude = {
     where: { status: 'FINALIZED' as const },
   },
   pickupHandoverResponse: { select: { decision: true } },
+  overdueHandoverRecoveries: {
+    orderBy: { reportedAt: 'desc' as const },
+    select: {
+      acceptance: { select: { acceptedAt: true } },
+      response: { select: { decision: true } },
+    },
+  },
   rentalIncidents: { select: { blocksCompletion: true, status: true } },
   renter: { select: { profile: { select: { displayName: true, firstName: true } } } },
   vehicle: { select: { make: true, model: true, operationalStatus: true } },
@@ -404,6 +411,10 @@ export class OwnerHomeService {
     booking: OwnerHomeBooking,
     state: ReturnType<typeof workflowCompliance>,
   ): OwnerHomeAttention | null {
+    const unresolvedRecovery = booking.overdueHandoverRecoveries.find(
+      ({ acceptance }) => !acceptance,
+    );
+    const recoveryAwaitingRenter = unresolvedRecovery && !unresolvedRecovery.response;
     const base = {
       bookingReference: booking.publicReference,
       deepLinkTarget: { bookingReference: booking.publicReference, route: 'Booking' as const },
@@ -413,14 +424,15 @@ export class OwnerHomeService {
       vehicleMake: booking.vehicle.make ?? 'Vehicle',
       vehicleModel: booking.vehicle.model ?? '',
     };
-    if (state.return.overdue)
+    if (recoveryAwaitingRenter) return null;
+    if (state.return.overdue && !unresolvedRecovery)
       return {
         ...base,
         timestamp: state.return.graceBoundary,
         titleCode: 'RETURN_OVERDUE',
         type: 'OVERDUE_RETURN' as const,
       };
-    if (state.start.overdue)
+    if (state.start.overdue && !unresolvedRecovery)
       return {
         ...base,
         timestamp: state.start.graceBoundary,

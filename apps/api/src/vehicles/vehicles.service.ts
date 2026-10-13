@@ -14,6 +14,7 @@ import {
   ReviewType,
   SecurityDepositSettlementStatus,
   VehicleLifecycleStatus,
+  VehicleChangeProposalStatus,
   VehicleOperationalStatus,
   VehiclePhotoPerspective,
   VehiclePowertrain,
@@ -107,6 +108,28 @@ const safeOwnerApprovalSelect = {
 } as const;
 
 const ownerVehicleInclude = {
+  changeProposals: {
+    orderBy: { createdAt: 'desc' as const },
+    select: {
+      id: true,
+      ownerApprovalBypassed: true,
+      platformReviewRequired: true,
+      status: true,
+      submittedByMembershipId: true,
+    },
+    take: 1,
+    where: {
+      status: {
+        in: [
+          VehicleChangeProposalStatus.DRAFT,
+          VehicleChangeProposalStatus.PENDING_OWNER_APPROVAL,
+          VehicleChangeProposalStatus.OWNER_CHANGES_REQUIRED,
+          VehicleChangeProposalStatus.PENDING_PLATFORM_REVIEW,
+          VehicleChangeProposalStatus.PLATFORM_CHANGES_REQUIRED,
+        ],
+      },
+    },
+  },
   category: true,
   documents: {
     include: { definition: true, fileAsset: { select: safeFileSelect } },
@@ -132,6 +155,14 @@ const ownerVehicleInclude = {
   statusHistory: { orderBy: { occurredAt: 'asc' as const } },
 };
 type OwnerVehicleRecord = Prisma.VehicleGetPayload<{ include: typeof ownerVehicleInclude }>;
+
+type VehicleViewer =
+  | { readonly kind: 'OWNER' }
+  | {
+      readonly context: OwnerAccessContext;
+      readonly kind: 'DELEGATED';
+      readonly ownerApprovalBypassEnabled: boolean;
+    };
 type SafeOwnerVehicleRecord = Omit<OwnerVehicleRecord, 'createdByMembershipId' | 'createdByUserId'>;
 type VehicleDeleteBlocker = {
   readonly code:
@@ -324,16 +355,20 @@ export class VehiclesService {
   }
 
   async listOwned(userId: string) {
-    return this.listAccessible({ ownerUserId: userId });
+    return this.listAccessible({ ownerUserId: userId }, { kind: 'OWNER' });
   }
 
   async listForOwnerAccess(context: OwnerAccessContext) {
-    return this.listAccessible(this.ownerAccess.vehicleReadWhere(context));
+    return this.listAccessible(
+      this.ownerAccess.vehicleReadWhere(context),
+      await this.delegatedVehicleViewer(context),
+    );
   }
 
-  private async listAccessible(accessWhere: Prisma.VehicleWhereInput) {
+  private async listAccessible(accessWhere: Prisma.VehicleWhereInput, viewer?: VehicleViewer) {
     const vehicles = await this.database.client.vehicle.findMany({
       include: {
+        changeProposals: ownerVehicleInclude.changeProposals,
         category: true,
         location: true,
         photos: {
@@ -376,15 +411,20 @@ export class VehiclesService {
           }),
         ])
       : [[], []];
-    return vehicles.map((vehicle) => ({
-      ...this.withoutInternalVehicleProvenance(this.withOwnerPhotoGrants(vehicle)),
-      availabilityToday: ownerAvailabilityToday({
-        blocks: blocks.filter(({ vehicleId }) => vehicleId === vehicle.id),
-        lifecycleStatus: vehicle.status,
-        occupancies: occupancies.filter(({ vehicleId }) => vehicleId === vehicle.id),
-        operationalStatus: vehicle.operationalStatus,
-      }),
-    }));
+    return vehicles
+      .filter((vehicle) => this.vehicleVisibleToViewer(vehicle, viewer))
+      .map((vehicle) => ({
+        ...this.withoutInternalVehicleProvenance(this.withOwnerPhotoGrants(vehicle), viewer),
+        ...(viewer?.kind === 'DELEGATED'
+          ? { canDiscardDraft: this.canManagerDiscardDraft(viewer.context, vehicle) }
+          : {}),
+        availabilityToday: ownerAvailabilityToday({
+          blocks: blocks.filter(({ vehicleId }) => vehicleId === vehicle.id),
+          lifecycleStatus: vehicle.status,
+          occupancies: occupancies.filter(({ vehicleId }) => vehicleId === vehicle.id),
+          operationalStatus: vehicle.operationalStatus,
+        }),
+      }));
   }
 
   async ownerDashboardSummary(userId: string) {
@@ -408,20 +448,24 @@ export class VehiclesService {
   }
 
   async getOwned(userId: string, id: string) {
-    return this.getAccessible({ id, ownerUserId: userId });
+    return this.getAccessible({ id, ownerUserId: userId }, { kind: 'OWNER' });
   }
 
   async getForOwnerAccess(context: OwnerAccessContext, id: string) {
     await this.ownerAccess.assertVehicleAccess(context, id, 'vehicles.view');
-    return this.getAccessible({ id, ownerProfileId: context.ownerProfileId });
+    return this.getAccessible(
+      { id, ownerProfileId: context.ownerProfileId },
+      await this.delegatedVehicleViewer(context),
+    );
   }
 
-  private async getAccessible(accessWhere: Prisma.VehicleWhereInput) {
+  private async getAccessible(accessWhere: Prisma.VehicleWhereInput, viewer?: VehicleViewer) {
     const vehicle = await this.database.client.vehicle.findFirst({
       include: ownerVehicleInclude,
       where: accessWhere,
     });
     if (!vehicle) this.notFound();
+    if (!this.vehicleVisibleToViewer(vehicle, viewer)) this.notFound();
     const id = vehicle.id;
     const { endExclusive, startInclusive } = manilaTodayWindow();
     const [occupancies, blocks] = await Promise.all([
@@ -445,7 +489,10 @@ export class VehiclesService {
       }),
     ]);
     return {
-      ...this.withoutInternalVehicleProvenance(this.withOwnerPhotoGrants(vehicle)),
+      ...this.withoutInternalVehicleProvenance(this.withOwnerPhotoGrants(vehicle), viewer),
+      ...(viewer?.kind === 'DELEGATED'
+        ? { canDiscardDraft: this.canManagerDiscardDraft(viewer.context, vehicle) }
+        : {}),
       knownIssues: this.withKnownIssueEvidenceGrants(vehicle.knownIssues),
       availabilityToday: ownerAvailabilityToday({
         blocks,
@@ -454,6 +501,61 @@ export class VehiclesService {
         operationalStatus: vehicle.operationalStatus,
       }),
     };
+  }
+
+  private vehicleVisibleToViewer(
+    vehicle: Pick<OwnerVehicleRecord, 'createdByMembershipId' | 'ownerApprovalRequests' | 'status'>,
+    viewer?: VehicleViewer,
+  ): boolean {
+    if (
+      !viewer ||
+      !vehicle.createdByMembershipId ||
+      vehicle.status !== VehicleLifecycleStatus.DRAFT
+    )
+      return true;
+    if (
+      viewer.kind === 'DELEGATED' &&
+      viewer.context.membershipId === vehicle.createdByMembershipId
+    )
+      return true;
+    return [
+      VehicleOwnerApprovalStatus.PENDING,
+      VehicleOwnerApprovalStatus.CHANGES_REQUIRED,
+    ].includes(vehicle.ownerApprovalRequests[0]?.status as never);
+  }
+
+  private async delegatedVehicleViewer(context: OwnerAccessContext): Promise<VehicleViewer> {
+    const membership = context.membershipId
+      ? await this.database.client.ownerStaffMembership.findFirst({
+          select: { ownerApprovalBypassEnabled: true },
+          where: {
+            id: context.membershipId,
+            ownerProfileId: context.ownerProfileId,
+            status: OwnerStaffStatus.ACTIVE,
+          },
+        })
+      : null;
+    return {
+      context,
+      kind: 'DELEGATED',
+      ownerApprovalBypassEnabled:
+        context.capacity === 'MANAGER' && Boolean(membership?.ownerApprovalBypassEnabled),
+    };
+  }
+
+  private canManagerDiscardDraft(
+    context: OwnerAccessContext,
+    vehicle: Pick<OwnerVehicleRecord, 'createdByMembershipId' | 'ownerApprovalRequests' | 'status'>,
+  ): boolean {
+    return (
+      context.capacity === 'MANAGER' &&
+      context.membershipStatus === OwnerStaffStatus.ACTIVE &&
+      context.permissions.includes('vehicles.create') &&
+      Boolean(context.membershipId) &&
+      vehicle.createdByMembershipId === context.membershipId &&
+      vehicle.status === VehicleLifecycleStatus.DRAFT &&
+      vehicle.ownerApprovalRequests[0]?.status !== VehicleOwnerApprovalStatus.APPROVED
+    );
   }
 
   async deleteEligibility(userId: string, id: string) {
@@ -1760,6 +1862,83 @@ export class VehiclesService {
     });
   }
 
+  async discardDelegatedDraft(
+    context: OwnerAccessContext,
+    actorUserId: string,
+    id: string,
+    request: RequestMetadata,
+  ) {
+    this.assertManagerVehicleCreationAuthority(context);
+    await this.ownerAccess.assertVehicleAccess(context, id, 'vehicles.create');
+    await this.database.client.$transaction(async (transaction) => {
+      await transaction.$queryRaw`SELECT id FROM vehicles WHERE id = ${id}::uuid FOR UPDATE`;
+      const vehicle = await transaction.vehicle.findFirst({
+        select: {
+          createdByMembershipId: true,
+          id: true,
+          ownerProfileId: true,
+          status: true,
+        },
+        where: { id, ownerProfileId: context.ownerProfileId },
+      });
+      if (
+        !vehicle ||
+        vehicle.createdByMembershipId !== context.membershipId ||
+        vehicle.status !== VehicleLifecycleStatus.DRAFT
+      ) {
+        this.ownerApprovalForbidden();
+      }
+      const approval = await transaction.vehicleOwnerApprovalRequest.findFirst({
+        orderBy: { submittedAt: 'desc' },
+        where: { ownerProfileId: context.ownerProfileId, vehicleId: id },
+      });
+      if (approval?.status === VehicleOwnerApprovalStatus.APPROVED) {
+        this.ownerApprovalForbidden();
+      }
+      if (approval?.status === VehicleOwnerApprovalStatus.PENDING) {
+        await transaction.vehicleOwnerApprovalRequest.update({
+          data: { status: VehicleOwnerApprovalStatus.WITHDRAWN },
+          where: { id: approval.id },
+        });
+      }
+      await this.transitionInTransaction(
+        transaction,
+        id,
+        actorUserId,
+        VehicleLifecycleStatus.DRAFT,
+        VehicleLifecycleStatus.ARCHIVED,
+        'Discarded by creating Manager',
+        request,
+        {
+          archivedAt: new Date(),
+          archivedByUser: { connect: { id: actorUserId } },
+          operationalStatus: VehicleOperationalStatus.TEMPORARILY_UNAVAILABLE,
+        },
+      );
+      await transaction.auditLog.create({
+        data: {
+          action: 'OWNER_WORKSPACE_VEHICLE_DRAFT_DISCARDED',
+          actorUserId,
+          ...(request.correlationId ? { correlationId: request.correlationId } : {}),
+          ...(request.ipAddress ? { ipAddress: request.ipAddress } : {}),
+          metadata: {
+            capacity: context.capacity,
+            membershipId: context.membershipId,
+            ownerProfileId: context.ownerProfileId,
+            permission: 'vehicles.create',
+            priorApprovalStatus: approval?.status ?? null,
+            requestId: approval?.id ?? null,
+            vehicleId: id,
+          },
+          reason: 'Creating Manager discarded pre-approval vehicle draft',
+          targetId: id,
+          targetType: 'VEHICLE',
+        },
+      });
+    });
+    await this.setPhotoClassification(id, FileClassification.PRIVATE);
+  }
+
   async approveOwnerApproval(
     ownerUserId: string,
     id: string,
@@ -2030,6 +2209,7 @@ export class VehiclesService {
     },
   >(
     vehicle: T,
+    viewer?: VehicleViewer,
   ): Omit<T, 'createdByMembershipId' | 'createdByUserId' | 'ownerApprovalRequests'> & {
     ownerApproval: {
       id: string;
@@ -2040,13 +2220,52 @@ export class VehiclesService {
       submittedRevision: number;
     } | null;
   } {
-    const { createdByMembershipId, createdByUserId, ownerApprovalRequests, ...safeVehicle } =
-      vehicle;
+    const {
+      changeProposals,
+      createdByMembershipId,
+      createdByUserId,
+      ownerApprovalRequests,
+      ...safeVehicle
+    } = vehicle as T & {
+      changeProposals?: readonly {
+        id: string;
+        ownerApprovalBypassed: boolean;
+        platformReviewRequired: boolean;
+        status: VehicleChangeProposalStatus;
+        submittedByMembershipId: string;
+      }[];
+    };
     void createdByMembershipId;
     void createdByUserId;
     const ownerApproval = ownerApprovalRequests?.[0];
+    const activeProposal = changeProposals?.[0];
     return {
       ...safeVehicle,
+      activeChangeProposal: activeProposal
+        ? {
+            id: activeProposal.id,
+            isCreator:
+              viewer?.kind === 'DELEGATED' &&
+              viewer.context.membershipId === activeProposal.submittedByMembershipId,
+            ownerApprovalBypassed: activeProposal.ownerApprovalBypassed,
+            platformReviewRequired: activeProposal.platformReviewRequired,
+            status: activeProposal.status,
+          }
+        : null,
+      capabilities:
+        viewer?.kind === 'DELEGATED'
+          ? {
+              canArchiveVehicle: false,
+              canEditOperationalFields:
+                viewer.context.capacity === 'MANAGER' &&
+                viewer.context.permissions.includes('vehicles.update_operational_fields'),
+              canManageKnownIssues: false,
+              canStartVehicleProposal:
+                viewer.context.capacity === 'MANAGER' &&
+                viewer.context.permissions.includes('vehicles.update_operational_fields'),
+              ownerApprovalBypassEnabled: viewer.ownerApprovalBypassEnabled,
+            }
+          : null,
       ownerApproval: ownerApproval
         ? {
             id: ownerApproval.id,

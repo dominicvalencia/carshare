@@ -1,4 +1,5 @@
 import type { NavigationProp } from '@react-navigation/native';
+import type { OwnerVehicleChangeProposalListResponse } from '@carrental/api-contracts';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
@@ -92,6 +93,13 @@ export function OwnerDashboardScreen({
     queryKey: ['owner-workspace', workspaceKey, 'vehicles'],
     retry: false,
   });
+  const changeProposals = useQuery({
+    enabled: !delegated && ownerStatus === 'VERIFIED',
+    queryFn: () =>
+      apiClient.request<OwnerVehicleChangeProposalListResponse>('/owner/vehicle-change-proposals'),
+    queryKey: ['owner-vehicle-change-proposals'],
+    retry: false,
+  });
   const upcoming = useInfiniteQuery<OwnerHomeUpcomingPage>({
     enabled:
       (delegated || ownerStatus === 'VERIFIED') && canViewRentals && selectedTab === 'Upcoming',
@@ -117,6 +125,7 @@ export function OwnerDashboardScreen({
   useRefreshOnFocusAndForeground(() => {
     if (delegated || ownerStatus === 'VERIFIED') void home.refetch();
     if ((delegated || ownerStatus === 'VERIFIED') && canViewVehicles) void vehicles.refetch();
+    if (!delegated && ownerStatus === 'VERIFIED') void changeProposals.refetch();
     if ((delegated || ownerStatus === 'VERIFIED') && canViewRentals && selectedTab === 'Upcoming')
       void upcoming.refetch();
     if (delegated && canViewMessages) void conversations.refetch();
@@ -173,6 +182,9 @@ export function OwnerDashboardScreen({
     vehicles.data?.filter(
       ({ ownerApproval, status }) => status === 'DRAFT' && ownerApproval?.status === 'PENDING',
     ) ?? [];
+  const pendingVehicleChanges =
+    changeProposals.data?.proposals.filter(({ status }) => status === 'PENDING_OWNER_APPROVAL') ??
+    [];
   if (selectedAmendment)
     return (
       <OwnerBookingRequestsScreen
@@ -224,6 +236,35 @@ export function OwnerDashboardScreen({
       <View style={styles.tabContent}>
         {selectedTab === 'Today' && (
           <View style={styles.tabPanel}>
+            {pendingVehicleChanges.length > 0 ? (
+              <Pressable
+                accessibilityLabel={`${pendingVehicleChanges.length} vehicle ${pendingVehicleChanges.length === 1 ? 'change' : 'changes'} awaiting your approval`}
+                accessibilityRole="button"
+                onPress={() =>
+                  pendingVehicleChanges.length === 1
+                    ? navigation.navigate('OwnerVehicleChangeProposal', {
+                        proposalId: pendingVehicleChanges[0]!.id,
+                        vehicleId: pendingVehicleChanges[0]!.vehicleId,
+                      })
+                    : navigation.navigate('Vehicles')
+                }
+              >
+                <Card style={styles.requestSummary}>
+                  <View style={styles.summaryIcon}>
+                    <Icon color={colors.primary} name="create-outline" />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text style={styles.cardTitle}>
+                      {pendingVehicleChanges.length}{' '}
+                      {pendingVehicleChanges.length === 1 ? 'vehicle change' : 'vehicle changes'}{' '}
+                      awaiting your approval
+                    </Text>
+                    <Text style={styles.link}>Review changes</Text>
+                  </View>
+                  <Icon color={colors.primary} name="chevron-forward" />
+                </Card>
+              </Pressable>
+            ) : null}
             {pendingOwnerApprovals.length > 0 ? (
               <Pressable
                 accessibilityLabel={`${pendingOwnerApprovals.length} ${pendingOwnerApprovals.length === 1 ? 'vehicle' : 'vehicles'} awaiting your approval`}

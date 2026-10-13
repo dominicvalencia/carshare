@@ -75,6 +75,9 @@ function member(overrides: Record<string, unknown> = {}) {
     invitations: [],
     invitedAt: new Date(),
     normalizedEmail: 'staff@example.com',
+    ownerApprovalBypassChangedAt: null,
+    ownerApprovalBypassChangedByUserId: null,
+    ownerApprovalBypassEnabled: false,
     ownerProfileId: 'owner-a',
     permissions: [{ permission: { code: 'vehicles.view' } }],
     role: OwnerStaffRole.STAFF,
@@ -90,6 +93,111 @@ function member(overrides: Record<string, unknown> = {}) {
 }
 
 describe('OwnerStaffService management boundaries', () => {
+  it.each([true, false])(
+    'allows the actual Owner to set Manager trusted authority to %s without changing permissions',
+    async (enabled) => {
+      const target = member({
+        ownerApprovalBypassEnabled: !enabled,
+        role: OwnerStaffRole.MANAGER,
+      });
+      const updated = member({
+        ownerApprovalBypassChangedAt: new Date(),
+        ownerApprovalBypassChangedByUserId: 'owner-user',
+        ownerApprovalBypassEnabled: enabled,
+        role: OwnerStaffRole.MANAGER,
+      });
+      const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+      const auditCreate = vi.fn().mockResolvedValue({ id: 'audit-a' });
+      const transaction = {
+        auditLog: { create: auditCreate },
+        ownerStaffMembership: {
+          findFirst: vi.fn().mockResolvedValue(target),
+          findUniqueOrThrow: vi.fn().mockResolvedValue(updated),
+          updateMany,
+        },
+      };
+      const service = createService({
+        $transaction: vi.fn((operation) => operation(transaction)),
+      });
+
+      await expect(
+        service.updateManagerAuthority(owner, 'owner-user', 'staff-a', enabled, {
+          correlationId: 'correlation-a',
+        }),
+      ).resolves.toMatchObject({ ownerApprovalBypassEnabled: enabled });
+      expect(updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            ownerApprovalBypassChangedByUserId: 'owner-user',
+            ownerApprovalBypassEnabled: enabled,
+          }),
+        }),
+      );
+      expect(updateMany.mock.calls[0]?.[0].data).not.toHaveProperty('permissions');
+      expect(auditCreate).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'OWNER_STAFF_MANAGER_AUTHORITY_CHANGED',
+          actorUserId: 'owner-user',
+          correlationId: 'correlation-a',
+          metadata: expect.objectContaining({
+            newOwnerApprovalBypassEnabled: enabled,
+            ownerProfileId: 'owner-a',
+            previousOwnerApprovalBypassEnabled: !enabled,
+          }),
+          targetId: 'staff-a',
+        }),
+      });
+    },
+  );
+
+  it.each([
+    ['Manager', manager],
+    [
+      'Staff',
+      {
+        ...manager,
+        capacity: 'STAFF' as const,
+        membershipId: 'staff-actor',
+      },
+    ],
+  ])('denies a delegated %s from changing trusted authority', async (_label, actor) => {
+    const transaction = vi.fn();
+    const service = createService({ $transaction: transaction });
+
+    await expect(
+      service.updateManagerAuthority(actor, 'delegated-user', 'manager-target', true, {}),
+    ).rejects.toMatchObject({ code: 'OWNER_STAFF_FORBIDDEN' });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects ordinary Staff and inactive or cross-workspace targets', async () => {
+    const findFirst = vi
+      .fn()
+      .mockResolvedValueOnce(member())
+      .mockResolvedValueOnce(
+        member({ role: OwnerStaffRole.MANAGER, status: OwnerStaffStatus.DISABLED }),
+      )
+      .mockResolvedValueOnce(null);
+    const transaction = {
+      auditLog: { create: vi.fn() },
+      ownerStaffMembership: { findFirst, updateMany: vi.fn() },
+    };
+    const service = createService({
+      $transaction: vi.fn((operation) => operation(transaction)),
+    });
+
+    await expect(
+      service.updateManagerAuthority(owner, 'owner-user', 'staff-a', true, {}),
+    ).rejects.toMatchObject({ code: 'OWNER_STAFF_FORBIDDEN' });
+    await expect(
+      service.updateManagerAuthority(owner, 'owner-user', 'manager-disabled', true, {}),
+    ).rejects.toMatchObject({ code: 'OWNER_STAFF_CONFLICT' });
+    await expect(
+      service.updateManagerAuthority(owner, 'owner-user', 'other-workspace-manager', true, {}),
+    ).rejects.toMatchObject({ code: 'OWNER_STAFF_NOT_FOUND' });
+    expect(transaction.ownerStaffMembership.updateMany).not.toHaveBeenCalled();
+  });
+
   it('projects only safe invitation context for the public preview', async () => {
     const service = createService(
       {},
