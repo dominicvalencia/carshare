@@ -23,12 +23,14 @@ export class OwnerWorkspaceBookingsController {
   @Get('requests')
   @RequireOwnerPermission('bookings.view')
   list(@CurrentPrincipal() principal: RequestPrincipal) {
+    this.ownerAccess.requireRequestManagement(principal.ownerAccess!);
     return this.bookings.listForOwnerAccess(principal.ownerAccess!);
   }
 
   @Get(':reference')
   @RequireOwnerPermission('bookings.view')
   detail(@CurrentPrincipal() principal: RequestPrincipal, @Param('reference') reference: string) {
+    this.ownerAccess.requireRequestManagement(principal.ownerAccess!);
     return this.bookings.ownerDetailForAccess(principal.ownerAccess!, reference);
   }
 
@@ -40,6 +42,7 @@ export class OwnerWorkspaceBookingsController {
     @Req() request: Request,
   ) {
     const context = principal.ownerAccess!;
+    this.ownerAccess.requireRequestManagement(context);
     const metadata = requestMetadata(request);
     await this.bookings.ownerAcceptForAccess(context, principal.userId, reference, metadata);
     await this.audit(principal, request, reference, 'bookings.accept', 'OWNER_BOOKING_ACCEPTED');
@@ -56,6 +59,7 @@ export class OwnerWorkspaceBookingsController {
     @Req() request: Request,
   ) {
     const context = principal.ownerAccess!;
+    this.ownerAccess.requireRequestManagement(context);
     const metadata = requestMetadata(request);
     await this.bookings.ownerRejectForAccess(
       context,

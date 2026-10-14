@@ -1,5 +1,30 @@
 export const VEHICLE_CHANGE_PROPOSAL_SNAPSHOT_VERSION = 1 as const;
 
+const knownIssueCategories = [
+  'SCRATCH',
+  'DENT',
+  'CRACK',
+  'PAINT_DAMAGE',
+  'WHEEL_OR_RIM',
+  'TIRE',
+  'GLASS',
+  'INTERIOR',
+  'WARNING_LIGHT',
+  'MECHANICAL_OR_OPERATIONAL',
+  'OTHER',
+] as const;
+const knownIssueVehicleAreas = [
+  'FRONT_BUMPER',
+  'REAR_BUMPER',
+  'DRIVER_SIDE',
+  'PASSENGER_SIDE',
+  'WINDSHIELD',
+  'WHEEL_OR_TIRE',
+  'INTERIOR',
+  'DASHBOARD',
+  'OTHER',
+] as const;
+
 export type VehicleChangeProposalStatus =
   | 'DRAFT'
   | 'PENDING_OWNER_APPROVAL'
@@ -10,6 +35,8 @@ export type VehicleChangeProposalStatus =
   | 'WITHDRAWN'
   | 'APPLIED'
   | 'SUPERSEDED';
+
+export type VehicleChangeProposalKind = 'GENERAL' | 'STAFF_KNOWN_ISSUE';
 
 export type VehicleChangeClassification = 'OWNER_APPROVAL_ONLY' | 'PLATFORM_REVIEW_REQUIRED';
 
@@ -35,6 +62,7 @@ export type VehicleChangeField =
   | 'documents.registration'
   | 'documents.insurance'
   | 'documents.ownership'
+  | 'knownIssues'
   | 'location'
   | `policy.${string}`;
 
@@ -69,6 +97,14 @@ export interface VehicleChangeProposalSnapshotV1 {
     readonly documentType: string;
     readonly fileAssetId: string;
     readonly expiresAt: string | null;
+  }[];
+  readonly knownIssues?: readonly {
+    readonly id: string | null;
+    readonly category: string;
+    readonly vehicleArea: string;
+    readonly classification: string;
+    readonly description: string;
+    readonly status: 'ACTIVE' | 'RESOLVED';
   }[];
   readonly location: {
     readonly latitude: string;
@@ -137,6 +173,7 @@ export interface VehicleChangeProposalReadModel {
   readonly id: string;
   readonly vehicleId: string;
   readonly status: VehicleChangeProposalStatus;
+  readonly kind: VehicleChangeProposalKind;
   readonly baseVehicleRevision: number;
   readonly snapshotSchemaVersion: number;
   readonly proposedSnapshot: VehicleChangeProposalSnapshotV1;
@@ -342,6 +379,8 @@ export function diffVehicleChangeProposalSnapshots(
   if (!sameSet(live.featureIds, proposed.featureIds)) changed.add('features');
   if (!sameArray(live.photos, proposed.photos)) changed.add('photos');
   for (const field of diffDocuments(live.documents, proposed.documents)) changed.add(field);
+  if (!sameArray(live.knownIssues ?? [], proposed.knownIssues ?? live.knownIssues ?? []))
+    changed.add('knownIssues');
   if (!sameRecord(live.location, proposed.location)) changed.add('location');
   for (const key of Object.keys(live.policy).sort() as (keyof typeof live.policy)[]) {
     if (live.policy[key] !== proposed.policy[key]) changed.add(`policy.${key}`);
@@ -356,7 +395,16 @@ export function validateVehicleChangeProposalSnapshotV1(
   if (!isRecord(snapshot)) return ['Proposal snapshot must be an object.'];
   rejectUnknownKeys(
     snapshot,
-    ['schemaVersion', 'vehicle', 'featureIds', 'photos', 'documents', 'location', 'policy'],
+    [
+      'schemaVersion',
+      'vehicle',
+      'featureIds',
+      'photos',
+      'documents',
+      'knownIssues',
+      'location',
+      'policy',
+    ],
     'snapshot',
     errors,
   );
@@ -454,6 +502,20 @@ export function validateVehicleChangeProposalSnapshotV1(
         'document',
         errors,
       );
+  }
+  if (snapshot.knownIssues !== undefined) {
+    if (!Array.isArray(snapshot.knownIssues)) errors.push('Known issues are invalid.');
+    else
+      for (const issue of snapshot.knownIssues) {
+        if (!isRecord(issue)) errors.push('Known issues are invalid.');
+        else
+          rejectUnknownKeys(
+            issue,
+            ['id', 'category', 'vehicleArea', 'classification', 'description', 'status'],
+            'known issue',
+            errors,
+          );
+      }
   }
   if (snapshot.location !== null) {
     if (!isRecord(snapshot.location)) return [...errors, 'Vehicle location is invalid.'];
@@ -576,6 +638,23 @@ export function validateVehicleChangeProposalSnapshotV1(
       snapshot.documents.length
   )
     errors.push('Document references are invalid.');
+  if (snapshot.knownIssues) {
+    const identifiedIssues = snapshot.knownIssues.filter(({ id }) => id !== null);
+    if (
+      snapshot.knownIssues.some(
+        (issue) =>
+          (issue.id !== null && !isIdentifier(issue.id)) ||
+          !knownIssueCategories.includes(issue.category as never) ||
+          !knownIssueVehicleAreas.includes(issue.vehicleArea as never) ||
+          !['COSMETIC', 'OPERATIONAL', 'SAFETY_CRITICAL'].includes(issue.classification) ||
+          !issue.description.trim() ||
+          issue.description.length > 1000 ||
+          !['ACTIVE', 'RESOLVED'].includes(issue.status),
+      ) ||
+      new Set(identifiedIssues.map(({ id }) => id)).size !== identifiedIssues.length
+    )
+      errors.push('Known issues are invalid.');
+  }
   if (
     snapshot.location &&
     (!snapshot.location.city.trim() ||

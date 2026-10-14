@@ -17,11 +17,12 @@ const vehicles = readFileSync(
 );
 
 describe('Owner delegated operations Phase 5A', () => {
-  it('exposes booking requests only with view permission and scopes requests by workspace', () => {
+  it('exposes booking requests only to Owners and Managers and scopes requests by workspace', () => {
     expect(account).not.toContain('label="Booking requests"');
     expect(navigation).toContain('ownerWorkspace={properties.ownerWorkspace!}');
     expect(bookings).toContain('/owner/workspaces/${ownerWorkspace.ownerProfileId}/bookings');
     expect(bookings).toContain("['owner-workspace', workspaceKey, 'booking-requests']");
+    expect(navigation).toContain("ownerWorkspace.capacity === 'MANAGER'");
   });
 
   it('gates accept and reject independently and keeps delegated cancellation unavailable', () => {

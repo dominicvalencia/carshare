@@ -112,6 +112,7 @@ describe('VehicleChangeProposalSnapshotService', () => {
         featureIds: [id('2'), id('3')],
         photos: [{ displayOrder: 0, isCover: true }],
         documents: [{ documentType: 'REGISTRATION', expiresAt: '2027-01-02' }],
+        knownIssues: [],
         location: { addressLine1: 'Private address', latitude: '14.599500' },
         policy: { dailyRateMinor: 250000, weeklyDiscountBps: 500 },
       },

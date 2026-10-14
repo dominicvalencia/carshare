@@ -14,7 +14,7 @@ import type { Request } from 'express';
 import { requestMetadata } from '../auth/auth.controller';
 import { AccessTokenGuard } from '../authorization/access-token.guard';
 import { CurrentPrincipal } from '../authorization/authorization.decorator';
-import { RequireOwnerPermission } from '../owner-access/owner-access.decorator';
+import { RequireAnyOwnerPermission } from '../owner-access/owner-access.decorator';
 import { OwnerAccessGuard } from '../owner-access/owner-access.guard';
 import type { RequestPrincipal } from '../security/security-context';
 import { VehicleChangeProposalsService } from './vehicle-change-proposals.service';
@@ -27,7 +27,7 @@ import {
 
 @Controller('owner/workspaces/:ownerProfileId/vehicles/:vehicleId/change-proposals')
 @UseGuards(AccessTokenGuard, OwnerAccessGuard)
-@RequireOwnerPermission('vehicles.update_operational_fields')
+@RequireAnyOwnerPermission('vehicles.update_operational_fields', 'known_issues.create')
 export class OwnerWorkspaceVehicleChangeProposalsController {
   constructor(private readonly proposals: VehicleChangeProposalsService) {}
 

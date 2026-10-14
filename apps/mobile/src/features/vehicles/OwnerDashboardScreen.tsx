@@ -68,14 +68,19 @@ export function OwnerDashboardScreen({
   const [selectedBookingReference, setSelectedBookingReference] = useState<string | null>(null);
   const [selectedRentalReference, setSelectedRentalReference] = useState<string | null>(null);
   const delegated = Boolean(ownerWorkspace && ownerWorkspace.capacity !== 'OWNER');
-  const workspaceKey = delegated ? ownerWorkspace!.ownerProfileId : 'owner';
+  const workspaceKey = delegated
+    ? `${ownerWorkspace!.ownerProfileId}:${ownerWorkspace!.membershipId ?? ownerWorkspace!.capacity}`
+    : 'owner';
   const canViewBookings = !delegated || hasOwnerPermission(ownerWorkspace!, 'bookings.view');
+  const canViewRequests = !delegated || (ownerWorkspace!.capacity === 'MANAGER' && canViewBookings);
   const canViewRentals = !delegated || hasOwnerPermission(ownerWorkspace!, 'rentals.view');
   const canViewMessages = !delegated || hasOwnerPermission(ownerWorkspace!, 'messages.view');
   const canRespondToRequests =
-    !delegated ||
-    hasOwnerPermission(ownerWorkspace!, 'bookings.accept') ||
-    hasOwnerPermission(ownerWorkspace!, 'bookings.reject');
+    canViewRequests &&
+    (!delegated ||
+      hasOwnerPermission(ownerWorkspace!, 'bookings.accept') ||
+      hasOwnerPermission(ownerWorkspace!, 'bookings.reject'));
+  const activeTab = selectedTab === 'Requests' && !canViewRequests ? 'Today' : selectedTab;
   const requestPollingInterval = useFocusedPollingInterval(
     OWNER_REQUEST_POLL_INTERVAL_MS,
     ownerStatus === 'VERIFIED',
@@ -110,7 +115,7 @@ export function OwnerDashboardScreen({
   });
   const upcoming = useInfiniteQuery<OwnerHomeUpcomingPage>({
     enabled:
-      (delegated || ownerStatus === 'VERIFIED') && canViewRentals && selectedTab === 'Upcoming',
+      (delegated || ownerStatus === 'VERIFIED') && canViewRentals && activeTab === 'Upcoming',
     getNextPageParam: (lastPage) =>
       lastPage.page < lastPage.totalPages ? lastPage.page + 1 : undefined,
     initialPageParam: 1,
@@ -136,7 +141,7 @@ export function OwnerDashboardScreen({
     if (delegated || ownerStatus === 'VERIFIED') void home.refetch();
     if (!delegated && ownerStatus === 'VERIFIED') void vehicles.refetch();
     if (!delegated && ownerStatus === 'VERIFIED') void changeProposals.refetch();
-    if ((delegated || ownerStatus === 'VERIFIED') && canViewRentals && selectedTab === 'Upcoming')
+    if ((delegated || ownerStatus === 'VERIFIED') && canViewRentals && activeTab === 'Upcoming')
       void upcoming.refetch();
     if ((delegated || ownerStatus === 'VERIFIED') && canViewMessages) void conversations.refetch();
   });
@@ -236,25 +241,25 @@ export function OwnerDashboardScreen({
           <TopTab
             label="Today"
             onPress={() => setSelectedTab('Today')}
-            selected={selectedTab === 'Today'}
+            selected={activeTab === 'Today'}
           />
           {canViewRentals ? (
-            <TopTab label="Upcoming" onPress={openUpcoming} selected={selectedTab === 'Upcoming'} />
+            <TopTab label="Upcoming" onPress={openUpcoming} selected={activeTab === 'Upcoming'} />
           ) : null}
-          {canViewBookings ? (
+          {canViewRequests ? (
             <TopTab
               count={requestCount}
               canRespond={canRespondToRequests}
               label="Requests"
               onPress={openRequests}
-              selected={selectedTab === 'Requests'}
+              selected={activeTab === 'Requests'}
             />
           ) : null}
         </View>
       }
     >
       <View style={styles.tabContent}>
-        {selectedTab === 'Today' && (
+        {activeTab === 'Today' && (
           <View style={styles.tabPanel}>
             {model.today.attention.length > 0 && (
               <TodaySection title={hasActionableAttention ? 'Needs attention' : 'Rental updates'}>
@@ -304,7 +309,7 @@ export function OwnerDashboardScreen({
                 ))}
               </TodaySection>
             )}
-            {requestCount > 0 && (
+            {canViewRequests && requestCount > 0 && (
               <Pressable
                 accessibilityLabel={`${ownerRequestSummaryLabel(requestCount, canRespondToRequests)}. View requests`}
                 accessibilityRole="button"
@@ -441,12 +446,12 @@ export function OwnerDashboardScreen({
             ) : null}
           </View>
         )}
-        {selectedTab === 'Upcoming' && (
+        {activeTab === 'Upcoming' && (
           <View style={styles.tabPanel}>
             <UpcomingTab model={model} onOpenBooking={openBooking} query={upcoming} />
           </View>
         )}
-        {selectedTab === 'Requests' && (
+        {canViewRequests && activeTab === 'Requests' && (
           <View style={styles.tabPanel}>
             <OwnerBookingRequestsScreen
               {...(delegated ? { ownerWorkspace } : {})}

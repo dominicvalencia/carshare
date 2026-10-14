@@ -15,6 +15,11 @@ const managerContext: OwnerAccessContext = {
   permissions: ['vehicles.view', 'vehicles.update_operational_fields'],
   vehicleScopeMode: 'ALL_VEHICLES',
 };
+const staffContext: OwnerAccessContext = {
+  ...managerContext,
+  capacity: 'STAFF',
+  permissions: ['vehicles.view', 'known_issues.create'],
+};
 
 function snapshot(): VehicleChangeProposalSnapshotV1 {
   return {
@@ -37,6 +42,7 @@ function snapshot(): VehicleChangeProposalSnapshotV1 {
       vin: 'VIN123',
     },
     featureIds: [id('4')],
+    knownIssues: [],
     photos: [{ displayOrder: 0, fileAssetId: id('5'), isCover: true, perspective: 'FRONT' }],
     documents: [
       {
@@ -114,6 +120,7 @@ function proposal(overrides: Record<string, unknown> = {}) {
     changedFields: [],
     createdAt: new Date('2026-10-13T01:00:00Z'),
     id: id('8'),
+    kind: 'GENERAL',
     ownerApprovalBypassed: false,
     ownerApprovalRequired: true,
     platformReviewRequired: false,
@@ -154,6 +161,11 @@ function setup(overrides: Record<string, unknown> = {}) {
     vehicleFeatureAssignment: {
       createMany: vi.fn().mockResolvedValue({ count: 1 }),
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    vehicleKnownIssue: {
+      create: vi.fn().mockResolvedValue({ id: id('19') }),
+      findMany: vi.fn().mockResolvedValue([]),
+      update: vi.fn().mockResolvedValue({ id: id('19') }),
     },
     vehiclePolicyVersion: {
       create: vi.fn().mockResolvedValue({ id: id('13') }),
@@ -288,6 +300,7 @@ describe('VehicleChangeProposalsService', () => {
         expect.objectContaining({
           data: expect.objectContaining({
             baseVehicleRevision: 4,
+            kind: 'GENERAL',
             submittedByMembershipId: managerContext.membershipId,
             submittedByUserId: id('11'),
           }),
@@ -413,16 +426,138 @@ describe('VehicleChangeProposalsService', () => {
     });
   });
 
-  it.each(['STAFF', 'OWNER'] as const)(
-    'denies %s because role alone is not proposal authority',
-    async (capacity) => {
-      const fixture = setup();
-      await expect(
-        fixture.service.create({ ...managerContext, capacity }, id('11'), id('9')),
-      ).rejects.toBeInstanceOf(ApplicationException);
-      expect(fixture.ownerAccess.assertVehicleAccess).not.toHaveBeenCalled();
-    },
-  );
+  it('allows scoped Staff to create a proposal draft for Known issues', async () => {
+    const fixture = setup();
+    await expect(fixture.service.create(staffContext, id('11'), id('9'))).resolves.toMatchObject({
+      status: 'DRAFT',
+    });
+    expect(fixture.ownerAccess.assertVehicleAccess).toHaveBeenCalledWith(
+      expect.objectContaining({ capacity: 'STAFF' }),
+      id('9'),
+      'known_issues.create',
+    );
+    expect(fixture.transaction.vehicleChangeProposal.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ kind: 'STAFF_KNOWN_ISSUE' }),
+      }),
+    );
+  });
+
+  it('denies Owner context because delegated proposal authority requires a membership', async () => {
+    const fixture = setup();
+    await expect(
+      fixture.service.create({ ...managerContext, capacity: 'OWNER' }, id('11'), id('9')),
+    ).rejects.toBeInstanceOf(ApplicationException);
+    expect(fixture.ownerAccess.assertVehicleAccess).not.toHaveBeenCalled();
+  });
+
+  it('constrains Staff proposal edits to Known issues only', async () => {
+    const fixture = setup();
+    await expect(
+      fixture.service.update(staffContext, id('11'), id('9'), id('8'), {
+        ...snapshot(),
+        vehicle: { ...snapshot().vehicle, description: 'Injected configuration change' },
+      }),
+    ).rejects.toMatchObject({ code: 'OWNER_ACCESS_DENIED' });
+    expect(fixture.transaction.vehicleChangeProposal.update).not.toHaveBeenCalled();
+  });
+
+  it('allows Staff to append but not alter an existing Known issue', async () => {
+    const fixture = setup();
+    const existingIssue = {
+      category: 'SCRATCH',
+      classification: 'COSMETIC',
+      description: 'Scratch on passenger door',
+      id: id('20'),
+      status: 'ACTIVE' as const,
+      vehicleArea: 'PASSENGER_SIDE',
+    };
+    const live = { ...snapshot(), knownIssues: [existingIssue] };
+    fixture.snapshots.buildFromLiveVehicle.mockResolvedValue({
+      baseVehicleRevision: 4,
+      snapshot: live,
+    });
+    fixture.transaction.vehicleChangeProposal.findFirst.mockResolvedValue({
+      ...proposal({ proposedSnapshot: live }),
+      assets: [],
+    });
+    await expect(
+      fixture.service.update(staffContext, id('11'), id('9'), id('8'), {
+        ...live,
+        knownIssues: [{ ...existingIssue, status: 'RESOLVED' }],
+      }),
+    ).rejects.toMatchObject({ code: 'OWNER_ACCESS_DENIED' });
+    expect(fixture.transaction.vehicleChangeProposal.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps a Staff-proposed Known issue out of live data until Owner approval', async () => {
+    const fixture = setup();
+    fixture.transaction.vehicleChangeProposal.findFirst.mockResolvedValue({
+      ...proposal({
+        proposedSnapshot: {
+          ...snapshot(),
+          knownIssues: [
+            {
+              category: 'MECHANICAL_OR_OPERATIONAL',
+              classification: 'OPERATIONAL',
+              description: 'Steering vibration above 80 km/h',
+              id: null,
+              status: 'ACTIVE',
+              vehicleArea: 'OTHER',
+            },
+          ],
+        },
+      }),
+      assets: [],
+    });
+    const result = await fixture.service.submit(staffContext, id('11'), id('9'), id('8'));
+    expect(result).toMatchObject({ status: 'PENDING_OWNER_APPROVAL' });
+    expect(fixture.transaction.vehicleKnownIssue.create).not.toHaveBeenCalled();
+    expect(fixture.transaction.vehicle.update).not.toHaveBeenCalled();
+  });
+
+  it('applies an approved Staff Known issue with submitter attribution', async () => {
+    const fixture = setup();
+    const proposedSnapshot = {
+      ...snapshot(),
+      knownIssues: [
+        {
+          category: 'MECHANICAL_OR_OPERATIONAL',
+          classification: 'OPERATIONAL',
+          description: 'Steering vibration above 80 km/h',
+          id: null,
+          status: 'ACTIVE',
+          vehicleArea: 'OTHER',
+        },
+      ],
+    } satisfies VehicleChangeProposalSnapshotV1;
+    fixture.transaction.vehicle.findFirst.mockResolvedValue({
+      id: id('9'),
+      ownerProfileId: managerContext.ownerProfileId,
+      revision: 4,
+      status: 'APPROVED',
+    });
+    fixture.transaction.vehicleChangeProposal.findFirst.mockResolvedValue(
+      proposal({
+        ownerProfileId: managerContext.ownerProfileId,
+        proposedSnapshot,
+        status: 'PENDING_OWNER_APPROVAL',
+        submittedByMembershipId: managerContext.membershipId,
+        submittedByUserId: id('11'),
+      }),
+    );
+
+    await expect(fixture.service.approve(id('12'), id('9'), id('8'))).resolves.toMatchObject({
+      status: 'APPLIED',
+    });
+    expect(fixture.transaction.vehicleKnownIssue.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        createdByUserId: id('11'),
+        description: 'Steering vibration above 80 km/h',
+        vehicleId: id('9'),
+      }),
+    });
+  });
 
   it('requires the explicit edit permission and scoped vehicle access', async () => {
     const fixture = setup();

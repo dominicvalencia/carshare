@@ -30,6 +30,7 @@ function snapshot(): VehicleChangeProposalSnapshotV1 {
       vin: 'VIN123',
     },
     featureIds: [id('2'), id('3')],
+    knownIssues: [],
     photos: [{ displayOrder: 0, fileAssetId: id('4'), isCover: true, perspective: 'FRONT' }],
     documents: [
       {
@@ -159,6 +160,26 @@ describe('vehicle change proposal snapshot policy', () => {
     expect(diffVehicleChangeProposalSnapshots(live, { ...live, documents: [] })).toEqual([
       'documents.registration',
     ]);
+  });
+
+  it('classifies Known issue changes as Owner-approval-only configuration', () => {
+    const live = snapshot();
+    const proposed = {
+      ...live,
+      knownIssues: [
+        {
+          category: 'MECHANICAL_OR_OPERATIONAL',
+          classification: 'OPERATIONAL',
+          description: 'Steering vibration above 80 km/h',
+          id: null,
+          status: 'ACTIVE',
+          vehicleArea: 'OTHER',
+        },
+      ],
+    } satisfies VehicleChangeProposalSnapshotV1;
+    expect(diffVehicleChangeProposalSnapshots(live, proposed)).toEqual(['knownIssues']);
+    expect(classifyVehicleChangedFields(['knownIssues'])).toBe('OWNER_APPROVAL_ONLY');
+    expect(validateVehicleChangeProposalSnapshotV1(proposed)).toEqual([]);
   });
 
   it('validates complete snapshots and rejects invalid policy/specification data', () => {

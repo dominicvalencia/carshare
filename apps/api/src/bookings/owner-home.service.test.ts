@@ -234,6 +234,7 @@ describe('Owner Home read model', () => {
       .mockReturnValueOnce({ id: { in: ['vehicle-rental'] } })
       .mockReturnValueOnce({ id: { in: ['vehicle-request'] } });
     const context = {
+      capacity: 'MANAGER',
       permissions: ['rentals.view', 'bookings.view'],
     } as never;
 
@@ -246,6 +247,78 @@ describe('Owner Home read model', () => {
     expect(bookingCount.mock.calls[0]?.[0].where.AND[0]).toEqual({
       vehicle: { id: { in: ['vehicle-request'] } },
     });
+  });
+
+  it('keeps Operational Staff Today operational while excluding request work', async () => {
+    findMany.mockResolvedValue([]);
+    amendmentFindMany.mockResolvedValue([]);
+    bookingCount.mockResolvedValue(0);
+    amendmentCount.mockResolvedValue(0);
+    findFirst.mockResolvedValue(null);
+    vehicleWhere.mockReturnValue({ id: { in: ['vehicle-rental'] } });
+    const context = {
+      capacity: 'STAFF',
+      permissions: ['rentals.view'],
+    } as never;
+
+    const result = await service.todayForAccess(context, NOW);
+
+    expect(vehicleWhere).toHaveBeenCalledTimes(1);
+    expect(vehicleWhere).toHaveBeenCalledWith(context, 'rentals.view');
+    expect(bookingCount).not.toHaveBeenCalled();
+    expect(amendmentCount).not.toHaveBeenCalled();
+    expect(result.requests.totalRequestsCount).toBe(0);
+    expect(result.today.counts.actionableRequestsCount).toBe(0);
+  });
+
+  it('keeps Staff operational Today available when request reads would fail', async () => {
+    const pickup = booking(
+      'STAFF-PICKUP',
+      BookingStatus.CONFIRMED,
+      '2026-10-02T05:00:00.000Z',
+      '2026-10-03T01:00:00.000Z',
+    );
+    const active = booking(
+      'STAFF-ACTIVE',
+      BookingStatus.ACTIVE,
+      '2026-10-01T01:00:00.000Z',
+      '2026-10-05T01:00:00.000Z',
+    );
+    const returning = booking(
+      'STAFF-RETURN',
+      BookingStatus.ACTIVE,
+      '2026-10-01T01:00:00.000Z',
+      '2026-10-02T14:00:00.000Z',
+    );
+    const overdue = booking(
+      'STAFF-OVERDUE',
+      BookingStatus.RETURN_PENDING,
+      '2026-09-30T01:00:00.000Z',
+      '2026-10-02T02:00:00.000Z',
+    );
+    findMany
+      .mockResolvedValueOnce([pickup])
+      .mockResolvedValueOnce([active])
+      .mockResolvedValueOnce([returning])
+      .mockResolvedValueOnce([overdue]);
+    amendmentFindMany.mockResolvedValue([]);
+    bookingCount.mockRejectedValue(new Error('request query must not run'));
+    amendmentCount.mockRejectedValue(new Error('request query must not run'));
+    findFirst.mockResolvedValue(null);
+    vehicleWhere.mockReturnValue({ id: { in: ['vehicle-rental'] } });
+
+    const result = await service.todayForAccess(
+      { capacity: 'STAFF', permissions: ['rentals.view'] } as never,
+      NOW,
+    );
+
+    expect(result.today.pickups).toHaveLength(1);
+    expect(result.today.activeRentals).toHaveLength(1);
+    expect(result.today.returns).toHaveLength(1);
+    expect(result.today.attention).toHaveLength(1);
+    expect(result.requests.totalRequestsCount).toBe(0);
+    expect(bookingCount).not.toHaveBeenCalled();
+    expect(amendmentCount).not.toHaveBeenCalled();
   });
 
   it('removes overdue handover attention after a recovery report is submitted', async () => {

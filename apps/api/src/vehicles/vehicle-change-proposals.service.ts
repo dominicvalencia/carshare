@@ -16,6 +16,7 @@ import {
   OwnerStaffVehicleScopeMode,
   Prisma,
   VehicleChangeProposalAssetKind,
+  VehicleChangeProposalKind,
   VehicleChangeProposalStatus,
   VehicleLifecycleStatus,
 } from '@carrental/database';
@@ -32,6 +33,7 @@ import type {
 import { FilesService } from '../files/files.service';
 
 const EDIT_PERMISSION = 'vehicles.update_operational_fields' as const;
+const STAFF_KNOWN_ISSUE_PERMISSION = 'known_issues.create' as const;
 const ELIGIBLE_LIFECYCLES = [VehicleLifecycleStatus.APPROVED] as const;
 
 const proposalReadSelect = {
@@ -50,6 +52,7 @@ const proposalReadSelect = {
   changedFields: true,
   createdAt: true,
   id: true,
+  kind: true,
   ownerApprovalBypassed: true,
   ownerApprovalRequired: true,
   platformReviewReason: true,
@@ -325,9 +328,13 @@ export class VehicleChangeProposalsService {
     vehicleId: string,
     request?: RequestMetadata,
   ): Promise<VehicleChangeProposalReadModel> {
-    this.assertManager(context);
+    this.assertProposalActor(context);
     const membershipId = context.membershipId!;
-    await this.ownerAccess.assertVehicleAccess(context, vehicleId, EDIT_PERMISSION);
+    await this.ownerAccess.assertVehicleAccess(
+      context,
+      vehicleId,
+      this.proposalPermission(context),
+    );
     try {
       return await this.database.client.$transaction(
         async (transaction) => {
@@ -346,6 +353,10 @@ export class VehicleChangeProposalsService {
               baseVehicleRevision: live.baseVehicleRevision,
               changeClassification: classification,
               changedFields,
+              kind:
+                context.capacity === 'STAFF'
+                  ? VehicleChangeProposalKind.STAFF_KNOWN_ISSUE
+                  : VehicleChangeProposalKind.GENERAL,
               ownerProfileId: context.ownerProfileId,
               platformReviewRequired: classification === 'PLATFORM_REVIEW_REQUIRED',
               proposedSnapshot: this.toJson(live.snapshot),
@@ -387,9 +398,13 @@ export class VehicleChangeProposalsService {
     vehicleId: string,
     proposalId: string,
   ): Promise<VehicleChangeProposalReadModel> {
-    this.assertManager(context);
+    this.assertProposalActor(context);
     const membershipId = context.membershipId!;
-    await this.ownerAccess.assertVehicleAccess(context, vehicleId, EDIT_PERMISSION);
+    await this.ownerAccess.assertVehicleAccess(
+      context,
+      vehicleId,
+      this.proposalPermission(context),
+    );
     const proposal = await this.database.client.vehicleChangeProposal.findFirst({
       select: proposalReadSelect,
       where: {
@@ -412,9 +427,13 @@ export class VehicleChangeProposalsService {
     proposedSnapshot: unknown,
     request?: RequestMetadata,
   ): Promise<VehicleChangeProposalReadModel> {
-    this.assertManager(context);
+    this.assertProposalActor(context);
     const membershipId = context.membershipId!;
-    await this.ownerAccess.assertVehicleAccess(context, vehicleId, EDIT_PERMISSION);
+    await this.ownerAccess.assertVehicleAccess(
+      context,
+      vehicleId,
+      this.proposalPermission(context),
+    );
     const validated = this.validateSnapshot(proposedSnapshot);
     return this.database.client.$transaction(
       async (transaction) => {
@@ -451,6 +470,7 @@ export class VehicleChangeProposalsService {
           (proposal as typeof proposal & { assets: { fileAssetId: string }[] }).assets,
         );
         const changedFields = diffVehicleChangeProposalSnapshots(live.snapshot, validated);
+        this.assertAllowedChanges(context, changedFields, live.snapshot, validated);
         const classification = classifyVehicleChangedFields(changedFields);
         const updated = await transaction.vehicleChangeProposal.update({
           data: {
@@ -490,9 +510,13 @@ export class VehicleChangeProposalsService {
     proposalId: string,
     request?: RequestMetadata,
   ) {
-    this.assertManager(context);
+    this.assertProposalActor(context);
     const membershipId = context.membershipId!;
-    await this.ownerAccess.assertVehicleAccess(context, vehicleId, EDIT_PERMISSION);
+    await this.ownerAccess.assertVehicleAccess(
+      context,
+      vehicleId,
+      this.proposalPermission(context),
+    );
     return this.database.client.$transaction(
       async (transaction) => {
         await this.assertActor(transaction, context, actorUserId);
@@ -550,9 +574,13 @@ export class VehicleChangeProposalsService {
     proposalId: string,
     request?: RequestMetadata,
   ) {
-    this.assertManager(context);
+    this.assertProposalActor(context);
     const membershipId = context.membershipId!;
-    await this.ownerAccess.assertVehicleAccess(context, vehicleId, EDIT_PERMISSION);
+    await this.ownerAccess.assertVehicleAccess(
+      context,
+      vehicleId,
+      this.proposalPermission(context),
+    );
     return this.database.client.$transaction(
       async (transaction) => {
         await transaction.$queryRaw`SELECT id FROM vehicles WHERE id = ${vehicleId}::uuid FOR UPDATE`;
@@ -581,6 +609,7 @@ export class VehicleChangeProposalsService {
         this.assertFresh(proposal.baseVehicleRevision, live.baseVehicleRevision);
         this.assertAssetReferences(proposed, live.snapshot, proposal.assets);
         const changedFields = diffVehicleChangeProposalSnapshots(live.snapshot, proposed);
+        this.assertAllowedChanges(context, changedFields, live.snapshot, proposed);
         if (!changedFields.length)
           throw new ApplicationException(
             'VEHICLE_CHANGE_PROPOSAL_EMPTY',
@@ -879,6 +908,7 @@ export class VehicleChangeProposalsService {
           await transaction.vehicleFeatureAssignment.createMany({
             data: proposed.featureIds.map((featureId) => ({ featureId, vehicleId })),
           });
+        await this.applyKnownIssues(transaction, vehicleId, proposal.submittedByUserId, proposed);
         await transaction.vehiclePolicyVersion.create({
           data: this.policyData(proposed, vehicleId, ownerUserId, policyVersion),
         });
@@ -998,6 +1028,7 @@ export class VehicleChangeProposalsService {
           vehicleId: input.vehicle.id,
         })),
       });
+    await this.applyKnownIssues(transaction, input.vehicle.id, input.actorUserId, input.proposed);
     await transaction.vehiclePolicyVersion.create({
       data: this.policyData(input.proposed, input.vehicle.id, input.actorUserId, policyVersion),
     });
@@ -1242,26 +1273,122 @@ export class VehicleChangeProposalsService {
     this.ownerAccess.requirePermission(context, EDIT_PERMISSION);
   }
 
+  private assertProposalActor(context: OwnerAccessContext): void {
+    if (!context.membershipId || !['MANAGER', 'STAFF'].includes(context.capacity))
+      throw this.denied();
+    this.ownerAccess.requirePermission(context, this.proposalPermission(context));
+  }
+
+  private proposalPermission(context: OwnerAccessContext) {
+    return context.capacity === 'STAFF' ? STAFF_KNOWN_ISSUE_PERMISSION : EDIT_PERMISSION;
+  }
+
+  private assertAllowedChanges(
+    context: OwnerAccessContext,
+    changedFields: readonly VehicleChangeField[],
+    live: VehicleChangeProposalSnapshotV1,
+    proposed: VehicleChangeProposalSnapshotV1,
+  ): void {
+    if (context.capacity !== 'STAFF') return;
+    if (changedFields.some((field) => field !== 'knownIssues')) throw this.denied();
+    const liveIssues = live.knownIssues ?? [];
+    const proposedExistingIssues = (proposed.knownIssues ?? []).filter(({ id }) => id !== null);
+    if (
+      proposedExistingIssues.length !== liveIssues.length ||
+      liveIssues.some((issue) => {
+        const proposedIssue = proposedExistingIssues.find(({ id }) => id === issue.id);
+        return !proposedIssue || JSON.stringify(proposedIssue) !== JSON.stringify(issue);
+      })
+    )
+      throw this.denied();
+  }
+
+  private async applyKnownIssues(
+    transaction: Prisma.TransactionClient,
+    vehicleId: string,
+    actorUserId: string,
+    snapshot: VehicleChangeProposalSnapshotV1,
+  ): Promise<void> {
+    if (snapshot.knownIssues === undefined) return;
+    const existing = await transaction.vehicleKnownIssue.findMany({
+      select: { id: true },
+      where: { vehicleId },
+    });
+    const existingIds = new Set(existing.map(({ id }) => id));
+    const proposedIds = new Set(
+      snapshot.knownIssues.flatMap(({ id }) => (id === null ? [] : [id])),
+    );
+    if (
+      [...proposedIds].some((id) => !existingIds.has(id)) ||
+      [...existingIds].some((id) => !proposedIds.has(id))
+    )
+      throw this.denied();
+
+    for (const issue of snapshot.knownIssues) {
+      if (issue.id) {
+        await transaction.vehicleKnownIssue.update({
+          data: {
+            category: issue.category as never,
+            classification: issue.classification as never,
+            description: issue.description.trim(),
+            ...(issue.status === 'RESOLVED'
+              ? { resolvedAt: new Date(), resolvedByUserId: actorUserId }
+              : { resolvedAt: null, resolvedByUserId: null }),
+            status: issue.status,
+            vehicleArea: issue.vehicleArea as never,
+          },
+          where: { id: issue.id },
+        });
+      } else {
+        await transaction.vehicleKnownIssue.create({
+          data: {
+            category: issue.category as never,
+            classification: issue.classification as never,
+            createdByUserId: actorUserId,
+            description: issue.description.trim(),
+            status: issue.status,
+            vehicleArea: issue.vehicleArea as never,
+            vehicleId,
+          },
+        });
+      }
+    }
+    if (
+      snapshot.knownIssues.some(
+        ({ classification, status }) => classification !== 'COSMETIC' && status === 'ACTIVE',
+      )
+    )
+      await transaction.vehicle.update({
+        data: { operationalStatus: 'MAINTENANCE' },
+        where: { id: vehicleId },
+      });
+  }
+
   private async assertActor(
     transaction: Prisma.TransactionClient,
     context: OwnerAccessContext,
     actorUserId: string,
-  ): Promise<{ displayName: string; ownerApprovalBypassEnabled: boolean }> {
+  ): Promise<{
+    displayName: string;
+    ownerApprovalBypassEnabled: boolean;
+    role: OwnerStaffRole;
+  }> {
     const membershipId = context.membershipId!;
     const actor = await transaction.ownerStaffMembership.findFirst({
       select: {
         displayName: true,
         id: true,
         ownerApprovalBypassEnabled: true,
+        role: true,
         permissions: {
           select: { permissionId: true },
-          where: { permission: { code: EDIT_PERMISSION } },
+          where: { permission: { code: this.proposalPermission(context) } },
         },
       },
       where: {
         id: membershipId,
         ownerProfileId: context.ownerProfileId,
-        role: OwnerStaffRole.MANAGER,
+        role: context.capacity === 'MANAGER' ? OwnerStaffRole.MANAGER : OwnerStaffRole.STAFF,
         status: OwnerStaffStatus.ACTIVE,
         userId: actorUserId,
       },
@@ -1269,7 +1396,9 @@ export class VehicleChangeProposalsService {
     if (!actor || actor.permissions.length !== 1) throw this.denied();
     return {
       displayName: actor.displayName,
-      ownerApprovalBypassEnabled: actor.ownerApprovalBypassEnabled,
+      ownerApprovalBypassEnabled:
+        context.capacity === 'MANAGER' && actor.ownerApprovalBypassEnabled,
+      role: context.capacity === 'MANAGER' ? OwnerStaffRole.MANAGER : OwnerStaffRole.STAFF,
     };
   }
 
@@ -1501,6 +1630,7 @@ export class VehicleChangeProposalsService {
       classification: proposal.changeClassification,
       createdAt: proposal.createdAt.toISOString(),
       id: proposal.id,
+      kind: proposal.kind,
       platformReviewRequired: proposal.platformReviewRequired,
       ownerApprovalBypassed: proposal.ownerApprovalBypassed,
       ownerApprovalRequired: proposal.ownerApprovalRequired,

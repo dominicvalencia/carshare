@@ -129,25 +129,13 @@ const presetOptions: readonly {
     role: 'MANAGER',
     label: 'Manager',
     description:
-      'Broad operational access and Staff management. Owner-only settings and financial authority remain restricted.',
+      'Can manage vehicles, booking requests, rental operations, and ordinary Staff. Vehicle changes require your approval unless trusted authority is enabled.',
   },
   {
     preset: 'OPERATIONS_STAFF',
     role: 'STAFF',
     label: 'Operations Staff',
-    description: 'Bookings, vehicles, availability, handover, return, and operations.',
-  },
-  {
-    preset: 'SUPPORT_STAFF',
-    role: 'STAFF',
-    label: 'Support Staff',
-    description: 'Bookings, messages, support, claims, and dispute visibility.',
-  },
-  {
-    preset: 'CUSTOM',
-    role: 'STAFF',
-    label: 'Custom Staff',
-    description: 'Choose permissions individually.',
+    description: 'Handles day-to-day rental operations for approved vehicles.',
   },
 ];
 
@@ -526,8 +514,6 @@ function InviteStaffScreen({
   const [preset, setPreset] = useState<OwnerStaffPreset>('OPERATIONS_STAFF');
   const [scope, setScope] = useState<OwnerStaffVehicleScopeMode>('ALL_VEHICLES');
   const [vehicleIds, setVehicleIds] = useState<string[]>([]);
-  const [permissions, setPermissions] = useState<string[]>([]);
-  const [permissionEditor, setPermissionEditor] = useState(false);
   const [vehiclePicker, setVehiclePicker] = useState(false);
   const [error, setError] = useState('');
   const selectedOption = presetOptions.find((option) => option.preset === preset)!;
@@ -541,7 +527,6 @@ function InviteStaffScreen({
           preset,
           role: selectedOption.role,
           vehicleScopeMode: scope,
-          ...(preset === 'CUSTOM' ? { permissions } : {}),
           ...(scope === 'SELECTED_VEHICLES' ? { vehicleIds } : {}),
         } satisfies InviteOwnerStaffRequest),
       }),
@@ -612,31 +597,10 @@ function InviteStaffScreen({
             label={option.label}
             description={option.description}
             selected={preset === option.preset}
-            onPress={() => {
-              setPreset(option.preset);
-              setPermissions([]);
-            }}
+            onPress={() => setPreset(option.preset)}
           />
         ))}
       </View>
-      {preset === 'CUSTOM' ? (
-        <View style={styles.compactSection}>
-          <SectionHeader title="Permissions" />
-          <Pressable
-            accessibilityLabel={`Configure permissions. ${permissions.length} selected`}
-            accessibilityRole="button"
-            onPress={() => setPermissionEditor(true)}
-          >
-            <Card style={styles.selectorRow}>
-              <View style={styles.flex}>
-                <Text style={styles.selectorTitle}>Custom · {permissions.length} selected</Text>
-              </View>
-              <Text style={styles.selectorAction}>Configure</Text>
-              <Icon color={colors.primary} name="chevron-forward" size={19} />
-            </Card>
-          </Pressable>
-        </View>
-      ) : null}
       <SectionHeader title="Vehicle access" />
       <Card style={styles.formCard}>
         <SegmentedControl
@@ -677,12 +641,6 @@ function InviteStaffScreen({
         selected={vehicleIds}
         onClose={() => setVehiclePicker(false)}
         onChange={setVehicleIds}
-      />
-      <PermissionEditorModal
-        visible={permissionEditor}
-        selected={permissions}
-        onClose={() => setPermissionEditor(false)}
-        onChange={setPermissions}
       />
     </NestedScreen>
   );
@@ -782,103 +740,6 @@ function PermissionGroupHeader({
         </Pressable>
       }
     />
-  );
-}
-
-function PermissionEditorModal({
-  visible,
-  selected,
-  onClose,
-  onChange,
-}: {
-  readonly visible: boolean;
-  readonly selected: readonly string[];
-  readonly onClose: () => void;
-  readonly onChange: (next: string[]) => void;
-}) {
-  const [headerHeight, setHeaderHeight] = useState(0);
-  const [contentHeight, setContentHeight] = useState(0);
-  const [footerHeight, setFooterHeight] = useState(0);
-  const { height: viewportHeight } = useWindowDimensions();
-  const safeArea = useSafeAreaInsets();
-  const maximumHeight = viewportHeight - Math.max(safeArea.top, spacing.md);
-  const measuredLayout = useMemo(
-    () =>
-      adaptiveSheetLayout({
-        contentHeight,
-        headerHeight: headerHeight + footerHeight,
-        maxSafeViewportHeight: maximumHeight,
-        safeAreaAllowance: 0,
-      }),
-    [contentHeight, footerHeight, headerHeight, maximumHeight],
-  );
-  const sheetHeight = useSharedValue(Math.min(520, maximumHeight));
-  const animatedSheetStyle = useAnimatedStyle(() => ({ height: sheetHeight.value }));
-
-  useEffect(() => {
-    if (!visible || headerHeight <= 0 || contentHeight <= 0 || footerHeight <= 0) return;
-    // Reanimated shared values are intentionally mutable UI-thread animation state.
-    // eslint-disable-next-line react-hooks/immutability
-    sheetHeight.value = withTiming(measuredLayout.height, { duration: 220 });
-  }, [
-    contentHeight,
-    footerHeight,
-    headerHeight,
-    measuredLayout.height,
-    selected.length,
-    sheetHeight,
-    visible,
-  ]);
-
-  return (
-    <Modal
-      animationType="slide"
-      onRequestClose={onClose}
-      presentationStyle="overFullScreen"
-      statusBarTranslucent
-      transparent
-      visible={visible}
-    >
-      <View style={styles.modalRoot}>
-        <Pressable
-          accessibilityLabel="Close permission editor"
-          onPress={onClose}
-          style={styles.backdrop}
-        />
-        <Reanimated.View
-          accessibilityLabel="Configure permissions"
-          accessibilityViewIsModal
-          style={[styles.sheet, animatedSheetStyle]}
-        >
-          <View
-            onLayout={({ nativeEvent }) => setHeaderHeight(nativeEvent.layout.height)}
-            style={styles.sheetHeader}
-          >
-            <BackControl label="Cancel" onPress={onClose} />
-            <Text accessibilityRole="header" style={styles.sheetTitle}>
-              Configure permissions
-            </Text>
-            <Text style={styles.sheetSubtitle}>
-              Choose what this Staff member can do in this workspace.
-            </Text>
-          </View>
-          <ScrollView
-            contentContainerStyle={styles.permissionSheetContent}
-            onContentSizeChange={(_width, height) => setContentHeight(Math.max(height, 120))}
-            scrollEnabled={measuredLayout.scrollEnabled}
-            showsVerticalScrollIndicator={measuredLayout.scrollEnabled}
-          >
-            <PermissionEditor selected={selected} onChange={onChange} />
-          </ScrollView>
-          <View
-            onLayout={({ nativeEvent }) => setFooterHeight(nativeEvent.layout.height)}
-            style={[styles.sheetFooter, { paddingBottom: Math.max(safeArea.bottom, spacing.lg) }]}
-          >
-            <Button label="Done" onPress={onClose} />
-          </View>
-        </Reanimated.View>
-      </View>
-    </Modal>
   );
 }
 
@@ -1929,7 +1790,6 @@ const styles = StyleSheet.create({
   permissionCard: { padding: 0 },
   permissionGroup: { gap: spacing.xxs },
   permissionGroups: { gap: spacing.sm },
-  permissionSheetContent: { paddingBottom: spacing.md, paddingHorizontal: spacing.xl },
   permissionLabel: { color: colors.ink, flex: 1, fontSize: 15, fontWeight: '700' },
   permissionRow: {
     alignItems: 'center',

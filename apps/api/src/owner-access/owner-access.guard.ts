@@ -2,7 +2,10 @@ import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { OwnerAccessService } from './owner-access.service';
-import { REQUIRED_OWNER_PERMISSION } from './owner-access.decorator';
+import {
+  REQUIRED_ANY_OWNER_PERMISSION,
+  REQUIRED_OWNER_PERMISSION,
+} from './owner-access.decorator';
 import type { OwnerPermissionCode } from './owner-permissions';
 
 @Injectable()
@@ -26,6 +29,18 @@ export class OwnerAccessGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
     if (permission) this.access.requirePermission(ownerAccess, permission);
+    const anyPermissions = this.reflector.getAllAndOverride<OwnerPermissionCode[]>(
+      REQUIRED_ANY_OWNER_PERMISSION,
+      [context.getHandler(), context.getClass()],
+    );
+    const fallbackPermission = anyPermissions?.[0];
+    if (
+      fallbackPermission &&
+      ownerAccess.capacity !== 'OWNER' &&
+      !anyPermissions.some((candidate) => ownerAccess.permissions.includes(candidate))
+    ) {
+      this.access.requirePermission(ownerAccess, fallbackPermission);
+    }
     request.principal = { ...principal, ownerAccess };
     return true;
   }

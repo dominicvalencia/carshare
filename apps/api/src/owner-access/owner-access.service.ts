@@ -70,6 +70,11 @@ export class OwnerAccessService {
     throw this.denied('The required Owner permission is not assigned.');
   }
 
+  requireRequestManagement(context: OwnerAccessContext): void {
+    if (context.capacity === 'OWNER' || context.capacity === 'MANAGER') return;
+    throw this.denied('Operational Staff cannot access booking requests.');
+  }
+
   async assertVehicleAccess(
     context: OwnerAccessContext,
     vehicleId: string,

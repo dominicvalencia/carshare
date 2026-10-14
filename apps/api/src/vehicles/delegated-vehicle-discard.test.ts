@@ -146,6 +146,31 @@ describe('delegated vehicle draft visibility and discard', () => {
     expect(visible('membership-other')).toBe(false);
   });
 
+  it('restricts Staff to approved live vehicles regardless of creator provenance', () => {
+    const { service } = setup();
+    const visible = (createdByMembershipId: string | null, status: VehicleLifecycleStatus) =>
+      Reflect.apply(
+        (
+          service as unknown as {
+            vehicleVisibleToViewer: (vehicle: unknown, viewer: unknown) => boolean;
+          }
+        ).vehicleVisibleToViewer,
+        service,
+        [
+          { createdByMembershipId, ownerApprovalRequests: [], status },
+          {
+            context: { ...managerContext, capacity: 'STAFF', membershipId: 'membership-staff' },
+            kind: 'DELEGATED',
+          },
+        ],
+      );
+
+    expect(visible(null, VehicleLifecycleStatus.DRAFT)).toBe(false);
+    expect(visible('membership-staff', VehicleLifecycleStatus.DRAFT)).toBe(false);
+    expect(visible('membership-manager', VehicleLifecycleStatus.PENDING_APPROVAL)).toBe(false);
+    expect(visible(null, VehicleLifecycleStatus.APPROVED)).toBe(true);
+  });
+
   it('archives its creator-owned draft and withdraws a pending request atomically', async () => {
     const { ownerAccess, service, transaction } = setup();
     await service.discardDelegatedDraft(managerContext, 'manager-user', 'vehicle-a', {

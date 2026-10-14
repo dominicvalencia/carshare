@@ -112,16 +112,18 @@ export class OwnerHomeService {
   async todayForAccess(context: OwnerAccessContext, now = new Date()) {
     const rentals = context.permissions.includes('rentals.view')
       ? { vehicle: this.ownerAccess.vehicleWhere(context, 'rentals.view') }
-      : { id: '__no_authorized_rentals__' };
-    const requests = context.permissions.includes('bookings.view')
+      : { id: '00000000-0000-0000-0000-000000000000' };
+    const canViewRequests =
+      context.capacity === 'MANAGER' && context.permissions.includes('bookings.view');
+    const requests = canViewRequests
       ? { vehicle: this.ownerAccess.vehicleWhere(context, 'bookings.view') }
-      : { id: '__no_authorized_requests__' };
+      : null;
     return this.todayForWhere(rentals, requests, false, now);
   }
 
   private async todayForWhere(
     base: Prisma.BookingWhereInput,
-    requestBase: Prisma.BookingWhereInput,
+    requestBase: Prisma.BookingWhereInput | null,
     includeAmendments: boolean,
     now: Date,
   ) {
@@ -226,7 +228,13 @@ export class OwnerHomeService {
             status: BookingAmendmentStatus.FINANCIAL_RECOVERY_PENDING,
           },
         }),
-        this.requestCounts(requestBase, includeAmendments),
+        requestBase
+          ? this.requestCounts(requestBase, includeAmendments)
+          : Promise.resolve({
+              amendmentRequestsCount: 0,
+              bookingRequestsCount: 0,
+              totalRequestsCount: 0,
+            }),
         this.database.client.booking.findFirst({
           include: ownerHomeBookingInclude,
           orderBy: [{ rentalStart: 'asc' }, { id: 'asc' }],

@@ -16,6 +16,17 @@ const liveVehicleSnapshotSelect = {
   fuelType: true,
   location: true,
   make: true,
+  knownIssues: {
+    orderBy: { createdAt: 'asc' as const },
+    select: {
+      category: true,
+      classification: true,
+      description: true,
+      id: true,
+      status: true,
+      vehicleArea: true,
+    },
+  },
   model: true,
   modelYear: true,
   photos: {
@@ -118,6 +129,14 @@ export class VehicleChangeProposalSnapshotService {
         documentType: document.definition.code,
         expiresAt: document.expiresAt?.toISOString().slice(0, 10) ?? null,
         fileAssetId: document.fileAssetId,
+      })),
+      knownIssues: (vehicle.knownIssues ?? []).map((issue) => ({
+        category: issue.category,
+        classification: issue.classification,
+        description: issue.description,
+        id: issue.id,
+        status: issue.status,
+        vehicleArea: issue.vehicleArea,
       })),
       location: vehicle.location
         ? {

@@ -224,8 +224,13 @@ interface Vehicle {
   } | null;
   readonly capabilities?: {
     readonly canArchiveVehicle: false;
+    readonly canAddKnownIssue: boolean;
+    readonly canEditHandoverUsage: boolean;
+    readonly canEditKnownIssues: boolean;
+    readonly canEditMarketplaceAvailability: boolean;
     readonly canEditOperationalFields: boolean;
-    readonly canManageKnownIssues: false;
+    readonly canEditVehicleConfiguration: boolean;
+    readonly canManageKnownIssues: boolean;
     readonly canStartVehicleProposal: boolean;
     readonly ownerApprovalBypassEnabled: boolean;
   } | null;
@@ -359,6 +364,7 @@ export function VehiclesScreen({
   return ownerWorkspace && ownerWorkspace.capacity !== 'OWNER' ? (
     <DelegatedVehiclesScreen
       {...(initialVehicleId ? { initialVehicleId } : {})}
+      key={`${ownerWorkspace.ownerProfileId}:${ownerWorkspace.membershipId ?? ownerWorkspace.capacity}`}
       ownerWorkspace={ownerWorkspace}
     />
   ) : (
@@ -503,14 +509,23 @@ function DelegatedVehiclesScreen({
     ownerWorkspace.membershipStatus === 'ACTIVE' &&
     hasOwnerPermission(ownerWorkspace, 'vehicles.create');
   const canEditOperational =
-    ownerWorkspace.capacity === 'MANAGER' &&
     ownerWorkspace.membershipStatus === 'ACTIVE' &&
-    hasOwnerPermission(ownerWorkspace, 'vehicles.update_operational_fields');
+    ((ownerWorkspace.capacity === 'MANAGER' &&
+      hasOwnerPermission(ownerWorkspace, 'vehicles.update_operational_fields')) ||
+      (ownerWorkspace.capacity === 'STAFF' &&
+        hasOwnerPermission(ownerWorkspace, 'known_issues.create')));
+  const workspaceActorKey = ownerWorkspace.membershipId ?? ownerWorkspace.capacity;
   const workspaceBase = `/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles`;
   const vehicleDetailQueryKey = (vehicleId: string) =>
-    ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicle', vehicleId] as const;
+    [
+      'owner-workspace',
+      ownerWorkspace.ownerProfileId,
+      workspaceActorKey,
+      'vehicle',
+      vehicleId,
+    ] as const;
   const vehicles = useQuery({
-    queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicles'],
+    queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, workspaceActorKey, 'vehicles'],
     queryFn: () =>
       apiClient.request<Vehicle[]>(`/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles`),
     refetchInterval: (query) =>
@@ -572,7 +587,16 @@ function DelegatedVehiclesScreen({
       />
     );
   if (selected && proposalEditing)
-    return (
+    return ownerWorkspace.capacity === 'STAFF' ? (
+      <StaffKnownIssueProposalEditor
+        workspaceBase={workspaceBase}
+        vehicle={selected}
+        onClose={() => {
+          setProposalEditing(false);
+          void vehicles.refetch();
+        }}
+      />
+    ) : (
       <ManagerVehicleProposalEditor
         workspaceBase={workspaceBase}
         vehicle={selected}
@@ -693,7 +717,13 @@ function DelegatedVehicleDetail({
   readonly onWithdraw: () => void;
 }) {
   const vehicle = useQuery({
-    queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicle', vehicleId],
+    queryKey: [
+      'owner-workspace',
+      ownerWorkspace.ownerProfileId,
+      ownerWorkspace.membershipId ?? ownerWorkspace.capacity,
+      'vehicle',
+      vehicleId,
+    ],
     queryFn: () => apiClient.request<Vehicle>(`${workspaceBase}/${vehicleId}`),
     refetchOnWindowFocus: true,
   });
@@ -776,7 +806,7 @@ function DelegatedVehicleDetail({
             <DetailAction label="Continue setup" onPress={onContinueSetup} />
           </View>
         ) : null}
-        {canStartProposal ? (
+        {canStartProposal && value.capabilities?.canEditVehicleConfiguration ? (
           <View style={styles.vehicleEditAction}>
             <DetailAction
               label={proposalEditable ? 'Continue editing changes' : 'Edit vehicle'}
@@ -877,7 +907,14 @@ function DelegatedVehicleDetail({
         <VehicleDetailSection title="Features">
           <VehicleDetailRow label="Selected features" value={String(value.features.length)} />
         </VehicleDetailSection>
-        <VehicleDetailSection title="Handover & usage">
+        <VehicleDetailSection
+          action={
+            canStartProposal && value.capabilities?.canEditHandoverUsage ? (
+              <DetailAction label="Edit handover & usage" onPress={onEditProposal} />
+            ) : null
+          }
+          title="Handover & usage"
+        >
           <VehicleDetailSummary
             label="Mileage"
             value={
@@ -915,7 +952,19 @@ function DelegatedVehicleDetail({
             value={policy ? fulfillmentSummary(policy) : 'Not configured'}
           />
         </VehicleDetailSection>
-        <VehicleDetailSection title="Known vehicle issues">
+        <VehicleDetailSection
+          action={
+            canStartProposal && value.capabilities?.canAddKnownIssue ? (
+              <DetailAction
+                label={
+                  value.capabilities.canEditKnownIssues ? 'Edit known issues' : 'Add known issue'
+                }
+                onPress={onEditProposal}
+              />
+            ) : null
+          }
+          title="Known vehicle issues"
+        >
           <Text style={styles.vehicleOperationalValue}>{activeIssues.length} active</Text>
           {activeIssues.slice(0, 3).map((issue) => (
             <Text key={issue.id} style={styles.vehicleDetailHelper}>
@@ -925,12 +974,17 @@ function DelegatedVehicleDetail({
         </VehicleDetailSection>
         <VehicleDetailSection
           action={
-            hasOwnerPermission(ownerWorkspace, 'availability.view') ? (
-              <DetailAction
-                label="Manage availability"
-                onPress={() => onManageAvailability(true)}
-              />
-            ) : null
+            <>
+              {canStartProposal && value.capabilities?.canEditMarketplaceAvailability ? (
+                <DetailAction label="Edit marketplace settings" onPress={onEditProposal} />
+              ) : null}
+              {hasOwnerPermission(ownerWorkspace, 'availability.view') ? (
+                <DetailAction
+                  label="Manage availability"
+                  onPress={() => onManageAvailability(true)}
+                />
+              ) : null}
+            </>
           }
           emphasized
           title="Marketplace & availability"
@@ -988,6 +1042,191 @@ function _DelegatedVehicleCard({
         </Text>
       </View>
     </Pressable>
+  );
+}
+
+function StaffKnownIssueProposalEditor({
+  workspaceBase,
+  vehicle,
+  onClose,
+}: {
+  readonly workspaceBase: string;
+  readonly vehicle: Vehicle;
+  readonly onClose: () => void | Promise<void>;
+}) {
+  const proposalBase = `${workspaceBase}/${vehicle.id}/change-proposals`;
+  const active = vehicle.activeChangeProposal;
+  const blockedByAnotherActor = Boolean(active && !active.isCreator);
+  const proposal = useQuery({
+    enabled: !blockedByAnotherActor,
+    queryKey: ['staff-known-issue-proposal', vehicle.id, active?.id ?? 'new'],
+    queryFn: () =>
+      active?.id
+        ? apiClient.request<GetVehicleChangeProposalResponse>(`${proposalBase}/${active.id}`)
+        : apiClient.request<CreateVehicleChangeProposalResponse>(proposalBase, {
+            body: '{}',
+            method: 'POST',
+          }),
+    retry: false,
+  });
+  if (blockedByAnotherActor)
+    return (
+      <SafeAreaView edges={['top']} style={styles.flex}>
+        <ScrollView contentContainerStyle={styles.page}>
+          <BackControl label="Vehicle detail" onPress={onClose} />
+          <StateView
+            icon="information-circle-outline"
+            title="Vehicle changes are already being prepared"
+            message="Another workspace member has an active proposal for this vehicle. Try again after it is completed or withdrawn."
+          />
+        </ScrollView>
+      </SafeAreaView>
+    );
+  if (proposal.isError)
+    return (
+      <SafeAreaView edges={['top']} style={styles.flex}>
+        <ScrollView contentContainerStyle={styles.page}>
+          <BackControl label="Vehicle detail" onPress={onClose} />
+          <StateView
+            actionLabel="Retry"
+            icon="cloud-offline-outline"
+            message={knownIssueProposalErrorMessage(proposal.error)}
+            onAction={() => void proposal.refetch()}
+            title="Known issue unavailable"
+          />
+        </ScrollView>
+      </SafeAreaView>
+    );
+  if (proposal.isPending || !proposal.data)
+    return <StateView loading title="Preparing known issue…" />;
+  return (
+    <StaffKnownIssueForm
+      key={proposal.data.id}
+      onClose={onClose}
+      proposal={proposal.data}
+      proposalBase={proposalBase}
+    />
+  );
+}
+
+function StaffKnownIssueForm({
+  onClose,
+  proposal,
+  proposalBase,
+}: {
+  readonly onClose: () => void | Promise<void>;
+  readonly proposal: GetVehicleChangeProposalResponse;
+  readonly proposalBase: string;
+}) {
+  const draftIssue = proposal.proposedSnapshot.knownIssues?.find(({ id }) => id === null);
+  const [category, setCategory] = useState(draftIssue?.category ?? 'OTHER');
+  const [vehicleArea, setVehicleArea] = useState(draftIssue?.vehicleArea ?? 'OTHER');
+  const [classification, setClassification] = useState(
+    draftIssue?.classification ?? 'COSMETIC',
+  );
+  const [description, setDescription] = useState(draftIssue?.description ?? '');
+  const [submitted, setSubmitted] = useState(false);
+  const submit = useMutation({
+    mutationFn: async () => {
+      const trimmedDescription = description.trim();
+      if (!trimmedDescription) throw new Error('Describe the known issue before submitting.');
+      const proposedSnapshot: VehicleChangeProposalSnapshotV1 = {
+        ...proposal.proposedSnapshot,
+        knownIssues: [
+          ...(proposal.proposedSnapshot.knownIssues ?? []).filter(({ id }) => id !== null),
+          {
+            category,
+            classification,
+            description: trimmedDescription,
+            id: null,
+            status: 'ACTIVE',
+            vehicleArea,
+          },
+        ],
+      };
+      await apiClient.request<UpdateVehicleChangeProposalResponse>(
+        `${proposalBase}/${proposal.id}`,
+        { body: JSON.stringify({ proposedSnapshot }), method: 'PATCH' },
+      );
+      return apiClient.request<SubmitVehicleChangeProposalResponse>(
+        `${proposalBase}/${proposal.id}/submission`,
+        { method: 'POST' },
+      );
+    },
+    onSuccess: () => setSubmitted(true),
+  });
+  if (submitted)
+    return (
+      <SafeAreaView edges={['top']} style={styles.flex}>
+        <ScrollView contentContainerStyle={styles.page}>
+          <BackControl label="Vehicle detail" onPress={onClose} />
+          <StateView
+            actionLabel="Back to vehicle"
+            icon="checkmark-circle-outline"
+            message="The live vehicle is unchanged until the Owner approves this known issue."
+            onAction={onClose}
+            title="Sent for Owner approval"
+          />
+        </ScrollView>
+      </SafeAreaView>
+    );
+  return (
+    <SafeAreaView edges={['top']} style={styles.flex}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.flex}
+      >
+        <ScrollView
+          contentContainerStyle={styles.page}
+          keyboardDismissMode={formKeyboardDismissMode}
+          keyboardShouldPersistTaps="handled"
+        >
+          <BackControl label="Vehicle detail" onPress={onClose} />
+          <Text style={styles.eyebrow}>KNOWN ISSUE</Text>
+          <Text style={styles.title}>Add known issue</Text>
+          <Text style={styles.body}>
+            Send a new issue to the Owner for approval. Existing vehicle details stay unchanged.
+          </Text>
+          <Section title="Issue details">
+            <SearchableReferenceSelector
+              label="Issue type"
+              options={knownIssueCategoryOptions}
+              value={category}
+              onChange={setCategory}
+            />
+            <SearchableReferenceSelector
+              label="Vehicle area"
+              options={knownIssueAreaOptions}
+              value={vehicleArea}
+              onChange={setVehicleArea}
+            />
+            <SearchableReferenceSelector
+              label="Classification"
+              options={knownIssueClassificationOptions}
+              value={classification}
+              onChange={setClassification}
+            />
+            <Field
+              compactMultiline
+              label="Description"
+              multiline
+              value={description}
+              onChange={setDescription}
+            />
+          </Section>
+          <Button
+            disabled={submit.isPending}
+            label={submit.isPending ? 'Submitting…' : 'Send to Owner for approval'}
+            onPress={() => submit.mutate()}
+          />
+          {submit.error ? (
+            <Text accessibilityRole="alert" style={styles.error}>
+              {knownIssueProposalErrorMessage(submit.error)}
+            </Text>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
@@ -5677,6 +5916,19 @@ function vehicleMutationErrorMessage(error: Error) {
     return 'You no longer have permission to change this vehicle.';
   }
   return error.message;
+}
+
+function knownIssueProposalErrorMessage(error: Error) {
+  if (
+    error instanceof ApiError &&
+    (error.status === 409 || error.code === 'VEHICLE_CHANGE_PROPOSAL_ALREADY_ACTIVE')
+  )
+    return 'Vehicle changes are already being prepared. Try again after the active proposal is completed or withdrawn.';
+  if (error instanceof ApiError && error.status === 403)
+    return 'You no longer have permission to add a known issue for this vehicle.';
+  if (error instanceof ApiError && error.status === 404)
+    return 'This vehicle is no longer available in your workspace.';
+  return error.message || 'We could not prepare the known issue form. Check your connection and try again.';
 }
 
 function ownerApprovalErrorMessage(error: Error) {

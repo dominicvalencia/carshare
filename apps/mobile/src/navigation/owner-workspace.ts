@@ -25,9 +25,12 @@ export function delegatedOwnerTabs(workspace: OwnerWorkspace) {
     return { today: true, vehicles: true, messages: true, more: true } as const;
   return {
     // Today is composed only from migrated, workspace-scoped read domains.
-    today: ['bookings.view', 'rentals.view', 'vehicles.view', 'messages.view'].some((permission) =>
-      hasOwnerPermission(workspace, permission),
-    ),
+    today: [
+      ...(workspace.capacity === 'MANAGER' ? ['bookings.view'] : []),
+      'rentals.view',
+      'vehicles.view',
+      'messages.view',
+    ].some((permission) => hasOwnerPermission(workspace, permission)),
     vehicles: hasOwnerPermission(workspace, 'vehicles.view'),
     messages: hasOwnerPermission(workspace, 'messages.view'),
     more: true,

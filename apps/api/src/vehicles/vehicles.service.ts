@@ -508,6 +508,9 @@ export class VehiclesService {
     vehicle: Pick<OwnerVehicleRecord, 'createdByMembershipId' | 'ownerApprovalRequests' | 'status'>,
     viewer?: VehicleViewer,
   ): boolean {
+    if (viewer?.kind === 'DELEGATED' && viewer.context.capacity === 'STAFF')
+      return vehicle.status === VehicleLifecycleStatus.APPROVED;
+
     if (
       !viewer ||
       !vehicle.createdByMembershipId ||
@@ -2330,13 +2333,34 @@ export class VehiclesService {
         viewer?.kind === 'DELEGATED'
           ? {
               canArchiveVehicle: false,
+              canAddKnownIssue: viewer.context.permissions.includes(
+                viewer.context.capacity === 'STAFF'
+                  ? 'known_issues.create'
+                  : 'vehicles.update_operational_fields',
+              ),
+              canEditHandoverUsage:
+                viewer.context.capacity === 'MANAGER' &&
+                viewer.context.permissions.includes('vehicles.update_operational_fields'),
+              canEditKnownIssues:
+                viewer.context.capacity === 'MANAGER' &&
+                viewer.context.permissions.includes('vehicles.update_operational_fields'),
+              canEditMarketplaceAvailability:
+                viewer.context.capacity === 'MANAGER' &&
+                viewer.context.permissions.includes('vehicles.update_operational_fields'),
               canEditOperationalFields:
                 viewer.context.capacity === 'MANAGER' &&
                 viewer.context.permissions.includes('vehicles.update_operational_fields'),
-              canManageKnownIssues: false,
-              canStartVehicleProposal:
+              canEditVehicleConfiguration:
                 viewer.context.capacity === 'MANAGER' &&
                 viewer.context.permissions.includes('vehicles.update_operational_fields'),
+              canManageKnownIssues: viewer.context.permissions.includes(
+                'vehicles.update_operational_fields',
+              ),
+              canStartVehicleProposal: viewer.context.permissions.includes(
+                viewer.context.capacity === 'STAFF'
+                  ? 'known_issues.create'
+                  : 'vehicles.update_operational_fields',
+              ),
               ownerApprovalBypassEnabled: viewer.ownerApprovalBypassEnabled,
             }
           : null,

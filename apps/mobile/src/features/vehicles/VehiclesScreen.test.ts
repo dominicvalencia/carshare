@@ -1129,4 +1129,43 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(source).toContain(": 'Mark available'");
     expect(source).not.toContain('Available for search');
   });
+
+  it('uses server capabilities for delegated proposal entry points', () => {
+    expect(source).toContain('value.capabilities?.canAddKnownIssue');
+    expect(source).toContain('value.capabilities?.canEditHandoverUsage');
+    expect(source).toContain('value.capabilities?.canEditMarketplaceAvailability');
+    expect(source).toContain('value.capabilities?.canEditVehicleConfiguration');
+    expect(source).toContain('label="Edit handover & usage"');
+    expect(source).toContain('label="Edit marketplace settings"');
+  });
+
+  it('uses a dedicated constrained Known Issue flow for Operational Staff', () => {
+    expect(source).toContain("ownerWorkspace.capacity === 'STAFF' ? (");
+    expect(source).toContain('<StaffKnownIssueProposalEditor');
+    const staffEditor = source.slice(
+      source.indexOf('function StaffKnownIssueProposalEditor('),
+      source.indexOf('function ManagerVehicleProposalEditor('),
+    );
+    expect(staffEditor).toContain('<Text style={styles.title}>Add known issue</Text>');
+    expect(staffEditor).toContain('Send to Owner for approval');
+    expect(staffEditor).toContain('knownIssues: [');
+    expect(staffEditor).toContain(".filter(({ id }) => id !== null)");
+    expect(staffEditor).not.toContain('<PhotosStep');
+    expect(staffEditor).not.toContain('<DocumentsStep');
+    expect(staffEditor).not.toContain('Pricing & rental policy');
+    expect(source).toContain("hasOwnerPermission(ownerWorkspace, 'known_issues.create')");
+    expect(source).toContain('const workspaceActorKey = ownerWorkspace.membershipId');
+  });
+
+  it('does not leave proposal initialization errors behind a loading state', () => {
+    const staffEditor = source.slice(
+      source.indexOf('function StaffKnownIssueProposalEditor('),
+      source.indexOf('function ManagerVehicleProposalEditor('),
+    );
+    expect(staffEditor.indexOf('if (proposal.isError)')).toBeLessThan(
+      staffEditor.indexOf('if (proposal.isPending || !proposal.data)'),
+    );
+    expect(staffEditor).toContain('actionLabel="Retry"');
+    expect(staffEditor).toContain('Vehicle changes are already being prepared');
+  });
 });

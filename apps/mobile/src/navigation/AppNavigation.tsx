@@ -326,7 +326,8 @@ function OwnerNavigation({
           />
         )}
       </OwnerTabs.Screen>
-      {hasOwnerPermission(ownerWorkspace, 'bookings.view') ? (
+      {(ownerWorkspace.capacity === 'OWNER' || ownerWorkspace.capacity === 'MANAGER') &&
+      hasOwnerPermission(ownerWorkspace, 'bookings.view') ? (
         <OwnerTabs.Screen
           name="Requests"
           options={{
@@ -545,6 +546,7 @@ export function AppNavigation(properties: AppNavigationProperties) {
         <Stack.Screen name="Booking" options={{ headerShown: false }}>
           {({ navigation, route }) =>
             properties.mode === 'owner' && properties.ownerWorkspace?.capacity !== 'OWNER' ? (
+              properties.ownerWorkspace!.capacity === 'MANAGER' &&
               hasOwnerPermission(properties.ownerWorkspace!, 'bookings.view') ? (
                 <OwnerBookingDestination
                   reference={route.params.bookingId}
@@ -646,6 +648,8 @@ export function AppNavigation(properties: AppNavigationProperties) {
         <Stack.Screen name="OwnerBookingRequests" options={{ headerShown: false }}>
           {() =>
             properties.ownerWorkspace &&
+            (properties.ownerWorkspace.capacity === 'OWNER' ||
+              properties.ownerWorkspace.capacity === 'MANAGER') &&
             hasOwnerPermission(properties.ownerWorkspace, 'bookings.view') ? (
               <OwnerBookingRequestsScreen
                 {...(properties.ownerWorkspace.capacity === 'OWNER'

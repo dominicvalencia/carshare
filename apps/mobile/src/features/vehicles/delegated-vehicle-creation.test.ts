@@ -63,9 +63,7 @@ describe('delegated Manager vehicle creation mobile flow', () => {
     expect(source).toContain("'Withdraw submission?'");
     expect(source).toContain("{ text: 'Cancel', style: 'cancel' }");
     expect(source).toContain("onPress: () => withdraw.mutate(selected.id)");
-    expect(source).toContain(
-      "['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicle', vehicleId] as const",
-    );
+    expect(source).toContain('ownerWorkspace.membershipId ?? ownerWorkspace.capacity');
     expect(source).toContain(
       'client.invalidateQueries({ queryKey: vehicleDetailQueryKey(vehicleId) })',
     );

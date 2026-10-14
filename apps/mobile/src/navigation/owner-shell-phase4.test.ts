@@ -35,7 +35,7 @@ describe('Phase 4 permission-aware Owner shell', () => {
     expect(vehicles).toContain('DelegatedVehiclesScreen');
     expect(vehicles).toContain('/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles');
     expect(vehicles).toContain(
-      "queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicles']",
+      "queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, workspaceActorKey, 'vehicles']",
     );
     expect(vehicles).toContain('title="No assigned vehicles"');
     const delegated = vehicles.slice(
@@ -45,6 +45,7 @@ describe('Phase 4 permission-aware Owner shell', () => {
     expect(delegated).toContain("hasOwnerPermission(ownerWorkspace, 'vehicles.create')");
     expect(delegated).toContain("ownerWorkspace.capacity === 'MANAGER'");
     expect(delegated).toContain("ownerWorkspace.membershipStatus === 'ACTIVE'");
+    expect(delegated).toContain('ownerWorkspace.membershipId ?? ownerWorkspace.capacity');
     expect(delegated).toContain("'Add vehicle'");
     expect(delegated).not.toContain('Manage vehicle');
     expect(delegated).toContain('You can view vehicles in this workspace.');

@@ -93,7 +93,7 @@ describe('Owner Today mobile UI', () => {
   });
 
   it('places Owner approval summaries after booking requests and operational sections', () => {
-    const requests = source.indexOf('{requestCount > 0 && (');
+    const requests = source.indexOf('{canViewRequests && requestCount > 0 && (');
     const changeApprovals = source.indexOf('{pendingVehicleChanges.length > 0 ? (');
     const vehicleApprovals = source.indexOf('{pendingOwnerApprovals.length > 0 ? (');
 
@@ -172,7 +172,7 @@ describe('Owner Today mobile UI', () => {
     const pickup = source.indexOf('title="Pickups today"');
     const active = source.indexOf('title="Active rentals"');
     const returns = source.indexOf('title="Returns today"');
-    const requests = source.indexOf('{requestCount > 0 && (');
+    const requests = source.indexOf('{canViewRequests && requestCount > 0 && (');
     expect(attention).toBeGreaterThan(0);
     expect(attention).toBeLessThan(pickup);
     expect(pickup).toBeLessThan(active);
@@ -202,6 +202,11 @@ describe('Owner Today mobile UI', () => {
     expect(source).toContain('label="Requests"');
     expect(source).toContain('ownerRequestSummaryLabel(requestCount, canRespondToRequests)');
     expect(source).not.toContain('filteredAmendments');
+    expect(source).toContain("ownerWorkspace!.capacity === 'MANAGER' && canViewBookings");
+    expect(source).toContain(
+      "const activeTab = selectedTab === 'Requests' && !canViewRequests ? 'Today' : selectedTab",
+    );
+    expect(source).toContain('{canViewRequests && requestCount > 0 && (');
   });
 
   it('supports recoverable loading, failure, empty, next-upcoming, focus, and resume states', () => {
@@ -373,8 +378,8 @@ describe('Owner Today mobile UI', () => {
 
   it('keeps all three views in one selected top-tab surface with isolated errors', () => {
     expect(source).toContain("route.params?.initialTab ?? 'Today'");
-    expect(source).toContain("selectedTab === 'Upcoming'");
-    expect(source).toContain("selectedTab === 'Requests'");
+    expect(source).toContain("activeTab === 'Upcoming'");
+    expect(source).toContain("activeTab === 'Requests'");
     expect(source).toContain('Upcoming rentals unavailable');
     expect(source).toContain('<OwnerBookingRequestsScreen');
     expect(source).toContain("navigation.navigate('OwnerRequestHistory')");

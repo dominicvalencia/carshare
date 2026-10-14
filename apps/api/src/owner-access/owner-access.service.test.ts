@@ -111,6 +111,17 @@ describe('OwnerAccessService', () => {
     ).toEqual({ ownerProfileId: 'owner-a' });
   });
 
+  it('allows request management only for Owner and Manager capacities', () => {
+    const service = serviceWithClient({});
+    expect(() => service.requireRequestManagement(ownerContext)).not.toThrow();
+    expect(() =>
+      service.requireRequestManagement({ ...staffContext, capacity: 'MANAGER' }),
+    ).not.toThrow();
+    expect(() => service.requireRequestManagement(staffContext)).toThrow(
+      'Operational Staff cannot access booking requests',
+    );
+  });
+
   it('denies direct read of an unassigned or cross-owner vehicle', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const service = serviceWithClient({ vehicle: { findFirst } });

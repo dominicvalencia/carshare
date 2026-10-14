@@ -184,6 +184,11 @@ enum VehicleChangeProposalAssetKind {
   DOCUMENT
 }
 
+enum VehicleChangeProposalKind {
+  GENERAL
+  STAFF_KNOWN_ISSUE
+}
+
 enum VehicleOperationalStatus {
   AVAILABLE
   MAINTENANCE
@@ -2059,6 +2064,7 @@ model VehicleChangeProposal {
   proposedSnapshot          Json                        @map("proposed_snapshot")
   changedFields             String[]                    @default([]) @map("changed_fields")
   changeClassification      VehicleChangeClassification @default(OWNER_APPROVAL_ONLY) @map("change_classification")
+  kind                      VehicleChangeProposalKind   @default(GENERAL)
   status                    VehicleChangeProposalStatus @default(DRAFT)
   submittedByUserId         String                      @map("submitted_by_user_id") @db.Uuid
   submittedByMembershipId   String                      @map("submitted_by_membership_id") @db.Uuid

@@ -64,6 +64,15 @@ describe('Owner Staff authority policy', () => {
     expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('bookings.cancel' as never);
     expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('claims.create' as never);
     expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('claims.respond' as never);
+    expect(OPERATIONS_STAFF_PERMISSIONS).toContain('known_issues.create');
+    expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain(
+      'vehicles.update_operational_fields' as never,
+    );
+    expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('bookings.view' as never);
+    expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('bookings.accept' as never);
+    expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('bookings.reject' as never);
+    expect(MANAGER_PERMISSIONS).toContain('vehicles.update_operational_fields');
+    expect(MANAGER_PERMISSIONS).toContain('bookings.view');
   });
 
   it('makes vehicle creation Manager-default without granting it to Staff presets or custom Staff', () => {

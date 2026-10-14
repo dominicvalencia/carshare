@@ -198,6 +198,12 @@ return, conversations, unread counts, incidents, claims, disputes, recovery visi
 projections. Removing a permission, assignment, or active membership takes effect on the next
 authoritative request even when a client still holds stale UI state.
 
+Operational Staff vehicle reads add a lifecycle ceiling after workspace and assignment scope:
+only `APPROVED` vehicles are returned from lists or direct detail reads. Creator provenance never
+grants ordinary Staff access to a draft, Owner-review submission, changes-required submission,
+withdrawn submission, or platform-review vehicle. Managers retain creator-only pre-live visibility,
+and Owners retain their review visibility.
+
 Users with multiple active Owner workspaces select one explicitly. Mobile stores the selection
 under an authenticated-user-scoped key and accepts it only while present in the latest auth
 projection. Switching workspace invalidates all workspace-scoped query roots. Query keys place the
@@ -213,11 +219,15 @@ permissions:
 - Vehicles appears with `vehicles.view`.
 - Messages appears with `messages.view`; replies additionally require `messages.reply`.
 - More remains available and exposes Staff under **More → Operations → Staff** with `staff.view`.
+- Requests is available only to the actual Owner or a Manager with booking-request permission.
 
 Today independently authorizes booking-request, rental, vehicle, and message summaries and omits
 unauthorized counts. “No assigned vehicles” is distinct from an empty Owner fleet. Booking Requests
 and Active rentals use their shared destinations from Today rather than duplicate delegated
 shortcuts in More. Actual Owner tabs and Owner-only areas remain unchanged.
+Operational Staff Today never includes pre-booking request counts or actions, while retaining its
+authorized pickup, handover, active-rental, return, overdue, recovery, inspection, and operational
+work. A stale Requests selection is normalized back to Today when the active workspace is Staff.
 
 Delegated deep links for vehicles, bookings, rentals, conversations, claims, and Staff members
 require an explicit active workspace, destination permission, vehicle scope, and applicable
@@ -334,9 +344,9 @@ implement approval bypass for any vehicle mutation.
 Manager configuration changes use a dedicated `VehicleChangeProposal` aggregate rather than
 writing pending values into the live vehicle aggregate. A proposal owns a complete canonical
 `VehicleChangeProposalSnapshotV1` (`snapshotSchemaVersion = 1`) covering configurable vehicle
-specifications, feature IDs, ordered photos, documents, private location, and the complete current
-policy. Ownership identity, lifecycle state, payout data, workspace assignment, and audit internals
-are excluded.
+specifications, feature IDs, ordered photos, documents, private location, Known issues, and the
+complete current policy. Ownership identity, lifecycle state, payout data, workspace assignment,
+and audit internals are excluded.
 
 Creating or storing a proposal does not change `Vehicle`, increment its revision, create a
 `VehiclePolicyVersion`, replace live features/photos/documents/location, or affect the public
@@ -352,9 +362,11 @@ trust controls cannot enter a proposal.
 
 Only one active proposal (`DRAFT`, either changes-required state, or either pending-review state)
 may exist per vehicle. Terminal proposals remain immutable history and do not prevent a new cycle.
-Composite foreign keys keep the vehicle and submitting Manager membership in the same Owner
-workspace, while submitter provenance preserves the Manager user and membership separately from
-the Owner of record.
+Composite foreign keys keep the vehicle and submitting membership in the same Owner workspace.
+The database submitter guard accepts `GENERAL` proposals only from active Managers and accepts
+`STAFF_KNOWN_ISSUE` proposals only from active Staff memberships that still hold
+`known_issues.create`. Submitter provenance preserves the delegated user and membership separately
+from the Owner of record; service-level snapshot validation provides the narrower field ceiling.
 
 Proposal photo/document references are proposal-owned and must use non-public file assets. Database
 guards prevent active proposal assets from being published or attached to live `VehiclePhoto` or
@@ -391,6 +403,19 @@ Proposal mutations use serializable transactions and audit the actual Manager us
 They do not write the live vehicle, policy versions, photos, documents, location, availability, or
 blocked periods. Availability remains on its existing operational authority path and is not part of
 proposal editing.
+
+Operational Staff may create, read, update, submit, and withdraw only their own proposal and only
+when its server-derived diff contains `knownIssues`. The narrow `known_issues.create` permission
+authorizes entry to the proposal aggregate, while a server field whitelist prevents
+Staff from changing vehicle specifications, pricing, policy, handover configuration, photos,
+documents, or location. A Staff Known-issue proposal remains non-live until Owner approval. Known
+issues are Owner-approval-only changes; they do not require platform review unless combined with a
+separately review-sensitive change. New issue attribution remains the submitting delegated user,
+not the approving Owner or reviewing Admin.
+
+Operational Staff Today skips booking-request queries entirely when request authority is absent.
+Its request projection is a stable zero-count result, while pickup, active-rental, return, overdue,
+recovery, inspection, and other authorized operational reads continue under `rentals.view`.
 
 The initial Phase 3 slice did not add proposal asset upload. The current flow does: proposal photo
 and document uploads remain private proposal assets, are authorized through proposal-scoped preview

@@ -178,6 +178,12 @@ export class AdminVehicleChangeProposalsService {
         await this.promotePhotos(transaction, vehicle.id, proposed);
         await this.promoteDocuments(transaction, vehicle.id, proposed);
         await this.promoteLocation(transaction, vehicle.id, proposed);
+        await this.promoteKnownIssues(
+          transaction,
+          vehicle.id,
+          proposal.submittedByUserId,
+          proposed,
+        );
         const reviewedAt = new Date();
         await transaction.vehicleChangeProposal.update({
           data: {
@@ -595,6 +601,60 @@ export class AdminVehicleChangeProposalsService {
       update: data,
       where: { vehicleId },
     });
+  }
+
+  private async promoteKnownIssues(
+    transaction: Prisma.TransactionClient,
+    vehicleId: string,
+    actorUserId: string,
+    proposed: VehicleChangeProposalSnapshotV1,
+  ) {
+    if (proposed.knownIssues === undefined) return;
+    const current = await transaction.vehicleKnownIssue.findMany({
+      select: { id: true },
+      where: { vehicleId },
+    });
+    const currentIds = new Set(current.map(({ id }) => id));
+    const proposedIds = new Set(
+      proposed.knownIssues.flatMap(({ id }) => (id === null ? [] : [id])),
+    );
+    if (
+      [...proposedIds].some((id) => !currentIds.has(id)) ||
+      [...currentIds].some((id) => !proposedIds.has(id))
+    )
+      throw new ApplicationException(
+        'VEHICLE_CHANGE_PROPOSAL_INVALID',
+        'Known issue references no longer match the live vehicle.',
+        HttpStatus.CONFLICT,
+      );
+    for (const issue of proposed.knownIssues) {
+      if (issue.id)
+        await transaction.vehicleKnownIssue.update({
+          data: {
+            category: issue.category as never,
+            classification: issue.classification as never,
+            description: issue.description.trim(),
+            ...(issue.status === 'RESOLVED'
+              ? { resolvedAt: new Date(), resolvedByUserId: actorUserId }
+              : { resolvedAt: null, resolvedByUserId: null }),
+            status: issue.status,
+            vehicleArea: issue.vehicleArea as never,
+          },
+          where: { id: issue.id },
+        });
+      else
+        await transaction.vehicleKnownIssue.create({
+          data: {
+            category: issue.category as never,
+            classification: issue.classification as never,
+            createdByUserId: actorUserId,
+            description: issue.description.trim(),
+            status: issue.status,
+            vehicleArea: issue.vehicleArea as never,
+            vehicleId,
+          },
+        });
+    }
   }
 
   private recordDecision(

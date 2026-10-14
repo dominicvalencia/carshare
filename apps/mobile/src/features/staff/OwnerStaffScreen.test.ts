@@ -267,12 +267,48 @@ describe('Owner Staff management UI', () => {
     expect(source).toContain('label="Cancel"');
   });
 
-  it('keeps Manager role choice owner-only and never exposes Verification Staff', () => {
+  it('offers only Manager and Operations Staff during creation', () => {
+    const addStaff = source.slice(
+      source.indexOf('const presetOptions'),
+      source.indexOf('function friendlyError'),
+    );
     expect(source).toContain('Managers can manage Staff, but not other Managers.');
     expect(source).not.toContain('Managers can administer ordinary Staff only.');
     expect(source).toContain("capacity === 'OWNER' || option.role !== 'MANAGER'");
-    expect(source).toContain("preset: 'MANAGER'");
-    expect(source).not.toContain('Verification Staff');
+    expect(addStaff).toContain("preset: 'MANAGER'");
+    expect(addStaff).toContain("label: 'Manager'");
+    expect(addStaff).toContain("preset: 'OPERATIONS_STAFF'");
+    expect(addStaff).toContain("label: 'Operations Staff'");
+    expect(addStaff).not.toContain("preset: 'CUSTOM'");
+    expect(addStaff).not.toContain("label: 'Custom Staff'");
+    expect(addStaff).not.toContain("preset: 'SUPPORT_STAFF'");
+    expect(addStaff).not.toContain('Verification Staff');
+  });
+
+  it('uses concise creation copy without exposing trusted-authority controls', () => {
+    const addStaff = source.slice(
+      source.indexOf('const presetOptions'),
+      source.indexOf('function PermissionEditor'),
+    );
+    expect(addStaff).toContain(
+      'Can manage vehicles, booking requests, rental operations, and ordinary Staff. Vehicle changes require your approval unless trusted authority is enabled.',
+    );
+    expect(addStaff).toContain(
+      'Handles day-to-day rental operations for approved vehicles.',
+    );
+    expect(addStaff).not.toContain('Act without Owner approval');
+    expect(addStaff).not.toContain('Enable trusted authority');
+  });
+
+  it('sends the selected role and preset without changing invitation semantics', () => {
+    const addStaff = source.slice(
+      source.indexOf('function InviteStaffScreen'),
+      source.indexOf('function PermissionEditor'),
+    );
+    expect(addStaff).toContain('preset,\n          role: selectedOption.role,');
+    expect(addStaff).toContain('`/owner/workspaces/${ownerProfileId}/staff/invitations`');
+    expect(addStaff).toContain("method: 'POST'");
+    expect(addStaff).not.toContain("preset === 'CUSTOM'");
   });
 
   it('uses human permission labels and excludes owner-only financial authority', () => {
@@ -299,17 +335,18 @@ describe('Owner Staff management UI', () => {
     expect(source).toContain('contentContainerStyle={styles.sheetContent}');
   });
 
-  it('keeps custom permissions off the Add staff page and opens a dedicated editor', () => {
-    const customBlock = source.slice(
-      source.indexOf("{preset === 'CUSTOM' ? ("),
-      source.indexOf('<SectionHeader title="Vehicle access" />'),
+  it('keeps custom permissions available in Edit access but not during creation', () => {
+    const addStaff = source.slice(
+      source.indexOf('function InviteStaffScreen'),
+      source.indexOf('function PermissionEditor'),
     );
-    expect(customBlock).toContain('title="Permissions"');
-    expect(customBlock).toContain('onPress={() => setPermissionEditor(true)}');
-    expect(customBlock).toContain('{permissions.length} selected');
-    expect(customBlock).not.toContain('<PermissionEditor');
-    expect(source).toContain('<PermissionEditorModal');
-    expect(source).toContain('Configure permissions\n            </Text>');
+    expect(addStaff).not.toContain('Custom Staff');
+    expect(addStaff).not.toContain('Configure permissions');
+    expect(addStaff).not.toContain('<PermissionEditorModal');
+    expect(source).toContain(
+      '<PermissionEditor selected={permissions} onChange={setPermissions} />',
+    );
+    expect(source).toContain("kind === 'permissions' ? 'Edit permissions' : 'Vehicle access'");
   });
 
   it('groups custom permissions and keeps section bulk controls inline and trailing', () => {
@@ -352,8 +389,7 @@ describe('Owner Staff management UI', () => {
     expect(source).toContain('<SectionHeader\n      flush');
   });
 
-  it('shows compact custom-permission and selected-vehicle summaries', () => {
-    expect(source).toContain('Custom · {permissions.length} selected');
+  it('shows the compact selected-vehicle summary during creation', () => {
     expect(source).toContain(
       "{vehicleIds.length} vehicle{vehicleIds.length === 1 ? '' : 's'} selected",
     );
@@ -400,7 +436,7 @@ describe('Owner Staff management UI', () => {
     expect(source).toContain(
       "accessibilityLabel={`${label || 'Vehicle'}, ${checked ? 'selected' : 'not selected'}`}",
     );
-    expect(source).toContain('<Button label="Done" onPress={onClose} />');
+    expect(source).toContain('label="Done"\n              onPress={onClose}');
   });
 
   it('wires every Phase 2 member mutation without operational delegation', () => {
