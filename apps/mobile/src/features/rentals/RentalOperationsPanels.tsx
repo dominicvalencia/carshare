@@ -18,7 +18,8 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { apiClient } from '../../auth/api-client';
+import { ApiError, apiClient } from '../../auth/api-client';
+import { useAuth } from '../../auth/AuthProvider';
 import { colors, radius, spacing } from '../../theme/tokens';
 import { dateTimeLabel, domainLabel, money, timeLabel } from '../../ui/format';
 import { invalidateBookingLifecycle } from '../../query/booking-invalidation';
@@ -29,7 +30,7 @@ import { SearchableReferenceSelector } from '../../ui/SearchableReferenceSelecto
 import { DateOnlyField } from '../../ui/DateOnlyField';
 import { DateTimeField } from '../../ui/DateTimeField';
 import { adaptiveSheetLayout } from '../../ui/adaptive-sheet-layout';
-import { BackControl, Icon, StatusBadge } from '../../ui/primitives';
+import { BackControl, Icon, StateView, StatusBadge } from '../../ui/primitives';
 import { HANDOVER_EVIDENCE_WAIVER_ACKNOWLEDGEMENT_VERSION } from '@carrental/api-contracts';
 import { tripDateSummary } from '../discovery/trip-date-policy';
 import type { OwnerWorkspace } from '../../auth/auth.types';
@@ -1438,6 +1439,7 @@ export function OwnerRentalPanel({
   readonly scrollConditionFormBy?: (delta: number) => void;
   readonly scrollToConditionForm?: (y: number) => void;
 }) {
+  const auth = useAuth();
   const client = useQueryClient();
   const workspaceKey = ownerWorkspace?.ownerProfileId ?? 'owner';
   const rentalEndpoint = ownerWorkspace
@@ -1680,11 +1682,14 @@ export function OwnerRentalPanel({
           !canReturn
         )
           throw new Error('Return access is no longer available.');
-        if (
-          ['claim', 'incident', 'correction', 'renter-no-show'].includes(operation) ||
-          operation.startsWith('discrepancy-')
-        )
-          throw new Error('This action is not available to delegated staff yet.');
+        if (operation === 'claim' && !canCreateClaim)
+          throw new Error('Claim access is no longer available.');
+        if (['incident', 'renter-no-show'].includes(operation) && !canReportIncident)
+          throw new Error('Incident reporting access is no longer available.');
+        if (operation === 'correction' && !canInspect)
+          throw new Error('Inspection update access is no longer available.');
+        if (operation.startsWith('discrepancy-') && !canHandover)
+          throw new Error('Pickup handover access is no longer available.');
       }
       if (operation.startsWith('discrepancy-')) {
         const responseType =
@@ -1693,7 +1698,7 @@ export function OwnerRentalPanel({
             : operation === 'discrepancy-clarify'
               ? 'CLARIFY_EXISTING_EVIDENCE'
               : 'REQUEST_SUPPORT';
-        return apiClient.request(`/owner/bookings/${reference}/rental/pickup/discrepancy/respond`, {
+        return apiClient.request(`${rentalEndpoint}/pickup/discrepancy/respond`, {
           body: JSON.stringify({
             responseType,
             responseText: ownerDiscrepancyResponse.trim(),
@@ -1739,16 +1744,13 @@ export function OwnerRentalPanel({
       if (operation === 'correction') {
         const pickup = detail.inspections.find(({ type }) => type === 'PICKUP');
         if (!pickup) throw new Error('Pickup inspection is unavailable.');
-        return apiClient.request(
-          `/owner/bookings/${reference}/rental/inspections/${pickup.id}/corrections`,
-          {
-            body: JSON.stringify({
-              reason: correctionReason.trim(),
-              proposedOdometerMeters: String(Math.round(Number(correctionOdometer) * 1000)),
-            }),
-            method: 'POST',
-          },
-        );
+        return apiClient.request(`${rentalEndpoint}/inspections/${pickup.id}/corrections`, {
+          body: JSON.stringify({
+            reason: correctionReason.trim(),
+            proposedOdometerMeters: String(Math.round(Number(correctionOdometer) * 1000)),
+          }),
+          method: 'POST',
+        });
       }
       if (operation === 'return') {
         return apiClient.request(`${rentalEndpoint}/return/start`, {
@@ -1789,7 +1791,7 @@ export function OwnerRentalPanel({
         });
       }
       if (operation === 'renter-no-show') {
-        return apiClient.request(`/owner/bookings/${reference}/rental/incidents`, {
+        return apiClient.request(`${rentalEndpoint}/incidents`, {
           body: JSON.stringify({
             category: 'RENTER_NO_SHOW',
             description: 'Renter did not arrive and pickup handover could not be completed.',
@@ -1862,8 +1864,37 @@ export function OwnerRentalPanel({
     setOwnerDiscrepancyResponseError('');
     action.mutate('discrepancy-support');
   };
+  const accessDenied = rental.error instanceof ApiError && rental.error.status === 403;
+  const retryRental = async () => {
+    if (accessDenied) await auth.refreshIdentity();
+    await rental.refetch();
+  };
   const detail = rental.data;
-  if (!detail) return <Text style={styles.body}>Loading rental operations…</Text>;
+  if (rental.isPending) return <StateView loading title="Loading rental operations…" />;
+  if (rental.isError)
+    return (
+      <StateView
+        actionLabel="Retry"
+        icon="cloud-offline-outline"
+        message={
+          accessDenied
+            ? 'Your workspace access may have changed. Refresh your access and try again.'
+            : rental.error.message
+        }
+        onAction={() => void retryRental()}
+        title={accessDenied ? 'Rental access unavailable' : 'Rental operations unavailable'}
+      />
+    );
+  if (!detail)
+    return (
+      <StateView
+        actionLabel="Retry"
+        icon="alert-circle-outline"
+        message="Refresh this rental to try again."
+        onAction={() => void retryRental()}
+        title="Rental unavailable"
+      />
+    );
   const needsInspection =
     detail.status === 'READY_FOR_PICKUP' &&
     detail.workflowCompliance?.start.evidenceOutcome !== 'WAIVED' &&
@@ -2087,6 +2118,7 @@ export function OwnerRentalPanel({
             endpointBase={rentalEndpoint}
             reference={reference}
             scope={overdueRecoveryScope}
+            workspaceKey={workspaceKey}
           />
         )}
       {detail.overdueHandoverRecovery && !detail.overdueHandoverRecovery.acceptance && (
@@ -2243,43 +2275,49 @@ export function OwnerRentalPanel({
             </Text>
           </View>
         )}
-      {canHandover && canInspect && needsInspection && !handoverStarted && pickupHandoverReady && (
-        <View
-          style={styles.actionCard}
-          onLayout={({ nativeEvent }) => {
-            ownerWorkflowOffsets.current.start = nativeEvent.layout.y;
-          }}
-        >
-          <Text style={styles.actionEyebrow}>Action required</Text>
-          <Text style={styles.cardTitle}>Complete pickup inspection</Text>
-          <Text style={styles.body}>Document the vehicle before handing it to the renter.</Text>
-          {detail.workflowCompliance?.workflow === 'B4' && (
-            <Text style={styles.actionNote}>
-              Complete the recorded handover to keep payout eligibility on track.
-            </Text>
-          )}
-          <Action
-            label="Start handover"
-            onPress={() => {
-              const knownIssues = (pickupDraft.data?.knownIssues ?? []).map((issue) => ({
-                category: issue.category,
-                classification: issue.classification,
-                description: issue.description,
-                evidenceFileAssetIds: [] as readonly string[],
-                knownIssueId: issue.id,
-                knownIssueEvidenceFileAssetIds: issue.evidence.map(
-                  ({ fileAssetId }) => fileAssetId,
-                ),
-                vehicleArea: issue.vehicleArea,
-              }));
-              setConditionIssues(knownIssues);
-              setShowConditionIssueForm(false);
-              if (knownIssues.length) setConditionDisclosureState('ISSUES_REPORTED');
-              setHandoverStarted(true);
+      {canHandover &&
+        canInspect &&
+        needsInspection &&
+        !handoverStarted &&
+        pickupHandoverReady &&
+        !pickupOverdue &&
+        !detail.overdueHandoverRecovery && (
+          <View
+            style={styles.actionCard}
+            onLayout={({ nativeEvent }) => {
+              ownerWorkflowOffsets.current.start = nativeEvent.layout.y;
             }}
-          />
-        </View>
-      )}
+          >
+            <Text style={styles.actionEyebrow}>Action required</Text>
+            <Text style={styles.cardTitle}>Complete pickup inspection</Text>
+            <Text style={styles.body}>Document the vehicle before handing it to the renter.</Text>
+            {detail.workflowCompliance?.workflow === 'B4' && (
+              <Text style={styles.actionNote}>
+                Complete the recorded handover to keep payout eligibility on track.
+              </Text>
+            )}
+            <Action
+              label="Start handover"
+              onPress={() => {
+                const knownIssues = (pickupDraft.data?.knownIssues ?? []).map((issue) => ({
+                  category: issue.category,
+                  classification: issue.classification,
+                  description: issue.description,
+                  evidenceFileAssetIds: [] as readonly string[],
+                  knownIssueId: issue.id,
+                  knownIssueEvidenceFileAssetIds: issue.evidence.map(
+                    ({ fileAssetId }) => fileAssetId,
+                  ),
+                  vehicleArea: issue.vehicleArea,
+                }));
+                setConditionIssues(knownIssues);
+                setShowConditionIssueForm(false);
+                if (knownIssues.length) setConditionDisclosureState('ISSUES_REPORTED');
+                setHandoverStarted(true);
+              }}
+            />
+          </View>
+        )}
       {canReportIncident &&
         detail.status === 'READY_FOR_PICKUP' &&
         showCompactRentalActions &&
@@ -2298,534 +2336,541 @@ export function OwnerRentalPanel({
             </View>
           </View>
         )}
-      {canHandover && canInspect && needsInspection && handoverStarted && (
-        <>
-          <View
-            style={styles.inspectionIntro}
-            onLayout={({ nativeEvent }) => {
-              ownerWorkflowOffsets.current.start = nativeEvent.layout.y;
-            }}
-          >
-            <Text accessibilityRole="header" style={styles.inspectionTitle}>
-              Pickup inspection
-            </Text>
-            <Text style={styles.body}>
-              Document the vehicle condition before handing it to the renter.
-            </Text>
-            <Text accessibilityLiveRegion="polite" style={styles.progress}>
-              {completedRequired(inspectionFiles)} of {perspectives.length} required photos added
-            </Text>
-          </View>
-          <View style={styles.inspectionSection}>
-            <Text accessibilityRole="header" style={styles.sectionTitle}>
-              Vehicle readings
-            </Text>
-            <View style={styles.readingField}>
-              <Text style={styles.readingLabel}>Odometer</Text>
-              <View style={styles.readingInputRow}>
-                <TextInput
-                  accessibilityLabel="Odometer reading in kilometers"
-                  style={[styles.input, styles.readingInput]}
-                  value={odometer}
-                  onChangeText={setOdometer}
-                  keyboardType="number-pad"
-                  placeholder="24,320"
-                  placeholderTextColor={colors.placeholder}
-                />
-                <Text style={styles.readingUnit}>km</Text>
-              </View>
-            </View>
-            {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' ? (
-              <View style={styles.readingField}>
-                <Text style={styles.readingLabel}>Fuel level</Text>
-                <View style={styles.readingInputRow}>
-                  <TextInput
-                    accessibilityLabel="Fuel level percentage"
-                    style={[styles.input, styles.readingInput]}
-                    value={fuel}
-                    onChangeText={setFuel}
-                    keyboardType="decimal-pad"
-                    placeholder="Enter fuel level"
-                    placeholderTextColor={colors.placeholder}
-                  />
-                  <Text style={styles.readingUnit}>%</Text>
-                </View>
-              </View>
-            ) : null}
-            {['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID'].includes(detail.vehicle.powertrain ?? '') ? (
-              <View style={styles.readingField}>
-                <Text style={styles.readingLabel}>Battery level</Text>
-                <View style={styles.readingInputRow}>
-                  <TextInput
-                    accessibilityLabel="Battery state of charge percentage"
-                    style={[styles.input, styles.readingInput]}
-                    value={soc}
-                    onChangeText={setSoc}
-                    keyboardType="decimal-pad"
-                    placeholder="Enter battery level"
-                    placeholderTextColor={colors.placeholder}
-                  />
-                  <Text style={styles.readingUnit}>%</Text>
-                </View>
-              </View>
-            ) : null}
-            <View style={styles.inspectionChecklist}>
-              {readingPerspectives.map(renderInspectionPhoto)}
-            </View>
-          </View>
-          <View style={styles.inspectionSection}>
-            <Text accessibilityRole="header" style={styles.sectionTitle}>
-              Exterior photos
-            </Text>
-            <View style={styles.inspectionChecklist}>
-              {exteriorPerspectives.map(renderInspectionPhoto)}
-            </View>
-          </View>
-          <View style={styles.inspectionSection}>
-            <Text accessibilityRole="header" style={styles.sectionTitle}>
-              Interior photos
-            </Text>
-            <View style={styles.inspectionChecklist}>
-              {interiorPerspectives.map(renderInspectionPhoto)}
-            </View>
-          </View>
-          <View style={styles.inspectionSection}>
-            <Text accessibilityRole="header" style={styles.sectionTitle}>
-              Pickup notes · Optional
-            </Text>
-            <TextInput
-              multiline
-              onChangeText={setNotes}
-              placeholder="Add anything the renter should know about the vehicle condition."
-              placeholderTextColor={colors.placeholder}
-              style={[styles.input, styles.notesInput]}
-              value={notes}
-            />
-          </View>
-          <View style={styles.inspectionSection}>
-            <View style={styles.conditionHeader}>
-              <Text accessibilityRole="header" style={styles.sectionTitle}>
-                Existing vehicle condition
-              </Text>
-              <Text style={styles.conditionStatus}>
-                {conditionDisclosureState === 'NO_KNOWN_ISSUES'
-                  ? 'No known issues'
-                  : conditionDisclosureState === 'ISSUES_REPORTED'
-                    ? `${conditionIssues.length} ${conditionIssues.length === 1 ? 'issue' : 'issues'}`
-                    : 'Review required'}
-              </Text>
-            </View>
-            <Text style={styles.body}>
-              Confirm the existing condition before handing over the vehicle.
-            </Text>
+      {canHandover &&
+        canInspect &&
+        needsInspection &&
+        handoverStarted &&
+        !pickupOverdue &&
+        !detail.overdueHandoverRecovery && (
+          <>
             <View
-              accessibilityLabel="Existing vehicle condition"
-              accessibilityRole="radiogroup"
-              style={styles.conditionChoiceGroup}
+              style={styles.inspectionIntro}
+              onLayout={({ nativeEvent }) => {
+                ownerWorkflowOffsets.current.start = nativeEvent.layout.y;
+              }}
             >
-              <ConditionDisclosureOption
-                label="No known issues"
-                onPress={() => {
-                  if (conditionIssues.some(({ knownIssueId }) => knownIssueId)) {
-                    Alert.alert(
-                      'Active known issues must be addressed',
-                      'Include each active issue or mark it resolved before declaring no known existing issues.',
-                    );
-                    return;
-                  }
-                  const selectNoIssues = () => {
-                    setConditionIssues([]);
-                    closeConditionIssueSheet();
-                    setConditionDisclosureState('NO_KNOWN_ISSUES');
-                  };
-                  if (conditionIssues.length) {
-                    Alert.alert(
-                      'Remove existing issue drafts?',
-                      'Choosing no known issues will remove the issues you added to this inspection.',
-                      [
-                        { text: 'Keep issues', style: 'cancel' },
-                        { text: 'Remove drafts', style: 'destructive', onPress: selectNoIssues },
-                      ],
-                    );
-                  } else selectNoIssues();
-                }}
-                selected={conditionDisclosureState === 'NO_KNOWN_ISSUES'}
-              />
-              <ConditionDisclosureOption
-                label="Report issues"
-                onPress={() => {
-                  setConditionDisclosureState('ISSUES_REPORTED');
-                  openNewConditionIssue();
-                }}
-                selected={conditionDisclosureState === 'ISSUES_REPORTED'}
+              <Text accessibilityRole="header" style={styles.inspectionTitle}>
+                Pickup inspection
+              </Text>
+              <Text style={styles.body}>
+                Document the vehicle condition before handing it to the renter.
+              </Text>
+              <Text accessibilityLiveRegion="polite" style={styles.progress}>
+                {completedRequired(inspectionFiles)} of {perspectives.length} required photos added
+              </Text>
+            </View>
+            <View style={styles.inspectionSection}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Vehicle readings
+              </Text>
+              <View style={styles.readingField}>
+                <Text style={styles.readingLabel}>Odometer</Text>
+                <View style={styles.readingInputRow}>
+                  <TextInput
+                    accessibilityLabel="Odometer reading in kilometers"
+                    style={[styles.input, styles.readingInput]}
+                    value={odometer}
+                    onChangeText={setOdometer}
+                    keyboardType="number-pad"
+                    placeholder="24,320"
+                    placeholderTextColor={colors.placeholder}
+                  />
+                  <Text style={styles.readingUnit}>km</Text>
+                </View>
+              </View>
+              {detail.vehicle.powertrain !== 'BATTERY_ELECTRIC' ? (
+                <View style={styles.readingField}>
+                  <Text style={styles.readingLabel}>Fuel level</Text>
+                  <View style={styles.readingInputRow}>
+                    <TextInput
+                      accessibilityLabel="Fuel level percentage"
+                      style={[styles.input, styles.readingInput]}
+                      value={fuel}
+                      onChangeText={setFuel}
+                      keyboardType="decimal-pad"
+                      placeholder="Enter fuel level"
+                      placeholderTextColor={colors.placeholder}
+                    />
+                    <Text style={styles.readingUnit}>%</Text>
+                  </View>
+                </View>
+              ) : null}
+              {['BATTERY_ELECTRIC', 'PLUG_IN_HYBRID'].includes(detail.vehicle.powertrain ?? '') ? (
+                <View style={styles.readingField}>
+                  <Text style={styles.readingLabel}>Battery level</Text>
+                  <View style={styles.readingInputRow}>
+                    <TextInput
+                      accessibilityLabel="Battery state of charge percentage"
+                      style={[styles.input, styles.readingInput]}
+                      value={soc}
+                      onChangeText={setSoc}
+                      keyboardType="decimal-pad"
+                      placeholder="Enter battery level"
+                      placeholderTextColor={colors.placeholder}
+                    />
+                    <Text style={styles.readingUnit}>%</Text>
+                  </View>
+                </View>
+              ) : null}
+              <View style={styles.inspectionChecklist}>
+                {readingPerspectives.map(renderInspectionPhoto)}
+              </View>
+            </View>
+            <View style={styles.inspectionSection}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Exterior photos
+              </Text>
+              <View style={styles.inspectionChecklist}>
+                {exteriorPerspectives.map(renderInspectionPhoto)}
+              </View>
+            </View>
+            <View style={styles.inspectionSection}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Interior photos
+              </Text>
+              <View style={styles.inspectionChecklist}>
+                {interiorPerspectives.map(renderInspectionPhoto)}
+              </View>
+            </View>
+            <View style={styles.inspectionSection}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Pickup notes · Optional
+              </Text>
+              <TextInput
+                multiline
+                onChangeText={setNotes}
+                placeholder="Add anything the renter should know about the vehicle condition."
+                placeholderTextColor={colors.placeholder}
+                style={[styles.input, styles.notesInput]}
+                value={notes}
               />
             </View>
-            {conditionDisclosureState === 'ISSUES_REPORTED' ? (
-              <>
-                <View style={styles.conditionIssueSummary}>
-                  <View>
-                    <Text style={styles.sectionTitle}>Existing issues</Text>
-                    <Text accessibilityLiveRegion="polite" style={styles.conditionIssueCount}>
-                      {conditionIssues.length} recorded
-                    </Text>
+            <View style={styles.inspectionSection}>
+              <View style={styles.conditionHeader}>
+                <Text accessibilityRole="header" style={styles.sectionTitle}>
+                  Existing vehicle condition
+                </Text>
+                <Text style={styles.conditionStatus}>
+                  {conditionDisclosureState === 'NO_KNOWN_ISSUES'
+                    ? 'No known issues'
+                    : conditionDisclosureState === 'ISSUES_REPORTED'
+                      ? `${conditionIssues.length} ${conditionIssues.length === 1 ? 'issue' : 'issues'}`
+                      : 'Review required'}
+                </Text>
+              </View>
+              <Text style={styles.body}>
+                Confirm the existing condition before handing over the vehicle.
+              </Text>
+              <View
+                accessibilityLabel="Existing vehicle condition"
+                accessibilityRole="radiogroup"
+                style={styles.conditionChoiceGroup}
+              >
+                <ConditionDisclosureOption
+                  label="No known issues"
+                  onPress={() => {
+                    if (conditionIssues.some(({ knownIssueId }) => knownIssueId)) {
+                      Alert.alert(
+                        'Active known issues must be addressed',
+                        'Include each active issue or mark it resolved before declaring no known existing issues.',
+                      );
+                      return;
+                    }
+                    const selectNoIssues = () => {
+                      setConditionIssues([]);
+                      closeConditionIssueSheet();
+                      setConditionDisclosureState('NO_KNOWN_ISSUES');
+                    };
+                    if (conditionIssues.length) {
+                      Alert.alert(
+                        'Remove existing issue drafts?',
+                        'Choosing no known issues will remove the issues you added to this inspection.',
+                        [
+                          { text: 'Keep issues', style: 'cancel' },
+                          { text: 'Remove drafts', style: 'destructive', onPress: selectNoIssues },
+                        ],
+                      );
+                    } else selectNoIssues();
+                  }}
+                  selected={conditionDisclosureState === 'NO_KNOWN_ISSUES'}
+                />
+                <ConditionDisclosureOption
+                  label="Report issues"
+                  onPress={() => {
+                    setConditionDisclosureState('ISSUES_REPORTED');
+                    openNewConditionIssue();
+                  }}
+                  selected={conditionDisclosureState === 'ISSUES_REPORTED'}
+                />
+              </View>
+              {conditionDisclosureState === 'ISSUES_REPORTED' ? (
+                <>
+                  <View style={styles.conditionIssueSummary}>
+                    <View>
+                      <Text style={styles.sectionTitle}>Existing issues</Text>
+                      <Text accessibilityLiveRegion="polite" style={styles.conditionIssueCount}>
+                        {conditionIssues.length} recorded
+                      </Text>
+                    </View>
+                    <SecondaryAction inline label="Add another" onPress={openNewConditionIssue} />
                   </View>
-                  <SecondaryAction inline label="Add another" onPress={openNewConditionIssue} />
-                </View>
-                {conditionIssues.some(({ knownIssueId }) => knownIssueId) ? (
-                  <>
-                    <View style={styles.conditionSubsectionHeader}>
-                      <Text style={styles.cardTitle}>Known vehicle issues</Text>
-                      <Text style={styles.conditionIssueCount}>
-                        {conditionIssues.filter(({ knownIssueId }) => knownIssueId).length} recorded
-                      </Text>
-                    </View>
-                    {conditionIssues.map((issue, index) =>
-                      issue.knownIssueId ? (
-                        <View
-                          key={`${issue.category}-${issue.vehicleArea}-${index}`}
-                          style={styles.issueCard}
-                        >
-                          <Text style={styles.cardTitle}>
-                            {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
-                          </Text>
-                          <Text style={styles.body}>{domainLabel(issue.classification)}</Text>
-                          <Text style={styles.body}>{issue.description}</Text>
-                          {issue.knownIssueEvidenceFileAssetIds?.length ? (
-                            <SecondaryAction
-                              label={`View supporting photos (${issue.knownIssueEvidenceFileAssetIds.length})`}
-                              onPress={() =>
-                                setConditionGallery(issue.knownIssueEvidenceFileAssetIds ?? [])
-                              }
-                            />
-                          ) : null}
-                        </View>
-                      ) : null,
-                    )}
-                  </>
-                ) : null}
-                {conditionIssues.some(({ knownIssueId }) => !knownIssueId) ? (
-                  <>
-                    <View style={styles.conditionSubsectionHeader}>
-                      <Text style={styles.cardTitle}>New issues</Text>
-                      <Text style={styles.conditionIssueCount}>
-                        {conditionIssues.filter(({ knownIssueId }) => !knownIssueId).length}{' '}
-                        recorded
-                      </Text>
-                    </View>
-                    {conditionIssues.map((issue, index) =>
-                      !issue.knownIssueId ? (
-                        <View
-                          key={`${issue.category}-${issue.vehicleArea}-${index}`}
-                          style={styles.issueCard}
-                        >
-                          <Text style={styles.cardTitle}>
-                            {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
-                          </Text>
-                          <Text style={styles.body}>{domainLabel(issue.classification)}</Text>
-                          <Text style={styles.body}>{issue.description}</Text>
-                          <View style={styles.inlineActions}>
-                            <SecondaryAction
-                              compact
-                              label={`Edit ${domainLabel(issue.category)} issue`}
-                              onPress={() => {
-                                setConditionCategory(issue.category);
-                                setConditionArea(issue.vehicleArea);
-                                setConditionClassification(issue.classification);
-                                setConditionDescription(issue.description);
-                                setConditionEvidenceIds(issue.evidenceFileAssetIds);
-                                setEditingConditionIssue(index);
-                                setConditionSheetContentHeight(0);
-                                setShowConditionIssueForm(true);
-                              }}
-                            />
-                            <Pressable
-                              accessibilityLabel={`Remove ${domainLabel(issue.category)} issue`}
-                              accessibilityRole="button"
-                              onPress={() =>
-                                Alert.alert(
-                                  'Remove issue?',
-                                  'This removes the issue from the draft.',
-                                  [
-                                    { text: 'Cancel', style: 'cancel' },
-                                    {
-                                      text: 'Remove',
-                                      style: 'destructive',
-                                      onPress: () => {
-                                        setFiles((current) => {
-                                          const captured = Object.keys(current).length
-                                            ? current
-                                            : draftFiles;
-                                          return {
-                                            ...captured,
-                                            ADDITIONAL: (captured.ADDITIONAL ?? []).filter(
-                                              ({ id }) => !issue.evidenceFileAssetIds.includes(id),
-                                            ),
-                                          };
-                                        });
-                                        setConditionIssues((current) =>
-                                          current.filter((_, issueIndex) => issueIndex !== index),
-                                        );
-                                      },
-                                    },
-                                  ],
-                                )
-                              }
-                              style={styles.destructiveSecondary}
-                            >
-                              <Text style={styles.destructiveSecondaryText}>Remove</Text>
-                            </Pressable>
-                          </View>
-                        </View>
-                      ) : null,
-                    )}
-                  </>
-                ) : null}
-                <Modal
-                  animationType="slide"
-                  onRequestClose={closeConditionIssueSheet}
-                  presentationStyle="overFullScreen"
-                  statusBarTranslucent
-                  transparent
-                  visible={showConditionIssueForm}
-                >
-                  <KeyboardAvoidingView
-                    behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-                    style={styles.conditionSheetRoot}
-                  >
-                    <View style={styles.exceptionBackdrop} />
-                    <Reanimated.View
-                      accessibilityViewIsModal
-                      style={[styles.conditionSheet, conditionSheetAnimatedStyle]}
-                    >
-                      <ScrollView
-                        automaticallyAdjustKeyboardInsets
-                        contentContainerStyle={[
-                          styles.conditionSheetContent,
-                          { paddingBottom: spacing.md },
-                        ]}
-                        keyboardShouldPersistTaps="handled"
-                        onContentSizeChange={(_width, height) =>
-                          setConditionSheetContentHeight(height)
-                        }
-                        scrollEnabled={conditionSheetLayout.scrollEnabled}
-                        showsVerticalScrollIndicator={conditionSheetLayout.scrollEnabled}
-                      >
-                        <BackControl label="Back" onPress={closeConditionIssueSheet} />
-                        <Text accessibilityRole="header" style={styles.exceptionTitle}>
-                          {editingConditionIssue === null
-                            ? 'Report existing issue'
-                            : 'Edit existing issue'}
+                  {conditionIssues.some(({ knownIssueId }) => knownIssueId) ? (
+                    <>
+                      <View style={styles.conditionSubsectionHeader}>
+                        <Text style={styles.cardTitle}>Known vehicle issues</Text>
+                        <Text style={styles.conditionIssueCount}>
+                          {conditionIssues.filter(({ knownIssueId }) => knownIssueId).length}{' '}
+                          recorded
                         </Text>
-                        <Text style={styles.conditionSheetHelper}>
-                          Record any damage or condition already present before handover.
-                        </Text>
-                        <View style={styles.issueForm}>
-                          <SearchableReferenceSelector
-                            label="Issue type"
-                            onChange={setConditionCategory}
-                            options={conditionCategoryOptions}
-                            sheetDismissLabel="Back"
-                            value={conditionCategory}
-                          />
-                          <SearchableReferenceSelector
-                            label="Location"
-                            onChange={setConditionArea}
-                            options={conditionAreaOptions}
-                            sheetDismissLabel="Back"
-                            value={conditionArea}
-                          />
-                          <SearchableReferenceSelector
-                            label="Severity"
-                            onChange={setConditionClassification}
-                            options={conditionClassificationOptions}
-                            sheetDismissLabel="Back"
-                            value={conditionClassification}
-                          />
-                          <Text
-                            accessibilityLiveRegion="polite"
-                            style={styles.classificationHelper}
+                      </View>
+                      {conditionIssues.map((issue, index) =>
+                        issue.knownIssueId ? (
+                          <View
+                            key={`${issue.category}-${issue.vehicleArea}-${index}`}
+                            style={styles.issueCard}
                           >
-                            {conditionClassificationExplanation(conditionClassification)}
-                          </Text>
-                          <Text style={styles.cardTitle}>Description</Text>
-                          <TextInput
-                            accessibilityLabel="Description"
-                            multiline
-                            ref={conditionDescriptionRef}
-                            onChangeText={(value) => {
-                              setConditionDescription(value);
-                              if (value.trim().length >= 3) setConditionDescriptionError('');
-                            }}
-                            placeholder="Describe the existing issue"
-                            placeholderTextColor={colors.placeholder}
-                            style={[styles.input, styles.issueDescriptionInput]}
-                            value={conditionDescription}
-                          />
-                          {conditionDescriptionError ? (
-                            <Text accessibilityRole="alert" style={styles.error}>
-                              {conditionDescriptionError}
+                            <Text style={styles.cardTitle}>
+                              {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
                             </Text>
-                          ) : null}
-                          <Text style={styles.cardTitle}>Supporting photos</Text>
-                          <Text style={styles.body}>
-                            Photos are private and visible only to authorized reviewers.
-                          </Text>
-                          <View style={styles.conditionIssuePhotos}>
-                            {conditionEvidence.map((file, index) => (
-                              <SecureCameraPhotoSlot
-                                busy={capture.isPending}
-                                compactRemoveOverlay
-                                guidance="Capture the affected area clearly."
-                                key={file.id}
-                                name={`Photo ${index + 1}`}
-                                onCapture={() =>
-                                  capture.mutate({ mode: 'append', perspective: 'ADDITIONAL' })
+                            <Text style={styles.body}>{domainLabel(issue.classification)}</Text>
+                            <Text style={styles.body}>{issue.description}</Text>
+                            {issue.knownIssueEvidenceFileAssetIds?.length ? (
+                              <SecondaryAction
+                                label={`View supporting photos (${issue.knownIssueEvidenceFileAssetIds.length})`}
+                                onPress={() =>
+                                  setConditionGallery(issue.knownIssueEvidenceFileAssetIds ?? [])
                                 }
-                                onRemove={() =>
-                                  setFiles((current) => {
-                                    setConditionEvidenceIds((ids) =>
-                                      ids.filter((id) => id !== file.id),
-                                    );
-                                    const captured = Object.keys(current).length
-                                      ? current
-                                      : draftFiles;
-                                    return {
-                                      ...captured,
-                                      ADDITIONAL: (captured.ADDITIONAL ?? []).filter(
-                                        ({ id }) => id !== file.id,
-                                      ),
-                                    };
-                                  })
-                                }
-                                persistedPreview={
-                                  !file.uri ? (
-                                    <AuthorizedInspectionImage
-                                      fileAssetId={file.id}
-                                      label={`Supporting photo ${index + 1} secure draft preview`}
-                                      large
-                                    />
-                                  ) : undefined
-                                }
-                                previewUri={file.uri}
-                                required={false}
-                                uploaded
-                              />
-                            ))}
-                            {conditionEvidence.length < 10 ? (
-                              <SecureCameraPhotoSlot
-                                busy={
-                                  capture.isPending &&
-                                  capture.variables?.perspective === 'ADDITIONAL'
-                                }
-                                captureLabel="Add photo"
-                                guidance="Use the rear camera to add supporting condition evidence."
-                                hideHeader
-                                name="Add photo"
-                                onCapture={() =>
-                                  capture.mutate({ mode: 'append', perspective: 'ADDITIONAL' })
-                                }
-                                required={false}
-                                uploaded={false}
                               />
                             ) : null}
                           </View>
-                          {capture.isError && capture.variables?.perspective === 'ADDITIONAL' && (
-                            <View>
-                              <Text accessibilityRole="alert" style={styles.error}>
-                                {attachmentUploaded
-                                  ? `Photo uploaded, but could not be attached. ${capture.error.message}`
-                                  : capture.error.message}
-                              </Text>
-                              <SecondaryAction
-                                label="Retry"
-                                onPress={() =>
-                                  capture.mutate({
-                                    mode: 'append',
-                                    perspective: 'ADDITIONAL',
-                                    retry: Boolean(pendingAttachment.current),
-                                  })
-                                }
-                              />
-                            </View>
-                          )}
-                        </View>
-                      </ScrollView>
-                      <View
-                        onLayout={({ nativeEvent }) =>
-                          setConditionSheetFooterHeight(nativeEvent.layout.height)
-                        }
-                        style={[
-                          styles.conditionSheetFooter,
-                          { paddingBottom: conditionSheetBottomAllowance },
-                        ]}
-                      >
-                        <Action
-                          label={editingConditionIssue === null ? 'Save issue' : 'Save changes'}
-                          onPress={saveConditionIssue}
-                        />
+                        ) : null,
+                      )}
+                    </>
+                  ) : null}
+                  {conditionIssues.some(({ knownIssueId }) => !knownIssueId) ? (
+                    <>
+                      <View style={styles.conditionSubsectionHeader}>
+                        <Text style={styles.cardTitle}>New issues</Text>
+                        <Text style={styles.conditionIssueCount}>
+                          {conditionIssues.filter(({ knownIssueId }) => !knownIssueId).length}{' '}
+                          recorded
+                        </Text>
                       </View>
-                    </Reanimated.View>
-                  </KeyboardAvoidingView>
-                </Modal>
-                <Modal
-                  animationType="fade"
-                  onRequestClose={() => setConditionGallery([])}
-                  visible={conditionGallery.length > 0}
-                >
-                  <View style={styles.conditionGallery}>
-                    <Pressable
-                      accessibilityLabel="Close supporting photos"
-                      accessibilityRole="button"
-                      hitSlop={spacing.md}
-                      onPress={() => setConditionGallery([])}
-                      style={styles.conditionGalleryClose}
+                      {conditionIssues.map((issue, index) =>
+                        !issue.knownIssueId ? (
+                          <View
+                            key={`${issue.category}-${issue.vehicleArea}-${index}`}
+                            style={styles.issueCard}
+                          >
+                            <Text style={styles.cardTitle}>
+                              {domainLabel(issue.category)} · {domainLabel(issue.vehicleArea)}
+                            </Text>
+                            <Text style={styles.body}>{domainLabel(issue.classification)}</Text>
+                            <Text style={styles.body}>{issue.description}</Text>
+                            <View style={styles.inlineActions}>
+                              <SecondaryAction
+                                compact
+                                label={`Edit ${domainLabel(issue.category)} issue`}
+                                onPress={() => {
+                                  setConditionCategory(issue.category);
+                                  setConditionArea(issue.vehicleArea);
+                                  setConditionClassification(issue.classification);
+                                  setConditionDescription(issue.description);
+                                  setConditionEvidenceIds(issue.evidenceFileAssetIds);
+                                  setEditingConditionIssue(index);
+                                  setConditionSheetContentHeight(0);
+                                  setShowConditionIssueForm(true);
+                                }}
+                              />
+                              <Pressable
+                                accessibilityLabel={`Remove ${domainLabel(issue.category)} issue`}
+                                accessibilityRole="button"
+                                onPress={() =>
+                                  Alert.alert(
+                                    'Remove issue?',
+                                    'This removes the issue from the draft.',
+                                    [
+                                      { text: 'Cancel', style: 'cancel' },
+                                      {
+                                        text: 'Remove',
+                                        style: 'destructive',
+                                        onPress: () => {
+                                          setFiles((current) => {
+                                            const captured = Object.keys(current).length
+                                              ? current
+                                              : draftFiles;
+                                            return {
+                                              ...captured,
+                                              ADDITIONAL: (captured.ADDITIONAL ?? []).filter(
+                                                ({ id }) =>
+                                                  !issue.evidenceFileAssetIds.includes(id),
+                                              ),
+                                            };
+                                          });
+                                          setConditionIssues((current) =>
+                                            current.filter((_, issueIndex) => issueIndex !== index),
+                                          );
+                                        },
+                                      },
+                                    ],
+                                  )
+                                }
+                                style={styles.destructiveSecondary}
+                              >
+                                <Text style={styles.destructiveSecondaryText}>Remove</Text>
+                              </Pressable>
+                            </View>
+                          </View>
+                        ) : null,
+                      )}
+                    </>
+                  ) : null}
+                  <Modal
+                    animationType="slide"
+                    onRequestClose={closeConditionIssueSheet}
+                    presentationStyle="overFullScreen"
+                    statusBarTranslucent
+                    transparent
+                    visible={showConditionIssueForm}
+                  >
+                    <KeyboardAvoidingView
+                      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                      style={styles.conditionSheetRoot}
                     >
-                      <Text style={styles.conditionGalleryCloseText}>Close</Text>
-                    </Pressable>
-                    <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
-                      {conditionGallery.map((fileAssetId, index) => (
-                        <Pressable
-                          accessibilityLabel="Close photo gallery"
-                          accessibilityRole="button"
-                          key={fileAssetId}
-                          onPress={() => setConditionGallery([])}
-                          style={[styles.conditionGalleryPage, { width: viewportWidth }]}
+                      <View style={styles.exceptionBackdrop} />
+                      <Reanimated.View
+                        accessibilityViewIsModal
+                        style={[styles.conditionSheet, conditionSheetAnimatedStyle]}
+                      >
+                        <ScrollView
+                          automaticallyAdjustKeyboardInsets
+                          contentContainerStyle={[
+                            styles.conditionSheetContent,
+                            { paddingBottom: spacing.md },
+                          ]}
+                          keyboardShouldPersistTaps="handled"
+                          onContentSizeChange={(_width, height) =>
+                            setConditionSheetContentHeight(height)
+                          }
+                          scrollEnabled={conditionSheetLayout.scrollEnabled}
+                          showsVerticalScrollIndicator={conditionSheetLayout.scrollEnabled}
                         >
-                          <Text style={styles.conditionGalleryCount}>
-                            {index + 1} / {conditionGallery.length}
+                          <BackControl label="Back" onPress={closeConditionIssueSheet} />
+                          <Text accessibilityRole="header" style={styles.exceptionTitle}>
+                            {editingConditionIssue === null
+                              ? 'Report existing issue'
+                              : 'Edit existing issue'}
                           </Text>
-                          <Pressable accessible={false} onPress={() => undefined}>
-                            <AuthorizedInspectionImage
-                              fileAssetId={fileAssetId}
-                              label={`Known issue supporting photo ${index + 1}`}
-                              large
+                          <Text style={styles.conditionSheetHelper}>
+                            Record any damage or condition already present before handover.
+                          </Text>
+                          <View style={styles.issueForm}>
+                            <SearchableReferenceSelector
+                              label="Issue type"
+                              onChange={setConditionCategory}
+                              options={conditionCategoryOptions}
+                              sheetDismissLabel="Back"
+                              value={conditionCategory}
                             />
+                            <SearchableReferenceSelector
+                              label="Location"
+                              onChange={setConditionArea}
+                              options={conditionAreaOptions}
+                              sheetDismissLabel="Back"
+                              value={conditionArea}
+                            />
+                            <SearchableReferenceSelector
+                              label="Severity"
+                              onChange={setConditionClassification}
+                              options={conditionClassificationOptions}
+                              sheetDismissLabel="Back"
+                              value={conditionClassification}
+                            />
+                            <Text
+                              accessibilityLiveRegion="polite"
+                              style={styles.classificationHelper}
+                            >
+                              {conditionClassificationExplanation(conditionClassification)}
+                            </Text>
+                            <Text style={styles.cardTitle}>Description</Text>
+                            <TextInput
+                              accessibilityLabel="Description"
+                              multiline
+                              ref={conditionDescriptionRef}
+                              onChangeText={(value) => {
+                                setConditionDescription(value);
+                                if (value.trim().length >= 3) setConditionDescriptionError('');
+                              }}
+                              placeholder="Describe the existing issue"
+                              placeholderTextColor={colors.placeholder}
+                              style={[styles.input, styles.issueDescriptionInput]}
+                              value={conditionDescription}
+                            />
+                            {conditionDescriptionError ? (
+                              <Text accessibilityRole="alert" style={styles.error}>
+                                {conditionDescriptionError}
+                              </Text>
+                            ) : null}
+                            <Text style={styles.cardTitle}>Supporting photos</Text>
+                            <Text style={styles.body}>
+                              Photos are private and visible only to authorized reviewers.
+                            </Text>
+                            <View style={styles.conditionIssuePhotos}>
+                              {conditionEvidence.map((file, index) => (
+                                <SecureCameraPhotoSlot
+                                  busy={capture.isPending}
+                                  compactRemoveOverlay
+                                  guidance="Capture the affected area clearly."
+                                  key={file.id}
+                                  name={`Photo ${index + 1}`}
+                                  onCapture={() =>
+                                    capture.mutate({ mode: 'append', perspective: 'ADDITIONAL' })
+                                  }
+                                  onRemove={() =>
+                                    setFiles((current) => {
+                                      setConditionEvidenceIds((ids) =>
+                                        ids.filter((id) => id !== file.id),
+                                      );
+                                      const captured = Object.keys(current).length
+                                        ? current
+                                        : draftFiles;
+                                      return {
+                                        ...captured,
+                                        ADDITIONAL: (captured.ADDITIONAL ?? []).filter(
+                                          ({ id }) => id !== file.id,
+                                        ),
+                                      };
+                                    })
+                                  }
+                                  persistedPreview={
+                                    !file.uri ? (
+                                      <AuthorizedInspectionImage
+                                        fileAssetId={file.id}
+                                        label={`Supporting photo ${index + 1} secure draft preview`}
+                                        large
+                                      />
+                                    ) : undefined
+                                  }
+                                  previewUri={file.uri}
+                                  required={false}
+                                  uploaded
+                                />
+                              ))}
+                              {conditionEvidence.length < 10 ? (
+                                <SecureCameraPhotoSlot
+                                  busy={
+                                    capture.isPending &&
+                                    capture.variables?.perspective === 'ADDITIONAL'
+                                  }
+                                  captureLabel="Add photo"
+                                  guidance="Use the rear camera to add supporting condition evidence."
+                                  hideHeader
+                                  name="Add photo"
+                                  onCapture={() =>
+                                    capture.mutate({ mode: 'append', perspective: 'ADDITIONAL' })
+                                  }
+                                  required={false}
+                                  uploaded={false}
+                                />
+                              ) : null}
+                            </View>
+                            {capture.isError && capture.variables?.perspective === 'ADDITIONAL' && (
+                              <View>
+                                <Text accessibilityRole="alert" style={styles.error}>
+                                  {attachmentUploaded
+                                    ? `Photo uploaded, but could not be attached. ${capture.error.message}`
+                                    : capture.error.message}
+                                </Text>
+                                <SecondaryAction
+                                  label="Retry"
+                                  onPress={() =>
+                                    capture.mutate({
+                                      mode: 'append',
+                                      perspective: 'ADDITIONAL',
+                                      retry: Boolean(pendingAttachment.current),
+                                    })
+                                  }
+                                />
+                              </View>
+                            )}
+                          </View>
+                        </ScrollView>
+                        <View
+                          onLayout={({ nativeEvent }) =>
+                            setConditionSheetFooterHeight(nativeEvent.layout.height)
+                          }
+                          style={[
+                            styles.conditionSheetFooter,
+                            { paddingBottom: conditionSheetBottomAllowance },
+                          ]}
+                        >
+                          <Action
+                            label={editingConditionIssue === null ? 'Save issue' : 'Save changes'}
+                            onPress={saveConditionIssue}
+                          />
+                        </View>
+                      </Reanimated.View>
+                    </KeyboardAvoidingView>
+                  </Modal>
+                  <Modal
+                    animationType="fade"
+                    onRequestClose={() => setConditionGallery([])}
+                    visible={conditionGallery.length > 0}
+                  >
+                    <View style={styles.conditionGallery}>
+                      <Pressable
+                        accessibilityLabel="Close supporting photos"
+                        accessibilityRole="button"
+                        hitSlop={spacing.md}
+                        onPress={() => setConditionGallery([])}
+                        style={styles.conditionGalleryClose}
+                      >
+                        <Text style={styles.conditionGalleryCloseText}>Close</Text>
+                      </Pressable>
+                      <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
+                        {conditionGallery.map((fileAssetId, index) => (
+                          <Pressable
+                            accessibilityLabel="Close photo gallery"
+                            accessibilityRole="button"
+                            key={fileAssetId}
+                            onPress={() => setConditionGallery([])}
+                            style={[styles.conditionGalleryPage, { width: viewportWidth }]}
+                          >
+                            <Text style={styles.conditionGalleryCount}>
+                              {index + 1} / {conditionGallery.length}
+                            </Text>
+                            <Pressable accessible={false} onPress={() => undefined}>
+                              <AuthorizedInspectionImage
+                                fileAssetId={fileAssetId}
+                                label={`Known issue supporting photo ${index + 1}`}
+                                large
+                              />
+                            </Pressable>
                           </Pressable>
-                        </Pressable>
-                      ))}
-                    </ScrollView>
-                  </View>
-                </Modal>
-              </>
-            ) : null}
-          </View>
-          {inspectionReady ? (
-            <View accessibilityLiveRegion="polite" style={styles.readyState}>
-              <Text style={styles.cardTitle}>Ready to submit</Text>
-              <Text style={styles.body}>All required pickup evidence has been added.</Text>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  </Modal>
+                </>
+              ) : null}
             </View>
-          ) : null}
-          <Action
-            label={
-              action.isPending && action.variables === 'inspection'
-                ? 'Submitting…'
-                : 'Submit inspection'
-            }
-            disabled={!inspectionReady || (action.isPending && action.variables === 'inspection')}
-            onPress={() => action.mutate('inspection')}
-          />
-        </>
-      )}
+            {inspectionReady ? (
+              <View accessibilityLiveRegion="polite" style={styles.readyState}>
+                <Text style={styles.cardTitle}>Ready to submit</Text>
+                <Text style={styles.body}>All required pickup evidence has been added.</Text>
+              </View>
+            ) : null}
+            <Action
+              label={
+                action.isPending && action.variables === 'inspection'
+                  ? 'Submitting…'
+                  : 'Submit inspection'
+              }
+              disabled={!inspectionReady || (action.isPending && action.variables === 'inspection')}
+              onPress={() => action.mutate('inspection')}
+            />
+          </>
+        )}
       {detail.status === 'READY_FOR_PICKUP' &&
         (detail.inspections.some(({ type }) => type === 'PICKUP') ||
           detail.workflowCompliance?.start.evidenceOutcome === 'WAIVED') &&
@@ -4257,11 +4302,13 @@ function OwnerOverdueRecoveryAction({
   endpointBase,
   reference,
   scope,
+  workspaceKey,
 }: {
   readonly detail: RentalDetail;
   readonly endpointBase: string;
   readonly reference: string;
   readonly scope: OverdueRecoveryScope;
+  readonly workspaceKey: string;
 }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -4298,6 +4345,7 @@ function OwnerOverdueRecoveryAction({
     setPickupAt(new Date(Math.min(now.getTime(), new Date(detail.rentalEnd).getTime() - 1)));
     setReturnAt(now);
     setContentHeight(0);
+    action.reset();
     setOpen(true);
   };
   const timestampError = overdueTimestampError({
@@ -4322,7 +4370,7 @@ function OwnerOverdueRecoveryAction({
         }),
       }),
     onSuccess: (result) => {
-      client.setQueryData(['owner-rental', reference], result);
+      client.setQueryData(['owner-workspace', workspaceKey, 'rental', reference], result);
       setOpen(false);
       invalidateRentalQueries(client, reference);
     },
@@ -4419,7 +4467,7 @@ function OwnerOverdueRecoveryAction({
               />
               {action.isError && (
                 <Text accessibilityRole="alert" style={styles.error}>
-                  {presentation.errorMessage}
+                  {overdueRecoveryErrorMessage(action.error, scope, presentation.errorMessage)}
                 </Text>
               )}
             </ScrollView>
@@ -4521,6 +4569,25 @@ function overdueTimestampError({
     return 'Return time must be after handover and cannot be in the future.';
   }
   return null;
+}
+
+function overdueRecoveryErrorMessage(error: Error, scope: OverdueRecoveryScope, fallback: string) {
+  if (!(error instanceof ApiError)) return fallback;
+  if (error.status === 403 || ['OWNER_ACCESS_DENIED', 'PERMISSION_DENIED'].includes(error.code))
+    return 'You no longer have access to complete this rental operation.';
+  if (error.code !== 'RENTAL_STATE_INVALID') return fallback;
+  if (error.message === 'Reported handover times are outside the allowed chronological window.')
+    return scope === 'BOTH'
+      ? 'Return time must be after the handover time, and both times must be within the rental period.'
+      : scope === 'RETURN'
+        ? 'Choose a return time after handover and within the rental period.'
+        : 'Choose a handover time within the rental period.';
+  if (
+    error.message.includes('must be reported together') ||
+    error.message.includes('may be reported')
+  )
+    return 'This rental changed. Refresh and try again.';
+  return 'This rental can no longer be recovered from its current state.';
 }
 
 function localDateKey(value: Date) {

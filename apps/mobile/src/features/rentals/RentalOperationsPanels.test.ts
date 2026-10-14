@@ -42,6 +42,8 @@ describe('inspection correction mobile synchronization', () => {
       '<NestedScreen\n      compactNestedHeader\n      constrainOverscroll',
     );
     expect(ownerRentalsSource).toContain('contentTopPadding={spacing.sm}');
+    expect(ownerRentalsSource).toContain('backLabel="Back"');
+    expect(ownerRentalsSource).not.toContain("selected ? 'All rentals' : 'Back'");
     expect(ownerRentalsSource).toContain('onContentSizeChange={(_width, height) =>');
     expect(ownerRentalsSource).toContain('height - scrollViewportHeight.current');
     expect(ownerRentalsSource).toContain('scrollTo({ animated: false, y: maximumOffset })');
@@ -203,6 +205,18 @@ describe('inspection correction mobile synchronization', () => {
     expect(source).toContain("category === 'RENTER_NO_SHOW'");
     expect(source).toContain('✓ Renter no-show reported');
     expect(source).toContain("action.variables === 'renter-no-show'");
+    expect(source).toContain("operation === 'claim' && !canCreateClaim");
+    expect(source).toContain(
+      "['incident', 'renter-no-show'].includes(operation) && !canReportIncident",
+    );
+    expect(source).toContain('return apiClient.request(`${rentalEndpoint}/incidents`');
+    expect(source).not.toContain(
+      "['claim', 'incident', 'correction', 'renter-no-show'].includes(operation)",
+    );
+    expect(source).toContain("operation === 'correction' && !canInspect");
+    expect(source).toContain("operation.startsWith('discrepancy-') && !canHandover");
+    expect(source).toContain('`${rentalEndpoint}/pickup/discrepancy/respond`');
+    expect(source).toContain('`${rentalEndpoint}/inspections/${pickup.id}/corrections`');
     expect(source).toContain('Get pickup code');
     expect(source).toContain('scrollToPickupCodeAfterLayout.current = true');
     expect(source).toContain('panelOffsetY.current + nativeEvent.layout.y - spacing.md');
@@ -218,7 +232,7 @@ describe('inspection correction mobile synchronization', () => {
     expect(source).toContain('Owner collection');
     expect(source).toContain("detail.handoverTravel.startStatus === 'ARRIVED'");
     expect(source).toContain("detail.handoverTravel.returnStatus === 'ARRIVED'");
-    expect(source).toContain('needsInspection && !handoverStarted && pickupHandoverReady');
+    expect(source).toContain('pickupHandoverReady &&\n        !pickupOverdue &&');
     expect(source).toContain('!returned &&');
     expect(source).toContain('!returnWaived &&');
     expect(source).toContain('const returnRecoveryReady = returnHandoverReady || returnOverdue;');
@@ -258,6 +272,16 @@ describe('inspection correction mobile synchronization', () => {
     expect(source).toContain("actionsEnabled={detail.status === 'RETURN_PENDING'}");
     expect(source).toContain('actionsEnabled && next');
     expect(source).not.toContain('/owner/bookings/${reference}/rental/return/inspection');
+  });
+
+  it('maps delegated overdue recovery failures to safe actionable messages', () => {
+    expect(source).toContain('function overdueRecoveryErrorMessage(');
+    expect(source).toContain('You no longer have access to complete this rental operation.');
+    expect(source).toContain('Return time must be after the handover time');
+    expect(source).toContain('This rental can no longer be recovered from its current state.');
+    expect(source).toContain('This rental changed. Refresh and try again.');
+    expect(source).toContain('overdueRecoveryErrorMessage(action.error, scope');
+    expect(source).toContain('action.reset();');
   });
 
   it('keeps the accepted-booking delivery and next-step cards compact and renter-facing', () => {
@@ -510,7 +534,9 @@ describe('inspection correction mobile synchronization', () => {
     expect(preSubmit).toContain('{presentation.warningTitle}');
     expect(preSubmit).toContain('label={presentation.preSubmitAction}');
     expect(preSubmit).toContain('apiClient.request<RentalDetail>');
-    expect(preSubmit).toContain("client.setQueryData(['owner-rental', reference], result)");
+    expect(preSubmit).toContain(
+      "client.setQueryData(['owner-workspace', workspaceKey, 'rental', reference], result)",
+    );
     expect(source).toContain(
       "detail.status === 'READY_FOR_PICKUP' &&\n        showCompactRentalActions &&\n        !pickup",
     );
@@ -795,6 +821,10 @@ describe('inspection correction mobile synchronization', () => {
     );
     expect(source).toContain('<OwnerOverdueRecoveryAction');
     expect(source).toContain('scope={overdueRecoveryScope}');
+    expect(source).toContain('workspaceKey={workspaceKey}');
+    expect(source).toContain(
+      "client.setQueryData(['owner-workspace', workspaceKey, 'rental', reference], result)",
+    );
     expect(source).toContain(
       "detail.fulfillment.startMethod === 'OWNER_DELIVERY' &&\n        canHandover &&\n        !pickupOverdue &&",
     );
@@ -805,6 +835,9 @@ describe('inspection correction mobile synchronization', () => {
     ).toHaveLength(2);
     expect(source).toContain(
       'needsInspection &&\n        !handoverStarted &&\n        !pickupHandoverReady &&\n        !pickupOverdue',
+    );
+    expect(source).toContain(
+      'pickupHandoverReady &&\n        !pickupOverdue &&\n        !detail.overdueHandoverRecovery',
     );
     expect(source).toContain('Handover recorded');
     expect(source).toContain("disputed ? 'Operations review' : 'Awaiting renter'");

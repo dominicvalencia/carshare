@@ -17,25 +17,43 @@ export interface PlaceSuggestion {
   readonly secondaryText: string;
 }
 export interface BookingLocationProvider {
-  searchPlaces(query: string, sessionToken: string): Promise<readonly PlaceSuggestion[]>;
-  resolvePlace(reference: string, sessionToken: string): Promise<CarShareLocation>;
-  reverseGeocode(latitude: number, longitude: number): Promise<CarShareLocation>;
+  searchPlaces(
+    query: string,
+    sessionToken: string,
+    ownerProfileId?: string,
+  ): Promise<readonly PlaceSuggestion[]>;
+  resolvePlace(
+    reference: string,
+    sessionToken: string,
+    ownerProfileId?: string,
+  ): Promise<CarShareLocation>;
+  reverseGeocode(
+    latitude: number,
+    longitude: number,
+    ownerProfileId?: string,
+  ): Promise<CarShareLocation>;
+}
+
+function workspaceQuery(ownerProfileId: string | undefined) {
+  return ownerProfileId ? `&ownerProfileId=${encodeURIComponent(ownerProfileId)}` : '';
 }
 
 export const bookingLocationProvider: BookingLocationProvider = {
-  async searchPlaces(query, sessionToken) {
+  async searchPlaces(query, sessionToken, ownerProfileId) {
     const response = await apiClient.request<{ items: readonly PlaceSuggestion[] }>(
-      `/locations/search?q=${encodeURIComponent(query)}&session=${encodeURIComponent(sessionToken)}`,
+      `/locations/search?q=${encodeURIComponent(query)}&session=${encodeURIComponent(sessionToken)}${workspaceQuery(ownerProfileId)}`,
     );
     return response.items;
   },
-  resolvePlace(reference, sessionToken) {
+  resolvePlace(reference, sessionToken, ownerProfileId) {
     return apiClient.request(
-      `/locations/places/${encodeURIComponent(reference)}?session=${encodeURIComponent(sessionToken)}`,
+      `/locations/places/${encodeURIComponent(reference)}?session=${encodeURIComponent(sessionToken)}${workspaceQuery(ownerProfileId)}`,
     );
   },
-  reverseGeocode(latitude, longitude) {
-    return apiClient.request(`/locations/reverse?latitude=${latitude}&longitude=${longitude}`);
+  reverseGeocode(latitude, longitude, ownerProfileId) {
+    return apiClient.request(
+      `/locations/reverse?latitude=${latitude}&longitude=${longitude}${workspaceQuery(ownerProfileId)}`,
+    );
   },
 };
 

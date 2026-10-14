@@ -89,6 +89,42 @@ export function ownerHomeIsOperationallyEmpty(model: OwnerHomeReadModel): boolea
   );
 }
 
+export function ownerRequestSummaryLabel(count: number, canRespond: boolean): string {
+  if (!canRespond) return `${count} booking ${count === 1 ? 'request' : 'requests'}`;
+  return `${count} ${count === 1 ? 'request needs' : 'requests need'} your response`;
+}
+
+export function ownerRequestTabAccessibilityLabel(count: number, canRespond: boolean): string {
+  if (count === 0) return 'Requests';
+  return canRespond
+    ? `Requests, ${count} ${count === 1 ? 'item needs' : 'items need'} your response`
+    : `Requests, ${count} booking ${count === 1 ? 'request' : 'requests'}`;
+}
+
+export function ownerUnreadMessagesLabel(count: number): string {
+  return `${count} unread ${count === 1 ? 'message' : 'messages'}`;
+}
+
+export function ownerUnreadMessageCount(
+  items: readonly { readonly unreadCount: number }[],
+): number {
+  return items.reduce((total, item) => total + item.unreadCount, 0);
+}
+
+export function ownerAttentionLabel(item: OwnerHomeAttention, canAct: boolean): string {
+  if (canAct) {
+    if (item.type === 'OVERDUE_PICKUP') return 'Pickup needs attention';
+    if (item.type === 'OVERDUE_RETURN') return 'Return is overdue';
+    if (item.type === 'FINANCIAL_RECOVERY') return 'Booking update needs review';
+    if (item.titleCode === 'PICKUP_DISCREPANCY') return 'Pickup discrepancy needs review';
+    return 'Booking needs attention';
+  }
+  if (item.type === 'OVERDUE_PICKUP') return 'Pickup overdue';
+  if (item.type === 'OVERDUE_RETURN') return 'Return overdue';
+  if (item.titleCode === 'PICKUP_DISCREPANCY') return 'Pickup discrepancy';
+  return 'Booking update';
+}
+
 export function groupOwnerUpcoming(
   items: readonly OwnerHomeCard[],
   todayStart: string,

@@ -113,6 +113,7 @@ export async function consumeDomainEvent(
             : {}),
           ...(eventType.startsWith('VEHICLE_OWNER_APPROVAL_') ||
           eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED' ||
+          eventType === 'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW' ||
           eventType.startsWith('VEHICLE_CHANGE_PROPOSAL_')
             ? {
                 managerDisplayName: text(payload.managerDisplayName),
@@ -319,6 +320,12 @@ function policyFor(eventType: string, payload: Payload): EventPolicy | null {
     return {
       category: NotificationCategory.BOOKING_UPDATES,
       templateKey: 'vehicle-owner-approval.changes-required',
+      recipients: 'DIRECT',
+    };
+  if (eventType === 'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW')
+    return {
+      category: NotificationCategory.BOOKING_UPDATES,
+      templateKey: 'vehicle.trusted-manager-submitted-for-review',
       recipients: 'DIRECT',
     };
   if (eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED')
@@ -819,6 +826,8 @@ function deepLink(
     return `${scheme}://owner/vehicle-approvals/${vehicleId}`;
   if (eventType.startsWith('VEHICLE_OWNER_APPROVAL_') && vehicleId)
     return `${scheme}://owner/vehicles/${vehicleId}`;
+  if (eventType === 'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW' && vehicleId)
+    return `${scheme}://owner/vehicles/${vehicleId}`;
   if (eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED' && vehicleId)
     return `${scheme}://owner/vehicles/${vehicleId}`;
   const proposalId = uuid(payload.proposalId);
@@ -838,7 +847,8 @@ function deepLink(
 function sourceType(eventType: string) {
   return eventType.startsWith('VEHICLE_OWNER_APPROVAL_')
     ? 'VEHICLE_OWNER_APPROVAL'
-    : eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED'
+    : eventType === 'VEHICLE_OPERATIONAL_FIELDS_UPDATED' ||
+        eventType === 'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW'
       ? 'VEHICLE'
       : eventType.startsWith('VEHICLE_CHANGE_PROPOSAL_')
         ? 'VEHICLE_CHANGE_PROPOSAL'

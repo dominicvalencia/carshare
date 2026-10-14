@@ -30,8 +30,13 @@ import {
 } from '../../ui/primitives';
 import {
   groupOwnerUpcoming,
+  ownerAttentionLabel,
   ownerHomeIsOperationallyEmpty,
   ownerHomeQueryKey,
+  ownerRequestSummaryLabel,
+  ownerRequestTabAccessibilityLabel,
+  ownerUnreadMessageCount,
+  ownerUnreadMessagesLabel,
   type OwnerHomeAttention,
   type OwnerHomeCard,
   type OwnerHomeReadModel,
@@ -66,8 +71,11 @@ export function OwnerDashboardScreen({
   const workspaceKey = delegated ? ownerWorkspace!.ownerProfileId : 'owner';
   const canViewBookings = !delegated || hasOwnerPermission(ownerWorkspace!, 'bookings.view');
   const canViewRentals = !delegated || hasOwnerPermission(ownerWorkspace!, 'rentals.view');
-  const canViewVehicles = !delegated || hasOwnerPermission(ownerWorkspace!, 'vehicles.view');
   const canViewMessages = !delegated || hasOwnerPermission(ownerWorkspace!, 'messages.view');
+  const canRespondToRequests =
+    !delegated ||
+    hasOwnerPermission(ownerWorkspace!, 'bookings.accept') ||
+    hasOwnerPermission(ownerWorkspace!, 'bookings.reject');
   const requestPollingInterval = useFocusedPollingInterval(
     OWNER_REQUEST_POLL_INTERVAL_MS,
     ownerStatus === 'VERIFIED',
@@ -83,7 +91,7 @@ export function OwnerDashboardScreen({
     retry: false,
   });
   const vehicles = useQuery({
-    enabled: (delegated || ownerStatus === 'VERIFIED') && canViewVehicles,
+    enabled: !delegated && ownerStatus === 'VERIFIED',
     queryFn: () =>
       apiClient.request<OwnerVehicleSummary[]>(
         delegated
@@ -115,20 +123,22 @@ export function OwnerDashboardScreen({
     queryKey: ['owner-home-upcoming', workspaceKey],
   });
   const conversations = useQuery({
-    enabled: delegated && canViewMessages,
+    enabled: (delegated || ownerStatus === 'VERIFIED') && canViewMessages,
     queryFn: () =>
       apiClient.request<{ items: readonly { unreadCount: number }[] }>(
-        `/owner/workspaces/${ownerWorkspace!.ownerProfileId}/conversations?limit=50`,
+        delegated
+          ? `/owner/workspaces/${ownerWorkspace!.ownerProfileId}/conversations?limit=50`
+          : '/conversations?limit=50&audience=OWNER',
       ),
     queryKey: ['conversations', workspaceKey],
   });
   useRefreshOnFocusAndForeground(() => {
     if (delegated || ownerStatus === 'VERIFIED') void home.refetch();
-    if ((delegated || ownerStatus === 'VERIFIED') && canViewVehicles) void vehicles.refetch();
+    if (!delegated && ownerStatus === 'VERIFIED') void vehicles.refetch();
     if (!delegated && ownerStatus === 'VERIFIED') void changeProposals.refetch();
     if ((delegated || ownerStatus === 'VERIFIED') && canViewRentals && selectedTab === 'Upcoming')
       void upcoming.refetch();
-    if (delegated && canViewMessages) void conversations.refetch();
+    if ((delegated || ownerStatus === 'VERIFIED') && canViewMessages) void conversations.refetch();
   });
 
   if (!delegated && ownerStatus !== 'VERIFIED')
@@ -163,6 +173,9 @@ export function OwnerDashboardScreen({
     );
 
   const model = home.data;
+  const hasActionableAttention = model.today.attention.some((item) =>
+    canActOnAttention(ownerWorkspace, item),
+  );
   const openBooking = (reference: string) =>
     delegated
       ? setSelectedRentalReference(reference)
@@ -170,6 +183,7 @@ export function OwnerDashboardScreen({
   const openUpcoming = () => setSelectedTab('Upcoming');
   const openRequests = () => setSelectedTab('Requests');
   const requestCount = model.requests.totalRequestsCount;
+  const unreadMessageCount = ownerUnreadMessageCount(conversations.data?.items ?? []);
   const vehicleAction =
     !delegated && vehicles.data
       ? vehicles.data.length === 0
@@ -179,12 +193,17 @@ export function OwnerDashboardScreen({
           : null
       : null;
   const pendingOwnerApprovals =
-    vehicles.data?.filter(
-      ({ ownerApproval, status }) => status === 'DRAFT' && ownerApproval?.status === 'PENDING',
-    ) ?? [];
+    !delegated
+      ? (vehicles.data?.filter(
+          ({ ownerApproval, status }) => status === 'DRAFT' && ownerApproval?.status === 'PENDING',
+        ) ?? [])
+      : [];
   const pendingVehicleChanges =
-    changeProposals.data?.proposals.filter(({ status }) => status === 'PENDING_OWNER_APPROVAL') ??
-    [];
+    !delegated
+      ? (changeProposals.data?.proposals.filter(
+          ({ status }) => status === 'PENDING_OWNER_APPROVAL',
+        ) ?? [])
+      : [];
   if (selectedAmendment)
     return (
       <OwnerBookingRequestsScreen
@@ -225,6 +244,7 @@ export function OwnerDashboardScreen({
           {canViewBookings ? (
             <TopTab
               count={requestCount}
+              canRespond={canRespondToRequests}
               label="Requests"
               onPress={openRequests}
               selected={selectedTab === 'Requests'}
@@ -236,6 +256,74 @@ export function OwnerDashboardScreen({
       <View style={styles.tabContent}>
         {selectedTab === 'Today' && (
           <View style={styles.tabPanel}>
+            {model.today.attention.length > 0 && (
+              <TodaySection title={hasActionableAttention ? 'Needs attention' : 'Rental updates'}>
+                {model.today.attention.map((item) => (
+                  <AttentionCard
+                    canAct={canActOnAttention(ownerWorkspace, item)}
+                    key={`${item.type}-${item.bookingReference}`}
+                    item={item}
+                    onPress={openBooking}
+                  />
+                ))}
+              </TodaySection>
+            )}
+            {model.today.pickups.length > 0 && (
+              <TodaySection title="Pickups today">
+                {model.today.pickups.map((item) => (
+                  <OperationalCard
+                    key={item.bookingReference}
+                    item={item}
+                    kind="pickup"
+                    onPress={openBooking}
+                  />
+                ))}
+              </TodaySection>
+            )}
+            {model.today.activeRentals.length > 0 && (
+              <TodaySection title="Active rentals">
+                {model.today.activeRentals.map((item) => (
+                  <OperationalCard
+                    key={item.bookingReference}
+                    item={item}
+                    kind="active"
+                    onPress={openBooking}
+                  />
+                ))}
+              </TodaySection>
+            )}
+            {model.today.returns.length > 0 && (
+              <TodaySection title="Returns today">
+                {model.today.returns.map((item) => (
+                  <OperationalCard
+                    key={item.bookingReference}
+                    item={item}
+                    kind="return"
+                    onPress={openBooking}
+                  />
+                ))}
+              </TodaySection>
+            )}
+            {requestCount > 0 && (
+              <Pressable
+                accessibilityLabel={`${ownerRequestSummaryLabel(requestCount, canRespondToRequests)}. View requests`}
+                accessibilityRole="button"
+                onPress={openRequests}
+              >
+                <Card style={styles.requestSummary}>
+                  <View style={styles.summaryIcon}>
+                    <Icon color={colors.primary} name="file-tray-full-outline" />
+                  </View>
+                  <View style={styles.flex}>
+                    <Text style={styles.cardTitle}>
+                      {ownerRequestSummaryLabel(requestCount, canRespondToRequests)}
+                    </Text>
+                    <Text style={styles.link}>View requests</Text>
+                  </View>
+                  <Icon color={colors.primary} name="chevron-forward" />
+                </Card>
+              </Pressable>
+            )}
             {pendingVehicleChanges.length > 0 ? (
               <Pressable
                 accessibilityLabel={`${pendingVehicleChanges.length} vehicle ${pendingVehicleChanges.length === 1 ? 'change' : 'changes'} awaiting your approval`}
@@ -293,142 +381,59 @@ export function OwnerDashboardScreen({
                 </Card>
               </Pressable>
             ) : null}
-            {model.today.attention.length > 0 && (
-              <TodaySection title="Needs attention">
-                {model.today.attention.map((item) => (
-                  <AttentionCard
-                    key={`${item.type}-${item.bookingReference}`}
-                    item={item}
-                    onPress={openBooking}
-                  />
-                ))}
-              </TodaySection>
-            )}
-            {model.today.pickups.length > 0 && (
-              <TodaySection title="Pickups today">
-                {model.today.pickups.map((item) => (
-                  <OperationalCard
-                    key={item.bookingReference}
-                    item={item}
-                    kind="pickup"
-                    onPress={openBooking}
-                  />
-                ))}
-              </TodaySection>
-            )}
-            {model.today.activeRentals.length > 0 && (
-              <TodaySection title="Active rentals">
-                {model.today.activeRentals.map((item) => (
-                  <OperationalCard
-                    key={item.bookingReference}
-                    item={item}
-                    kind="active"
-                    onPress={openBooking}
-                  />
-                ))}
-              </TodaySection>
-            )}
-            {model.today.returns.length > 0 && (
-              <TodaySection title="Returns today">
-                {model.today.returns.map((item) => (
-                  <OperationalCard
-                    key={item.bookingReference}
-                    item={item}
-                    kind="return"
-                    onPress={openBooking}
-                  />
-                ))}
-              </TodaySection>
-            )}
-            {ownerHomeIsOperationallyEmpty(model) && pendingOwnerApprovals.length === 0 && (
-              <View style={requestCount === 0 && styles.centeredEmpty}>
-                <Card style={styles.emptyCard}>
-                  <Icon color={colors.primary} name="sunny-outline" size={28} />
-                  <Text style={styles.emptyTitle}>Nothing scheduled today</Text>
-                  {model.today.nextUpcoming ? (
-                    <>
-                      <Text style={styles.emptyMessage}>
-                        Your next rental starts {dateLabel(model.today.nextUpcoming.pickup.at)}.
-                      </Text>
-                      <Button
-                        compact
-                        label="View upcoming"
-                        onPress={openUpcoming}
-                        variant="secondary"
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <Text style={styles.emptyMessage}>
-                        Future confirmed rentals will appear in Upcoming.
-                      </Text>
-                      {vehicleAction && (
+            {ownerHomeIsOperationallyEmpty(model) &&
+              requestCount === 0 &&
+              pendingOwnerApprovals.length === 0 &&
+              unreadMessageCount === 0 && (
+                <View style={styles.centeredEmpty}>
+                  <Card style={styles.emptyCard}>
+                    <Icon color={colors.primary} name="sunny-outline" size={28} />
+                    <Text style={styles.emptyTitle}>Nothing scheduled today</Text>
+                    {model.today.nextUpcoming ? (
+                      <>
+                        <Text style={styles.emptyMessage}>
+                          Your next rental starts {dateLabel(model.today.nextUpcoming.pickup.at)}.
+                        </Text>
                         <Button
                           compact
-                          label={vehicleAction}
-                          onPress={() => navigation.navigate('Vehicles')}
+                          label="View upcoming"
+                          onPress={openUpcoming}
                           variant="secondary"
                         />
-                      )}
-                    </>
-                  )}
-                </Card>
-              </View>
-            )}
-            {requestCount > 0 && (
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.emptyMessage}>
+                          Future confirmed rentals will appear in Upcoming.
+                        </Text>
+                        {vehicleAction && (
+                          <Button
+                            compact
+                            label={vehicleAction}
+                            onPress={() => navigation.navigate('Vehicles')}
+                            variant="secondary"
+                          />
+                        )}
+                      </>
+                    )}
+                  </Card>
+                </View>
+              )}
+            {canViewMessages && unreadMessageCount > 0 ? (
               <Pressable
-                accessibilityLabel={`${requestCount} requests need your response. View requests`}
+                accessibilityLabel={`${ownerUnreadMessagesLabel(unreadMessageCount)}. View messages`}
                 accessibilityRole="button"
-                onPress={openRequests}
+                onPress={() => navigation.navigate('Messages')}
               >
-                <Card style={styles.requestSummary}>
-                  <View style={styles.summaryIcon}>
-                    <Icon color={colors.primary} name="file-tray-full-outline" />
-                  </View>
-                  <View style={styles.flex}>
-                    <Text style={styles.cardTitle}>
-                      {requestCount} {requestCount === 1 ? 'request needs' : 'requests need'} your
-                      response
-                    </Text>
-                    <Text style={styles.link}>View requests</Text>
-                  </View>
-                  <Icon color={colors.primary} name="chevron-forward" />
-                </Card>
-              </Pressable>
-            )}
-            {delegated && canViewMessages ? (
-              <Pressable accessibilityRole="button" onPress={() => navigation.navigate('Messages')}>
                 <Card style={styles.requestSummary}>
                   <View style={styles.summaryIcon}>
                     <Icon color={colors.primary} name="chatbubble-outline" />
                   </View>
                   <View style={styles.flex}>
-                    <Text style={styles.cardTitle}>Messages</Text>
-                    <Text style={styles.link}>
-                      {(conversations.data?.items ?? []).reduce(
-                        (total, item) => total + item.unreadCount,
-                        0,
-                      )}{' '}
-                      unread
+                    <Text style={styles.cardTitle}>
+                      {ownerUnreadMessagesLabel(unreadMessageCount)}
                     </Text>
-                  </View>
-                  <Icon color={colors.primary} name="chevron-forward" />
-                </Card>
-              </Pressable>
-            ) : null}
-            {delegated && canViewVehicles ? (
-              <Pressable accessibilityRole="button" onPress={() => navigation.navigate('Vehicles')}>
-                <Card style={styles.requestSummary}>
-                  <View style={styles.summaryIcon}>
-                    <Icon color={colors.primary} name="car-sport-outline" />
-                  </View>
-                  <View style={styles.flex}>
-                    <Text style={styles.cardTitle}>Vehicles</Text>
-                    <Text style={styles.link}>
-                      {vehicles.data?.length
-                        ? `${vehicles.data.length} assigned`
-                        : 'No assigned vehicles'}
-                    </Text>
+                    <Text style={styles.link}>View messages</Text>
                   </View>
                   <Icon color={colors.primary} name="chevron-forward" />
                 </Card>
@@ -567,19 +572,21 @@ function UpcomingCard({
 }
 
 function TopTab({
+  canRespond = true,
   count = 0,
   label,
   onPress,
   selected = false,
 }: {
   readonly count?: number;
+  readonly canRespond?: boolean;
   readonly label: string;
   readonly onPress: () => void;
   readonly selected?: boolean;
 }) {
   const accessibilityLabel =
-    label === 'Requests' && count > 0
-      ? `Requests, ${count} items need your response`
+    label === 'Requests'
+      ? ownerRequestTabAccessibilityLabel(count, canRespond)
       : `${label}${selected ? ', selected' : ''}`;
   return (
     <Pressable
@@ -664,13 +671,15 @@ function OperationalCard({
 }
 
 function AttentionCard({
+  canAct,
   item,
   onPress,
 }: {
+  readonly canAct: boolean;
   readonly item: OwnerHomeAttention;
   readonly onPress: (reference: string) => void;
 }) {
-  const label = attentionLabel(item);
+  const label = ownerAttentionLabel(item, canAct);
   const vehicleName = `${item.vehicleMake} ${item.vehicleModel}`.trim();
   return (
     <Pressable
@@ -696,12 +705,24 @@ function AttentionCard({
   );
 }
 
-function attentionLabel(item: OwnerHomeAttention): string {
-  if (item.type === 'OVERDUE_PICKUP') return 'Pickup needs attention';
-  if (item.type === 'OVERDUE_RETURN') return 'Return is overdue';
-  if (item.type === 'FINANCIAL_RECOVERY') return 'Booking update needs review';
-  if (item.titleCode === 'PICKUP_DISCREPANCY') return 'Pickup discrepancy needs review';
-  return 'Booking needs attention';
+function canActOnAttention(
+  ownerWorkspace: OwnerWorkspace | undefined,
+  item: OwnerHomeAttention,
+): boolean {
+  if (!ownerWorkspace || ownerWorkspace.capacity === 'OWNER') return true;
+  if (item.type === 'OVERDUE_PICKUP' || item.titleCode === 'PICKUP_DISCREPANCY')
+    return ['handover.perform', 'inspections.create', 'inspections.update'].some((permission) =>
+      hasOwnerPermission(ownerWorkspace, permission),
+    );
+  if (item.type === 'OVERDUE_RETURN')
+    return ['return.perform', 'inspections.create', 'inspections.update'].some((permission) =>
+      hasOwnerPermission(ownerWorkspace, permission),
+    );
+  if (item.type === 'OPERATIONAL_HOLD')
+    return ['incidents.create', 'claims.create'].some((permission) =>
+      hasOwnerPermission(ownerWorkspace, permission),
+    );
+  return false;
 }
 
 function compactDateLabel(value: string): string {

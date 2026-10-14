@@ -1843,15 +1843,17 @@ export function OwnerMoreScreen({
   const renterSetupPending = Boolean(
     renterEnabled && !auth.user?.profile?.renterOnboardingCompletedAt,
   );
+  const isDelegatedWorkspace = ownerWorkspace.capacity !== 'OWNER';
+  const workspaceLabel = ownerWorkspaceLabel(ownerWorkspace);
   const renterEnrollment = useMutation({
     mutationFn: () => auth.enrollPersona('RENTER'),
     onSuccess: () => onModeChange('renter'),
   });
   return (
     <Screen
-      eyebrow="Owner mode"
-      title="Manage your business"
-      subtitle={`${ownerWorkspaceLabel(ownerWorkspace)} · ${ownerWorkspace.capacity === 'OWNER' ? 'Owner' : ownerWorkspace.capacity === 'MANAGER' ? 'Manager' : 'Staff'}`}
+      eyebrow={isDelegatedWorkspace ? 'Staff mode' : 'Owner mode'}
+      title={isDelegatedWorkspace ? 'Workspace operations' : 'Manage your business'}
+      subtitle={isDelegatedWorkspace ? `Owner: ${workspaceLabel}` : `${workspaceLabel} · Owner`}
     >
       {ownerWorkspaces.length > 1 ? (
         <View style={styles.section}>
@@ -1891,39 +1893,41 @@ export function OwnerMoreScreen({
           </Card>
         </View>
       ) : null}
-      <Card style={styles.modeCard}>
-        <Icon color={colors.primary} name="person-circle-outline" size={32} />
-        <View style={styles.flex}>
-          <Text style={styles.cardTitle}>
-            {renterSetupPending
-              ? 'Continue Renter Setup'
-              : renterEnabled
-                ? 'Switch to renter mode'
-                : 'Start Renting Cars'}
-          </Text>
-          <Text style={styles.body}>
-            {renterSetupPending
-              ? 'Finish your guided Renter setup when you are ready.'
-              : renterEnabled
-                ? 'Search and book cars with the same account.'
-                : 'Add Renter access to this account and begin guided setup.'}
-          </Text>
-        </View>
-        <Pressable
-          accessibilityLabel={
-            renterSetupPending
-              ? 'Continue Renter Setup'
-              : renterEnabled
-                ? 'Switch to renter mode'
-                : 'Start Renting Cars'
-          }
-          disabled={renterEnrollment.isPending}
-          onPress={() => (renterEnabled ? onModeChange('renter') : renterEnrollment.mutate())}
-        >
-          <Icon color={colors.primary} name="swap-horizontal" size={28} />
-        </Pressable>
-      </Card>
-      {renterEnrollment.isError && (
+      {ownerWorkspace.capacity === 'OWNER' || renterEnabled ? (
+        <Card style={styles.modeCard}>
+          <Icon color={colors.primary} name="person-circle-outline" size={32} />
+          <View style={styles.flex}>
+            <Text style={styles.cardTitle}>
+              {renterSetupPending
+                ? 'Continue Renter Setup'
+                : renterEnabled
+                  ? 'Switch to renter mode'
+                  : 'Start Renting Cars'}
+            </Text>
+            <Text style={styles.body}>
+              {renterSetupPending
+                ? 'Finish your guided Renter setup when you are ready.'
+                : renterEnabled
+                  ? 'Search and book cars with the same account.'
+                  : 'Add Renter access to this account and begin guided setup.'}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityLabel={
+              renterSetupPending
+                ? 'Continue Renter Setup'
+                : renterEnabled
+                  ? 'Switch to renter mode'
+                  : 'Start Renting Cars'
+            }
+            disabled={renterEnrollment.isPending}
+            onPress={() => (renterEnabled ? onModeChange('renter') : renterEnrollment.mutate())}
+          >
+            <Icon color={colors.primary} name="swap-horizontal" size={28} />
+          </Pressable>
+        </Card>
+      ) : null}
+      {ownerWorkspace.capacity === 'OWNER' && renterEnrollment.isError && (
         <Text accessibilityRole="alert" style={styles.error}>
           We could not enable Renter access. Check your connection and try again.
         </Text>

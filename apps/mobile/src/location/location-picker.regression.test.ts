@@ -47,6 +47,13 @@ describe('contractual location picker', () => {
     expect(vehicles).toContain('Selected pickup location');
     expect(vehicles).toContain('Change location');
     expect(vehicles).toContain('presentation="vehicleSetup"');
+    expect(vehicles).toContain(
+      "endpointBase.match(/^\\/owner\\/workspaces\\/([^/]+)\\/vehicles\\//)?.[1]",
+    );
+    expect(vehicles).toContain('ownerProfileId={ownerProfileId}');
+    expect(picker).toContain(
+      'provider.reverseGeocode(next.latitude, next.longitude, ownerProfileId)',
+    );
     expect(vehicles).toContain('dismissLabel="Back"');
     expect(vehicles).toContain('initial={location}');
     expect(vehicles).toContain('onCancel={() => setPickerOpen(false)}');

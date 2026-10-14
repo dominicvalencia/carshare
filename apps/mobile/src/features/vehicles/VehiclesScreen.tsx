@@ -209,6 +209,7 @@ interface Vehicle {
     readonly submittedByDisplayName: string;
     readonly submittedRevision: number;
   } | null;
+  readonly canDiscardDraft?: boolean;
   readonly activeChangeProposal?: {
     readonly id: string;
     readonly isCreator: boolean;
@@ -506,6 +507,8 @@ function DelegatedVehiclesScreen({
     ownerWorkspace.membershipStatus === 'ACTIVE' &&
     hasOwnerPermission(ownerWorkspace, 'vehicles.update_operational_fields');
   const workspaceBase = `/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles`;
+  const vehicleDetailQueryKey = (vehicleId: string) =>
+    ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicle', vehicleId] as const;
   const vehicles = useQuery({
     queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicles'],
     queryFn: () =>
@@ -534,9 +537,22 @@ function DelegatedVehiclesScreen({
       apiClient.request(`${workspaceBase}/${vehicleId}/owner-approval-submission`, {
         method: 'DELETE',
       }),
+    onSuccess: async (_result, vehicleId) => {
+      await Promise.all([
+        vehicles.refetch(),
+        client.invalidateQueries({ queryKey: vehicleDetailQueryKey(vehicleId) }),
+      ]);
+      setEditing(false);
+    },
+  });
+  const discard = useMutation({
+    mutationFn: (vehicleId: string) =>
+      apiClient.request(`${workspaceBase}/${vehicleId}/draft`, { method: 'DELETE' }),
     onSuccess: async () => {
+      setSelectedId(null);
       await vehicles.refetch();
-      setEditing(true);
+      await client.invalidateQueries({ queryKey: ['owner', 'vehicles'] });
+      await client.invalidateQueries({ queryKey: ['owner-home'] });
     },
   });
   if (selectedId && editing)
@@ -546,11 +562,12 @@ function DelegatedVehiclesScreen({
         endpointBase={`${workspaceBase}/${selectedId}`}
         id={selectedId}
         referenceBase={`${workspaceBase}/reference-data`}
-        onClose={() => {
+        onClose={async () => {
+          await Promise.all([
+            vehicles.refetch(),
+            client.invalidateQueries({ queryKey: vehicleDetailQueryKey(selectedId) }),
+          ]);
           setEditing(false);
-          void client.invalidateQueries({
-            queryKey: ['owner-workspace', ownerWorkspace.ownerProfileId, 'vehicles'],
-          });
         }}
       />
     );
@@ -576,16 +593,30 @@ function DelegatedVehiclesScreen({
         workspaceBase={workspaceBase}
         onBack={() => setSelectedId(null)}
         onContinueSetup={() => setEditing(true)}
+        onDiscard={() => discard.mutate(selected.id)}
         onEditProposal={() => setProposalEditing(true)}
         onManageAvailability={setManagingAvailability}
-        onWithdraw={() => withdraw.mutate(selected.id)}
+        onWithdraw={() =>
+          Alert.alert(
+            'Withdraw submission?',
+            'This vehicle will return to Draft so you can continue editing it. You can submit it for approval again later.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Withdraw submission',
+                style: 'destructive',
+                onPress: () => withdraw.mutate(selected.id),
+              },
+            ],
+          )
+        }
       />
     );
   return (
     <SafeAreaView edges={['top']} style={styles.flex}>
       <ScrollView contentContainerStyle={styles.page}>
         <View style={styles.fleetHeader}>
-          <Text style={styles.eyebrow}>OWNER FLEET</Text>
+          <Text style={styles.eyebrow}>STAFF MODE</Text>
           <Text style={styles.fleetTitle}>Vehicles</Text>
           <Text style={styles.fleetHelper}>
             {canCreate
@@ -643,6 +674,7 @@ function DelegatedVehicleDetail({
   workspaceBase,
   onBack,
   onContinueSetup,
+  onDiscard,
   onEditProposal,
   onManageAvailability,
   onWithdraw,
@@ -655,6 +687,7 @@ function DelegatedVehicleDetail({
   readonly workspaceBase: string;
   readonly onBack: () => void;
   readonly onContinueSetup: () => void;
+  readonly onDiscard: () => void;
   readonly onEditProposal: () => void;
   readonly onManageAvailability: (value: boolean) => void;
   readonly onWithdraw: () => void;
@@ -715,7 +748,7 @@ function DelegatedVehicleDetail({
             {value.modelYear ?? '—'} · {value.category?.name ?? 'Vehicle'} ·{' '}
             {domainLabel(value.fuelType)}
           </Text>
-          <StatusBadge label={vehicleStatusLabel(value.status)} tone={vehicleTone(value.status)} />
+          <StatusBadge label={delegatedApprovalLabel(value)} tone={delegatedApprovalTone(value)} />
         </View>
         {proposalLabel ? (
           <VehicleDetailSection
@@ -908,6 +941,11 @@ function DelegatedVehicleDetail({
             value={availabilityTodayLabel(value.availabilityToday)}
           />
         </VehicleDetailSection>
+        {value.canDiscardDraft ? (
+          <View style={styles.delegatedDiscardAction}>
+            <DetailAction label="Discard vehicle" onPress={onDiscard} />
+          </View>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -960,7 +998,7 @@ function ManagerVehicleProposalEditor({
 }: {
   readonly workspaceBase: string;
   readonly vehicle: Vehicle;
-  readonly onClose: () => void;
+  readonly onClose: () => void | Promise<void>;
 }) {
   const proposalBase = `${workspaceBase}/${vehicle.id}/change-proposals`;
   const active = vehicle.activeChangeProposal;
@@ -1112,12 +1150,14 @@ function ManagerVehicleProposalEditor({
               onChange={(value) => updateVehicle('color', value)}
             />
             <Field
+              compactMultiline
               label="Description"
               multiline
               value={snapshot.vehicle.description ?? ''}
               onChange={(value) => updateVehicle('description', value)}
             />
             <Field
+              compactMultiline
               label="Rental requirements"
               multiline
               value={snapshot.vehicle.rentalRequirements ?? ''}
@@ -1737,7 +1777,9 @@ function FleetVehicleCard({
   const distinctAvailability = fleetDistinctAvailabilityLabel(vehicle.availabilityToday);
   const accessibilityDetails = draft
     ? awaitingOwnerApproval
-      ? `${title}. Awaiting your approval. Review vehicle.`
+      ? delegated
+        ? `${title}. Awaiting Owner approval. View vehicle.`
+        : `${title}. Awaiting your approval. Review vehicle.`
       : `${title}. Draft. Setup in progress. Continue setup.`
     : `${title}. Status: ${vehicleStatusLabel(vehicle.status)}. ${policy ? `${money(policy.dailyRateMinor)} per day. ` : ''}${metadata ? `${metadata}. ` : ''}Marketplace: ${ownerMarketplaceStatus(vehicle)}. Vehicle availability: ${availabilityTodayLabel(vehicle.availabilityToday)}. Manage vehicle.`;
 
@@ -1767,7 +1809,9 @@ function FleetVehicleCard({
                 : changeUnderReview
                   ? 'Changes under CarShare review'
                   : awaitingOwnerApproval
-                    ? 'Awaiting your approval'
+                    ? delegated
+                      ? 'Awaiting Owner approval'
+                      : 'Awaiting your approval'
                     : vehicleStatusLabel(vehicle.status)
           }
           tone={
@@ -1777,7 +1821,9 @@ function FleetVehicleCard({
         {draft ? (
           <Text style={styles.fleetDraftState}>
             {awaitingOwnerApproval
-              ? 'Review the Manager submission'
+              ? delegated
+                ? 'Waiting for Owner review'
+                : 'Review the Manager submission'
               : vehicle.ownerApproval?.status === 'CHANGES_REQUIRED'
                 ? 'Returned to Manager'
                 : 'Setup in progress'}
@@ -1955,7 +2001,7 @@ function VehicleDetail({
           />
         </View>
         {pendingOwnerApproval ? (
-          <VehicleDetailSection emphasized title="Awaiting your approval">
+          <VehicleDetailSection emphasized title="Review submission">
             <VehicleDetailRow
               label="Submitted by"
               value={pendingOwnerApproval.submittedByDisplayName}
@@ -2444,7 +2490,6 @@ function VehicleOwnerReturnSheet({
         <View style={styles.removalReasonBackdrop} />
         <Reanimated.View style={[styles.removalReasonSheet, animatedSheetStyle]}>
           <ScrollView
-            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
             contentContainerStyle={[
               styles.removalReasonContent,
               { paddingBottom: Math.max(safeArea.bottom, spacing.lg) },
@@ -2461,6 +2506,7 @@ function VehicleOwnerReturnSheet({
               Tell the Manager what needs to be updated before you review it again.
             </Text>
             <Field
+              compactMultiline
               label="Feedback"
               multiline
               onChange={setReason}
@@ -2477,20 +2523,24 @@ function VehicleOwnerReturnSheet({
                 {ownerApprovalErrorMessage(error)}
               </Text>
             ) : null}
-            <Button
-              disabled={loading || !meaningful}
-              label={loading ? 'Returning…' : 'Return for changes'}
-              onPress={() => {
-                setTouched(true);
-                if (meaningful) onSubmit(reason.trim());
-              }}
-            />
+            <View style={styles.ownerReturnAction}>
+              <Button
+                disabled={loading || !meaningful}
+                label={loading ? 'Returning…' : 'Return for changes'}
+                onPress={() => {
+                  setTouched(true);
+                  if (meaningful) onSubmit(reason.trim());
+                }}
+              />
+            </View>
           </ScrollView>
         </Reanimated.View>
       </KeyboardAvoidingView>
     </Modal>
   );
 }
+
+export { VehicleOwnerReturnSheet };
 
 function vehicleDeleteBlockerMessage(code?: string): string {
   if (code === 'ONGOING_RENTAL')
@@ -3034,7 +3084,10 @@ function VehicleEditor({
       }),
     onSuccess: async (_result, variables) => {
       await refresh();
-      if (delegated && variables.path === '/owner-approval-submission') onClose();
+      if (delegated && variables.path === '/owner-approval-submission') {
+        await client.invalidateQueries({ queryKey: ['owner-workspace'] });
+        await onClose();
+      }
     },
     onError: async (error) => {
       if (!delegated) return;
@@ -3245,11 +3298,7 @@ function VehicleEditor({
                     }
                   >
                     <Text style={styles.primaryText}>
-                      {action.isPending
-                        ? 'Submitting…'
-                        : delegated
-                          ? 'Submit for Owner approval'
-                          : 'Submit for approval'}
+                      {action.isPending ? 'Submitting…' : 'Submit for approval'}
                     </Text>
                   </Pressable>
                 )}
@@ -4048,6 +4097,7 @@ function LocationStep({
   readonly onSaved: () => void;
   readonly onContinue: () => void;
 }) {
+  const ownerProfileId = endpointBase.match(/^\/owner\/workspaces\/([^/]+)\/vehicles\//)?.[1];
   const initialLocation: CarShareLocation | undefined = vehicle.location
     ? {
         displayName:
@@ -4147,6 +4197,7 @@ function LocationStep({
               mapAccessibilityLabel="Google map for choosing the private vehicle pickup point"
               mapGuidance="Move the map to adjust the exact pickup and return point."
               presentation="vehicleSetup"
+              ownerProfileId={ownerProfileId}
               onCancel={() => setPickerOpen(false)}
               onConfirm={(value) => {
                 setLocation(value);
@@ -5287,6 +5338,7 @@ function DetailsFormSection({
 }
 
 function Field({
+  compactMultiline = false,
   grouped = false,
   helper,
   label,
@@ -5297,6 +5349,7 @@ function Field({
   placeholder,
   prefix,
 }: {
+  readonly compactMultiline?: boolean;
   readonly grouped?: boolean;
   readonly helper?: string;
   readonly label: string;
@@ -5319,6 +5372,7 @@ function Field({
         prefix ? styles.prefixedTextInput : styles.input,
         grouped && !prefix && styles.groupedInput,
         multiline && styles.multilineInput,
+        compactMultiline && styles.compactMultilineInput,
       ]}
       textAlignVertical={multiline ? 'top' : 'center'}
       value={value}
@@ -5841,6 +5895,7 @@ const styles = StyleSheet.create({
   },
   depositSection: { gap: spacing.xs, marginTop: spacing.xs },
   detailsFields: { gap: spacing.md },
+  delegatedDiscardAction: { marginTop: spacing.sm },
   detailsOptional: { color: colors.subtleText, fontSize: 12, fontWeight: '700' },
   detailsSection: { gap: spacing.sm },
   detailsSectionHeading: {
@@ -6185,6 +6240,7 @@ const styles = StyleSheet.create({
   link: { color: colors.primary, fontWeight: '700', marginTop: spacing.sm },
   loading: { alignItems: 'center', flex: 1, justifyContent: 'center' },
   multilineInput: { minHeight: 128, paddingTop: spacing.md },
+  compactMultilineInput: { minHeight: 96 },
   page: { backgroundColor: colors.background, flexGrow: 1, padding: spacing.xl },
   photoAddAction: {
     alignItems: 'center',
@@ -6593,6 +6649,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   removalReasonTitle: { color: colors.ink, fontSize: 28, fontWeight: '900' },
+  ownerReturnAction: { marginTop: spacing.lg },
   vehicleMetaRow: {
     alignItems: 'center',
     flexDirection: 'row',

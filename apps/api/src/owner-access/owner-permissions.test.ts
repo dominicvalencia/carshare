@@ -40,6 +40,32 @@ describe('Owner Staff authority policy', () => {
     expect(() => assertManagerTargetRole(OwnerStaffRole.STAFF)).not.toThrow();
   });
 
+  it('gives the Manager preset the complete registered rental-operation permission set', () => {
+    const rentalOperations = [
+      'bookings.view',
+      'bookings.accept',
+      'bookings.reject',
+      'bookings.cancel',
+      'rentals.view',
+      'handover.perform',
+      'return.perform',
+      'inspections.create',
+      'inspections.update',
+      'incidents.create',
+      'incidents.update',
+      'claims.view',
+      'claims.create',
+      'claims.respond',
+      'messages.view',
+      'messages.reply',
+    ] as const;
+
+    expect(MANAGER_PERMISSIONS).toEqual(expect.arrayContaining(rentalOperations));
+    expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('bookings.cancel' as never);
+    expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('claims.create' as never);
+    expect(OPERATIONS_STAFF_PERMISSIONS).not.toContain('claims.respond' as never);
+  });
+
   it('makes vehicle creation Manager-default without granting it to Staff presets or custom Staff', () => {
     expect(OWNER_PERMISSIONS['vehicles.create']).toBe(
       'Create a new vehicle inside an authorized Owner workspace',

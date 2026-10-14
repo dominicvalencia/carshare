@@ -27,6 +27,10 @@ export function renderNotification(
       title: 'Changes requested',
       body: `The Owner requested changes to ${vehicleDisplayName}.`,
     },
+    'vehicle.trusted-manager-submitted-for-review': {
+      title: 'Vehicle submitted for review',
+      body: `${managerDisplayName} submitted ${vehicleDisplayName} to CarShare review using trusted authority.`,
+    },
     'vehicle.operational-fields-updated': {
       title: 'Vehicle updated',
       body: `${managerDisplayName} updated ${vehicleDisplayName}.`,

@@ -601,7 +601,7 @@ function CredentialScreen({
           {registration
             ? 'We couldn’t create your account. Check your details and try again.'
             : login
-              ? 'We couldn’t log you in. Check your details and try again.'
+              ? loginErrorMessage(mutation.error)
               : mode === 'forgot'
                 ? 'We couldn’t send the reset link. Please try again.'
                 : mode === 'reset'
@@ -611,6 +611,17 @@ function CredentialScreen({
       )}
     </View>
   );
+}
+
+function loginErrorMessage(error: Error | null): string {
+  if (!(error instanceof ApiError)) return 'We couldn’t log you in. Please try again.';
+  if (error.code === 'INVALID_CREDENTIALS')
+    return 'The email, mobile number, or password is incorrect.';
+  if (error.code === 'NETWORK_ERROR')
+    return 'CarShare could not reach the service. Check your connection and try again.';
+  if (error.status === 429) return 'Too many login attempts. Wait a moment and try again.';
+  if (['ACCOUNT_DEACTIVATED', 'ACCOUNT_SUSPENDED'].includes(error.code)) return error.message;
+  return 'We couldn’t log you in. Please try again.';
 }
 
 function InvitationContextCard({ context }: { readonly context: InvitationAuthContext }) {

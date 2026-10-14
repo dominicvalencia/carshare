@@ -15,6 +15,8 @@ import {
   HandoverEvidenceWaiverDto,
   HandoverTravelTransitionDto,
   OverdueHandoverRecoveryDto,
+  PickupDiscrepancyResponseDto,
+  RequestInspectionCorrectionDto,
   ReturnConfirmationDto,
   SubmitInspectionDto,
   UpsertInspectionDraftMediaDto,
@@ -157,6 +159,56 @@ export class OwnerWorkspaceRentalsController {
     return result;
   }
 
+  @Post(':reference/pickup/discrepancy/respond')
+  @RequireOwnerPermission('handover.perform')
+  async respondToPickupDiscrepancy(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Body() input: PickupDiscrepancyResponseDto,
+    @Req() request: Request,
+  ) {
+    const booking = await this.authority(principal.ownerAccess!, reference, 'handover.perform');
+    await this.rentals.respondToPickupDiscrepancy(
+      booking.ownerUserId,
+      reference,
+      input,
+      requestMetadata(request),
+      principal.userId,
+    );
+    await this.audit(
+      principal,
+      request,
+      reference,
+      'handover.perform',
+      'PICKUP_DISCREPANCY_RESPONDED',
+    );
+    return this.rentals.ownerDetailForAccess(principal.ownerAccess!, reference);
+  }
+
+  @Post(':reference/pickup/discrepancy/support')
+  @RequireOwnerPermission('handover.perform')
+  async escalatePickupDiscrepancy(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Req() request: Request,
+  ) {
+    const booking = await this.authority(principal.ownerAccess!, reference, 'handover.perform');
+    await this.rentals.escalatePickupDiscrepancy(
+      principal.userId,
+      reference,
+      requestMetadata(request),
+      { actorUserId: principal.userId, ownerUserId: booking.ownerUserId },
+    );
+    await this.audit(
+      principal,
+      request,
+      reference,
+      'handover.perform',
+      'PICKUP_DISCREPANCY_SUPPORT_REQUESTED',
+    );
+    return this.rentals.ownerDetailForAccess(principal.ownerAccess!, reference);
+  }
+
   @Post(':reference/pickup/verify')
   @RequireOwnerPermission('rentals.view')
   async verifyPickup(
@@ -198,6 +250,34 @@ export class OwnerWorkspaceRentalsController {
       { actorUserId: principal.userId, ownerUserId: booking.ownerUserId },
     );
     await this.audit(principal, request, reference, 'return.perform', 'RETURN_STARTED');
+    return result;
+  }
+
+  @Post(':reference/inspections/:inspectionId/corrections')
+  @RequireOwnerPermission('inspections.update')
+  async requestCorrection(
+    @CurrentPrincipal() principal: RequestPrincipal,
+    @Param('reference') reference: string,
+    @Param('inspectionId') inspectionId: string,
+    @Body() input: RequestInspectionCorrectionDto,
+    @Req() request: Request,
+  ) {
+    const booking = await this.authority(principal.ownerAccess!, reference, 'inspections.update');
+    const result = await this.rentals.requestInspectionCorrection(
+      booking.ownerUserId,
+      reference,
+      inspectionId,
+      input,
+      requestMetadata(request),
+      principal.userId,
+    );
+    await this.audit(
+      principal,
+      request,
+      reference,
+      'inspections.update',
+      'INSPECTION_CORRECTION_REQUESTED',
+    );
     return result;
   }
 
@@ -278,7 +358,7 @@ export class OwnerWorkspaceRentalsController {
     let booking: Awaited<ReturnType<OwnerAccessService['assertBookingAccess']>> | undefined;
     for (const permission of permissions)
       booking = await this.authority(principal.ownerAccess!, reference, permission);
-    const result = await this.rentals.reportOverdueHandoverRecovery(
+    await this.rentals.reportOverdueHandoverRecovery(
       booking!.ownerUserId,
       reference,
       input,
@@ -296,7 +376,7 @@ export class OwnerWorkspaceRentalsController {
         ),
       ),
     );
-    return result;
+    return this.rentals.ownerDetailForAccess(principal.ownerAccess!, reference);
   }
 
   private async waive(

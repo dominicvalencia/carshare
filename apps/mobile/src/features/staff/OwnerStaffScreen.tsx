@@ -21,7 +21,6 @@ import {
   ScrollView,
   Share,
   StyleSheet,
-  Switch,
   Text,
   useWindowDimensions,
   View,
@@ -1240,23 +1239,48 @@ function StaffDetailScreen({
         <View style={styles.compactSection}>
           <SectionHeader title="Manager authority" />
           <Card style={styles.managerAuthorityCard}>
-            <View style={styles.managerAuthorityRow}>
+            <Pressable
+              accessibilityLabel="Act without Owner approval"
+              accessibilityRole="switch"
+              accessibilityState={{
+                checked: value.ownerApprovalBypassEnabled,
+                disabled: value.status !== 'ACTIVE' || managerAuthority.isPending,
+              }}
+              disabled={value.status !== 'ACTIVE' || managerAuthority.isPending}
+              onPress={() =>
+                setManagerAuthorityConfirmation(!value.ownerApprovalBypassEnabled)
+              }
+              style={({ pressed }) => [
+                styles.managerAuthorityRow,
+                pressed && styles.managerAuthorityRowPressed,
+              ]}
+            >
               <Text style={styles.managerAuthorityTitle}>
-                Allow this Manager to act without Owner approval
+                Act without Owner approval
               </Text>
-              <Switch
-                accessibilityLabel="Allow this Manager to act without Owner approval"
-                disabled={value.status !== 'ACTIVE' || managerAuthority.isPending}
-                onValueChange={(enabled) => setManagerAuthorityConfirmation(enabled)}
-                trackColor={{ true: colors.primarySoft }}
-                thumbColor={value.ownerApprovalBypassEnabled ? colors.primary : undefined}
-                value={value.ownerApprovalBypassEnabled}
-              />
-            </View>
+              <View
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+                pointerEvents="none"
+                style={[
+                  styles.managerAuthoritySwitchTrack,
+                  value.ownerApprovalBypassEnabled && styles.managerAuthoritySwitchTrackEnabled,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.managerAuthoritySwitchThumb,
+                    value.ownerApprovalBypassEnabled && styles.managerAuthoritySwitchThumbEnabled,
+                  ]}
+                />
+              </View>
+            </Pressable>
             <Text style={styles.meta}>
-              This Manager can make and submit supported vehicle changes without your approval.
-              Owner-only financial, ownership, and workspace controls remain restricted. You will
-              still be notified of every trusted vehicle update or submission.
+              Allows this Manager to make supported vehicle changes without your approval.
+            </Text>
+            <Text style={styles.meta}>
+              You’ll still be notified of every trusted vehicle update or submission. Owner-only
+              financial, ownership, and workspace controls remain restricted.
             </Text>
             {value.status !== 'ACTIVE' ? (
               <Text style={styles.note}>
@@ -1720,12 +1744,17 @@ function ManagerAuthorityConfirmationModal({
         <View style={styles.confirmSheet}>
           <BackControl label="Cancel" onPress={onCancel} />
           <Text accessibilityRole="header" style={styles.confirmTitle}>
-            {enabled ? 'Give this Manager trusted authority?' : 'Remove trusted authority?'}
+            {enabled ? 'Enable trusted authority?' : 'Remove trusted authority?'}
           </Text>
           <Text style={styles.confirmCopy}>
             {enabled
-              ? 'This Manager will no longer need your approval for supported vehicle and operational changes. Their actions will still be recorded, you will still be notified of vehicle changes, and CarShare review and Owner-only restrictions still apply.'
+              ? 'This Manager will no longer need your approval for supported vehicle and operational changes.'
               : 'This Manager will need your approval again for supported vehicle changes submitted after this change.'}
+          </Text>
+          <Text style={styles.confirmCopy}>
+            {enabled
+              ? 'You’ll still be notified of vehicle changes. CarShare review and Owner-only financial, ownership, and workspace restrictions still apply.'
+              : 'Existing submissions keep the approval rules that applied when they were submitted.'}
           </Text>
           <Button
             disabled={pending}
@@ -1848,13 +1877,34 @@ const styles = StyleSheet.create({
   invitationActions: { gap: spacing.sm },
   list: { gap: spacing.xs },
   manageAccessCard: { gap: spacing.sm, padding: spacing.sm },
-  managerAuthorityCard: { gap: spacing.sm, padding: spacing.sm },
+  managerAuthorityCard: { gap: spacing.xs, padding: spacing.sm },
   managerAuthorityRow: {
     alignItems: 'center',
+    borderRadius: radius.sm,
     flexDirection: 'row',
     gap: spacing.md,
     justifyContent: 'space-between',
+    minHeight: 48,
+    paddingHorizontal: spacing.xs,
   },
+  managerAuthorityRowPressed: { backgroundColor: colors.primarySoft },
+  managerAuthoritySwitchThumb: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.pill,
+    height: 22,
+    width: 22,
+  },
+  managerAuthoritySwitchThumbEnabled: { alignSelf: 'flex-end' },
+  managerAuthoritySwitchTrack: {
+    backgroundColor: colors.border,
+    borderRadius: radius.pill,
+    flexShrink: 0,
+    height: 28,
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+    width: 50,
+  },
+  managerAuthoritySwitchTrackEnabled: { backgroundColor: colors.primary },
   managerAuthorityTitle: { color: colors.ink, flex: 1, fontSize: 15, fontWeight: '800' },
   memberHeadingRow: {
     alignItems: 'center',

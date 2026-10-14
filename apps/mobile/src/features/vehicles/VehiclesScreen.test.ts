@@ -83,7 +83,8 @@ describe('Phase 12 owner vehicle acceptance UX', () => {
     expect(card).toContain("const draft = vehicle.status === 'DRAFT'");
     expect(card).toContain("'Untitled vehicle draft'");
     expect(card).toContain('<Text style={styles.fleetDraftState}>');
-    expect(card).toContain("? 'Review the Manager submission'");
+    expect(card).toContain("? 'Waiting for Owner review'");
+    expect(card).toContain(": 'Review the Manager submission'");
     expect(card).toContain(": 'Setup in progress'");
     expect(card).toContain('{draft ? (');
     expect(card).toContain('{policy && <Text style={styles.fleetRate}>');

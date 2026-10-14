@@ -76,7 +76,7 @@ export function OwnerRentalsScreen({
           scrollRef.current?.scrollTo({ animated: false, y: maximumOffset });
         }
       }}
-      backLabel={selected ? 'All rentals' : 'Back'}
+      backLabel="Back"
       onBack={
         selected
           ? () => {
@@ -86,7 +86,7 @@ export function OwnerRentalsScreen({
             }
           : undefined
       }
-      eyebrow="Owner mode"
+      eyebrow={ownerWorkspace ? 'Staff mode' : 'Owner mode'}
       title="Active rentals"
       subtitle="Pickup, return, claims, and renter coordination in one place."
     >

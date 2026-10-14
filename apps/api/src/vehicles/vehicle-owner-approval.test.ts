@@ -51,6 +51,7 @@ const completeVehicle = {
 
 function setup(input?: {
   approval?: Record<string, unknown> | null;
+  ownerApprovalBypassEnabled?: boolean;
   vehicle?: Record<string, unknown> | null;
 }) {
   const approval =
@@ -68,6 +69,13 @@ function setup(input?: {
   const transaction = {
     $queryRaw: vi.fn().mockResolvedValue([]),
     auditLog: { create: vi.fn().mockResolvedValue({ id: 'audit-a' }) },
+    ownerStaffMembership: {
+      findFirst: vi.fn().mockResolvedValue({
+        displayName: 'Manager Name',
+        ownerApprovalBypassEnabled: input?.ownerApprovalBypassEnabled ?? false,
+        permissions: [{ permissionId: 'vehicles-create' }],
+      }),
+    },
     outboxEvent: { create: vi.fn().mockResolvedValue({ id: 'outbox-a' }) },
     user: {
       findUnique: vi.fn().mockResolvedValue({
@@ -153,6 +161,77 @@ describe('delegated vehicle Owner approval', () => {
         }),
       }),
     });
+  });
+
+  it('sends a trusted Manager-created vehicle directly to CarShare review', async () => {
+    const { service, transaction } = setup({ ownerApprovalBypassEnabled: true });
+
+    await expect(
+      service.submitForOwnerApproval(managerContext, 'manager-user', 'vehicle-a', {
+        correlationId: 'request-a',
+      }),
+    ).resolves.toMatchObject({
+      ownerApprovalBypassed: true,
+      status: VehicleLifecycleStatus.PENDING_APPROVAL,
+      submittedRevision: 7,
+      vehicleId: 'vehicle-a',
+    });
+    expect(transaction.vehicleOwnerApprovalRequest.create).not.toHaveBeenCalled();
+    expect(transaction.vehicle.update).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: VehicleLifecycleStatus.PENDING_APPROVAL,
+        submittedAt: expect.any(Date),
+      }),
+      where: { id: 'vehicle-a' },
+    });
+    expect(transaction.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW',
+        metadata: expect.objectContaining({
+          ownerApprovalBypassEnabled: true,
+          ownerApprovalBypassed: true,
+          permission: 'vehicles.create',
+        }),
+      }),
+    });
+    expect(transaction.outboxEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        aggregateId: 'vehicle-a',
+        aggregateType: 'VEHICLE',
+        eventType: 'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW',
+        payload: expect.objectContaining({
+          managerDisplayName: 'Manager Name',
+          recipientUserId: 'owner-user',
+          vehicleDisplayName: 'Toyota Vios',
+          vehicleId: 'vehicle-a',
+        }),
+      }),
+    });
+  });
+
+  it('revalidates trusted Manager membership and vehicle-create permission transactionally', async () => {
+    const { service, transaction } = setup({ ownerApprovalBypassEnabled: true });
+    transaction.ownerStaffMembership.findFirst.mockResolvedValueOnce(null);
+
+    await expect(
+      service.submitForOwnerApproval(managerContext, 'manager-user', 'vehicle-a', {}),
+    ).rejects.toMatchObject({ code: 'VEHICLE_OWNER_APPROVAL_FORBIDDEN' });
+    expect(transaction.vehicle.update).not.toHaveBeenCalled();
+    expect(transaction.vehicleOwnerApprovalRequest.create).not.toHaveBeenCalled();
+    expect(transaction.outboxEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('does not let a trusted Manager submit another Manager’s draft', async () => {
+    const { service, transaction } = setup({
+      ownerApprovalBypassEnabled: true,
+      vehicle: { ...completeVehicle, createdByMembershipId: 'membership-other' },
+    });
+
+    await expect(
+      service.submitForOwnerApproval(managerContext, 'manager-user', 'vehicle-a', {}),
+    ).rejects.toMatchObject({ code: 'VEHICLE_OWNER_APPROVAL_FORBIDDEN' });
+    expect(transaction.ownerStaffMembership.findFirst).not.toHaveBeenCalled();
+    expect(transaction.vehicle.update).not.toHaveBeenCalled();
   });
 
   it.each([

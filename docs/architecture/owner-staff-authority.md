@@ -460,8 +460,11 @@ Trust adds no permissions and does not change the Manager role. Ownership/worksp
 payout/bank controls, manual money movement, Security Deposit settlement, trust configuration,
 Manager administration, live-vehicle archive/removal, and platform compliance remain Owner-only.
 
-Trusted bypass for the legacy Manager-created **new vehicle** submission remains narrowly deferred.
-That flow uses the separate `VehicleOwnerApprovalRequest` aggregate and platform-submission
-orchestration, not `VehicleChangeProposal`; combining it in this phase would couple two independent
-state machines without a shared transactional application boundary. Normal new-vehicle Owner
-approval therefore remains unchanged until a dedicated phase audits and extends that flow.
+Trusted bypass also applies to future Manager-created **new vehicle** submissions through the
+existing workspace-scoped submission endpoint. Submission re-reads the active Manager membership,
+the exact `vehicles.create` permission, and `ownerApprovalBypassEnabled` under the vehicle lock. A
+normal Manager still creates a `VehicleOwnerApprovalRequest`; a trusted Manager creates no Owner
+approval request and moves the complete draft directly from `DRAFT` to `PENDING_APPROVAL` for
+CarShare review. The transition, trust decision, Manager provenance, audit record, and privacy-safe
+Owner notification are committed atomically. Existing pending Owner-approval requests are not
+retroactively bypassed, and CarShare review remains mandatory.

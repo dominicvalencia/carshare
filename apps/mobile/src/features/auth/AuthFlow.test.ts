@@ -47,6 +47,15 @@ describe('Welcome and native splash presentation', () => {
     expect(auth).toContain('{!brandedCredentialScreen && (');
   });
 
+  it('shows specific safe login errors without revealing whether an account exists', () => {
+    expect(auth).toContain("if (error.code === 'INVALID_CREDENTIALS')");
+    expect(auth).toContain('The email, mobile number, or password is incorrect.');
+    expect(auth).toContain("if (error.code === 'NETWORK_ERROR')");
+    expect(auth).toContain('Too many login attempts. Wait a moment and try again.');
+    expect(auth).toContain('? loginErrorMessage(mutation.error)');
+    expect(auth).not.toContain('No account exists');
+  });
+
   it('keeps password recovery contextual without exposing utility actions on Login', () => {
     const credentials = auth.slice(
       auth.indexOf('function CredentialScreen('),

@@ -19,17 +19,17 @@ describe('Owner delegated operations Phase 5D', () => {
   it('independently gates Today sections and never presents owner mutation for no vehicles', () => {
     expect(dashboard).toContain("hasOwnerPermission(ownerWorkspace!, 'bookings.view')");
     expect(dashboard).toContain("hasOwnerPermission(ownerWorkspace!, 'rentals.view')");
-    expect(dashboard).toContain("hasOwnerPermission(ownerWorkspace!, 'vehicles.view')");
     expect(dashboard).toContain("hasOwnerPermission(ownerWorkspace!, 'messages.view')");
-    expect(dashboard).toContain("'No assigned vehicles'");
     expect(dashboard).toMatch(/const vehicleAction =\s+!delegated/);
+    expect(dashboard).toContain('canViewMessages && unreadMessageCount > 0');
+    expect(dashboard).not.toContain('vehicleAttentionCount');
+    expect(dashboard).not.toContain("'No assigned vehicles'");
   });
 
-  it('uses workspace-scoped Today, upcoming, vehicle, and unread queries', () => {
+  it('uses workspace-scoped Today, upcoming, and unread queries', () => {
     expect(dashboard).toContain('/owner/workspaces/${ownerWorkspace!.ownerProfileId}/home');
     expect(dashboard).toContain('queryKey: [...ownerHomeQueryKey, workspaceKey]');
     expect(dashboard).toContain("queryKey: ['owner-home-upcoming', workspaceKey]");
-    expect(dashboard).toContain("queryKey: ['owner-workspace', workspaceKey, 'vehicles']");
     expect(dashboard).toContain("queryKey: ['conversations', workspaceKey]");
   });
 
@@ -38,6 +38,8 @@ describe('Owner delegated operations Phase 5D', () => {
     expect(account).toContain('label="Staff"');
     expect(account).toContain("ownerWorkspace.capacity === 'OWNER'");
     expect(account).toContain('label="Active rentals"');
+    expect(account).toContain("ownerWorkspace.capacity === 'OWNER' || renterEnabled");
+    expect(account).toContain("ownerWorkspace.capacity === 'OWNER' && renterEnrollment.isError");
   });
 
   it('invalidates all delegated domains on workspace switching', () => {

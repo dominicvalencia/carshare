@@ -139,16 +139,44 @@ describe('Owner Staff management UI', () => {
   it('shows trusted Manager authority only to the actual Owner with confirmation and refresh', () => {
     expect(source).toContain("capacity === 'OWNER' && value.role === 'MANAGER'");
     expect(source).toContain('<SectionHeader title="Manager authority" />');
-    expect(source).toContain('Allow this Manager to act without Owner approval');
-    expect(source).toContain('still be notified of every trusted vehicle update or submission.');
-    expect(source).toContain('setManagerAuthorityConfirmation(enabled)');
-    expect(source).toContain('Give this Manager trusted authority?');
+    expect(source).toContain('Act without Owner approval');
+    expect(source).toContain(
+      'Allows this Manager to make supported vehicle changes without your approval.',
+    );
+    expect(source).toContain('You’ll still be notified of every trusted vehicle update or submission.');
+    expect(source).toContain('setManagerAuthorityConfirmation(!value.ownerApprovalBypassEnabled)');
+    expect(source).toContain('accessibilityRole="switch"');
+    expect(source).toContain('styles.managerAuthoritySwitchTrack');
+    expect(source).toContain('styles.managerAuthoritySwitchThumb');
+    expect(source).toContain('managerAuthoritySwitchTrackEnabled: { backgroundColor: colors.primary }');
+    expect(source).toContain('Enable trusted authority?');
     expect(source).toContain('Enable trusted authority');
     expect(source).toContain('Remove trusted authority?');
     expect(source).toContain('Remove trusted authority');
+    expect(source).toContain(
+      'Existing submissions keep the approval rules that applied when they were submitted.',
+    );
     expect(source).toContain('/manager-authority`');
     expect(source).toContain('await refresh()');
     expect(source).toContain('(error.status === 403 || error.status === 409)');
+  });
+
+  it('keeps Manager authority confirmation dismissal and mutation behavior unchanged', () => {
+    const detail = source.slice(
+      source.indexOf('function StaffDetailScreen'),
+      source.indexOf('function AccessEditorModal'),
+    );
+    const confirmation = source.slice(
+      source.indexOf('function ManagerAuthorityConfirmationModal'),
+      source.indexOf('const styles = StyleSheet.create'),
+    );
+
+    expect(detail).toContain('enabled={managerAuthorityConfirmation}');
+    expect(detail).toContain('onCancel={() => setManagerAuthorityConfirmation(null)}');
+    expect(detail).toContain('managerAuthority.mutate(managerAuthorityConfirmation)');
+    expect(confirmation).toContain('<BackControl label="Cancel" onPress={onCancel} />');
+    expect(confirmation).toContain('onPress={onConfirm}');
+    expect(confirmation).not.toContain('<Button disabled={pending} label="Cancel"');
   });
 
   it('shows a compact selected-vehicle summary row and removes the standalone picker button', () => {

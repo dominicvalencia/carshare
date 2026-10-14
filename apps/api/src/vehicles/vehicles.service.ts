@@ -8,6 +8,7 @@ import {
   InspectionConditionClassification,
   MileagePolicyType,
   OwnerStaffStatus,
+  OwnerStaffRole,
   OwnerStaffVehicleScopeMode,
   PostReturnClaimStatus,
   Prisma,
@@ -1764,20 +1765,93 @@ export class VehiclesService {
           include: ownerVehicleInclude,
           where: { id, ownerProfileId: context.ownerProfileId },
         });
-        if (!vehicle || !vehicle.createdByMembershipId) this.ownerApprovalForbidden();
+        if (!vehicle || vehicle.createdByMembershipId !== context.membershipId)
+          this.ownerApprovalForbidden();
+        const actor = await transaction.ownerStaffMembership.findFirst({
+          select: {
+            displayName: true,
+            ownerApprovalBypassEnabled: true,
+            permissions: {
+              select: { permissionId: true },
+              where: { permission: { code: 'vehicles.create' } },
+            },
+          },
+          where: {
+            id: context.membershipId!,
+            ownerProfileId: context.ownerProfileId,
+            role: OwnerStaffRole.MANAGER,
+            status: OwnerStaffStatus.ACTIVE,
+            userId: actorUserId,
+          },
+        });
+        if (!actor || actor.permissions.length !== 1) this.ownerApprovalForbidden();
         this.assertState(
           vehicle.status,
           [VehicleLifecycleStatus.DRAFT],
-          'Only a delegated draft can be submitted for Owner approval.',
+          'Only a delegated draft can be submitted.',
         );
         const failures = await this.readinessFailures(vehicle, transaction);
         if (failures.length) {
           throw new ApplicationException(
             VehicleErrorCode.VEHICLE_NOT_READY_FOR_OWNER_APPROVAL,
-            'Complete the required vehicle sections before Owner review.',
+            'Complete the required vehicle sections before submission.',
             HttpStatus.UNPROCESSABLE_ENTITY,
             failures,
           );
+        }
+        if (actor.ownerApprovalBypassEnabled) {
+          const submittedAt = new Date();
+          await this.transitionInTransaction(
+            transaction,
+            id,
+            actorUserId,
+            VehicleLifecycleStatus.DRAFT,
+            VehicleLifecycleStatus.PENDING_APPROVAL,
+            undefined,
+            request,
+            { reviewReason: null, submittedAt },
+          );
+          await transaction.auditLog.create({
+            data: {
+              action: 'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW',
+              actorUserId,
+              ...(request.correlationId ? { correlationId: request.correlationId } : {}),
+              ...(request.ipAddress ? { ipAddress: request.ipAddress } : {}),
+              metadata: {
+                capacity: context.capacity,
+                membershipId: context.membershipId,
+                ownerApprovalBypassEnabled: true,
+                ownerApprovalBypassed: true,
+                ownerProfileId: context.ownerProfileId,
+                permission: 'vehicles.create',
+                submittedRevision: vehicle.revision,
+                vehicleId: id,
+              },
+              targetId: id,
+              targetType: 'VEHICLE',
+            },
+          });
+          await transaction.outboxEvent.create({
+            data: {
+              aggregateId: id,
+              aggregateType: 'VEHICLE',
+              eventType: 'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW',
+              payload: {
+                managerDisplayName: actor.displayName,
+                notificationAudience: 'OWNER',
+                notificationIdentity: `${id}:TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW:${vehicle.revision}`,
+                recipientUserId: vehicle.ownerUserId,
+                vehicleDisplayName: this.vehicleDisplayName(vehicle),
+                vehicleId: id,
+              },
+            },
+          });
+          return {
+            ownerApprovalBypassed: true,
+            status: VehicleLifecycleStatus.PENDING_APPROVAL,
+            submittedRevision: vehicle.revision,
+            vehicleId: id,
+          };
         }
         const approval = await transaction.vehicleOwnerApprovalRequest.create({
           data: {

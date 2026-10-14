@@ -32,13 +32,19 @@ describe('Owner delegated operations Phase 5A', () => {
     expect(bookings).toContain('{canReject ? (');
   });
 
+  it('uses review copy for delegated viewers who cannot respond', () => {
+    expect(bookings).toContain('const canRespondToRequests =');
+    expect(bookings).toContain("? 'Needs review'");
+    expect(bookings).toContain("? 'No requests need your response'");
+    expect(bookings).toContain(": 'No requests need review'");
+    expect(bookings).toContain("? 'No booking requests need review'");
+  });
+
   it('reuses availability UI with workspace-scoped cache and view-only behavior', () => {
     expect(vehicles).toContain("hasOwnerPermission(ownerWorkspace, 'availability.view')");
     expect(vehicles).toContain("hasOwnerPermission(ownerWorkspace, 'availability.update')");
     expect(vehicles).toContain("'vehicle-blocks', id");
     expect(vehicles).toContain('You have view-only availability access.');
-    expect(vehicles).toContain(
-      '/owner/workspaces/${ownerWorkspace.ownerProfileId}/vehicles/${selected.id}',
-    );
+    expect(vehicles).toContain('endpointBase={`${workspaceBase}/${vehicleId}`}');
   });
 });

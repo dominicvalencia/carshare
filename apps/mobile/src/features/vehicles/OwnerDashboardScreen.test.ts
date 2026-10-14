@@ -4,8 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   groupOwnerUpcoming,
+  ownerAttentionLabel,
   ownerHomeIsOperationallyEmpty,
+  ownerRequestSummaryLabel,
+  ownerRequestTabAccessibilityLabel,
   ownerTodayDateLabel,
+  ownerUnreadMessageCount,
+  ownerUnreadMessagesLabel,
   type OwnerHomeCard,
   type OwnerHomeReadModel,
 } from './owner-home';
@@ -76,6 +81,81 @@ function model(overrides: Partial<OwnerHomeReadModel['today']> = {}): OwnerHomeR
 }
 
 describe('Owner Today mobile UI', () => {
+  it('uses capability-aware request copy while retaining the Owner wording', () => {
+    expect(ownerRequestSummaryLabel(1, true)).toBe('1 request needs your response');
+    expect(ownerRequestSummaryLabel(2, true)).toBe('2 requests need your response');
+    expect(ownerRequestSummaryLabel(1, false)).toBe('1 booking request');
+    expect(ownerRequestSummaryLabel(2, false)).toBe('2 booking requests');
+    expect(ownerRequestTabAccessibilityLabel(1, true)).toBe('Requests, 1 item needs your response');
+    expect(ownerRequestTabAccessibilityLabel(1, false)).toBe('Requests, 1 booking request');
+    expect(source).toContain("hasOwnerPermission(ownerWorkspace!, 'bookings.accept')");
+    expect(source).toContain("hasOwnerPermission(ownerWorkspace!, 'bookings.reject')");
+  });
+
+  it('places Owner approval summaries after booking requests and operational sections', () => {
+    const requests = source.indexOf('{requestCount > 0 && (');
+    const changeApprovals = source.indexOf('{pendingVehicleChanges.length > 0 ? (');
+    const vehicleApprovals = source.indexOf('{pendingOwnerApprovals.length > 0 ? (');
+
+    expect(requests).toBeGreaterThan(-1);
+    expect(changeApprovals).toBeGreaterThan(requests);
+    expect(vehicleApprovals).toBeGreaterThan(changeApprovals);
+  });
+
+  it('shows a message summary only when messages need attention', () => {
+    expect(ownerUnreadMessageCount([{ unreadCount: 0 }])).toBe(0);
+    expect(ownerUnreadMessageCount([{ unreadCount: 2 }, { unreadCount: 1 }])).toBe(3);
+    expect(ownerUnreadMessagesLabel(1)).toBe('1 unread message');
+    expect(ownerUnreadMessagesLabel(3)).toBe('3 unread messages');
+    expect(source).toContain('canViewMessages && unreadMessageCount > 0');
+    expect(source).not.toContain('<Text style={styles.cardTitle}>Messages</Text>');
+    expect(source).not.toContain('<Text style={styles.cardTitle}>Vehicles</Text>');
+    expect(source).not.toContain('vehicleAttentionCount');
+    expect(source).not.toContain('Review vehicles');
+    expect(source).not.toContain("'No assigned vehicles'");
+    expect(source).not.toContain('`${vehicles.data.length} assigned`');
+  });
+
+  it('uses the shared conversation summary for Owner and delegated unread attention', () => {
+    expect(source).toContain("'/conversations?limit=50&audience=OWNER'");
+    expect(source).toContain(
+      '`/owner/workspaces/${ownerWorkspace!.ownerProfileId}/conversations?limit=50`',
+    );
+    expect(source).toContain("queryKey: ['conversations', workspaceKey]");
+    expect(navigationSource).toContain('delegatedOwnerTabs(ownerWorkspace)');
+    expect(navigationSource).toContain(
+      'options={badges.messages ? { tabBarBadge: badges.messages } : {}}',
+    );
+  });
+
+  it('uses neutral attention copy when delegated users lack the matching action permission', () => {
+    const attention: OwnerHomeReadModel['today']['attention'][number] = {
+      bookingReference: 'CR-ATTENTION',
+      deepLinkTarget: { bookingReference: 'CR-ATTENTION', route: 'Booking' },
+      renterDisplayName: 'Mika Santos',
+      severity: 'WARNING',
+      timestamp: null,
+      titleCode: 'PICKUP_DISCREPANCY',
+      type: 'OPERATIONAL_HOLD',
+      vehicleMake: 'Honda',
+      vehicleModel: 'Civic',
+    };
+    expect(ownerAttentionLabel(attention, true)).toBe('Pickup discrepancy needs review');
+    expect(ownerAttentionLabel(attention, false)).toBe('Pickup discrepancy');
+    expect(source).toContain(
+      "title={hasActionableAttention ? 'Needs attention' : 'Rental updates'}",
+    );
+    for (const permission of [
+      'handover.perform',
+      'return.perform',
+      'inspections.create',
+      'inspections.update',
+      'incidents.create',
+      'claims.create',
+    ])
+      expect(source).toContain(`'${permission}'`);
+  });
+
   it('uses the server Manila window for its displayed date', () => {
     expect(ownerTodayDateLabel(model().today.startInclusive, 'Asia/Manila')).toBe('Friday, Oct 2');
   });
@@ -88,14 +168,16 @@ describe('Owner Today mobile UI', () => {
   });
 
   it('renders server sections in operational priority order with compact cards', () => {
-    const attention = source.indexOf('title="Needs attention"');
+    const attention = source.indexOf("title={hasActionableAttention ? 'Needs attention'");
     const pickup = source.indexOf('title="Pickups today"');
     const active = source.indexOf('title="Active rentals"');
     const returns = source.indexOf('title="Returns today"');
+    const requests = source.indexOf('{requestCount > 0 && (');
     expect(attention).toBeGreaterThan(0);
     expect(attention).toBeLessThan(pickup);
     expect(pickup).toBeLessThan(active);
     expect(active).toBeLessThan(returns);
+    expect(returns).toBeLessThan(requests);
     expect(source).toContain('kind="pickup"');
     expect(source).toContain('kind="active"');
     expect(source).toContain('kind="return"');
@@ -118,7 +200,7 @@ describe('Owner Today mobile UI', () => {
     expect(source).toContain('const requestCount = model.requests.totalRequestsCount');
     expect(source).toContain('count={requestCount}');
     expect(source).toContain('label="Requests"');
-    expect(source).toContain('requests need');
+    expect(source).toContain('ownerRequestSummaryLabel(requestCount, canRespondToRequests)');
     expect(source).not.toContain('filteredAmendments');
   });
 
@@ -204,7 +286,7 @@ describe('Owner Today mobile UI', () => {
   it('starts with centered tabs and no repeated Owner Home header', () => {
     const screen = source.indexOf('<Screen\n      stickyHeader={');
     const tabs = source.indexOf('accessibilityRole="tablist"', screen);
-    const attention = source.indexOf('title="Needs attention"', tabs);
+    const attention = source.indexOf("title={hasActionableAttention ? 'Needs attention'", tabs);
     expect(screen).toBeGreaterThan(0);
     expect(tabs).toBeGreaterThan(screen);
     expect(attention).toBeGreaterThan(tabs);
@@ -250,8 +332,10 @@ describe('Owner Today mobile UI', () => {
     );
   });
 
-  it('centers the empty Today card when no request summary follows it', () => {
-    expect(source).toContain('style={requestCount === 0 && styles.centeredEmpty}');
+  it('centers the empty Today card only when no operational attention follows it', () => {
+    expect(source).toContain('requestCount === 0 &&');
+    expect(source).toContain('unreadMessageCount === 0 &&');
+    expect(source).toContain('<View style={styles.centeredEmpty}>');
     expect(source).toContain(
       "centeredEmpty: { alignItems: 'center', flex: 1, justifyContent: 'center' }",
     );

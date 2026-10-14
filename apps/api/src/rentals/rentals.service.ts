@@ -260,6 +260,40 @@ export function securityDepositBlocksHandover(input: {
   );
 }
 
+export function overdueRecoveryAttribution(ownerUserId: string, actorUserId: string) {
+  return {
+    historyActorUserId: actorUserId,
+    reportedByUserId: ownerUserId,
+  } as const;
+}
+
+export function normalHandoverRequiresRecovery(
+  booking: {
+    actualPickupAt: Date | null;
+    actualReturnAt: Date | null;
+    pickupWindowEnd: Date | null;
+    rentalEnd: Date;
+    status: BookingStatus;
+  },
+  phase: HandoverPhase,
+  returnConfirmationGraceMinutes: number,
+  now = new Date(),
+) {
+  return phase === HandoverPhase.START
+    ? new Set<BookingStatus>([BookingStatus.CONFIRMED, BookingStatus.READY_FOR_PICKUP]).has(
+        booking.status,
+      ) &&
+        !booking.actualPickupAt &&
+        Boolean(booking.pickupWindowEnd && now > booking.pickupWindowEnd)
+    : new Set<BookingStatus>([
+        BookingStatus.READY_FOR_PICKUP,
+        BookingStatus.ACTIVE,
+        BookingStatus.RETURN_PENDING,
+      ]).has(booking.status) &&
+        !booking.actualReturnAt &&
+        now.getTime() > booking.rentalEnd.getTime() + returnConfirmationGraceMinutes * 60_000;
+}
+
 @Injectable()
 export class RentalsService {
   private readonly pickupEarlyMinutes: number;
@@ -315,7 +349,7 @@ export class RentalsService {
   async ownerDetailForAccess(context: OwnerAccessContext, reference: string) {
     await this.ownerAccess.assertBookingAccess(context, reference, 'rentals.view');
     await this.evaluateReadiness(reference);
-    return this.ownerAccessProjection(context, this.serialize(await this.load(reference)));
+    return this.ownerAccessProjection(context, await this.serialize(await this.load(reference)));
   }
 
   async listForOwnerAccess(context: OwnerAccessContext) {
@@ -325,7 +359,11 @@ export class RentalsService {
       orderBy: { rentalStart: 'desc' },
       where: { vehicle },
     });
-    return bookings.map((booking) => this.ownerAccessProjection(context, this.serialize(booking)));
+    return Promise.all(
+      bookings.map(async (booking) =>
+        this.ownerAccessProjection(context, await this.serialize(booking)),
+      ),
+    );
   }
 
   private ownerAccessProjection<T>(context: OwnerAccessContext, value: T): T {
@@ -406,6 +444,7 @@ export class RentalsService {
       }
       booking = await this.ensureReady(transaction, booking);
       this.assertPickupWindow(booking);
+      this.assertNormalHandoverPathAllowed(booking, HandoverPhase.START);
       if (booking.status !== BookingStatus.READY_FOR_PICKUP) {
         this.invalidState('Pickup evidence requires a booking ready for pickup.');
       }
@@ -504,11 +543,15 @@ export class RentalsService {
       if (type === InspectionType.PICKUP) {
         booking = await this.ensureReady(transaction, booking);
         this.assertPickupWindow(booking);
+        this.assertNormalHandoverPathAllowed(booking, HandoverPhase.START);
         if (booking.status !== BookingStatus.READY_FOR_PICKUP) {
           this.invalidState('Pickup inspection requires a booking ready for pickup.');
         }
-      } else if (booking.status !== BookingStatus.RETURN_PENDING) {
-        this.invalidState('Return inspection requires a return-pending booking.');
+      } else {
+        this.assertNormalHandoverPathAllowed(booking, HandoverPhase.RETURN);
+        if (booking.status !== BookingStatus.RETURN_PENDING) {
+          this.invalidState('Return inspection requires a return-pending booking.');
+        }
       }
       this.validatePowertrainMeasurements(booking.vehicle.powertrain, input);
       if (type === InspectionType.RETURN) {
@@ -953,6 +996,7 @@ export class RentalsService {
     reference: string,
     input: PickupDiscrepancyResponseDto,
     metadata: RequestMetadata,
+    actorUserId = ownerUserId,
   ) {
     await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
@@ -1039,7 +1083,7 @@ export class RentalsService {
           data: {
             category: input.acknowledgedCondition.category,
             classification: input.acknowledgedCondition.classification,
-            createdByUserId: ownerUserId,
+            createdByUserId: actorUserId,
             description: input.acknowledgedCondition.description.trim(),
             id: randomUUID(),
             inspectionId: inspection.id,
@@ -1094,7 +1138,7 @@ export class RentalsService {
           previousResponseId: previousResponse?.id ?? null,
           roundNumber: (previousResponse?.roundNumber ?? 0) + 1,
           referencedInspectionMediaId: input.referencedInspectionMediaId ?? null,
-          respondedByUserId: ownerUserId,
+          respondedByUserId: actorUserId,
           responseText: input.responseText.trim(),
           responseType: input.responseType,
         },
@@ -1113,7 +1157,7 @@ export class RentalsService {
               blocksCompletion: true,
               id: randomUUID(),
               incidentId: incident.id,
-              openedByUserId: ownerUserId,
+              openedByUserId: actorUserId,
               originType: DisputeOriginType.INCIDENT,
               reason: input.responseText.trim(),
             },
@@ -1201,13 +1245,20 @@ export class RentalsService {
     return this.participantDetailById(renterUserId, reference);
   }
 
-  async escalatePickupDiscrepancy(userId: string, reference: string, metadata: RequestMetadata) {
+  async escalatePickupDiscrepancy(
+    userId: string,
+    reference: string,
+    metadata: RequestMetadata,
+    ownerAuthority?: OwnerOperationAuthority,
+  ) {
+    const authorizationUserId = ownerAuthority?.ownerUserId ?? userId;
+    const actorUserId = ownerAuthority?.actorUserId ?? userId;
     await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
       const booking = await transaction.booking.findUniqueOrThrow({
         where: { publicReference: reference },
       });
-      this.assertParticipant(booking, userId);
+      this.assertParticipant(booking, authorizationUserId);
       if (booking.status !== BookingStatus.READY_FOR_PICKUP)
         this.invalidState('Only an unresolved pre-custody handover may be escalated.');
       const incident = await transaction.rentalIncident.findFirstOrThrow({
@@ -1239,7 +1290,7 @@ export class RentalsService {
             blocksCompletion: true,
             id: randomUUID(),
             incidentId: incident.id,
-            openedByUserId: userId,
+            openedByUserId: actorUserId,
             originType: DisputeOriginType.INCIDENT,
             reason:
               'Participant explicitly requested CarShare support for the pickup-condition disagreement.',
@@ -1248,11 +1299,13 @@ export class RentalsService {
       await this.outbox(transaction, booking.id, 'PICKUP_DISCREPANCY_SUPPORT_REQUESTED', {
         bookingId: booking.id,
         recipientUserId:
-          booking.ownerUserId === userId ? booking.renterUserId : booking.ownerUserId,
+          booking.ownerUserId === authorizationUserId ? booking.renterUserId : booking.ownerUserId,
       });
       await this.analytics(transaction, booking, 'PICKUP_DISCREPANCY_SUPPORT_REQUESTED', metadata);
     });
-    return this.participantDetailById(userId, reference);
+    return ownerAuthority
+      ? this.ownerDetailById(ownerAuthority.ownerUserId, reference)
+      : this.participantDetailById(userId, reference);
   }
 
   async transitionHandoverTravel(
@@ -1280,6 +1333,7 @@ export class RentalsService {
           );
         }
         const isStart = input.phase === HandoverPhase.START;
+        this.assertNormalHandoverPathAllowed(booking, input.phase);
         if (!isStart && booking.status !== BookingStatus.RETURN_PENDING) {
           this.invalidState('The renter must start Return before collection travel can begin.');
         }
@@ -1374,6 +1428,7 @@ export class RentalsService {
     metadata: RequestMetadata,
     actorUserId = ownerUserId,
   ) {
+    const attribution = overdueRecoveryAttribution(ownerUserId, actorUserId);
     await this.database.client.$transaction(async (transaction) => {
       await this.lockBooking(transaction, reference);
       const booking = await transaction.booking.findUniqueOrThrow({
@@ -1455,7 +1510,7 @@ export class RentalsService {
           acknowledgementVersion: input.acknowledgementVersion,
           bookingId: booking.id,
           correlationId: metadata.correlationId ?? null,
-          reportedByUserId: actorUserId,
+          reportedByUserId: attribution.reportedByUserId,
           reportedPickupAt: pickupAt,
           reportedReturnAt: returnAt,
           responseDeadlineAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
@@ -1468,7 +1523,7 @@ export class RentalsService {
         booking.status,
         booking.status,
         BookingActorType.USER,
-        actorUserId,
+        attribution.historyActorUserId,
         `OVERDUE_HANDOVER_RECOVERY_${input.scope}_REPORTED`,
         metadata,
       );
@@ -1611,6 +1666,7 @@ export class RentalsService {
       if (authorizationUserId !== authorizedUserId) this.denied();
       if (booking.handoverWorkflowVersion !== HANDOVER_WORKFLOW_VERSION_B4)
         this.invalidState('Evidence waiver is available only for supported B4 bookings.');
+      this.assertNormalHandoverPathAllowed(booking, phase);
       if (
         !input.acknowledged ||
         input.acknowledgementVersion !== HANDOVER_EVIDENCE_WAIVER_ACKNOWLEDGEMENT_VERSION
@@ -2000,6 +2056,7 @@ export class RentalsService {
       booking = await this.ensureReady(transaction, booking);
       await this.assertNoBlockingAcceptedAmendment(transaction, booking.id);
       this.assertPickupWindow(booking);
+      this.assertNormalHandoverPathAllowed(booking, HandoverPhase.START);
       if (booking.status !== BookingStatus.READY_FOR_PICKUP) {
         this.invalidState('Pickup confirmation requires a booking ready for pickup.');
       }
@@ -2119,6 +2176,7 @@ export class RentalsService {
       if (booking.status !== BookingStatus.READY_FOR_PICKUP) {
         this.invalidState('Booking is not ready for pickup verification.');
       }
+      this.assertNormalHandoverPathAllowed(booking, HandoverPhase.START);
       if (
         securityDepositBlocksHandover({
           authorizedAmountMinor: booking.securityDeposit?.authorizedAmountMinor ?? 0n,
@@ -2284,6 +2342,7 @@ export class RentalsService {
       if (booking.status !== BookingStatus.ACTIVE) {
         this.invalidState('Only an active rental can begin return.');
       }
+      this.assertNormalHandoverPathAllowed(booking, HandoverPhase.RETURN);
       await terminateActiveExtensionForReturn(transaction, booking.id);
       await transaction.booking.update({
         data: { status: BookingStatus.RETURN_PENDING },
@@ -2364,6 +2423,7 @@ export class RentalsService {
       if (booking.status !== BookingStatus.RETURN_PENDING) {
         this.invalidState('Booking is not waiting for return confirmation.');
       }
+      this.assertNormalHandoverPathAllowed(booking, HandoverPhase.RETURN);
       const pickup = await transaction.inspection.findFirst({
         include: {
           amendments: {
@@ -2559,6 +2619,7 @@ export class RentalsService {
     inspectionId: string,
     input: RequestInspectionCorrectionDto,
     metadata: RequestMetadata,
+    actorUserId = ownerUserId,
   ) {
     if (
       input.proposedOdometerMeters === undefined &&
@@ -2579,7 +2640,6 @@ export class RentalsService {
       });
       if (
         inspection.booking.ownerUserId !== ownerUserId ||
-        inspection.submittedByUserId !== ownerUserId ||
         inspection.type !== InspectionType.PICKUP ||
         inspection.status !== InspectionStatus.FINALIZED
       )
@@ -2604,7 +2664,7 @@ export class RentalsService {
       }
       const created = await transaction.inspectionAmendment.create({
         data: {
-          createdByUserId: ownerUserId,
+          createdByUserId: actorUserId,
           evidence: {
             originalBatterySocBasisPoints: inspection.batterySocBasisPoints,
             originalFuelBasisPoints: inspection.fuelBasisPoints,
@@ -2630,7 +2690,7 @@ export class RentalsService {
     });
     await this.audit.record({
       action: 'INSPECTION_CORRECTION_REQUESTED',
-      actorUserId: ownerUserId,
+      actorUserId,
       metadata: { bookingId: correction.bookingId, inspectionId },
       reason: input.reason,
       request: metadata,
@@ -3335,6 +3395,24 @@ export class RentalsService {
     }
     // The end boundary governs overdue reminders, not workflow expiry. Lifecycle,
     // travel, holds, review and challenge-expiry checks remain independently enforced.
+  }
+
+  private assertNormalHandoverPathAllowed(
+    booking: {
+      actualPickupAt: Date | null;
+      actualReturnAt: Date | null;
+      pickupWindowEnd: Date | null;
+      rentalEnd: Date;
+      status: BookingStatus;
+    },
+    phase: HandoverPhase,
+  ) {
+    if (normalHandoverRequiresRecovery(booking, phase, this.returnConfirmationGraceMinutes))
+      throw new ApplicationException(
+        'HANDOVER_RECOVERY_REQUIRED',
+        'This handover is overdue and must be completed using recovery.',
+        HttpStatus.CONFLICT,
+      );
   }
 
   private async extendOccupancyOrEscalate(

@@ -85,6 +85,33 @@ describe('renter profile persona presentation', () => {
 });
 
 describe('hosting profile persona and verification presentation', () => {
+  it('uses workspace-focused copy for delegated More without exposing the member role', () => {
+    expect(ownerMore).toContain("const isDelegatedWorkspace = ownerWorkspace.capacity !== 'OWNER'");
+    expect(ownerMore).toContain("eyebrow={isDelegatedWorkspace ? 'Staff mode' : 'Owner mode'}");
+    expect(ownerMore).toContain(
+      "title={isDelegatedWorkspace ? 'Workspace operations' : 'Manage your business'}",
+    );
+    expect(ownerMore).toContain(
+      'subtitle={isDelegatedWorkspace ? `Owner: ${workspaceLabel}` : `${workspaceLabel} · Owner`}',
+    );
+    expect(ownerMore).not.toContain("ownerWorkspace.capacity === 'MANAGER' ? 'Manager' : 'Staff'");
+  });
+
+  it('keeps the existing Owner More copy and shared workspace-name fallback', () => {
+    expect(ownerMore).toContain("'Owner mode'");
+    expect(ownerMore).toContain("'Manage your business'");
+    expect(ownerMore).toContain('const workspaceLabel = ownerWorkspaceLabel(ownerWorkspace)');
+    expect(ownerMore).toContain('`${workspaceLabel} · Owner`');
+  });
+
+  it('leaves More sections, logout, and tab wiring unchanged', () => {
+    expect(ownerMore).toContain('<MenuSection title="Operations">');
+    expect(ownerMore).toContain('<MenuSection title="Help & settings">');
+    expect(ownerMore).toContain('<LogoutButton />');
+    expect(navigationSource).toContain('<OwnerTabs.Screen name="More">');
+    expect(navigationSource).toContain('<OwnerMoreScreen');
+  });
+
   it('places Staff in the existing Owner Operations menu', () => {
     expect(ownerMore).toContain('label="Staff"');
     expect(ownerMore).toContain("navigation.navigate('OwnerStaff')");

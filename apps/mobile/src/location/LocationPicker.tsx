@@ -42,6 +42,7 @@ export function LocationPicker({
   mapAccessibilityLabel,
   mapGuidance,
   allowCurrentLocation = true,
+  ownerProfileId,
   dismissLabel = 'Cancel location selection',
   presentation = 'default',
   onCancel,
@@ -57,6 +58,7 @@ export function LocationPicker({
   readonly mapAccessibilityLabel?: string;
   readonly mapGuidance?: string;
   readonly allowCurrentLocation?: boolean;
+  readonly ownerProfileId?: string | undefined;
   readonly dismissLabel?: string;
   readonly presentation?: 'default' | 'vehicleSetup';
   readonly onCancel: () => void;
@@ -96,7 +98,7 @@ export function LocationPicker({
     const timer = setTimeout(() => {
       setStatus('searching');
       provider
-        .searchPlaces(query.trim(), session.current)
+        .searchPlaces(query.trim(), session.current, ownerProfileId)
         .then((items) => {
           if (id === request.current) setResults(items);
         })
@@ -109,14 +111,14 @@ export function LocationPicker({
         });
     }, 350);
     return () => clearTimeout(timer);
-  }, [provider, query, visible]);
+  }, [ownerProfileId, provider, query, visible]);
   const resolveCoordinates = async (next: Region) => {
     const id = ++request.current;
     setPending(undefined);
     setError('');
     setStatus('resolving');
     try {
-      const value = await provider.reverseGeocode(next.latitude, next.longitude);
+      const value = await provider.reverseGeocode(next.latitude, next.longitude, ownerProfileId);
       if (id === request.current) setPending(value);
     } catch {
       if (id === request.current)
@@ -131,7 +133,11 @@ export function LocationPicker({
     setError('');
     setStatus('resolving');
     try {
-      const value = await provider.resolvePlace(item.providerReference, session.current);
+      const value = await provider.resolvePlace(
+        item.providerReference,
+        session.current,
+        ownerProfileId,
+      );
       if (id !== request.current) return;
       setPending(value);
       const next = {

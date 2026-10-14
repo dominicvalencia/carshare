@@ -4,6 +4,57 @@ import { consumeDomainEvent, workerPushProvider } from './notification-delivery'
 import type { WorkerEnvironment } from '@carrental/config';
 
 describe('vehicle Owner approval notification delivery', () => {
+  it('delivers a trusted new-vehicle submission notification to the Owner', async () => {
+    const ownerUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const vehicleId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const creates = new Map<string, Record<string, unknown>>();
+    const database = {
+      devicePushToken: { findMany: vi.fn(async () => []) },
+      notificationPreference: { findUnique: vi.fn(async () => null) },
+      notification: {
+        upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => {
+          creates.set(String(create.stableKey), create);
+          return { id: vehicleId };
+        }),
+      },
+    } as unknown as PrismaClient;
+    const payload = {
+      managerDisplayName: 'Mika Santos',
+      notificationAudience: 'OWNER',
+      notificationIdentity: `${vehicleId}:TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW:7`,
+      recipientUserId: ownerUserId,
+      vehicleDisplayName: 'Nissan Navara',
+      vehicleId,
+    };
+
+    await consumeDomainEvent(
+      database,
+      'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW',
+      payload,
+      'outbox-1',
+    );
+    await consumeDomainEvent(
+      database,
+      'VEHICLE_TRUSTED_MANAGER_SUBMITTED_FOR_REVIEW',
+      payload,
+      'outbox-2',
+    );
+
+    expect(creates).toHaveLength(1);
+    expect([...creates.values()][0]).toMatchObject({
+      audience: 'OWNER',
+      deepLink: `carrental://owner/vehicles/${vehicleId}`,
+      sourceId: vehicleId,
+      sourceType: 'VEHICLE',
+      templateKey: 'vehicle.trusted-manager-submitted-for-review',
+      userId: ownerUserId,
+      variables: {
+        managerDisplayName: 'Mika Santos',
+        vehicleDisplayName: 'Nissan Navara',
+      },
+    });
+  });
+
   it.each([
     ['VEHICLE_CHANGE_PROPOSAL_SUBMITTED', 'vehicle-change-proposal.submitted'],
     [

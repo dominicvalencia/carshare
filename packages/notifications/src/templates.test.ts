@@ -45,6 +45,16 @@ describe('overdue reminder content', () => {
 
   it('renders privacy-safe trusted Manager proposal notifications', () => {
     expect(
+      renderNotification('vehicle.trusted-manager-submitted-for-review', {
+        managerDisplayName: 'Mika Santos',
+        vehicleDisplayName: 'Nissan Navara',
+        privateLocation: 'PRIVATE',
+      }),
+    ).toEqual({
+      body: 'Mika Santos submitted Nissan Navara to CarShare review using trusted authority.',
+      title: 'Vehicle submitted for review',
+    });
+    expect(
       renderNotification('vehicle-change-proposal.trusted-applied', {
         managerDisplayName: 'Mika Santos',
         vehicleDisplayName: 'Honda Civic',

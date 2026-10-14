@@ -93,6 +93,10 @@ export function OwnerBookingRequestsScreen({
     ? `/owner/workspaces/${ownerWorkspace.ownerProfileId}/bookings`
     : '/owner/bookings';
   const workspaceKey = ownerWorkspace?.ownerProfileId ?? 'owner';
+  const canRespondToRequests =
+    !ownerWorkspace ||
+    hasOwnerPermission(ownerWorkspace, 'bookings.accept') ||
+    hasOwnerPermission(ownerWorkspace, 'bookings.reject');
   const [selected, setSelected] = useState<string | null>(
     initialAmendmentReference ? null : (initialBookingReference ?? null),
   );
@@ -227,7 +231,7 @@ export function OwnerBookingRequestsScreen({
           {(['Needs response', 'Upcoming', 'All'] as const).map((value) => (
             <Chip
               key={value}
-              label={value}
+              label={value === 'Needs response' && !canRespondToRequests ? 'Needs review' : value}
               selected={filter === value}
               onPress={() => setFilter(value)}
             />
@@ -238,7 +242,7 @@ export function OwnerBookingRequestsScreen({
         <View style={styles.embeddedHeader}>
           <View style={styles.flex}>
             <Text accessibilityRole="header" style={styles.sectionLabel}>
-              Needs your response
+              {canRespondToRequests ? 'Needs your response' : 'Needs review'}
             </Text>
             <Text style={styles.body}>New bookings and requested booking changes.</Text>
           </View>
@@ -364,7 +368,13 @@ export function OwnerBookingRequestsScreen({
           compact
           icon="file-tray-outline"
           title={
-            embedded ? 'No requests need your response' : ownerAmendmentEmptyTitle(effectiveFilter)
+            embedded
+              ? canRespondToRequests
+                ? 'No requests need your response'
+                : 'No requests need review'
+              : effectiveFilter === 'Needs response' && !canRespondToRequests
+                ? 'No booking requests need review'
+                : ownerAmendmentEmptyTitle(effectiveFilter)
           }
           message={
             embedded
